@@ -1,6 +1,7 @@
 plans/
 .cache/
 .work/
+dist/
 out/
 __pycache__/
 *.pyc
