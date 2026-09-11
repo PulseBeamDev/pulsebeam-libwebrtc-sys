@@ -289,7 +289,37 @@ impl ArtifactManifest {
         {
             return Err("invalid license inventory".into());
         }
+        if manifest
+            .links
+            .iter()
+            .any(|link| link.name.is_empty() || link.name.contains(['\r', '\n']))
+        {
+            return Err("invalid native link entry".into());
+        }
         Ok(manifest)
+    }
+
+    pub(crate) fn cargo_link_directives(&self, library_dir: &str) -> Vec<String> {
+        let mut directives = vec![
+            format!("cargo::rustc-link-search=native={library_dir}"),
+            format!("cargo::rustc-link-lib=static={}", self.archive.name),
+        ];
+        for link in &self.links {
+            match link.kind {
+                LinkKind::Dylib => directives.push(format!("cargo::rustc-link-lib={}", link.name)),
+                LinkKind::Framework => {
+                    directives.push(format!("cargo::rustc-link-lib=framework={}", link.name));
+                }
+                LinkKind::WeakFramework => {
+                    directives.push("cargo::rustc-link-arg=-weak_framework".into());
+                    directives.push(format!("cargo::rustc-link-arg={}", link.name));
+                }
+                LinkKind::LinkArg => {
+                    directives.push(format!("cargo::rustc-link-arg={}", link.name));
+                }
+            }
+        }
+        directives
     }
 }
 
@@ -369,5 +399,34 @@ mod tests {
             1,
         );
         assert!(validate(inconsistent.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn translates_every_link_kind_in_order_and_rejects_unknown_kinds() {
+        let mut fixture: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        fixture["links"] = serde_json::json!([
+            {"kind": "dylib", "name": "pthread"},
+            {"kind": "framework", "name": "CoreMedia"},
+            {"kind": "weak_framework", "name": "VideoToolbox"},
+            {"kind": "link_arg", "name": "-pthread"}
+        ]);
+        let fixture = serde_json::to_vec(&fixture).unwrap();
+        let manifest = validate(&fixture).unwrap();
+        assert_eq!(
+            manifest.cargo_link_directives("/artifact/lib"),
+            [
+                "cargo::rustc-link-search=native=/artifact/lib",
+                "cargo::rustc-link-lib=static=webrtc",
+                "cargo::rustc-link-lib=pthread",
+                "cargo::rustc-link-lib=framework=CoreMedia",
+                "cargo::rustc-link-arg=-weak_framework",
+                "cargo::rustc-link-arg=VideoToolbox",
+                "cargo::rustc-link-arg=-pthread",
+            ]
+        );
+        let unknown = String::from_utf8(fixture)
+            .unwrap()
+            .replacen("link_arg", "mystery", 1);
+        assert!(validate(unknown.as_bytes()).is_err());
     }
 }

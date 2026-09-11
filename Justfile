@@ -32,7 +32,9 @@ check:
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
+    python3 -m unittest tests/test_artifact_lock.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
+    python3 tools/write_artifact_lock.py --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --lib --locked --offline

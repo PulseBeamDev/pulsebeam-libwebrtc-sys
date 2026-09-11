@@ -24,3 +24,8 @@ pub fn bridge_identity() -> &'static str {
 #[path = "../build_support/manifest.rs"]
 #[allow(dead_code)]
 mod manifest;
+
+#[cfg(test)]
+#[path = "../build_support/artifact.rs"]
+#[allow(dead_code)]
+mod artifact;

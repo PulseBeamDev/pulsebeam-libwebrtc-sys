@@ -65,8 +65,20 @@ For development against a matching extracted artifact:
 PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR=.work/package/webrtc-core-linux-x86_64 cargo test
 ```
 
-The override is intentionally local-only. Immutable release resolution and
-download/cache behavior are introduced in a later implementation slice.
+This is the only local-artifact override. Without it, `build.rs` selects the
+exact `TARGET` plus the additive `native` feature in `artifacts.lock.json`,
+verifies a cached archive, or downloads its immutable URL and verifies its
+SHA-256 before safe extraction. The cache defaults to
+`$CARGO_HOME/pulsebeam-webrtc-sys/artifacts-v1`; set
+`PULSEBEAM_WEBRTC_SYS_CACHE_DIR` when a hermetic build needs an explicit cache
+location. `CARGO_NET_OFFLINE=true`, Cargo's `--offline`, or
+`PULSEBEAM_WEBRTC_SYS_OFFLINE=true` disables downloads and reports the exact
+missing asset and checksum.
+
+The development lock includes all 18 target/flavor selections. Until the first
+full matching release, only the checked-in Linux x86_64 core proof artifact has
+release coordinates; unreleased selections require the explicit local override.
+Release-ready Git revisions contain URLs and checksums for all 18 entries.
 
 ## Artifact flavors
 
@@ -179,13 +191,16 @@ identity; `m150_release` is branch context, not an input to the build. The
 source is built without a local patch stack, and only optimized release
 artifacts are published.
 
-Releases run only through the manual GitHub Actions workflow. It requires an
-existing tag that resolves to the workflow commit, builds and compile/link-checks
-all 18 archives on standard hosted runners, generates `SHA256SUMS`, attests the
-final assets, and creates one GitHub Release. Publication succeeds only after
-every matrix entry succeeds. Provenance, rather than byte-for-byte archive
-identity across runners, is the reproducibility contract; published releases
-should be treated as immutable.
+Releases use two explicit phases. First, the manual GitHub Actions workflow
+requires an existing producer tag, builds and compile/link-checks all 18
+archives, generates `SHA256SUMS` plus an `artifacts.lock.json` candidate, attests
+the final assets, and creates one immutable GitHub Release. Publication succeeds
+only after every matrix entry succeeds. Second, replace the repository lock with
+that candidate (equivalently run `tools/write_artifact_lock.py` against the
+release's `SHA256SUMS`), run `just check`, and commit the resulting release-ready
+Git revision. Consumers must use that revision, not the producer-tag revision.
+Provenance, rather than byte-for-byte archive identity across runners, is the
+reproducibility contract; published releases are immutable.
 
 The smoke test validates API availability and the exported static link closure.
 It does not claim physical camera, microphone, speaker, GPU, platform UI, or

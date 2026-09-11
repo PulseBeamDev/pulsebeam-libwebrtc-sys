@@ -95,9 +95,19 @@ def validate_cargo_state(root: Path, version: str) -> list[str]:
         errors.append(f"Cargo.lock: cxx {version} is not resolved as one local package")
     if len(locked_macro) != 1 or locked_macro[0].get("version") != version:
         errors.append(f"Cargo.lock: cxxbridge-macro is not resolved exactly once at {version}")
-    forbidden = sorted(
-        package.get("name") for package in packages if package.get("name") in {"cc", "cxx-build"}
-    )
+    by_name: dict[str, list[dict]] = {}
+    for package in packages:
+        by_name.setdefault(package.get("name", ""), []).append(package)
+    pending = ["cxx"]
+    reached: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        for package in by_name.get(name, []):
+            pending.extend(dependency.split()[0] for dependency in package.get("dependencies", []))
+    forbidden = sorted(reached & {"cc", "cxx-build"})
     if forbidden:
         errors.append(f"Cargo.lock: forbidden consumer native build packages: {', '.join(forbidden)}")
     if (root / VENDOR / "build.rs").exists():

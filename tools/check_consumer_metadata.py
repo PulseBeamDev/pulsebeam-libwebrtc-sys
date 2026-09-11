@@ -22,7 +22,12 @@ def _package_by_id(metadata: dict) -> dict[str, dict]:
 
 def _reachable(resolve: dict, root: str) -> set[str]:
     nodes = {
-        node["id"]: [dependency["pkg"] for dependency in node.get("deps", [])]
+        node["id"]: [
+            dependency["pkg"]
+            for dependency in node.get("deps", [])
+            if not dependency.get("dep_kinds")
+            or any(kind.get("kind") != "dev" for kind in dependency["dep_kinds"])
+        ]
         for node in resolve.get("nodes", [])
     }
     pending = [root]
@@ -34,6 +39,18 @@ def _reachable(resolve: dict, root: str) -> set[str]:
         reached.add(package_id)
         pending.extend(nodes.get(package_id, []))
     return reached
+
+
+def _direct(resolve: dict, root: str) -> set[str]:
+    node = next((node for node in resolve.get("nodes", []) if node["id"] == root), None)
+    if node is None:
+        raise MetadataError("Cargo metadata has no node for pulsebeam-webrtc-sys")
+    return {
+        dependency["pkg"]
+        for dependency in node.get("deps", [])
+        if not dependency.get("dep_kinds")
+        or any(kind.get("kind") != "dev" for kind in dependency["dep_kinds"])
+    }
 
 
 def validate(metadata: dict) -> None:
@@ -59,6 +76,7 @@ def validate(metadata: dict) -> None:
     if len(sys_packages) != 1:
         raise MetadataError("consumer does not resolve exactly one pulsebeam-webrtc-sys package")
     bridge_graph = _reachable(resolve, sys_packages[0]["id"])
+    direct_bridge_dependencies = _direct(resolve, sys_packages[0]["id"])
 
     cxx_packages = [
         packages[package_id]
@@ -78,7 +96,7 @@ def validate(metadata: dict) -> None:
     forbidden = sorted(
         {
             packages[package_id]["name"]
-            for package_id in bridge_graph
+            for package_id in direct_bridge_dependencies
             if packages[package_id].get("name") in {"cc", "cxx-build"}
         }
     )
@@ -86,6 +104,17 @@ def validate(metadata: dict) -> None:
         raise MetadataError(
             "bridge graph contains forbidden native build packages: " + ", ".join(forbidden)
         )
+
+    names = {packages[package_id].get("name") for package_id in bridge_graph}
+    if "ureq" in names:
+        if "oxitls-rustcrypto-provider" not in names:
+            raise MetadataError("artifact downloader has no pure-Rust TLS crypto provider")
+        rustls = next(
+            (node for node in resolve["nodes"] if packages[node["id"]].get("name") == "rustls"),
+            None,
+        )
+        if rustls is None or {"aws_lc_rs", "aws-lc-rs", "ring"} & set(rustls.get("features", [])):
+            raise MetadataError("artifact downloader enabled a native rustls crypto provider")
 
 
 def main() -> int:

@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "release_ready": false,
+  "bridge_identity": "pulsebeam-webrtc-sys-bridge-v1",
+  "artifacts": [
+    {
+      "cargo_target": "x86_64-unknown-linux-gnu",
+      "artifact_target": "linux-x86_64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-linux-x86_64.tar.gz",
+      "url": "https://raw.githubusercontent.com/PulseBeamDev/pulsebeam-libwebrtc-sys/e9af98dea8c31c5a92f3faaa3132db198d739341/tests/fixtures/webrtc-core-linux-x86_64.tar.gz",
+      "sha256": "bc236cd3f111479a15e182f268d88002e5f53aeec902603a88252c23c0d471d1"
+    },
+    {
+      "cargo_target": "x86_64-unknown-linux-gnu",
+      "artifact_target": "linux-x86_64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-linux-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-unknown-linux-gnu",
+      "artifact_target": "linux-arm64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-linux-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-unknown-linux-gnu",
+      "artifact_target": "linux-arm64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-linux-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-pc-windows-msvc",
+      "artifact_target": "windows-x86_64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-windows-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-pc-windows-msvc",
+      "artifact_target": "windows-x86_64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-windows-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-apple-darwin",
+      "artifact_target": "macos-x86_64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-macos-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-apple-darwin",
+      "artifact_target": "macos-x86_64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-macos-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-darwin",
+      "artifact_target": "macos-arm64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-macos-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-darwin",
+      "artifact_target": "macos-arm64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-macos-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-linux-android",
+      "artifact_target": "android-x86_64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-android-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "x86_64-linux-android",
+      "artifact_target": "android-x86_64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-android-x86_64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-linux-android",
+      "artifact_target": "android-arm64-v8a",
+      "flavor": "core",
+      "asset_name": "webrtc-core-android-arm64-v8a.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-linux-android",
+      "artifact_target": "android-arm64-v8a",
+      "flavor": "native",
+      "asset_name": "webrtc-native-android-arm64-v8a.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-ios",
+      "artifact_target": "ios-arm64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-ios-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-ios",
+      "artifact_target": "ios-arm64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-ios-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-ios-sim",
+      "artifact_target": "ios-simulator-arm64",
+      "flavor": "core",
+      "asset_name": "webrtc-core-ios-simulator-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    },
+    {
+      "cargo_target": "aarch64-apple-ios-sim",
+      "artifact_target": "ios-simulator-arm64",
+      "flavor": "native",
+      "asset_name": "webrtc-native-ios-simulator-arm64.tar.gz",
+      "url": null,
+      "sha256": null
+    }
+  ]
+}

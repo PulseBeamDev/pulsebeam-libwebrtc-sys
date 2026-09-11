@@ -1,25 +1,30 @@
+#[path = "build_support/artifact.rs"]
+mod artifact;
 #[path = "build_support/manifest.rs"]
 mod manifest;
 
-use std::{env, fs, path::PathBuf};
-
-use manifest::{ArtifactManifest, LinkKind, SUPPORTED_CARGO_TARGETS, artifact_target};
+use std::{env, path::Path};
 
 const BRIDGE_IDENTITY: &str = "pulsebeam-webrtc-sys-bridge-v1";
+const ARTIFACT_LOCK: &[u8] = include_bytes!("artifacts.lock.json");
 
 fn main() {
-    println!("cargo::rerun-if-env-changed=PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR");
-    println!("cargo::rerun-if-env-changed=PULSEBEAM_WEBRTC_SYS_SKIP_LINK");
-
-    if env::var_os("PULSEBEAM_WEBRTC_SYS_SKIP_LINK").is_some() {
-        return;
+    for name in [
+        artifact::ARTIFACT_DIR_ENV,
+        artifact::CACHE_DIR_ENV,
+        artifact::OFFLINE_ENV,
+        "CARGO_NET_OFFLINE",
+        "PULSEBEAM_WEBRTC_SYS_SKIP_LINK",
+    ] {
+        println!("cargo::rerun-if-env-changed={name}");
     }
+    println!("cargo::rerun-if-changed=artifacts.lock.json");
 
     let target = env::var("TARGET").expect("Cargo did not provide TARGET");
-    let artifact_target = artifact_target(&target).unwrap_or_else(|| {
+    let artifact_target = manifest::artifact_target(&target).unwrap_or_else(|| {
         panic!(
             "unsupported Cargo target {target}; supported targets: {}",
-            SUPPORTED_CARGO_TARGETS.join(", ")
+            manifest::SUPPORTED_CARGO_TARGETS.join(", ")
         )
     });
     let flavor = if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
@@ -28,44 +33,30 @@ fn main() {
         "core"
     };
 
-    let artifact = PathBuf::from(
-        env::var_os("PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR")
-            .expect("set PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR to the matching extracted artifact"),
-    );
-    let manifest_path = artifact.join("manifest.json");
-    println!("cargo::rerun-if-changed={}", manifest_path.display());
+    if env::var_os("PULSEBEAM_WEBRTC_SYS_SKIP_LINK").is_some() {
+        return;
+    }
 
-    let bytes = fs::read(&manifest_path)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", manifest_path.display()));
-    let manifest = ArtifactManifest::parse_and_validate(
-        &bytes,
-        BRIDGE_IDENTITY,
-        flavor,
-        artifact_target,
-        &target,
-    )
-    .unwrap_or_else(|error| panic!("invalid {}: {error}", manifest_path.display()));
-
+    let artifact = artifact::resolve(ARTIFACT_LOCK, BRIDGE_IDENTITY, &target, flavor)
+        .unwrap_or_else(|error| panic!("failed to resolve native artifact: {error}"));
+    let manifest =
+        artifact::validate_extracted(&artifact, BRIDGE_IDENTITY, flavor, artifact_target, &target)
+            .unwrap_or_else(|error| panic!("invalid native artifact: {error}"));
     let library = artifact.join(&manifest.archive.member);
-    assert!(
-        library.is_file(),
-        "missing native archive {}",
-        library.display()
-    );
     let library_dir = library
         .parent()
         .expect("native archive path must have a parent directory");
-    println!("cargo::rustc-link-search=native={}", library_dir.display());
-    println!("cargo::rustc-link-lib=static={}", manifest.archive.name);
-    for link in manifest.links {
-        match link.kind {
-            LinkKind::Dylib => println!("cargo::rustc-link-lib={}", link.name),
-            LinkKind::Framework => println!("cargo::rustc-link-lib=framework={}", link.name),
-            LinkKind::WeakFramework => {
-                println!("cargo::rustc-link-arg=-weak_framework");
-                println!("cargo::rustc-link-arg={}", link.name);
-            }
-            LinkKind::LinkArg => println!("cargo::rustc-link-arg={}", link.name),
-        }
+    println!(
+        "cargo::rerun-if-changed={}",
+        artifact.join("manifest.json").display()
+    );
+    println!("cargo::rerun-if-changed={}", library.display());
+    for directive in manifest.cargo_link_directives(path_string(library_dir)) {
+        println!("{directive}");
     }
+}
+
+fn path_string(path: &Path) -> &str {
+    path.to_str()
+        .expect("native artifact path must be valid Unicode for Cargo link directives")
 }

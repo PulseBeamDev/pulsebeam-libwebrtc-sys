@@ -13,9 +13,20 @@ native = []
 cxx = { version = "=1.0.200", path = "vendor/cxx" }
 
 [dev-dependencies]
+flate2 = { version = "=1.1.2", default-features = false, features = ["rust_backend"] }
+oxitls-rustcrypto-provider = "=0.3.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+tar = { version = "=0.4.44", default-features = false }
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 
 [build-dependencies]
+flate2 = { version = "=1.1.2", default-features = false, features = ["rust_backend"] }
+oxitls-rustcrypto-provider = "=0.3.0"
+rustls = { version = "=0.23.44", default-features = false, features = ["std", "tls12"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+tar = { version = "=0.4.44", default-features = false }
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }

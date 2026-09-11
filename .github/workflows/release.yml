@@ -145,6 +145,9 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           path: release
@@ -155,6 +158,11 @@ jobs:
         run: |
           test "$(find . -maxdepth 1 -name 'webrtc-*.tar.gz' | wc -l)" -eq 18
           find . -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
+      - name: Generate release-ready consumer lock
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 tools/write_artifact_lock.py --tag "$RELEASE_TAG" --checksums release/SHA256SUMS --output release/artifacts.lock.json
       - name: Attest final release assets
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
