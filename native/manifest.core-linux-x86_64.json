@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "bridge_identity": "pulsebeam-webrtc-sys-bridge-v1",
+  "source_repository": "https://github.com/webrtc-sdk/webrtc.git",
+  "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
+  "flavor": "core",
+  "target": "linux-x86_64",
+  "cargo_target": "x86_64-unknown-linux-gnu",
+  "archive": {
+    "member": "lib/libwebrtc.a",
+    "name": "webrtc"
+  },
+  "links": [
+    { "kind": "dylib", "name": "pthread" },
+    { "kind": "dylib", "name": "dl" },
+    { "kind": "dylib", "name": "rt" },
+    { "kind": "dylib", "name": "m" }
+  ]
+}

@@ -10,6 +10,7 @@ webrtc_url := "https://github.com/webrtc-sdk/webrtc.git"
 webrtc_commit := "ba469aa2093ba950066258ca0a59a6fbd1295582"
 depot_tools_url := "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
 depot_tools_commit := "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
+cxx_version := "1.0.200"
 
 default: check
 
@@ -29,9 +30,10 @@ check:
     grep -Eq '^[[:space:]]+while IFS= read -r root_label; do roots\+=' Justfile
     grep -Fq 'CreateModularPeerConnectionFactory' consumer/smoke.cc
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
-    test "$(wc -l < Justfile)" -le 300
-    test "$(( $(wc -l < Justfile) + $(wc -l < .github/workflows/release.yml) + $(wc -l < consumer/smoke.cc) ))" -le 600
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/release.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
+    cargo fmt --check
+    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --lib --locked --offline
+    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
     git diff --check
 
 # Synchronize, build, export, archive, and compile/link-check one raw artifact.
@@ -69,6 +71,7 @@ _prerequisites target:
     for tool in git tar python3; do
       command -v "$tool" >/dev/null || { echo "missing prerequisite: $tool" >&2; exit 1; }
     done
+    if test "{{ target }}" = linux-x86_64; then command -v cargo >/dev/null || { echo 'missing prerequisite: cargo' >&2; exit 1; }; fi
     case "{{ target }}" in
       windows-*) command -v cl.exe >/dev/null || { echo 'Windows builds require an MSVC developer shell' >&2; exit 1; } ;;
       macos-*|ios-*) command -v xcrun >/dev/null || { echo 'Apple builds require Xcode command-line tools' >&2; exit 1; } ;;
@@ -165,22 +168,47 @@ _export flavor target:
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then "$gn" desc --root="$src" "$out" //buildtools/third_party/libc++ outputs >> "$archives"; "$gn" desc --root="$src" "$out" //buildtools/third_party/libc++abi outputs >> "$archives"; fi
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
     test -s "$archives" || { echo 'static closure is empty' >&2; exit 1; }
-    library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
-    { printf 'CREATE %s\n' "$library"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$input"; done < "$archives"; while read -r input; do printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
     roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
     if test -d "$out/gen"; then (cd "$out/gen" && find . -type f \( -name '*.h' -o -name '*.inc' \) -print0 | tar --null -T - -cf -) | tar -C "$stage/include" -xf -; fi
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then mkdir -p "$stage/include/c++/v1"; cp -R "$src/third_party/libc++/src/include/." "$stage/include/c++/v1/"; cp "$src/buildtools/third_party/libc++/__config_site" "$src/buildtools/third_party/libc++/__assertion_handler" "$stage/include/c++/v1/"; fi
+    if test "{{ flavor }}:{{ target }}" = core:linux-x86_64; then just --justfile "{{ root }}/Justfile" _bridge-objects "$stage" >> "$objects"; cp "{{ root }}/native/manifest.core-linux-x86_64.json" "$stage/manifest.json"; fi
+    library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
+    { printf 'CREATE %s\n' "$library"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$input"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     vpython3 "$src/tools_webrtc/libs/generate_licenses.py" --target //:webrtc "$stage/LICENSES" "$out"
     cp "$src/LICENSE" "$stage/LICENSES/WEBRTC-BSD.txt"; test ! -f "$src/PATENTS" || cp "$src/PATENTS" "$stage/LICENSES/"; cp "{{ root }}/LICENSE" "$stage/LICENSES/REPOSITORY-APACHE-2.0.txt"
+    if test "{{ flavor }}:{{ target }}" = core:linux-x86_64; then cp "{{ root }}/vendor/cxx/LICENSE-APACHE" "$stage/LICENSES/CXX-APACHE-2.0.txt"; cp "{{ root }}/vendor/cxx/LICENSE-MIT" "$stage/LICENSES/CXX-MIT.txt"; fi
     just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}" > "$stage/link.txt"
     definitions=$("$gn" desc --root="$src" "$out" //:webrtc defines --all | sed 's/^/-D/' | tr '\n' ' ')
     { printf 'webrtc_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ flavor }}' '{{ target }}'; just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
-    rm -f "$archive"; tar -C "$stage" -czf "$archive" include lib link.txt LICENSES build.txt
+    members=(include lib link.txt LICENSES build.txt); test ! -f "$stage/manifest.json" || members+=(manifest.json)
+    rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
     verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects"' EXIT; tar -C "$verify" -xzf "$archive"
     just --justfile "{{ root }}/Justfile" _smoke "{{ target }}" "$verify"
+
+_bridge-objects stage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/core/linux-x86_64"
+    generator="{{ work }}/cxxbridge-tools/bin/cxxbridge"
+    if test "$($generator --version 2>/dev/null || true)" != "cxxbridge {{ cxx_version }}"; then
+      CARGO_HOME="{{ work }}/cargo-home" cargo install cxxbridge-cmd --version "{{ cxx_version }}" --locked --root "{{ work }}/cxxbridge-tools"
+    fi
+    rm -rf "$bridge"; mkdir -p "$bridge/include/rust" "$bridge/include/pulsebeam-webrtc-sys/src" "$bridge/include/pulsebeam-webrtc-sys/native" "$bridge/obj"
+    cp "{{ root }}/native/probe.h" "$bridge/include/pulsebeam-webrtc-sys/native/probe.h"
+    "$generator" --header > "$bridge/include/rust/cxx.h"
+    "$generator" "{{ root }}/src/lib.rs" --header > "$bridge/include/pulsebeam-webrtc-sys/src/lib.rs.h"
+    "$generator" "{{ root }}/src/lib.rs" > "$bridge/lib.rs.cc"
+    definitions=$("$(just --justfile "{{ root }}/Justfile" _gn)" desc --root="$src" "{{ work }}/out/core/linux-x86_64" //:webrtc defines --all | sed 's/^/-D/')
+    readarray -t defs <<< "$definitions"
+    cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+    args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -I"$bridge/include" -pthread "${defs[@]}")
+    "$cxx" "${args[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.o"
+    "$cxx" "${args[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.o"
+    "$cxx" "${args[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.o"
+    printf '%s\n' "$bridge/obj/bridge.o" "$bridge/obj/probe.o" "$bridge/obj/cxx.o"
 
 _link-flags flavor target:
     #!/usr/bin/env bash

@@ -3,5 +3,6 @@ plans/
 .work/
 dist/
 out/
+target/
 __pycache__/
 *.pyc

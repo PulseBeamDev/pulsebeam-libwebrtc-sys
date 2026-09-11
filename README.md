@@ -1,8 +1,8 @@
-# `webrtc-build`
+# `pulsebeam-webrtc-sys`
 
-This repository builds pinned, raw WebRTC development artifacts for PulseBeam.
-It is build infrastructure only: bindings, codec adapters, rendering,
-applications, and runtime integration belong to downstream repositories.
+This repository builds and consumes PulseBeam's pinned WebRTC artifacts. It owns
+the private CXX bridge, small native adapters, artifact metadata and selection,
+and the low-level Rust API used by `pulsebeam-libwebrtc`.
 
 ## Commands
 
@@ -13,9 +13,20 @@ just check
 just build <core|native> <target>
 ```
 
-`just check` is fast and offline. `just build` validates the flavor, target, and
-host before it synchronizes the pinned sources, configures and compiles WebRTC,
-exports the static closure, and performs a compile/link-only consumer check.
+`just check` is fast and offline once the pinned Rust dependencies are cached.
+`just build` validates the flavor, target, and host before it synchronizes the
+pinned sources, configures and compiles WebRTC, exports the static closure, and
+performs a compile/link-only consumer check. The initial Rust bridge proof is
+produced for `core/linux-x86_64`.
+
+For development against that extracted artifact:
+
+```console
+PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR=.work/package/webrtc-core-linux-x86_64 cargo test
+```
+
+The override is intentionally local-only. Immutable release resolution and
+download/cache behavior are introduced in a later implementation slice.
 
 ## Artifact flavors
 
@@ -97,6 +108,7 @@ link.txt          required system libraries, frameworks, and link flags
 LICENSES/         applicable notices and licenses
 build.txt         source revision, flavor, target, toolchain, GN arguments,
                   and exported C++ definitions
+manifest.json     versioned bridge and link identity (initial host proof)
 ```
 
 Headers and libraries always come from the same immutable WebRTC revision. The
@@ -106,10 +118,12 @@ multithreaded CRT (`/MT`), Apple targets use platform libc++ and frameworks, and
 Android uses its pinned API/NDK system libraries. `link.txt` records the system
 link contract for each target.
 
-Downstream Rust/CXX bridges must keep STL types private to C++, expose opaque
-handles or copied plain data, and destroy WebRTC-owned objects through the same
-C++ runtime that created them. Consumer bridge code must use the artifact's C++
-ABI, definitions, and link settings.
+The generated CXX C++ half and repository-owned adapters are compiled during
+artifact production with WebRTC's target compiler and ABI settings, then merged
+into the single native archive. The pinned CXX Rust runtime is vendored without
+its compiler-running Cargo build script; its matching C++ runtime is also part
+of the native archive. Cargo consumers therefore compile only Rust. CXX and STL
+types stay private; the public crate surface uses ordinary Rust values.
 
 This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 
@@ -136,11 +150,11 @@ applications.
 
 ## Downstream rendering contract
 
-This repository contains neither Rust bindings nor rendering code. The intended
-`pulsebeam-libwebrtc` feature model uses `core` by default, lets an additive
-`native` feature select the matching native artifact, and keeps rendering
-independently selectable so core applications can render without enabling
-platform devices.
+This repository contains the low-level Rust bindings but no rendering code. The
+intended `pulsebeam-libwebrtc` feature model uses `core` by default, lets an
+additive `native` feature select the matching native artifact, and keeps
+rendering independently selectable so core applications can render without
+enabling platform devices.
 
 wgpu is the intended common renderer for Android, iOS, macOS, Windows, and
 Linux. The initial path uploads decoded I420 or NV12 planes and performs color
@@ -152,19 +166,19 @@ is deferred.
 ## Repository boundaries
 
 This repository owns the immutable source/tool pins, target matrix, GN
-arguments, `Justfile` command surface, release workflow, one consumer smoke
-test, and the licenses needed to make releases trustworthy. Its own code is
-Apache-2.0 licensed. It must not vendor WebRTC, depot_tools, generated build
-trees, output archives, bindings, codec implementations, application or
-simulator code, or a source patch stack. Build workspaces and release artifacts
-are disposable local/CI output.
+arguments, private CXX definition, native adapters, low-level Rust package,
+artifact metadata, release workflow, consumer tests, and licenses needed to
+make releases trustworthy. Its own code is Apache-2.0 licensed. It must not
+vendor WebRTC, depot_tools, generated build trees, output archives, application
+or simulator code, production codec implementations, or a source patch stack.
+Build workspaces and release artifacts are disposable local/CI output.
 
 Non-goals include:
 
 - maintaining a WebRTC or BoringSSL fork;
 - bundling an H.264 encoder or decoder;
 - deterministic cryptographic output;
-- defining a public Rust or C++ binding API;
+- exposing CXX or libwebrtc's C++ ABI as the public Rust API;
 - implementing Rust, wgpu, or zero-copy rendering here;
 - publishing debug artifacts or physical-device test infrastructure;
 - promising byte-identical builds across runners; and
