@@ -9,9 +9,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "6c9c0ebac9b435486dde3dc25fb74218789999f444a736d19f30231386e68bd1",
-      "generated_header_sha256": "af255ba090bc63a4af18181550f280427e0cd6a75e1568883c8ce3426fbfb909",
-      "generated_source_sha256": "d75b9ad0a944dc3c8f0f7408679c803546a6904d64ed81557d622752ddc7dcfe"
+      "bridge_source_sha256": "869d28a6345a8ae8fa96633863fefe7985a7e8bfce8d532e67c0270bbc7b14e4",
+      "generated_header_sha256": "f986fc63746bf36812728212919e868a6604f73cdaae97b4a41d0b6955d9106a",
+      "generated_source_sha256": "08f5d1bae1eca9bdb8ac6c918d66d6d8f6fc34f45ee2332e3281b42213ee36a9"
     }
   },
   "sources": {
@@ -29,7 +29,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "a9dbb20279df620b4db9b7680bd8533896161fdd754e6ecb5a8bee639854064c",
+  "native_configuration_sha256": "59b3144afa1bfef312a8844d976d51b223dff462d956ebb658a02afb585748de",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",
@@ -42,11 +42,26 @@
     "name": "webrtc"
   },
   "links": [
-    { "kind": "link_arg", "name": "-fuse-ld=lld" },
-    { "kind": "dylib", "name": "pthread" },
-    { "kind": "dylib", "name": "dl" },
-    { "kind": "dylib", "name": "rt" },
-    { "kind": "dylib", "name": "m" }
+    {
+      "kind": "link_arg",
+      "name": "-fuse-ld=lld"
+    },
+    {
+      "kind": "dylib",
+      "name": "pthread"
+    },
+    {
+      "kind": "dylib",
+      "name": "dl"
+    },
+    {
+      "kind": "dylib",
+      "name": "rt"
+    },
+    {
+      "kind": "dylib",
+      "name": "m"
+    }
   ],
   "licenses": {
     "sha256": "fe956273e437802f0d3b1253c8efe025f8abfd8edffcae26ae98676f7ce3b08c",

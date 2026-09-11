@@ -1,10 +1,27 @@
 //! Low-level Rust integration with PulseBeam's pinned libwebrtc artifact.
 
+mod codec;
 mod execution;
 mod network;
 
+pub(crate) use codec::{
+    RustVideoDecoder, RustVideoDecoderFactory, RustVideoEncoder, RustVideoEncoderFactory,
+    decoder_configure, decoder_decode, decoder_factory_create, decoder_factory_formats,
+    decoder_factory_query, decoder_get_info, decoder_is_valid, decoder_register_callback,
+    decoder_release, encoder_encode, encoder_factory_create, encoder_factory_formats,
+    encoder_factory_query, encoder_get_info, encoder_init, encoder_is_valid,
+    encoder_register_callback, encoder_release, encoder_set_rates,
+};
 pub(crate) use execution::{RustTask, run_task};
 
+pub use codec::{
+    AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
+    DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, VideoCodecFormat, VideoDecoder,
+    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
+    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
+    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoRateControl,
+    VideoResolution,
+};
 pub use execution::{
     BuildEnvironmentError, Environment, EnvironmentBuilder, ManualClock, NetworkThread,
     QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue,
@@ -17,16 +34,128 @@ pub use network::{
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
 mod ffi {
+    struct FfiCodecParameter {
+        key: String,
+        value: String,
+    }
+
+    struct FfiCodecFormat {
+        name: String,
+        parameters: Vec<FfiCodecParameter>,
+    }
+
+    struct FfiCodecSupport {
+        supported: bool,
+        power_efficient: bool,
+    }
+
+    struct FfiEncoderSettings {
+        width: u32,
+        height: u32,
+        start_bitrate_bps: u32,
+        max_bitrate_bps: u32,
+        min_bitrate_bps: u32,
+        max_framerate: u32,
+        cores: u32,
+        max_payload_size: u32,
+    }
+
+    struct FfiDecoderSettings {
+        cores: u32,
+        max_width: u32,
+        max_height: u32,
+    }
+
+    struct FfiRateControl {
+        bitrate_bps: u32,
+        framerate_fps: f64,
+        bandwidth_bps: u64,
+    }
+
+    struct FfiEncoderInfo {
+        implementation_name: String,
+        hardware_accelerated: bool,
+        supports_native_handle: bool,
+    }
+
+    struct FfiDecoderInfo {
+        implementation_name: String,
+        hardware_accelerated: bool,
+    }
+
+    #[allow(dead_code)]
+    struct FfiCodecTestResult {
+        status: i32,
+        encoded_frames: u32,
+        decoded_frames: u32,
+        checksum: u64,
+    }
+
     extern "Rust" {
         type RustTask;
+        type RustVideoEncoderFactory;
+        type RustVideoDecoderFactory;
+        type RustVideoEncoder;
+        type RustVideoDecoder;
 
         fn run_task(task: Box<RustTask>);
+
+        fn encoder_factory_formats(factory: &RustVideoEncoderFactory) -> Vec<FfiCodecFormat>;
+        fn encoder_factory_query(
+            factory: &RustVideoEncoderFactory,
+            format: &FfiCodecFormat,
+            scalability_mode: &str,
+            has_resolution: bool,
+            width: u32,
+            height: u32,
+        ) -> FfiCodecSupport;
+        fn encoder_factory_create(
+            factory: &RustVideoEncoderFactory,
+            format: &FfiCodecFormat,
+        ) -> Box<RustVideoEncoder>;
+        fn encoder_is_valid(encoder: &RustVideoEncoder) -> bool;
+        fn encoder_init(encoder: &mut RustVideoEncoder, settings: FfiEncoderSettings) -> i32;
+        fn encoder_register_callback(encoder: &mut RustVideoEncoder) -> i32;
+        fn encoder_encode(
+            encoder: &mut RustVideoEncoder,
+            frame: UniquePtr<NativeVideoFrame>,
+            frame_types: &[u8],
+            callback: SharedPtr<NativeEncodedImageCallback>,
+        ) -> i32;
+        fn encoder_set_rates(encoder: &mut RustVideoEncoder, rates: FfiRateControl) -> i32;
+        fn encoder_release(encoder: &mut RustVideoEncoder) -> i32;
+        fn encoder_get_info(encoder: &RustVideoEncoder) -> FfiEncoderInfo;
+
+        fn decoder_factory_formats(factory: &RustVideoDecoderFactory) -> Vec<FfiCodecFormat>;
+        fn decoder_factory_query(
+            factory: &RustVideoDecoderFactory,
+            format: &FfiCodecFormat,
+            reference_scaling: bool,
+            has_resolution: bool,
+            width: u32,
+            height: u32,
+        ) -> FfiCodecSupport;
+        fn decoder_factory_create(
+            factory: &RustVideoDecoderFactory,
+            format: &FfiCodecFormat,
+        ) -> Box<RustVideoDecoder>;
+        fn decoder_is_valid(decoder: &RustVideoDecoder) -> bool;
+        fn decoder_configure(decoder: &mut RustVideoDecoder, settings: FfiDecoderSettings) -> bool;
+        fn decoder_register_callback(decoder: &mut RustVideoDecoder) -> i32;
+        fn decoder_decode(
+            decoder: &mut RustVideoDecoder,
+            frame: UniquePtr<NativeEncodedVideoFrame>,
+            callback: SharedPtr<NativeDecodedImageCallback>,
+        ) -> i32;
+        fn decoder_release(decoder: &mut RustVideoDecoder) -> i32;
+        fn decoder_get_info(decoder: &RustVideoDecoder) -> FfiDecoderInfo;
     }
 
     unsafe extern "C++" {
         include!("pulsebeam-webrtc-sys/native/probe.h");
         include!("pulsebeam-webrtc-sys/native/execution.h");
         include!("pulsebeam-webrtc-sys/native/network.h");
+        include!("pulsebeam-webrtc-sys/native/codec.h");
 
         type NativeEnvironment;
         type NativeManualClock;
@@ -41,6 +170,14 @@ mod ffi {
         type NativeSimulatedUdpSocket;
         type NativeOutboundPacket;
         type NativeReceivedPacket;
+        type NativeVideoEncoderFactory;
+        type NativeVideoDecoderFactory;
+        type NativeAudioEncoderFactory;
+        type NativeAudioDecoderFactory;
+        type NativeVideoFrame;
+        type NativeEncodedVideoFrame;
+        type NativeEncodedImageCallback;
+        type NativeDecodedImageCallback;
 
         fn bridge_identity() -> &'static str;
 
@@ -148,6 +285,69 @@ mod ffi {
         fn received_packet_source_ip(packet: &NativeReceivedPacket) -> Vec<u8>;
         fn received_packet_source_port(packet: &NativeReceivedPacket) -> u16;
         fn received_packet_payload(packet: &NativeReceivedPacket) -> Vec<u8>;
+
+        fn new_video_encoder_factory(
+            factory: Box<RustVideoEncoderFactory>,
+        ) -> UniquePtr<NativeVideoEncoderFactory>;
+        fn new_video_decoder_factory(
+            factory: Box<RustVideoDecoderFactory>,
+        ) -> UniquePtr<NativeVideoDecoderFactory>;
+        fn new_builtin_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
+        fn new_builtin_audio_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
+        fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
+        fn video_encoder_query(
+            factory: &NativeVideoEncoderFactory,
+            format: &FfiCodecFormat,
+            scalability_mode: &str,
+            has_resolution: bool,
+            width: u32,
+            height: u32,
+        ) -> FfiCodecSupport;
+        fn video_decoder_formats(factory: &NativeVideoDecoderFactory) -> Vec<FfiCodecFormat>;
+        fn video_decoder_query(
+            factory: &NativeVideoDecoderFactory,
+            format: &FfiCodecFormat,
+            reference_scaling: bool,
+            has_resolution: bool,
+            width: u32,
+            height: u32,
+        ) -> FfiCodecSupport;
+        fn native_video_frame_width(frame: &NativeVideoFrame) -> u32;
+        fn native_video_frame_height(frame: &NativeVideoFrame) -> u32;
+        fn native_video_frame_timestamp_us(frame: &NativeVideoFrame) -> i64;
+        fn native_video_frame_rtp_timestamp(frame: &NativeVideoFrame) -> u32;
+        fn native_video_frame_i420(frame: &NativeVideoFrame) -> Vec<u8>;
+        fn native_encoded_frame_width(frame: &NativeEncodedVideoFrame) -> u32;
+        fn native_encoded_frame_height(frame: &NativeEncodedVideoFrame) -> u32;
+        fn native_encoded_frame_rtp_timestamp(frame: &NativeEncodedVideoFrame) -> u32;
+        fn native_encoded_frame_key(frame: &NativeEncodedVideoFrame) -> bool;
+        fn native_encoded_frame_qp(frame: &NativeEncodedVideoFrame) -> i32;
+        fn native_encoded_frame_data(frame: &NativeEncodedVideoFrame) -> Vec<u8>;
+        fn encoded_callback_emit(
+            callback: &NativeEncodedImageCallback,
+            data: &[u8],
+            width: u32,
+            height: u32,
+            rtp_timestamp: u32,
+            key_frame: bool,
+            qp: i32,
+        ) -> bool;
+        fn decoded_callback_emit(
+            callback: &NativeDecodedImageCallback,
+            data: &[u8],
+            width: u32,
+            height: u32,
+            timestamp_us: i64,
+            rtp_timestamp: u32,
+        ) -> bool;
+        #[allow(dead_code)]
+        fn test_codec_roundtrip(
+            encoder: &NativeVideoEncoderFactory,
+            decoder: &NativeVideoDecoderFactory,
+            frames: u32,
+        ) -> FfiCodecTestResult;
+        #[allow(dead_code)]
+        fn test_encoder_factory_cross_thread(factory: &NativeVideoEncoderFactory) -> bool;
     }
 }
 
