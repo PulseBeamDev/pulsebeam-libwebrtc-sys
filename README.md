@@ -11,6 +11,7 @@ The complete local interface is:
 ```console
 just check
 just build <core|native> <target>
+just refresh-cxx
 ```
 
 `just check` is fast and offline once the pinned Rust dependencies are cached.
@@ -19,6 +20,15 @@ pinned sources, configures and compiles WebRTC, exports the static closure, and
 performs C++ and Rust compile/link-only consumer checks. Every flavor/target
 artifact carries the same generated bridge and portable adapter sources,
 compiled with that job's target toolchain and ABI configuration.
+
+`just refresh-cxx` is the explicit networked maintenance operation for the
+Rust-only CXX runtime. It downloads the version recorded in
+`vendor/cxx/provenance.json`, verifies the crates.io package checksum before
+touching the import, copies the selected upstream runtime, header, C++ runtime,
+and license files byte-for-byte, and regenerates the packaging-only manifest
+from `tools/cxx/Cargo.toml.in`. `just check` verifies the recorded inventory,
+per-file digests, generated overlay, exact component versions, and dependency
+graph without accessing the network.
 
 For development against a matching extracted artifact:
 
@@ -195,3 +205,16 @@ For a routine WebRTC upgrade, change only `webrtc_commit` near the top of the
 `depot_tools` revision only when WebRTC compatibility requires it. Adapt build
 arguments or target selection only when CI shows that an upstream change broke
 a required PulseBeam contract.
+
+Upgrade CXX as one reviewable change:
+
+1. From the crates.io index and the matching upstream tag, update the package
+   version and checksum plus the repository tag and commit in
+   `vendor/cxx/provenance.json`.
+2. Run `just refresh-cxx`. Review the imported inventory and regenerated
+   per-file digests; do not edit any imported file.
+3. Pin the same exact version in the root `Cargo.toml`, then update
+   `cxxbridge-macro` and `Cargo.lock` with Cargo. Change the overlay only for an
+   intentional packaging requirement and describe that delta in provenance.
+4. Run `just check`, run the applicable native artifact build, then run
+   `just refresh-cxx` once more and confirm that it produces no diff.

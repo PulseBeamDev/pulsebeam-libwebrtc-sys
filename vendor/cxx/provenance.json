@@ -1,0 +1,66 @@
+{
+  "imported_files": {
+    "LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+    "LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "include/cxx.h": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
+    "src/cxx.cc": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
+    "src/cxx_string.rs": "c4f5ea30ddb2a7a894dd771a13a3f906c6930967580384bd6a2adde2a5a03a73",
+    "src/cxx_vector.rs": "c3388cbb55bfca7121a6fb23d4bce6cd16ede6ce00af7693c39dd591591fc086",
+    "src/exception.rs": "d5242bac9f954bffec810c843075b61accead3509f7f5329e2ea75c600b1cea8",
+    "src/extern_type.rs": "b8c1ffc73f4234d4fd8fd8524353a78274035ab3a4447bf6571b5476646c8ec9",
+    "src/fmt.rs": "b75c8b10290e97520e74b532721e352a62453fdd0072e7908c65a384e93db19d",
+    "src/function.rs": "8601e7fcaabb52fd9df9a5a7d31d44ef2cad2e4e2f2c1eddbe3362b6e1cf4c08",
+    "src/hash.rs": "4d6e8e562639b6734b94fb904352e5cfb62bc492959eaee7b86796b7e4cd071b",
+    "src/lib.rs": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
+    "src/lossy.rs": "0e944618c973956da1ab268ced4147b72ee1ca3fa8d9941058b5299289c4831b",
+    "src/macros/assert.rs": "1bbe8abb6d18979ff18f52af6c65209ca3f07926ddfdf3d4faf41d45179ae35a",
+    "src/macros/mod.rs": "145fc84a45ccbb51f854f8a34f94900fb748312be4dceee4b3a8aa2b8f1bd9d2",
+    "src/memory.rs": "5e9045c3b0b37d2f51efffe7d3b197a119b138143964bde95a78d6d44bc73887",
+    "src/opaque.rs": "1d24253303c6f67ba56dbf697a56ed8214edc83fa47a5938e077d817c6a7d106",
+    "src/result.rs": "22d2dcb29f73a68a65694e533a3699d8e67d082e51925d6cfc7fab2562983d75",
+    "src/rust_slice.rs": "6be93bfd91d7c9e455e82b16ab0d287b386ac6d4b95d5ec5c19a0353f6ea7ac6",
+    "src/rust_str.rs": "de079536b2865fb9e23f180cb6b6ab7eba51634702323bc35b779b4b4ad8578f",
+    "src/rust_string.rs": "7b11d8e737b77a27ff5b1823e33628ac2627dbec44e1e5823c3b041c390dccce",
+    "src/rust_type.rs": "f9290f88e67151d930a4755db3bb07d58e197a87982e4bceab82d610e7f03366",
+    "src/rust_vec.rs": "c0c2c4e116cc86608b6cbd7781c862c7a2ab1b177ffb569c4281ceb0fbef529c",
+    "src/shared_ptr.rs": "7c7b067fc7aa6fe09c1df50a9f64d4b9a81a5659d5c299a80e455918d081ef59",
+    "src/symbols/exception.rs": "caf703cc147b4a20268c8f643e3a350aad19f6724ce38e54237a34216930faa8",
+    "src/symbols/mod.rs": "d8e701f172fff4bca08337fd1fd26140918411679db9d725bf3818585a94d6d8",
+    "src/symbols/rust_slice.rs": "e3c9c822b6bec6e423c50113d024b12f2144c5158fb6c701e35eb0f0d8e47e36",
+    "src/symbols/rust_str.rs": "15b012980b022115cee7106b93ff052b0373ef7812fb326ce094fbb2b6013cc4",
+    "src/symbols/rust_string.rs": "2a0d7d3fcc7088bf85c16e913bd1b5c09f929525768f5df8537b0a66d5e5c694",
+    "src/symbols/rust_vec.rs": "9e9372544f6d4303446c0d4aae30f58f879493616b6274e7c6fd64b6edc853e4",
+    "src/type_id.rs": "149e87157a1be4e2240930856a85daac9532de0f49a0364e6567fb8e988cd94c",
+    "src/unique_ptr.rs": "b230b835e251bd8fa15a7d8eb48f084217908d1ba65ae6b652fdde032c2b56f7",
+    "src/unwind.rs": "52b17e57f1b6b8c24a731fbdca15b3701139d1b1abd1671e557ef6f40ad5b18a",
+    "src/vector.rs": "e475882b53f6823d34b66764b7c4468b1312cd5b43829df06bfb4b62dd989e30",
+    "src/weak_ptr.rs": "11f1917f0409aff5c4319ad219333dadb12d96831fa7de3a69432f0b71bc948f"
+  },
+  "licenses": [
+    {
+      "path": "LICENSE-APACHE",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "spdx": "MIT"
+    }
+  ],
+  "overlay": {
+    "generated_manifest": "vendor/cxx/Cargo.toml",
+    "intentional_delta": "Removes the upstream native build script, native build dependencies, C++ standard-library linker helper, and non-runtime features; retains only the Rust runtime and its exact proc-macro dependency.",
+    "template": "tools/cxx/Cargo.toml.in"
+  },
+  "package": {
+    "checksum": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
+    "name": "cxx",
+    "registry": "https://crates.io",
+    "version": "1.0.200"
+  },
+  "schema": 1,
+  "upstream": {
+    "commit": "30ac7296e557ca0d5cd34d959b8e9848c10f4af4",
+    "repository": "https://github.com/dtolnay/cxx",
+    "tag": "1.0.200"
+  }
+}

@@ -1,0 +1,24 @@
+[package]
+name = "cxx"
+version = "@CXX_VERSION@"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Pinned Rust-only CXX runtime for pulsebeam-webrtc-sys consumers"
+
+[features]
+default = ["std"]
+alloc = []
+std = ["alloc", "foldhash/std"]
+
+[dependencies]
+cxxbridge-macro = "=@CXX_VERSION@"
+foldhash = { version = "0.2", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(built_with_cargo)",
+  "cfg(compile_error_if_alloc)",
+  "cfg(compile_error_if_std)",
+  "cfg(cxx_experimental_no_alloc)",
+] }
