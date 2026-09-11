@@ -19,7 +19,7 @@ check:
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx'
     test "$(grep -Ec '^[[:space:]]+- flavor:' .github/workflows/release.yml)" -eq 18
-    test "$(find consumer -type f | wc -l)" -eq 1
+    test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
     grep -Fq 'rtc_build_libvpx=true' Justfile
     grep -Fq 'rtc_include_dav1d_in_internal_decoder_factory=true' Justfile
@@ -31,11 +31,13 @@ check:
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_cxx_provenance.py
+    python3 -m unittest tests/test_consumer_metadata.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
-    ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/release.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
+    ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --lib --locked --offline
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
+    CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py
     git diff --check
 
 # Download, checksum, and mechanically refresh the pinned Rust-only CXX import.
