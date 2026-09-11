@@ -95,12 +95,59 @@ same simulation seed.
   asset requires a SHA-256 checksum and GitHub/Sigstore build-provenance
   attestation.
 
+## Release operations
+
+Releases are manual and immutable. Review source changes before dispatching CI:
+
+```console
+just update-source <40-character-webrtc-commit> <milestone> <recipe-revision>
+git diff -- Justfile
+```
+
+`update-source` verifies that the exact commit is fetchable from
+`webrtc-sdk/webrtc`, changes only the authoritative identity constants, and
+prints the resulting source and recipe identity. It does not sync, build, tag,
+or publish anything. Any source, flag, packaging, or recipe correction after a
+release requires a new recipe revision.
+
+After committing, reviewing, and pushing the clean recipe commit, dispatch the
+only publishing workflow with:
+
+```console
+just release m150-r1
+```
+
+The command checks tag syntax and identity agreement, the clean pushed recipe
+commit, GitHub credentials, source availability, and the absence of an existing
+tag or release. The workflow is `workflow_dispatch`-only. It builds and verifies
+the full matrix through `just`, aggregates only the expected verified files,
+creates the release checksum index and manifest, generates GitHub/Sigstore
+provenance, and uploads a draft. The draft becomes public only after a clean
+download passes the same release checks. A failed draft is never advertised as
+a final release and must not be repaired in place; increment the recipe
+revision.
+
+Anyone with GitHub CLI credentials that can read the repository attestations
+can independently download and verify a published release without local build
+outputs:
+
+```console
+just verify-release m150-r1
+```
+
+This checks the exact asset inventory, release-wide and per-asset SHA-256
+checksums, manifest/source/recipe agreement, all target/flavor slices, archive
+structure, licenses and third-party notices, codec disclosures, absence of a
+bundled OpenH264 or FFmpeg H.264 implementation, the immutable release tag, and
+GitHub/Sigstore build provenance.
+
 "Static" applies to the WebRTC library, not to every operating-system runtime.
-The Linux kits use the Bullseye ABI floor and dynamically supplied glibc and
-libstdc++; Windows retains the pinned upstream static CRT (`/MT`) contract;
-Apple uses the platform libc++ and frameworks; and Android records and retains
-its pinned NDK/libc++ contract, with JNI shared libraries allowed in `native`.
-Every manifest must state the exact runtime and linker contract.
+The Linux kits use the Bullseye ABI floor, dynamically supplied glibc, and the
+packaged pinned libc++/libc++abi static runtime; Windows retains the pinned
+upstream static CRT (`/MT`) contract; Apple uses the platform libc++ and
+frameworks; and Android records and retains its pinned NDK/libc++ contract,
+with JNI shared libraries allowed in `native`. Every manifest must state the
+exact runtime and linker contract.
 
 Downstream Rust/CXX bindings must expose opaque handles or copied plain data,
 keep STL types private to C++, and destroy WebRTC-owned objects through the same
