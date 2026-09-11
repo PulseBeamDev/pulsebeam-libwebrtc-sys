@@ -5,7 +5,7 @@ mod manifest;
 
 use std::{env, path::Path};
 
-const BRIDGE_IDENTITY: &str = "pulsebeam-webrtc-sys-bridge-v1";
+const BRIDGE_IDENTITY: &str = "pulsebeam-webrtc-sys-bridge-v2";
 const ARTIFACT_LOCK: &[u8] = include_bytes!("artifacts.lock.json");
 
 fn main() {

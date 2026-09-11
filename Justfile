@@ -39,6 +39,11 @@ check:
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --lib --locked --offline
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
+    runtime_artifact=$(mktemp -d); trap 'rm -rf "$runtime_artifact"' EXIT
+    tar -C "$runtime_artifact" -xzf tests/fixtures/webrtc-core-linux-x86_64.tar.gz manifest.json lib/libwebrtc.a
+    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test execution --locked --offline -- --test-threads=1
+    rm -rf "$runtime_artifact"
+    trap - EXIT
     CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py
     git diff --check
 
@@ -187,7 +192,7 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _bridge-objects "{{ flavor }}" "{{ target }}" "$stage" "$definitions_file" >> "$objects"
     library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
     { printf 'CREATE %s\n' "$library"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$input"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
-    members=$("$ar" t "$library"); for member in bridge probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null; done
+    members=$("$ar" t "$library"); for member in bridge execution probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null; done
     "$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm" "$library" 2>/dev/null | grep -F "pulsebeam\$webrtc_sys\$cxxbridge1\$$cxx_abi\$bridge_identity" >/dev/null
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     license_targets=(); while IFS= read -r root_label; do license_targets+=(--target "$root_label"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
@@ -198,7 +203,7 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}" > "$toolchain_file"
     definitions=$(tr '\n' ' ' < "$definitions_file")
     { printf 'webrtc_commit=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
-    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v1 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
+    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
     verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
@@ -213,7 +218,7 @@ _bridge-objects flavor target stage definitions_file:
     src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"
     generator=$(CARGO_HOME="{{ work }}/cargo-home" python3 "{{ root }}/tools/cxx_import.py" install-generator --root "{{ work }}/cxxbridge-tools")
     rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
-    cp "{{ root }}/native/probe.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/probe.h"
+    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
     cp "{{ root }}/vendor/cxx/include/cxx.h" "{{ stage }}/include/rust/cxx.h"
     "$generator" "{{ root }}/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "{{ root }}/src/lib.rs" > "$bridge/lib.rs.cc"
@@ -234,15 +239,17 @@ _bridge-objects flavor target stage definitions_file:
     esac
     if test "{{ target }}" = windows-x86_64; then
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge/lib.rs.cc" "/Fo$bridge/obj/bridge.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "{{ root }}/native/execution.cc" "/Fo$bridge/obj/execution.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "{{ root }}/native/probe.cc" "/Fo$bridge/obj/probe.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "{{ root }}/vendor/cxx/src/cxx.cc" "/Fo$bridge/obj/cxx.$suffix"
     else
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/execution.cc" -o "$bridge/obj/execution.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.$suffix"
     fi
     if test "{{ target }}" = windows-x86_64; then "$src/third_party/llvm-build/Release+Asserts/bin/llvm-readobj" --file-headers "$bridge/obj/bridge.obj" | grep -F 'Format: COFF-x86-64' >/dev/null; fi
-    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
+    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
 
 _link-flags flavor target:
     #!/usr/bin/env bash

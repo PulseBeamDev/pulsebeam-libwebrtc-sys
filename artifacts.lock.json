@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
   "release_ready": false,
-  "bridge_identity": "pulsebeam-webrtc-sys-bridge-v1",
+  "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
   "artifacts": [
     {
       "cargo_target": "x86_64-unknown-linux-gnu",
       "artifact_target": "linux-x86_64",
       "flavor": "core",
       "asset_name": "webrtc-core-linux-x86_64.tar.gz",
-      "url": "https://raw.githubusercontent.com/PulseBeamDev/pulsebeam-libwebrtc-sys/e9af98dea8c31c5a92f3faaa3132db198d739341/tests/fixtures/webrtc-core-linux-x86_64.tar.gz",
-      "sha256": "bc236cd3f111479a15e182f268d88002e5f53aeec902603a88252c23c0d471d1"
+      "url": null,
+      "sha256": null
     },
     {
       "cargo_target": "x86_64-unknown-linux-gnu",

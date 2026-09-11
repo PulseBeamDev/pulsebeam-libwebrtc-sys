@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -61,6 +62,7 @@ def clean_snapshot(destination: Path, download_url: str) -> None:
         and item["flavor"] == "core"
     )
     entry["url"] = download_url
+    entry["sha256"] = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     run(["git", "init", "--quiet"], cwd=destination)
     run(["git", "config", "user.name", "Rust-only consumer proof"], cwd=destination)

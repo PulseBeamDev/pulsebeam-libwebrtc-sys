@@ -3,7 +3,7 @@
 namespace pulsebeam::webrtc_sys {
 
 rust::Str bridge_identity() noexcept {
-  return "pulsebeam-webrtc-sys-bridge-v1";
+  return "pulsebeam-webrtc-sys-bridge-v2";
 }
 
 }  // namespace pulsebeam::webrtc_sys

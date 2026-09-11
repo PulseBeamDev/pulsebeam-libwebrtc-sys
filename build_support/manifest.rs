@@ -15,11 +15,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "7bc00b47a463acafe06aab3327080ae5433a07fac717dd3fc2a8f70084ae7b71";
+    "1688cdd7715325c615847660161a0b5b0ff7672d8da75943aa0b997eac5a17d4";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "8755e7856ec733d6b3e562033c9ee46ef011ebe99fdb167aeef1552829b5c420";
+    "7e99b24dd91585d4f86adf3624dda7aafbd73a1e50e32c3364d225273bae957d";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "3fe9468e470c3d2808dede82c4b52c816d89e04459bd009cd10c38e1453022d5";
+    "c1b7f32f72f151c80c4590f42be964b7fbc13e620665ac721c29e95179392ba7";
 
 pub(crate) const SUPPORTED_CARGO_TARGETS: [&str; 9] = [
     "x86_64-unknown-linux-gnu",
@@ -335,7 +335,7 @@ mod tests {
     fn validate(bytes: &[u8]) -> Result<ArtifactManifest, String> {
         ArtifactManifest::parse_and_validate(
             bytes,
-            "pulsebeam-webrtc-sys-bridge-v1",
+            "pulsebeam-webrtc-sys-bridge-v2",
             "core",
             "linux-x86_64",
             "x86_64-unknown-linux-gnu",
@@ -370,7 +370,7 @@ mod tests {
     fn rejects_substitution_by_bridge_target_flavor_or_cargo_target() {
         let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
         for (expected, wrong) in [
-            ("pulsebeam-webrtc-sys-bridge-v1", "wrong-bridge"),
+            ("pulsebeam-webrtc-sys-bridge-v2", "wrong-bridge"),
             ("linux-x86_64", "linux-arm64"),
             (r#""flavor": "core""#, r#""flavor": "native""#),
             ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),

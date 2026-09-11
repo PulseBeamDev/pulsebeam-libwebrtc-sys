@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn lock_has_all_eighteen_exact_selections() {
         let lock =
-            ArtifactLock::parse_and_validate(LOCK, "pulsebeam-webrtc-sys-bridge-v1").unwrap();
+            ArtifactLock::parse_and_validate(LOCK, "pulsebeam-webrtc-sys-bridge-v2").unwrap();
         assert_eq!(lock.artifacts.len(), 18);
         for target in SUPPORTED_CARGO_TARGETS {
             for flavor in ["core", "native"] {
@@ -520,7 +520,7 @@ mod tests {
             1,
         );
         assert!(
-            ArtifactLock::parse_and_validate(lock.as_bytes(), "pulsebeam-webrtc-sys-bridge-v1")
+            ArtifactLock::parse_and_validate(lock.as_bytes(), "pulsebeam-webrtc-sys-bridge-v2")
                 .unwrap_err()
                 .contains("unreleased selections")
         );
@@ -530,7 +530,7 @@ mod tests {
     fn rejects_unsupported_target_before_artifact_resolution() {
         let error = resolve(
             LOCK,
-            "pulsebeam-webrtc-sys-bridge-v1",
+            "pulsebeam-webrtc-sys-bridge-v2",
             "x86_64-unknown-linux-musl",
             "core",
         )
