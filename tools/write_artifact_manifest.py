@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from cxx_provenance import artifact_provenance, validate_artifact_provenance
+
 
 TARGETS = {
     "linux-x86_64": {
@@ -136,7 +138,9 @@ def main():
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--depot-tools-repository", required=True)
     parser.add_argument("--depot-tools-revision", required=True)
-    parser.add_argument("--cxx-version", required=True)
+    parser.add_argument("--bridge-source", type=Path, required=True)
+    parser.add_argument("--generated-header", type=Path, required=True)
+    parser.add_argument("--generated-source", type=Path, required=True)
     parser.add_argument("--toolchain-file", type=Path, required=True)
     parser.add_argument("--gn-args-file", type=Path, required=True)
     parser.add_argument("--defines-file", type=Path, required=True)
@@ -146,9 +150,16 @@ def main():
 
     target = TARGETS[args.target]
     toolchain = args.toolchain_file.read_text().strip()
+    cxx = artifact_provenance(
+        Path(__file__).resolve().parents[1],
+        args.bridge_source,
+        args.generated_header,
+        args.generated_source,
+    )
+    validate_artifact_provenance(cxx, Path(__file__).resolve().parents[1])
     native_configuration = {
         "bridge_identity": args.bridge_identity,
-        "cxx_version": args.cxx_version,
+        "cxx": cxx,
         "source_revision": args.source_revision,
         "depot_tools_revision": args.depot_tools_revision,
         "flavor": args.flavor,
@@ -166,8 +177,8 @@ def main():
         })
 
     manifest = {
-        "schema_version": 1,
-        "bridge": {"identity": args.bridge_identity, "cxx_version": args.cxx_version},
+        "schema_version": 2,
+        "bridge": {"identity": args.bridge_identity, "cxx": cxx},
         "sources": {
             "webrtc": {"repository": args.source_repository, "revision": args.source_revision},
             "depot_tools": {

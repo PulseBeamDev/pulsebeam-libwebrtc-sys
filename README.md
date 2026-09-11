@@ -30,6 +30,13 @@ from `tools/cxx/Cargo.toml.in`. `just check` verifies the recorded inventory,
 per-file digests, generated overlay, exact component versions, and dependency
 graph without accessing the network.
 
+Artifact builds obtain `cxxbridge-cmd` from the exact published package also
+recorded in `vendor/cxx/provenance.json`. The package checksum and reported
+version are verified before bridge generation. Each manifest records both CXX
+package checksums plus the imported runtime/header, bridge definition, and
+generated C++ output digests; export rechecks the packaged headers against that
+metadata before consumer smoke tests run.
+
 For development against a matching extracted artifact:
 
 ```console
@@ -119,8 +126,9 @@ link.txt          required system libraries, frameworks, and link flags
 LICENSES/         applicable notices and licenses
 build.txt         source revision, flavor, target, toolchain, GN arguments,
                   and exported C++ definitions
-manifest.json     versioned source, bridge, native configuration, ABI, archive,
-                  ordered link-input, and license-inventory identity
+manifest.json     versioned source and CXX producer provenance, native
+                  configuration, ABI, archive, ordered link-input, and license
+                  inventory identity
 ```
 
 Headers and libraries always come from the same immutable WebRTC revision. The
@@ -208,9 +216,9 @@ a required PulseBeam contract.
 
 Upgrade CXX as one reviewable change:
 
-1. From the crates.io index and the matching upstream tag, update the package
-   version and checksum plus the repository tag and commit in
-   `vendor/cxx/provenance.json`.
+1. From the crates.io index and the matching upstream tag, update both the
+   `cxx` and `cxxbridge-cmd` package versions and checksums plus the repository
+   tag and commit in `vendor/cxx/provenance.json`.
 2. Run `just refresh-cxx`. Review the imported inventory and regenerated
    per-file digests; do not edit any imported file.
 3. Pin the same exact version in the root `Cargo.toml`, then update

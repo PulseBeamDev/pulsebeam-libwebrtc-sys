@@ -6,6 +6,20 @@ const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
 const CXX_VERSION: &str = "1.0.200";
+const CXX_PACKAGE_SHA256: &str = "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7";
+const CXXBRIDGE_CMD_PACKAGE_SHA256: &str =
+    "25784b9f840a76b9b5151553ad70fc2abb3ec3b21fe379c5c7b029b2e0b91faf";
+const CXX_RUST_RUNTIME_SHA256: &str =
+    "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d";
+const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8";
+const CXX_NATIVE_RUNTIME_SHA256: &str =
+    "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
+const BRIDGE_SOURCE_SHA256: &str =
+    "7bc00b47a463acafe06aab3327080ae5433a07fac717dd3fc2a8f70084ae7b71";
+const GENERATED_BRIDGE_HEADER_SHA256: &str =
+    "8755e7856ec733d6b3e562033c9ee46ef011ebe99fdb167aeef1552829b5c420";
+const GENERATED_BRIDGE_SOURCE_SHA256: &str =
+    "3fe9468e470c3d2808dede82c4b52c816d89e04459bd009cd10c38e1453022d5";
 
 pub(crate) const SUPPORTED_CARGO_TARGETS: [&str; 9] = [
     "x86_64-unknown-linux-gnu",
@@ -52,7 +66,21 @@ pub(crate) struct ArtifactManifest {
 #[serde(deny_unknown_fields)]
 struct Bridge {
     identity: String,
-    cxx_version: String,
+    cxx: CxxProvenance,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CxxProvenance {
+    version: String,
+    runtime_package_sha256: String,
+    generator_package_sha256: String,
+    rust_runtime_sha256: String,
+    header_sha256: String,
+    native_runtime_sha256: String,
+    bridge_source_sha256: String,
+    generated_header_sha256: String,
+    generated_source_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,7 +161,7 @@ impl ArtifactManifest {
         expected_cargo_target: &str,
     ) -> Result<Self, String> {
         let manifest: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        if manifest.schema_version != 1 {
+        if manifest.schema_version != 2 {
             return Err(format!(
                 "unsupported manifest schema {}",
                 manifest.schema_version
@@ -147,8 +175,48 @@ impl ArtifactManifest {
             ),
             (
                 "CXX version",
-                manifest.bridge.cxx_version.as_str(),
+                manifest.bridge.cxx.version.as_str(),
                 CXX_VERSION,
+            ),
+            (
+                "CXX runtime package checksum",
+                manifest.bridge.cxx.runtime_package_sha256.as_str(),
+                CXX_PACKAGE_SHA256,
+            ),
+            (
+                "CXX generator package checksum",
+                manifest.bridge.cxx.generator_package_sha256.as_str(),
+                CXXBRIDGE_CMD_PACKAGE_SHA256,
+            ),
+            (
+                "CXX Rust runtime digest",
+                manifest.bridge.cxx.rust_runtime_sha256.as_str(),
+                CXX_RUST_RUNTIME_SHA256,
+            ),
+            (
+                "CXX header digest",
+                manifest.bridge.cxx.header_sha256.as_str(),
+                CXX_HEADER_SHA256,
+            ),
+            (
+                "CXX native runtime digest",
+                manifest.bridge.cxx.native_runtime_sha256.as_str(),
+                CXX_NATIVE_RUNTIME_SHA256,
+            ),
+            (
+                "bridge source digest",
+                manifest.bridge.cxx.bridge_source_sha256.as_str(),
+                BRIDGE_SOURCE_SHA256,
+            ),
+            (
+                "generated bridge header digest",
+                manifest.bridge.cxx.generated_header_sha256.as_str(),
+                GENERATED_BRIDGE_HEADER_SHA256,
+            ),
+            (
+                "generated bridge source digest",
+                manifest.bridge.cxx.generated_source_sha256.as_str(),
+                GENERATED_BRIDGE_SOURCE_SHA256,
             ),
             (
                 "source repository",
@@ -227,7 +295,10 @@ impl ArtifactManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactManifest, SUPPORTED_CARGO_TARGETS, artifact_target};
+    use super::{
+        ArtifactManifest, CXX_PACKAGE_SHA256, CXXBRIDGE_CMD_PACKAGE_SHA256,
+        SUPPORTED_CARGO_TARGETS, artifact_target,
+    };
 
     const FIXTURE: &[u8] = include_bytes!("../native/manifest.core-linux-x86_64.json");
 
@@ -277,5 +348,26 @@ mod tests {
             let invalid = fixture.replacen(expected, wrong, 1);
             assert!(validate(invalid.as_bytes()).is_err());
         }
+    }
+
+    #[test]
+    fn rejects_missing_malformed_or_inconsistent_cxx_provenance() {
+        let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
+        let missing = fixture.replacen(
+            r#"      "generated_source_sha256": "#,
+            r#"      "removed_generated_source_sha256": "#,
+            1,
+        );
+        assert!(validate(missing.as_bytes()).is_err());
+
+        let malformed = fixture.replacen(CXX_PACKAGE_SHA256, "not-a-sha256", 1);
+        assert!(validate(malformed.as_bytes()).is_err());
+
+        let inconsistent = fixture.replacen(
+            CXXBRIDGE_CMD_PACKAGE_SHA256,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            1,
+        );
+        assert!(validate(inconsistent.as_bytes()).is_err());
     }
 }

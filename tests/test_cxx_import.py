@@ -56,6 +56,13 @@ class CxxImportTests(unittest.TestCase):
                 "version": self.version,
                 "checksum": self._sha256(self.archive),
             },
+            "generator": {
+                "name": "cxxbridge-cmd",
+                "registry": "https://crates.io",
+                "version": self.version,
+                "checksum": "1" * 64,
+                "source_revision": "0" * 40,
+            },
             "upstream": {
                 "repository": "https://github.com/dtolnay/cxx",
                 "tag": self.version,
@@ -145,6 +152,26 @@ class CxxImportTests(unittest.TestCase):
         with self.assertRaisesRegex(cxx_import.ImportError, "version disagrees"):
             cxx_import.refresh(self.root, archive)
         self.assertEqual(marker.read_bytes(), b"preserve me")
+
+    def test_substituted_generator_version_is_rejected(self):
+        install_root = self.root / "generator"
+        binary = cxx_import.generator_binary(install_root)
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\nprintf 'cxxbridge 1.0.199\\n'\n")
+        binary.chmod(0o755)
+        (install_root / cxx_import.GENERATOR_STAMP).write_text(
+            json.dumps(self.provenance["generator"])
+        )
+        with self.assertRaisesRegex(cxx_import.ImportError, "version must be"):
+            cxx_import.verify_generator(self.root, install_root)
+
+    def test_wrong_generator_package_checksum_is_rejected(self):
+        archive = self.root / "cxxbridge-cmd.crate"
+        archive.write_bytes(b"not the recorded package")
+        with self.assertRaisesRegex(cxx_import.ImportError, "generator package checksum mismatch"):
+            cxx_import.unpack_generator(
+                archive, self.root / "unpacked", self.provenance["generator"]
+            )
 
 
 if __name__ == "__main__":

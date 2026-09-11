@@ -30,6 +30,7 @@ check:
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
+    python3 -m unittest tests/test_cxx_provenance.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/release.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
@@ -193,10 +194,11 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}" > "$toolchain_file"
     definitions=$(tr '\n' ' ' < "$definitions_file")
     { printf 'webrtc_commit=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
-    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v1 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --cxx-version "$cxx_version" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
+    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v1 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
     verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
+    python3 "{{ root }}/tools/cxx_provenance.py" "$verify"
     just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$verify"
     just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$verify"
     git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo 'source checkout is modified' >&2; exit 1; }
@@ -204,16 +206,18 @@ _export flavor target:
 _bridge-objects flavor target stage definitions_file:
     #!/usr/bin/env bash
     set -euo pipefail
-    src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"; cxx_version=$(python3 "{{ root }}/tools/cxx_import.py" version)
-    generator="{{ work }}/cxxbridge-tools/bin/cxxbridge"
-    if test "$($generator --version 2>/dev/null || true)" != "cxxbridge $cxx_version"; then
-      CARGO_HOME="{{ work }}/cargo-home" cargo install cxxbridge-cmd --version "$cxx_version" --locked --root "{{ work }}/cxxbridge-tools"
-    fi
+    src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"
+    generator=$(CARGO_HOME="{{ work }}/cargo-home" python3 "{{ root }}/tools/cxx_import.py" install-generator --root "{{ work }}/cxxbridge-tools")
     rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
     cp "{{ root }}/native/probe.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/probe.h"
-    "$generator" --header > "{{ stage }}/include/rust/cxx.h"
+    cp "{{ root }}/vendor/cxx/include/cxx.h" "{{ stage }}/include/rust/cxx.h"
     "$generator" "{{ root }}/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "{{ root }}/src/lib.rs" > "$bridge/lib.rs.cc"
+    "$generator" "{{ root }}/src/lib.rs" --header > "$bridge/lib.rs.h.repeat"
+    "$generator" "{{ root }}/src/lib.rs" > "$bridge/lib.rs.cc.repeat"
+    cmp "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h" "$bridge/lib.rs.h.repeat"
+    cmp "$bridge/lib.rs.cc" "$bridge/lib.rs.cc.repeat"
+    rm "$bridge/lib.rs.h.repeat" "$bridge/lib.rs.cc.repeat"
     defs=(); while IFS= read -r definition; do defs+=("$definition"); done < "{{ definitions_file }}"
     include=(-I"{{ stage }}/include")
     case "{{ target }}" in
