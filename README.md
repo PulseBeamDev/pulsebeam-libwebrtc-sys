@@ -1,8 +1,8 @@
 # `webrtc-build`
 
 This repository builds pinned, raw WebRTC development artifacts for PulseBeam.
-Bindings, platform package containers, rendering, and runtime integration belong
-to downstream repositories.
+It is build infrastructure only: bindings, codec adapters, rendering,
+applications, and runtime integration belong to downstream repositories.
 
 ## Commands
 
@@ -17,24 +17,75 @@ just build <core|native> <target>
 host before it synchronizes the pinned sources, configures and compiles WebRTC,
 exports the static closure, and performs a compile/link-only consumer check.
 
-## Flavors and targets
+## Artifact flavors
 
-`core` is an optimized, static, headless C++ build with injectable clocks, task
-queues, threads, packet sockets, devices, media endpoints, and codec factories.
-`native` adds upstream platform audio, camera, screen/window capture, and native
-codec paths where the target provides them. Both flavors build Opus, VP8, VP9,
-and AV1. Bundled H.264 is disabled, while H.264 signaling and caller-supplied
-codec factories remain available.
+Every supported target has two artifacts built from the same pinned source and
+with the same public WebRTC API:
 
-Both flavors support the same targets:
+- `core` is an optimized, static, headless C++ engine for simulations, servers,
+  and custom media pipelines. It retains WebRTC transport and media logic,
+  built-in audio codecs, VP8, VP9, AV1, and caller-supplied devices, media
+  sources, sinks, clocks, queues, sockets, and codec factories. It excludes
+  platform capture, playback, and window-system integrations where upstream
+  build switches allow.
+- `native` adds the upstream platform audio, camera, screen/window capture, and
+  native codec paths available for the target. Rendering remains a downstream
+  responsibility so clients can use one consistent implementation across
+  platforms.
 
-- `linux-x86_64` and `linux-arm64` (Bullseye/glibc 2.31)
-- `windows-x86_64` (Windows 10, static `/MT` CRT)
-- `macos-x86_64` and `macos-arm64` (macOS 12)
-- `android-x86_64` and `android-arm64-v8a` (Android API 26; native uses AAudio)
-- `ios-arm64` and `ios-simulator-arm64` (iOS 18)
+Bundled H.264 is disabled in both flavors. H.264 signaling and the public codec
+factory interfaces remain available for caller-supplied implementations.
 
-## Artifacts
+## Target matrix
+
+Both flavors support every target in this matrix:
+
+| Platform | Targets | Minimum runtime |
+|---|---|---|
+| Linux | `linux-x86_64`, `linux-arm64` | Debian Bullseye sysroot / glibc 2.31 |
+| Windows | `windows-x86_64` | Windows 10 |
+| macOS | `macos-x86_64`, `macos-arm64` | macOS 12 |
+| Android | `android-x86_64`, `android-arm64-v8a` | API 26; native uses AAudio |
+| iOS | `ios-arm64`, `ios-simulator-arm64` | iOS 18 |
+
+Each target is a separate archive built with its supported toolchain. Android
+ABIs and Apple device/simulator builds are not combined. Linux musl, 32-bit
+Android, Windows arm64, x86_64 iOS Simulator, WebAssembly, and other targets are
+deferred.
+
+## Injection and determinism boundary
+
+The exported API retains the upstream extension points required by PulseBeam:
+
+| Requirement | Upstream mechanism |
+|---|---|
+| Caller-controlled time | `EnvironmentFactory` |
+| Cooperative task queues | `TaskQueueFactory` |
+| Caller-owned threads | `PeerConnectionFactoryDependencies` |
+| Simulated sockets/network | `PacketSocketFactory` |
+| Seeded WebRTC IDs/randomness | `SetRandomGenerator` |
+
+WebRTC has no usable runtime injection point for deterministic cryptographic
+entropy. This repository does not patch WebRTC or BoringSSL to add one.
+Consumers must not expect certificates, DTLS material, SRTP keys, or encrypted
+bytes to repeat for the same simulation seed.
+
+## H.264 boundary
+
+The build always uses `rtc_use_h264=false`; it does not compile or publish the
+built-in OpenH264 encoder or FFmpeg H.264 decoder, and there is no separate
+H.264-enabled artifact. The consumer smoke test preserves the public
+`VideoEncoderFactory` and `VideoDecoderFactory` path so downstream code can
+advertise and inject H.264 implementations.
+
+`pulsebeam-libwebrtc` owns any optional OpenH264 adapter. OpenH264 acquisition,
+distribution, enablement, attribution, licensing, and version checks belong to
+that adapter and the consuming product. A consumer may instead provide a
+hardware-backed or separately licensed implementation. Absence of an external
+implementation must leave H.264 unavailable or produce an explicit error; it
+must not change these artifacts.
+
+## Artifact and ABI contract
 
 Each build writes one `dist/webrtc-<flavor>-<target>.tar.gz` containing:
 
@@ -44,18 +95,82 @@ lib/libwebrtc.a   self-contained static library (non-Windows)
 lib/webrtc.lib    self-contained static library (Windows)
 link.txt          required system libraries, frameworks, and link flags
 LICENSES/         applicable notices and licenses
-build.txt         source revision, flavor, target, toolchain, and GN arguments
+build.txt         source revision, flavor, target, toolchain, GN arguments,
+                  and exported C++ definitions
 ```
 
-Android device/ABI and Apple device/simulator archives stay separate. This
-repository does not produce AARs, JARs, frameworks, or XCFrameworks.
+Headers and libraries always come from the same immutable WebRTC revision. The
+archive contains the WebRTC-owned static link closure but does not redistribute
+the operating-system runtime: Linux supplies glibc, Windows uses the static
+multithreaded CRT (`/MT`), Apple targets use platform libc++ and frameworks, and
+Android uses its pinned API/NDK system libraries. `link.txt` records the system
+link contract for each target.
 
-## Releases and upgrades
+Downstream Rust/CXX bridges must keep STL types private to C++, expose opaque
+handles or copied plain data, and destroy WebRTC-owned objects through the same
+C++ runtime that created them. Consumer bridge code must use the artifact's C++
+ABI, definitions, and link settings.
 
-Releases run only through the manual GitHub Actions workflow. The workflow
-requires an existing tag that resolves to the workflow commit, builds the
-literal 18-job matrix on standard hosted runners, generates `SHA256SUMS`,
-attests the final assets, and creates one GitHub Release.
+This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
+
+## Release contract
+
+The immutable commit
+`ba469aa2093ba950066258ca0a59a6fbd1295582` is the current WebRTC source
+identity; `m150_release` is branch context, not an input to the build. The
+source is built without a local patch stack, and only optimized release
+artifacts are published.
+
+Releases run only through the manual GitHub Actions workflow. It requires an
+existing tag that resolves to the workflow commit, builds and compile/link-checks
+all 18 archives on standard hosted runners, generates `SHA256SUMS`, attests the
+final assets, and creates one GitHub Release. Publication succeeds only after
+every matrix entry succeeds. Provenance, rather than byte-for-byte archive
+identity across runners, is the reproducibility contract; published releases
+should be treated as immutable.
+
+The smoke test validates API availability and the exported static link closure.
+It does not claim physical camera, microphone, speaker, GPU, platform UI, or
+hardware-codec qualification. Those runtime tests belong to downstream
+applications.
+
+## Downstream rendering contract
+
+This repository contains neither Rust bindings nor rendering code. The intended
+`pulsebeam-libwebrtc` feature model uses `core` by default, lets an additive
+`native` feature select the matching native artifact, and keeps rendering
+independently selectable so core applications can render without enabling
+platform devices.
+
+wgpu is the intended common renderer for Android, iOS, macOS, Windows, and
+Linux. The initial path uploads decoded I420 or NV12 planes and performs color
+conversion, scaling, cropping, and rotation in shaders; the application owns
+the window or view, surface lifetime, and UI-thread integration. Zero-copy
+interop with `CVPixelBuffer`, `AHardwareBuffer`, Direct3D textures, and DMA-BUF
+is deferred.
+
+## Repository boundaries
+
+This repository owns the immutable source/tool pins, target matrix, GN
+arguments, `Justfile` command surface, release workflow, one consumer smoke
+test, and the licenses needed to make releases trustworthy. Its own code is
+Apache-2.0 licensed. It must not vendor WebRTC, depot_tools, generated build
+trees, output archives, bindings, codec implementations, application or
+simulator code, or a source patch stack. Build workspaces and release artifacts
+are disposable local/CI output.
+
+Non-goals include:
+
+- maintaining a WebRTC or BoringSSL fork;
+- bundling an H.264 encoder or decoder;
+- deterministic cryptographic output;
+- defining a public Rust or C++ binding API;
+- implementing Rust, wgpu, or zero-copy rendering here;
+- publishing debug artifacts or physical-device test infrastructure;
+- promising byte-identical builds across runners; and
+- depending on or adapting LiveKit `webrtc-sys`.
+
+## Upgrades
 
 For a routine WebRTC upgrade, change only `webrtc_commit` near the top of the
 `Justfile`, review the build, and run the release workflow. Change the pinned
