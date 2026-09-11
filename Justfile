@@ -1,4 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
+set windows-shell := ["C:/Program Files/Git/bin/bash.exe", "-euo", "pipefail", "-c"]
 
 root := justfile_directory()
 work := env_var_or_default("WEBRTC_WORK", root + "/.work")
@@ -23,6 +24,9 @@ check:
     grep -Fq 'rtc_use_h264=false' Justfile
     grep -Fq 'rtc_build_libvpx=true' Justfile
     grep -Fq 'rtc_include_dav1d_in_internal_decoder_factory=true' Justfile
+    grep -Eq '^set windows-shell := \["C:/Program Files/Git/bin/bash\.exe"' Justfile
+    grep -Eq '^[[:space:]]+python3 .*install-sysroot\.py" --arch=arm64$' Justfile
+    grep -Eq '^[[:space:]]+while IFS= read -r root_label; do roots\+=' Justfile
     grep -Fq 'CreateModularPeerConnectionFactory' consumer/smoke.cc
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
     test "$(wc -l < Justfile)" -le 300
@@ -40,6 +44,7 @@ build flavor target:
     just --justfile "$justfile" _validate-host "{{ target }}"
     just --justfile "$justfile" _prerequisites "{{ target }}"
     just --justfile "$justfile" _sync "{{ target }}"
+    just --justfile "$justfile" _target-dependencies "{{ target }}"
     just --justfile "$justfile" _configure "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _compile "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _export "{{ flavor }}" "{{ target }}"
@@ -94,6 +99,14 @@ _sync target:
     gclient runhooks
     printf '%s\n' "$sync_key" > "$checkout/.pulsebeam-sync-target"
 
+_target-dependencies target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{ work }}/checkout/src"
+    if test "{{ target }}" = linux-arm64; then
+      python3 "$src/build/linux/sysroot_scripts/install-sysroot.py" --arch=arm64
+    fi
+
 _gn-args flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -132,8 +145,8 @@ _compile flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     src="{{ work }}/checkout/src"; out="{{ work }}/out/{{ flavor }}/{{ target }}"
-    mapfile -t roots < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
-    for index in "${!roots[@]}"; do roots[$index]=${roots[$index]#//}; done
+    roots=()
+    while IFS= read -r root_label; do roots+=("${root_label#//}"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
     "$src/third_party/ninja/ninja" -C "$out" "${roots[@]}"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" libc++ libc++abi; fi
     if [[ "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" buildtools/third_party/libunwind:libunwind; fi
