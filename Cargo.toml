@@ -6,6 +6,9 @@ license = "Apache-2.0"
 links = "pulsebeam_webrtc"
 publish = false
 
+[features]
+native = []
+
 [dependencies]
 cxx = { version = "=1.0.200", path = "vendor/cxx" }
 

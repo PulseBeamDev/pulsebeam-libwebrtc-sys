@@ -16,10 +16,11 @@ just build <core|native> <target>
 `just check` is fast and offline once the pinned Rust dependencies are cached.
 `just build` validates the flavor, target, and host before it synchronizes the
 pinned sources, configures and compiles WebRTC, exports the static closure, and
-performs a compile/link-only consumer check. The initial Rust bridge proof is
-produced for `core/linux-x86_64`.
+performs C++ and Rust compile/link-only consumer checks. Every flavor/target
+artifact carries the same generated bridge and portable adapter sources,
+compiled with that job's target toolchain and ABI configuration.
 
-For development against that extracted artifact:
+For development against a matching extracted artifact:
 
 ```console
 PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR=.work/package/webrtc-core-linux-x86_64 cargo test
@@ -108,15 +109,18 @@ link.txt          required system libraries, frameworks, and link flags
 LICENSES/         applicable notices and licenses
 build.txt         source revision, flavor, target, toolchain, GN arguments,
                   and exported C++ definitions
-manifest.json     versioned bridge and link identity (initial host proof)
+manifest.json     versioned source, bridge, native configuration, ABI, archive,
+                  ordered link-input, and license-inventory identity
 ```
 
 Headers and libraries always come from the same immutable WebRTC revision. The
 archive contains the WebRTC-owned static link closure but does not redistribute
 the operating-system runtime: Linux supplies glibc, Windows uses the static
 multithreaded CRT (`/MT`), Apple targets use platform libc++ and frameworks, and
-Android uses its pinned API/NDK system libraries. `link.txt` records the system
-link contract for each target.
+Android uses its pinned API/NDK system libraries. `link.txt` remains a
+human-readable producer report. The versioned, ordered, typed entries in
+`manifest.json` are the Rust crate's authoritative system-library, framework,
+weak-framework, and raw-linker contract.
 
 The generated CXX C++ half and repository-owned adapters are compiled during
 artifact production with WebRTC's target compiler and ABI settings, then merged

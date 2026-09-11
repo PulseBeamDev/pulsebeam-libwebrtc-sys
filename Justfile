@@ -30,6 +30,7 @@ check:
     grep -Eq '^[[:space:]]+while IFS= read -r root_label; do roots\+=' Justfile
     grep -Fq 'CreateModularPeerConnectionFactory' consumer/smoke.cc
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
+    python3 tools/write_artifact_manifest.py --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/release.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --lib --locked --offline
@@ -71,7 +72,7 @@ _prerequisites target:
     for tool in git tar python3; do
       command -v "$tool" >/dev/null || { echo "missing prerequisite: $tool" >&2; exit 1; }
     done
-    if test "{{ target }}" = linux-x86_64; then command -v cargo >/dev/null || { echo 'missing prerequisite: cargo' >&2; exit 1; }; fi
+    command -v cargo >/dev/null || { echo 'missing prerequisite: cargo' >&2; exit 1; }
     case "{{ target }}" in
       windows-*) command -v cl.exe >/dev/null || { echo 'Windows builds require an MSVC developer shell' >&2; exit 1; } ;;
       macos-*|ios-*) command -v xcrun >/dev/null || { echo 'Apple builds require Xcode command-line tools' >&2; exit 1; } ;;
@@ -161,7 +162,7 @@ _export flavor target:
     stage="{{ work }}/package/webrtc-{{ flavor }}-{{ target }}"; archive="{{ dist }}/webrtc-{{ flavor }}-{{ target }}.tar.gz"
     gn=$(just --justfile "{{ root }}/Justfile" _gn); ar="$src/third_party/llvm-build/Release+Asserts/bin/llvm-ar"
     rm -rf "$stage"; mkdir -p "$stage/include" "$stage/lib" "$stage/LICENSES" "{{ dist }}"
-    base=$(mktemp); extra=$(mktemp); archives=$(mktemp); objects=$(mktemp); trap 'rm -f "$base" "$extra" "$archives" "$objects"' EXIT
+    base=$(mktemp); extra=$(mktemp); archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
     { printf '%s\n' //:webrtc; "$gn" desc --root="$src" "$out" //:webrtc deps --all; } | LC_ALL=C sort -u > "$base"
     while read -r root_label; do { printf '%s\n' "$root_label"; "$gn" desc --root="$src" "$out" "$root_label" deps --all; }; done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}") | LC_ALL=C sort -u > "$extra"
     { "$gn" desc --root="$src" "$out" //:webrtc outputs; while read -r label; do "$gn" desc --root="$src" "$out" "$label" outputs 2>/dev/null || true; done < <(comm -23 "$extra" "$base"); } | grep -E '\.(a|lib)$' | LC_ALL=C sort -u > "$archives"
@@ -173,42 +174,63 @@ _export flavor target:
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
     if test -d "$out/gen"; then (cd "$out/gen" && find . -type f \( -name '*.h' -o -name '*.inc' \) -print0 | tar --null -T - -cf -) | tar -C "$stage/include" -xf -; fi
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then mkdir -p "$stage/include/c++/v1"; cp -R "$src/third_party/libc++/src/include/." "$stage/include/c++/v1/"; cp "$src/buildtools/third_party/libc++/__config_site" "$src/buildtools/third_party/libc++/__assertion_handler" "$stage/include/c++/v1/"; fi
-    if test "{{ flavor }}:{{ target }}" = core:linux-x86_64; then just --justfile "{{ root }}/Justfile" _bridge-objects "$stage" >> "$objects"; cp "{{ root }}/native/manifest.core-linux-x86_64.json" "$stage/manifest.json"; fi
+    "$gn" desc --root="$src" "$out" //:webrtc defines --all | sed 's/^/-D/' > "$definitions_file"
+    just --justfile "{{ root }}/Justfile" _bridge-objects "{{ flavor }}" "{{ target }}" "$stage" "$definitions_file" >> "$objects"
     library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
     { printf 'CREATE %s\n' "$library"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$input"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
+    members=$("$ar" t "$library"); for member in bridge probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null; done
+    "$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm" "$library" 2>/dev/null | grep -F 'pulsebeam$webrtc_sys$cxxbridge1$200$bridge_identity' >/dev/null
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
-    vpython3 "$src/tools_webrtc/libs/generate_licenses.py" --target //:webrtc "$stage/LICENSES" "$out"
+    license_targets=(); while IFS= read -r root_label; do license_targets+=(--target "$root_label"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
+    vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"
     cp "$src/LICENSE" "$stage/LICENSES/WEBRTC-BSD.txt"; test ! -f "$src/PATENTS" || cp "$src/PATENTS" "$stage/LICENSES/"; cp "{{ root }}/LICENSE" "$stage/LICENSES/REPOSITORY-APACHE-2.0.txt"
-    if test "{{ flavor }}:{{ target }}" = core:linux-x86_64; then cp "{{ root }}/vendor/cxx/LICENSE-APACHE" "$stage/LICENSES/CXX-APACHE-2.0.txt"; cp "{{ root }}/vendor/cxx/LICENSE-MIT" "$stage/LICENSES/CXX-MIT.txt"; fi
+    cp "{{ root }}/vendor/cxx/LICENSE-APACHE" "$stage/LICENSES/CXX-APACHE-2.0.txt"; cp "{{ root }}/vendor/cxx/LICENSE-MIT" "$stage/LICENSES/CXX-MIT.txt"
     just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}" > "$stage/link.txt"
-    definitions=$("$gn" desc --root="$src" "$out" //:webrtc defines --all | sed 's/^/-D/' | tr '\n' ' ')
-    { printf 'webrtc_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ flavor }}' '{{ target }}'; just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
-    members=(include lib link.txt LICENSES build.txt); test ! -f "$stage/manifest.json" || members+=(manifest.json)
+    just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}" > "$toolchain_file"
+    definitions=$(tr '\n' ' ' < "$definitions_file")
+    { printf 'webrtc_commit=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
+    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v1 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --cxx-version "{{ cxx_version }}" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
+    members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
-    verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects"' EXIT; tar -C "$verify" -xzf "$archive"
-    just --justfile "{{ root }}/Justfile" _smoke "{{ target }}" "$verify"
+    verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
+    just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$verify"
+    just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$verify"
+    git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo 'source checkout is modified' >&2; exit 1; }
 
-_bridge-objects stage:
+_bridge-objects flavor target stage definitions_file:
     #!/usr/bin/env bash
     set -euo pipefail
-    src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/core/linux-x86_64"
+    src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"
     generator="{{ work }}/cxxbridge-tools/bin/cxxbridge"
     if test "$($generator --version 2>/dev/null || true)" != "cxxbridge {{ cxx_version }}"; then
       CARGO_HOME="{{ work }}/cargo-home" cargo install cxxbridge-cmd --version "{{ cxx_version }}" --locked --root "{{ work }}/cxxbridge-tools"
     fi
-    rm -rf "$bridge"; mkdir -p "$bridge/include/rust" "$bridge/include/pulsebeam-webrtc-sys/src" "$bridge/include/pulsebeam-webrtc-sys/native" "$bridge/obj"
-    cp "{{ root }}/native/probe.h" "$bridge/include/pulsebeam-webrtc-sys/native/probe.h"
-    "$generator" --header > "$bridge/include/rust/cxx.h"
-    "$generator" "{{ root }}/src/lib.rs" --header > "$bridge/include/pulsebeam-webrtc-sys/src/lib.rs.h"
+    rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
+    cp "{{ root }}/native/probe.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/probe.h"
+    "$generator" --header > "{{ stage }}/include/rust/cxx.h"
+    "$generator" "{{ root }}/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "{{ root }}/src/lib.rs" > "$bridge/lib.rs.cc"
-    definitions=$("$(just --justfile "{{ root }}/Justfile" _gn)" desc --root="$src" "{{ work }}/out/core/linux-x86_64" //:webrtc defines --all | sed 's/^/-D/')
-    readarray -t defs <<< "$definitions"
-    cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
-    args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -I"$bridge/include" -pthread "${defs[@]}")
-    "$cxx" "${args[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.o"
-    "$cxx" "${args[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.o"
-    "$cxx" "${args[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.o"
-    printf '%s\n' "$bridge/obj/bridge.o" "$bridge/obj/probe.o" "$bridge/obj/cxx.o"
+    defs=(); while IFS= read -r definition; do defs+=("$definition"); done < "{{ definitions_file }}"
+    include=(-I"{{ stage }}/include")
+    case "{{ target }}" in
+      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
+      linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
+      android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1"); suffix=o;;
+      macos-x86_64|macos-arm64) arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness); suffix=o;;
+      ios-arm64|ios-simulator-arm64) sdk=$(case "{{ target }}" in ios-arm64) printf iphoneos;; *) printf iphonesimulator;; esac); minimum=$(case "{{ target }}" in ios-arm64) printf '%s' -miphoneos-version-min=18.0;; *) printf '%s' -mios-simulator-version-min=18.0;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness); suffix=o;;
+      windows-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang-cl"; args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
+    esac
+    if test "{{ target }}" = windows-x86_64; then
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge/lib.rs.cc" "/Fo$bridge/obj/bridge.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "{{ root }}/native/probe.cc" "/Fo$bridge/obj/probe.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "{{ root }}/vendor/cxx/src/cxx.cc" "/Fo$bridge/obj/cxx.$suffix"
+    else
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.$suffix"
+    fi
+    if test "{{ target }}" = windows-x86_64; then "$src/third_party/llvm-build/Release+Asserts/bin/llvm-readobj" --file-headers "$bridge/obj/bridge.obj" | grep -F 'Format: COFF-x86-64' >/dev/null; fi
+    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
 
 _link-flags flavor target:
     #!/usr/bin/env bash
@@ -222,10 +244,10 @@ _link-flags flavor target:
     esac
     printf '%s\n' "$flags"
 
-_smoke target kit:
+_cpp-smoke flavor target kit:
     #!/usr/bin/env bash
     set -euo pipefail
-    src="{{ work }}/checkout/src"; read -r -a link < "{{ kit }}/link.txt"
+    src="{{ work }}/checkout/src"; read -r -a link <<< "$(just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}")"
     read -r -a exported_defines <<< "$(sed -n 's/^cxx_defines=//p' "{{ kit }}/build.txt")"
     defs=(-std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness "${exported_defines[@]}")
     case "{{ target }}" in
@@ -237,6 +259,24 @@ _smoke target kit:
       windows-x86_64) "$src/third_party/llvm-build/Release+Asserts/bin/clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"{{ kit }}/include" "{{ root }}/consumer/smoke.cc" "{{ kit }}/lib/webrtc.lib" "${link[@]}" "/Fe:{{ kit }}/smoke.exe"; exit;;
     esac
     "$cxx" "${defs[@]}" "${args[@]}" -I"{{ kit }}/include" "{{ root }}/consumer/smoke.cc" "{{ kit }}/lib/libwebrtc.a" "${link[@]}" -o "{{ kit }}/smoke"
+
+_rust-smoke flavor target kit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{ work }}/checkout/src"
+    case "{{ target }}" in
+      linux-x86_64) cargo_target=x86_64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=x86_64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_amd64-sysroot" -C link-arg=-fuse-ld=lld);;
+      linux-arm64) cargo_target=aarch64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=aarch64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot" -C link-arg=-fuse-ld=lld);;
+      android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); case "{{ target }}" in android-x86_64) cargo_target=x86_64-linux-android; triple=x86_64;; *) cargo_target=aarch64-linux-android; triple=aarch64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=--target=${triple}-linux-android26" -C "link-arg=--sysroot=$prebuilt/sysroot" -C link-arg=-fuse-ld=lld);;
+      macos-x86_64|macos-arm64) case "{{ target }}" in macos-x86_64) cargo_target=x86_64-apple-darwin; arch=x86_64;; *) cargo_target=aarch64-apple-darwin; arch=arm64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=-arch" -C "link-arg=$arch" -C "link-arg=-isysroot" -C "link-arg=$(xcrun --sdk macosx --show-sdk-path)" -C link-arg=-mmacosx-version-min=12.0);;
+      ios-arm64|ios-simulator-arm64) case "{{ target }}" in ios-arm64) cargo_target=aarch64-apple-ios; sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) cargo_target=aarch64-apple-ios-sim; sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=-arch -C link-arg=arm64 -C link-arg=-isysroot -C "link-arg=$(xcrun --sdk "$sdk" --show-sdk-path)" -C "link-arg=$minimum");;
+      windows-x86_64) cargo_target=x86_64-pc-windows-msvc; cxx=''; rustflags=(-C target-feature=+crt-static);;
+    esac
+    linker_env="CARGO_TARGET_$(printf '%s' "$cargo_target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+    command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="{{ work }}/cargo-home" CARGO_TARGET_DIR="{{ work }}/rust-smoke/{{ flavor }}/{{ target }}" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="{{ kit }}")
+    test -z "$cxx" || command+=("$linker_env=$cxx")
+    features=(); test "{{ flavor }}" = core || features=(--features native)
+    "${command[@]}" cargo test --locked --target "$cargo_target" "${features[@]}" --test identity --no-run
 
 _gn:
     @case "$(uname -s)" in Linux) path='{{ work }}/checkout/src/buildtools/linux64/gn';; Darwin) path='{{ work }}/checkout/src/buildtools/mac/gn';; *) path='{{ work }}/checkout/src/buildtools/win/gn.exe';; esac; test -x "$path" || { echo 'pinned GN is missing' >&2; exit 1; }; printf '%s\n' "$path"

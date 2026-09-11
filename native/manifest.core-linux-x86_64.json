@@ -1,19 +1,70 @@
 {
   "schema_version": 1,
-  "bridge_identity": "pulsebeam-webrtc-sys-bridge-v1",
-  "source_repository": "https://github.com/webrtc-sdk/webrtc.git",
-  "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
-  "flavor": "core",
-  "target": "linux-x86_64",
-  "cargo_target": "x86_64-unknown-linux-gnu",
+  "bridge": {
+    "identity": "pulsebeam-webrtc-sys-bridge-v1",
+    "cxx_version": "1.0.200"
+  },
+  "sources": {
+    "webrtc": {
+      "repository": "https://github.com/webrtc-sdk/webrtc.git",
+      "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582"
+    },
+    "depot_tools": {
+      "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+      "revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
+    }
+  },
+  "artifact": {
+    "flavor": "core",
+    "target": "linux-x86_64",
+    "cargo_target": "x86_64-unknown-linux-gnu"
+  },
+  "native_configuration_sha256": "159f12eb14fc0944279cacf4e3dfc31789c0a31218fac13a808c663d87f78cb2",
+  "abi": {
+    "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
+    "cxx_standard": "C++20",
+    "cxx_runtime": "bundled libc++ and libc++abi",
+    "crt": "glibc",
+    "minimum_runtime": "glibc 2.31 (Debian Bullseye sysroot)"
+  },
   "archive": {
     "member": "lib/libwebrtc.a",
     "name": "webrtc"
   },
   "links": [
+    { "kind": "link_arg", "name": "-fuse-ld=lld" },
     { "kind": "dylib", "name": "pthread" },
     { "kind": "dylib", "name": "dl" },
     { "kind": "dylib", "name": "rt" },
     { "kind": "dylib", "name": "m" }
-  ]
+  ],
+  "licenses": {
+    "sha256": "fe956273e437802f0d3b1253c8efe025f8abfd8edffcae26ae98676f7ce3b08c",
+    "files": [
+      {
+        "path": "LICENSES/CXX-APACHE-2.0.txt",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "LICENSES/CXX-MIT.txt",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      },
+      {
+        "path": "LICENSES/LICENSE.md",
+        "sha256": "e225bbee88b0d8ec6ad39f2753a046835e692ee1cefcd9c6175f924d56d522d2"
+      },
+      {
+        "path": "LICENSES/PATENTS",
+        "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145"
+      },
+      {
+        "path": "LICENSES/REPOSITORY-APACHE-2.0.txt",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      {
+        "path": "LICENSES/WEBRTC-BSD.txt",
+        "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482"
+      }
+    ]
+  }
 }
