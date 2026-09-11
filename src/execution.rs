@@ -78,7 +78,7 @@ impl ManualClock {
         }
     }
 
-    fn native(&self) -> &ffi::NativeManualClock {
+    pub(crate) fn native(&self) -> &ffi::NativeManualClock {
         self.0.native.as_ref().expect("validated manual clock")
     }
 }
