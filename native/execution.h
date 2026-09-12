@@ -4,7 +4,12 @@
 #include <cstdint>
 #include <memory>
 
+#include "api/environment/environment.h"
 #include "rust/cxx.h"
+
+namespace webrtc {
+class Thread;
+}
 
 namespace pulsebeam::webrtc_sys {
 
@@ -69,6 +74,7 @@ class NativeEnvironment final {
   NativeEnvironment& operator=(const NativeEnvironment&) = delete;
 
   const std::unique_ptr<State>& state() const noexcept;
+  webrtc::Environment environment() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -94,6 +100,7 @@ class NativeThread final {
   NativeThread& operator=(const NativeThread&) = delete;
 
   const std::unique_ptr<State>& state() const noexcept;
+  webrtc::Thread* thread() const noexcept;
 
  private:
   std::unique_ptr<State> state_;

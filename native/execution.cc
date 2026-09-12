@@ -290,6 +290,9 @@ const std::unique_ptr<NativeEnvironment::State>& NativeEnvironment::state()
     const noexcept {
   return state_;
 }
+webrtc::Environment NativeEnvironment::environment() const noexcept {
+  return state_->environment;
+}
 
 NativeRandomnessLease::~NativeRandomnessLease() {
   webrtc::SetDefaultRandomGenerator();
@@ -301,6 +304,9 @@ NativeThread::~NativeThread() = default;
 const std::unique_ptr<NativeThread::State>& NativeThread::state()
     const noexcept {
   return state_;
+}
+webrtc::Thread* NativeThread::thread() const noexcept {
+  return state_ ? state_->thread.get() : nullptr;
 }
 
 std::unique_ptr<NativeManualClock> new_manual_clock(

@@ -9,9 +9,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "869d28a6345a8ae8fa96633863fefe7985a7e8bfce8d532e67c0270bbc7b14e4",
-      "generated_header_sha256": "f986fc63746bf36812728212919e868a6604f73cdaae97b4a41d0b6955d9106a",
-      "generated_source_sha256": "08f5d1bae1eca9bdb8ac6c918d66d6d8f6fc34f45ee2332e3281b42213ee36a9"
+      "bridge_source_sha256": "909c39c48ac188145b9540e019eab5744e569b12bf98f8be0800b4de1ac75f33",
+      "generated_header_sha256": "9b852bc478a69de47efb86a0c50dbd229328267a6c37393876f8894ef500075c",
+      "generated_source_sha256": "06e23bd07157890ff6c61a1e4a613232138623b256fb8e43813a2a9958c31ccc"
     }
   },
   "sources": {
@@ -29,7 +29,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "59b3144afa1bfef312a8844d976d51b223dff462d956ebb658a02afb585748de",
+  "native_configuration_sha256": "68b821e602390a1dc71401e525b894cae53f599e77da35f06536449e68e48175",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",

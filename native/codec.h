@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "api/scoped_refptr.h"
 #include "rust/cxx.h"
 
 namespace webrtc {
@@ -92,6 +93,7 @@ public:
   explicit NativeAudioEncoderFactory(std::unique_ptr<State> state) noexcept;
   ~NativeAudioEncoderFactory();
   const State &state() const noexcept;
+  webrtc::scoped_refptr<webrtc::AudioEncoderFactory> factory() const noexcept;
 
 private:
   std::unique_ptr<State> state_;
@@ -103,6 +105,7 @@ public:
   explicit NativeAudioDecoderFactory(std::unique_ptr<State> state) noexcept;
   ~NativeAudioDecoderFactory();
   const State &state() const noexcept;
+  webrtc::scoped_refptr<webrtc::AudioDecoderFactory> factory() const noexcept;
 
 private:
   std::unique_ptr<State> state_;

@@ -261,7 +261,7 @@ impl Environment {
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
     }
 
-    fn native(&self) -> &ffi::NativeEnvironment {
+    pub(crate) fn native(&self) -> &ffi::NativeEnvironment {
         self.native.as_ref().expect("validated environment")
     }
 }
@@ -463,6 +463,10 @@ macro_rules! thread_handle {
 
             pub fn close(&mut self) {
                 drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
+            }
+
+            pub(crate) fn native(&self) -> &ffi::NativeThread {
+                self.native.as_ref().expect("validated WebRTC thread")
             }
         }
     };

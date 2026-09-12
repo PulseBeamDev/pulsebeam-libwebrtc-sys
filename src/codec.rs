@@ -378,7 +378,7 @@ impl VideoEncoderFactoryHandle {
             power_efficient: result.power_efficient,
         }
     }
-    fn native(&self) -> &ffi::NativeVideoEncoderFactory {
+    pub(crate) fn native(&self) -> &ffi::NativeVideoEncoderFactory {
         self.0.native.as_ref().expect("validated encoder factory")
     }
 }
@@ -424,7 +424,7 @@ impl VideoDecoderFactoryHandle {
             power_efficient: result.power_efficient,
         }
     }
-    fn native(&self) -> &ffi::NativeVideoDecoderFactory {
+    pub(crate) fn native(&self) -> &ffi::NativeVideoDecoderFactory {
         self.0.native.as_ref().expect("validated decoder factory")
     }
 }
@@ -461,6 +461,12 @@ impl AudioEncoderFactory {
     pub fn is_available(&self) -> bool {
         !self.0.native.is_null()
     }
+    pub(crate) fn native(&self) -> &ffi::NativeAudioEncoderFactory {
+        self.0
+            .native
+            .as_ref()
+            .expect("validated audio encoder factory")
+    }
 }
 impl AudioDecoderFactory {
     pub fn builtin() -> Result<Self, CodecError> {
@@ -473,6 +479,12 @@ impl AudioDecoderFactory {
     }
     pub fn is_available(&self) -> bool {
         !self.0.native.is_null()
+    }
+    pub(crate) fn native(&self) -> &ffi::NativeAudioDecoderFactory {
+        self.0
+            .native
+            .as_ref()
+            .expect("validated audio decoder factory")
     }
 }
 

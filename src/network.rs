@@ -217,7 +217,7 @@ impl NetworkManagerProvider {
         ffi::network_manager_provider_is_valid(self.native())
     }
 
-    fn native(&self) -> &ffi::NativeNetworkManagerProvider {
+    pub(crate) fn native(&self) -> &ffi::NativeNetworkManagerProvider {
         self.native
             .as_ref()
             .expect("validated network manager provider")
@@ -276,7 +276,7 @@ impl PacketSocketFactoryProvider {
         Err(NetworkError::UnsupportedDns)
     }
 
-    fn native(&self) -> &ffi::NativePacketSocketFactoryProvider {
+    pub(crate) fn native(&self) -> &ffi::NativePacketSocketFactoryProvider {
         self.native
             .as_ref()
             .expect("validated packet socket factory provider")

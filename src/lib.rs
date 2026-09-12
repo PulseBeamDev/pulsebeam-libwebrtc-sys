@@ -3,6 +3,7 @@
 mod codec;
 mod execution;
 mod network;
+mod peer;
 
 pub(crate) use codec::{
     RustVideoDecoder, RustVideoDecoderFactory, RustVideoEncoder, RustVideoEncoderFactory,
@@ -30,6 +31,12 @@ pub use execution::{
 pub use network::{
     NetworkAddress, NetworkEndpoint, NetworkError, NetworkManagerProvider, OutboundPacket,
     PacketSocketFactoryProvider, ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
+};
+pub use peer::{
+    ConnectionState, IceCandidate, IceGatheringState, OperationCompletion, OperationId,
+    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    PeerConnectionFactoryBuilder, PeerError, PeerErrorKind, SessionDescription,
+    SessionDescriptionType, SignalingState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -81,6 +88,25 @@ mod ffi {
     struct FfiDecoderInfo {
         implementation_name: String,
         hardware_accelerated: bool,
+    }
+
+    struct FfiPeerEvent {
+        kind: u8,
+        operation_id: u64,
+        has_description: bool,
+        sdp_type: u8,
+        state: u8,
+        event_id: u32,
+        sdp_mline_index: i32,
+        port: i32,
+        error_code: i32,
+        error_type: u8,
+        sdp: String,
+        sdp_mid: String,
+        candidate: String,
+        address: String,
+        url: String,
+        message: String,
     }
 
     #[allow(dead_code)]
@@ -156,6 +182,7 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/execution.h");
         include!("pulsebeam-webrtc-sys/native/network.h");
         include!("pulsebeam-webrtc-sys/native/codec.h");
+        include!("pulsebeam-webrtc-sys/native/peer.h");
 
         type NativeEnvironment;
         type NativeManualClock;
@@ -178,6 +205,8 @@ mod ffi {
         type NativeEncodedVideoFrame;
         type NativeEncodedImageCallback;
         type NativeDecodedImageCallback;
+        type NativePeerConnectionFactory;
+        type NativePeerConnection;
 
         fn bridge_identity() -> &'static str;
 
@@ -348,6 +377,49 @@ mod ffi {
         ) -> FfiCodecTestResult;
         #[allow(dead_code)]
         fn test_encoder_factory_cross_thread(factory: &NativeVideoEncoderFactory) -> bool;
+
+        unsafe fn new_peer_connection_factory(
+            environment: &NativeEnvironment,
+            network_thread: &NativeThread,
+            worker_thread: &NativeThread,
+            signaling_thread: &NativeThread,
+            network_manager: *const NativeNetworkManagerProvider,
+            packet_socket_factory: *const NativePacketSocketFactoryProvider,
+            audio_encoder: *const NativeAudioEncoderFactory,
+            audio_decoder: *const NativeAudioDecoderFactory,
+            video_encoder: *const NativeVideoEncoderFactory,
+            video_decoder: *const NativeVideoDecoderFactory,
+            error: &mut String,
+        ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn create_peer_connection(
+            factory: &NativePeerConnectionFactory,
+            ice_candidate_pool_size: u16,
+            always_negotiate_data_channels: bool,
+            error: &mut String,
+        ) -> UniquePtr<NativePeerConnection>;
+        fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64);
+        fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64);
+        fn peer_set_local_description(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            sdp_type: u8,
+            sdp: &str,
+        );
+        fn peer_set_remote_description(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            sdp_type: u8,
+            sdp: &str,
+        );
+        fn peer_add_ice_candidate(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            sdp_mid: &str,
+            sdp_mline_index: i32,
+            candidate: &str,
+        );
+        fn peer_take_event(peer: &NativePeerConnection) -> FfiPeerEvent;
+        fn close_peer_connection(peer: Pin<&mut NativePeerConnection>) -> bool;
     }
 }
 

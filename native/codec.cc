@@ -449,6 +449,10 @@ const NativeAudioEncoderFactory::State &
 NativeAudioEncoderFactory::state() const noexcept {
   return *state_;
 }
+webrtc::scoped_refptr<webrtc::AudioEncoderFactory>
+NativeAudioEncoderFactory::factory() const noexcept {
+  return state_->factory;
+}
 NativeAudioDecoderFactory::NativeAudioDecoderFactory(
     std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
@@ -456,6 +460,10 @@ NativeAudioDecoderFactory::~NativeAudioDecoderFactory() = default;
 const NativeAudioDecoderFactory::State &
 NativeAudioDecoderFactory::state() const noexcept {
   return *state_;
+}
+webrtc::scoped_refptr<webrtc::AudioDecoderFactory>
+NativeAudioDecoderFactory::factory() const noexcept {
+  return state_->factory;
 }
 
 std::unique_ptr<NativeVideoEncoderFactory>
