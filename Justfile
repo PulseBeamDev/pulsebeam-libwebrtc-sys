@@ -18,7 +18,10 @@ check:
     set -euo pipefail
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx'
-    test "$(grep -Ec '^[[:space:]]+- flavor:' .github/workflows/release.yml)" -eq 18
+    test "$(sed -n '/^  build:/,/^  desktop-runtime:/p' .github/workflows/release.yml | grep -Ec '^[[:space:]]+- flavor:')" -eq 18
+    test "$(sed -n '/^  desktop-runtime:/,/^  lifetime-sanitizers:/p' .github/workflows/release.yml | grep -Ec '^[[:space:]]+- flavor:')" -eq 8
+    grep -Fq '  rust-only-consumer:' .github/workflows/release.yml
+    grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
     grep -Fq 'rtc_build_libvpx=true' Justfile
@@ -33,8 +36,10 @@ check:
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
+    python3 -m unittest tests/test_release_audit.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
     python3 tools/write_artifact_lock.py --help >/dev/null
+    python3 -m tools.audit_release --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
@@ -55,7 +60,7 @@ check:
 refresh-cxx:
     python3 "{{ root }}/tools/cxx_import.py" refresh
 
-# Synchronize, build, export, archive, and compile/link-check one raw artifact.
+# Synchronize, build, export, archive, and compile/link-check one complete crate artifact.
 build flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -133,6 +138,7 @@ _gn-args flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     common='is_debug=false is_component_build=false use_rtti=false rtc_include_tests=false rtc_build_examples=false rtc_build_tools=false rtc_use_h264=false rtc_include_opus=true rtc_build_opus=true rtc_build_libvpx=true rtc_libvpx_build_vp9=true rtc_include_builtin_audio_codecs=true rtc_include_dav1d_in_internal_decoder_factory=true rtc_enable_protobuf=false symbol_level=0 use_siso=false treat_warnings_as_errors=false'
+    case "${PULSEBEAM_WEBRTC_SANITIZER:-}" in '') ;; address) common+=' is_asan=true dcheck_always_on=true';; *) echo 'PULSEBEAM_WEBRTC_SANITIZER must be empty or address' >&2; exit 1;; esac
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
     case "{{ target }}" in
       linux-x86_64) platform='target_os="linux" target_cpu="x64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_amd64-sysroot" use_custom_libcxx=true' ;;
@@ -305,11 +311,28 @@ _rust-smoke flavor target kit:
       ios-arm64|ios-simulator-arm64) case "{{ target }}" in ios-arm64) cargo_target=aarch64-apple-ios; sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) cargo_target=aarch64-apple-ios-sim; sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=-arch -C link-arg=arm64 -C link-arg=-isysroot -C "link-arg=$(xcrun --sdk "$sdk" --show-sdk-path)" -C "link-arg=$minimum");;
       windows-x86_64) cargo_target=x86_64-pc-windows-msvc; cxx=''; rustflags=(-C target-feature=+crt-static);;
     esac
+    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags+=(-C link-arg=-fsanitize=address); fi
     linker_env="CARGO_TARGET_$(printf '%s' "$cargo_target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="{{ work }}/cargo-home" CARGO_TARGET_DIR="{{ work }}/rust-smoke/{{ flavor }}/{{ target }}" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="{{ kit }}")
     test -z "$cxx" || command+=("$linker_env=$cxx")
     features=(); test "{{ flavor }}" = core || features=(--features native)
     "${command[@]}" cargo test --locked --target "$cargo_target" "${features[@]}" --test identity --no-run
+
+# Execute the complete Rust runtime suite against an extracted host-native artifact.
+_runtime-test flavor target archive:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just --justfile "{{ root }}/Justfile" _validate-flavor "{{ flavor }}"
+    case "{{ target }}:$(uname -s):$(uname -m)" in
+      linux-x86_64:Linux:x86_64|windows-x86_64:*MINGW*:x86_64|windows-x86_64:*MSYS*:x86_64|macos-x86_64:Darwin:x86_64|macos-arm64:Darwin:arm64) ;;
+      *) echo "{{ target }} is not native to this runtime host" >&2; exit 1;;
+    esac
+    test -f "{{ archive }}" || { echo "missing runtime artifact: {{ archive }}" >&2; exit 1; }
+    artifact=$(mktemp -d); trap 'rm -rf "$artifact"' EXIT
+    tar -C "$artifact" -xzf "{{ archive }}"
+    features=(); test "{{ flavor }}" = core || features=(--features native)
+    rustflags=(); if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags=(-C link-arg=-fsanitize=address); fi
+    RUSTFLAGS="${rustflags[*]}" CARGO_HOME="{{ work }}/cargo-home" CARGO_TARGET_DIR="{{ work }}/runtime/{{ flavor }}/{{ target }}" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact" cargo test --locked "${features[@]}" --tests -- --test-threads=1
 
 _gn:
     @case "$(uname -s)" in Linux) path='{{ work }}/checkout/src/buildtools/linux64/gn';; Darwin) path='{{ work }}/checkout/src/buildtools/mac/gn';; *) path='{{ work }}/checkout/src/buildtools/win/gn.exe';; esac; test -x "$path" || { echo 'pinned GN is missing' >&2; exit 1; }; printf '%s\n' "$path"

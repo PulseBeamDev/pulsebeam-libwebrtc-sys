@@ -19,7 +19,7 @@ import threading
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "tests/fixtures/webrtc-core-linux-x86_64.tar.gz"
+DEFAULT_ARTIFACT = ROOT / "tests/fixtures/webrtc-core-linux-x86_64.tar.gz"
 CONSUMER = ROOT / "consumer/rust-only"
 
 
@@ -38,7 +38,7 @@ def run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None, cap
     )
 
 
-def clean_snapshot(destination: Path, download_url: str) -> None:
+def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None:
     listing = subprocess.check_output(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=ROOT,
@@ -62,7 +62,7 @@ def clean_snapshot(destination: Path, download_url: str) -> None:
         and item["flavor"] == "core"
     )
     entry["url"] = download_url
-    entry["sha256"] = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
+    entry["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     run(["git", "init", "--quiet"], cwd=destination)
     run(["git", "config", "user.name", "Rust-only consumer proof"], cwd=destination)
@@ -71,9 +71,9 @@ def clean_snapshot(destination: Path, download_url: str) -> None:
     run(["git", "commit", "--quiet", "-m", "snapshot"], cwd=destination)
 
 
-def extract_artifact(destination: Path) -> None:
+def extract_artifact(source_artifact: Path, destination: Path) -> None:
     wanted = {"manifest.json", "lib/libwebrtc.a"}
-    with tarfile.open(FIXTURE, "r:gz") as archive:
+    with tarfile.open(source_artifact, "r:gz") as archive:
         members = {member.name: member for member in archive.getmembers() if member.name in wanted}
         if set(members) != wanted:
             raise ProofError("checked-in host artifact is missing its manifest or native archive")
@@ -159,21 +159,22 @@ def expect_failure(command: list[str], *, cwd: Path, env: dict[str, str], messag
         raise ProofError(f"failure did not contain {message!r}:\n{output}")
 
 
-def prove() -> None:
+def prove(source_artifact: Path) -> None:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise ProofError("the checked-in Rust-only artifact fixture requires Linux x86_64")
-    if not FIXTURE.is_file():
-        raise ProofError(f"missing checked-in host artifact: {FIXTURE}")
+    if not source_artifact.is_file():
+        raise ProofError(f"missing host artifact: {source_artifact}")
 
     with tempfile.TemporaryDirectory(prefix="pulsebeam-rust-only-") as temporary:
         temporary_root = Path(temporary)
-        with ArtifactServer(FIXTURE.read_bytes()) as server:
+        payload = source_artifact.read_bytes()
+        with ArtifactServer(payload) as server:
             repository = temporary_root / "repository"
             repository.mkdir()
-            clean_snapshot(repository, server.url)
+            clean_snapshot(repository, server.url, source_artifact)
 
             artifact = temporary_root / "artifact"
-            extract_artifact(artifact)
+            extract_artifact(source_artifact, artifact)
 
             consumer = temporary_root / "consumer"
             shutil.copytree(CONSUMER / "src", consumer / "src")
@@ -195,7 +196,7 @@ def prove() -> None:
             marker = temporary_root / "compiler-invocations"
             environment = compiler_environment(marker, temporary_root / "compiler-sentinels")
             environment["CARGO_TARGET_DIR"] = str(temporary_root / "target")
-            environment["PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR"] = str(artifact)
+            environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-cache")
 
             metadata = run(
                 ["cargo", "metadata", "--format-version=1"],
@@ -210,17 +211,21 @@ def prove() -> None:
                 cwd=ROOT,
             )
 
+            # The release proof starts with no override, artifact cache, or target cache.
+            run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+
+            environment["PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR"] = str(artifact)
             environment["CARGO_NET_OFFLINE"] = "true"
             run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
 
             cache = temporary_root / "warm-cache"
             cache.mkdir()
-            shutil.copy2(FIXTURE, cache / "webrtc-core-linux-x86_64.tar.gz")
+            shutil.copy2(source_artifact, cache / "webrtc-core-linux-x86_64.tar.gz")
             environment.pop("PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR")
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(cache)
             run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
 
-            download_cache = temporary_root / "download-cache"
+            download_cache = temporary_root / "second-download-cache"
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(download_cache)
             environment.pop("CARGO_NET_OFFLINE")
             run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
@@ -274,9 +279,10 @@ def prove() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.parse_args()
+    parser.add_argument("--artifact", type=Path, default=DEFAULT_ARTIFACT)
+    args = parser.parse_args()
     try:
-        prove()
+        prove(args.artifact.resolve())
     except (OSError, subprocess.CalledProcessError, ProofError) as error:
         print(f"Rust-only consumer proof: {error}", file=sys.stderr)
         return 1

@@ -43,6 +43,13 @@ performs C++ and Rust compile/link-only consumer checks. Every flavor/target
 artifact carries the same generated bridge and portable adapter sources,
 compiled with that job's target toolchain and ABI configuration.
 
+The release workflow separately runs the full Rust runtime suite for both
+flavors on Linux x86_64, Windows x86_64, macOS x86_64, and macOS arm64. Linux
+arm64 remains a cross-only cross build, and Android and iOS remain compile/link
+checks. Linux x86_64 AddressSanitizer jobs rebuild both flavors and exercise the
+lifetime-sensitive environment, provider, peer, channel, video, and teardown
+tests; only their failure logs are retained, never their instrumented archives.
+
 `just refresh-cxx` is the explicit networked maintenance operation for the
 Rust-only CXX runtime. It downloads the version recorded in
 `vendor/cxx/provenance.json`, verifies the crates.io package checksum before
@@ -191,21 +198,32 @@ identity; `m150_release` is branch context, not an input to the build. The
 source is built without a local patch stack, and only optimized release
 artifacts are published.
 
-Releases use two explicit phases. First, the manual GitHub Actions workflow
-requires an existing producer tag, builds and compile/link-checks all 18
-archives, generates `SHA256SUMS` plus an `artifacts.lock.json` candidate, attests
-the final assets, and creates one immutable GitHub Release. Publication succeeds
-only after every matrix entry succeeds. Second, replace the repository lock with
-that candidate (equivalently run `tools/write_artifact_lock.py` against the
-release's `SHA256SUMS`), run `just check`, and commit the resulting release-ready
-Git revision. Consumers must use that revision, not the producer-tag revision.
-Provenance, rather than byte-for-byte archive identity across runners, is the
-reproducibility contract; published releases are immutable.
+Releases use two explicit phases:
 
-The smoke test validates API availability and the exported static link closure.
-It does not claim physical camera, microphone, speaker, GPU, platform UI, or
-hardware-codec qualification. Those runtime tests belong to downstream
-applications.
+1. Run the source-pin upgrade rehearsal for any new WebRTC pin. Create and push
+   an immutable producer tag at the reviewed revision, then dispatch **Manual
+   pulsebeam-webrtc-sys release** with that exact tag. The workflow builds and
+   compile/link-checks all 18 archives, runs all eight desktop flavor/target
+   runtime jobs and both Linux AddressSanitizer jobs, and runs the cold
+   Rust-only Git consumer against the newly built core Linux archive. It audits
+   the 18 manifests and embedded license inventories, creates `SHA256SUMS`,
+   `RELEASE-MANIFEST.json`, the repository license, and an
+   `artifacts.lock.json` candidate, attests every final asset, and creates the
+   release only after every required job succeeds.
+2. Download `SHA256SUMS` from that immutable release and run
+   `python3 tools/write_artifact_lock.py --tag <tag> --checksums SHA256SUMS`.
+   Confirm that all 18 entries have URLs and hashes, run `just check`, commit
+   only the resulting lock update, and give PulseBeam that release-ready Git
+   revision. Consumers use this second-phase revision, not the producer tag.
+
+Never replace an asset on an existing release. If publication is incomplete or
+incorrect, use a new producer tag. Provenance, rather than byte-for-byte archive
+identity across runners, is the reproducibility contract.
+
+The automated host suite validates the portable API and exported static link
+closure. It does not claim physical camera, microphone, speaker, GPU, platform
+UI, or hardware-codec qualification; physical-device qualification remains a
+downstream application responsibility.
 
 ## Downstream rendering contract
 
@@ -245,11 +263,16 @@ Non-goals include:
 
 ## Upgrades
 
-For a routine WebRTC upgrade, change only `webrtc_commit` near the top of the
-`Justfile`, review the build, and run the release workflow. Change the pinned
-`depot_tools` revision only when WebRTC compatibility requires it. Adapt build
-arguments or target selection only when CI shows that an upstream change broke
-a required PulseBeam contract.
+For a routine WebRTC upgrade, first dispatch **WebRTC source-pin upgrade
+rehearsal** with the proposed 40-character commit. That job substitutes only
+`webrtc_commit`, checksum-refreshes the pinned CXX import and requires it to
+stay byte-identical, then regenerates the CXX bridge and compiles/links the full
+core Linux adapter. Upstream API drift therefore fails at a focused adapter or
+compiler step. Once reviewed, change only `webrtc_commit` near the top of the
+`Justfile`, run `just check`, and use the two-phase release procedure above.
+Change `depot_tools_commit` only when WebRTC compatibility requires it. Change
+build arguments or target selection only to repair an observed required-matrix
+failure.
 
 Upgrade CXX as one reviewable change:
 
@@ -263,3 +286,15 @@ Upgrade CXX as one reviewable change:
    intentional packaging requirement and describe that delta in provenance.
 4. Run `just check`, run the applicable native artifact build, then run
    `just refresh-cxx` once more and confirm that it produces no diff.
+
+## Acceptance coverage
+
+| Contract | Automated job or release check |
+|---|---|
+| Offline schemas, extraction, target/flavor substitution, link translation, source cleanliness, CXX inventory, and Rust-only dependency graph | **Fast checks / check** (`just check`) |
+| Complete bridge and extracted-artifact C++/Rust compile/link for all 18 identities | **Manual release / build** matrix plus `audit_release.py` |
+| Deterministic execution/network, signaling, data channel, injected video path, and ordered teardown for both desktop flavors | Eight **Desktop runtime** matrix jobs |
+| Observer, callback, partial-construction, close/drop, and provider lifetime under instrumentation | Two **ASan lifetime tests** jobs |
+| Fresh Git dependency, cold artifact and target caches, identity probe, host runtime smoke, and forbidden C/C++ compiler sentinels | **Cold Rust-only Git consumer** |
+| One-pin upstream rehearsal and mechanical CXX/generated-bridge refresh | **WebRTC source-pin upgrade rehearsal** |
+| Immutable URLs/checksums, complete external lock, licenses, notices, and attestations | The two documented release phases and **publish** gate |
