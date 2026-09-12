@@ -25,6 +25,7 @@
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder.h"
 #include "api/video_codecs/video_encoder_factory.h"
+#include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_error_codes.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 
@@ -45,6 +46,9 @@ struct NativeEncodedImageCallback::State {
   std::mutex mutex;
   webrtc::EncodedImageCallback *callback = nullptr;
   bool active = false;
+  bool h264 = false;
+  webrtc::H264PacketizationMode h264_packetization_mode =
+      webrtc::H264PacketizationMode::NonInterleaved;
 };
 struct NativeDecodedImageCallback::State {
   std::mutex mutex;
@@ -121,10 +125,19 @@ std::vector<std::uint8_t> CopyI420(const webrtc::VideoFrame &frame) {
 
 class RustEncoder final : public webrtc::VideoEncoder {
 public:
-  explicit RustEncoder(rust::Box<RustVideoEncoder> encoder) noexcept
+  RustEncoder(rust::Box<RustVideoEncoder> encoder,
+              const webrtc::SdpVideoFormat& format) noexcept
       : encoder_(std::move(encoder)),
         callback_(std::make_shared<NativeEncodedImageCallback>(
-            std::make_shared<NativeEncodedImageCallback::State>())) {}
+            std::make_shared<NativeEncodedImageCallback::State>())) {
+    callback_->state()->h264 = format.name == "H264";
+    const auto packetization_mode = format.parameters.find("packetization-mode");
+    if (packetization_mode != format.parameters.end() &&
+        packetization_mode->second == "0") {
+      callback_->state()->h264_packetization_mode =
+          webrtc::H264PacketizationMode::SingleNalUnit;
+    }
+  }
   ~RustEncoder() override { Release(); }
 
   int InitEncode(const webrtc::VideoCodec *codec,
@@ -280,7 +293,7 @@ public:
     auto encoder = encoder_factory_create(*factory_, FromNative(format));
     if (!encoder_is_valid(*encoder))
       return nullptr;
-    return std::make_unique<RustEncoder>(std::move(encoder));
+    return std::make_unique<RustEncoder>(std::move(encoder), format);
   }
 
 private:
@@ -350,6 +363,16 @@ NativeVideoFrame::NativeVideoFrame(std::unique_ptr<State> state) noexcept
 NativeVideoFrame::~NativeVideoFrame() = default;
 const NativeVideoFrame::State &NativeVideoFrame::state() const noexcept {
   return *state_;
+}
+std::unique_ptr<NativeVideoFrame>
+wrap_video_frame(const webrtc::VideoFrame &frame) noexcept {
+  auto state = std::make_unique<NativeVideoFrame::State>();
+  state->width = static_cast<std::uint32_t>(frame.width());
+  state->height = static_cast<std::uint32_t>(frame.height());
+  state->timestamp_us = frame.timestamp_us();
+  state->rtp_timestamp = frame.rtp_timestamp();
+  state->i420 = CopyI420(frame);
+  return std::make_unique<NativeVideoFrame>(std::move(state));
 }
 NativeEncodedVideoFrame::NativeEncodedVideoFrame(
     std::unique_ptr<State> state) noexcept
@@ -590,7 +613,18 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
   image.SetFrameType(key_frame ? webrtc::VideoFrameType::kVideoFrameKey
                                : webrtc::VideoFrameType::kVideoFrameDelta);
   image.qp_ = qp;
-  return state->callback->OnEncodedImage(image, nullptr).error ==
+  std::optional<webrtc::CodecSpecificInfo> codec_specific;
+  if (state->h264) {
+    codec_specific.emplace();
+    codec_specific->codecType = webrtc::kVideoCodecH264;
+    codec_specific->codecSpecific.H264.packetization_mode =
+        state->h264_packetization_mode;
+    codec_specific->codecSpecific.H264.temporal_idx = webrtc::kNoTemporalIdx;
+    codec_specific->codecSpecific.H264.base_layer_sync = false;
+    codec_specific->codecSpecific.H264.idr_frame = key_frame;
+  }
+  return state->callback->OnEncodedImage(
+             image, codec_specific ? &*codec_specific : nullptr).error ==
          webrtc::EncodedImageCallback::Result::OK;
 }
 bool decoded_callback_emit(const NativeDecodedImageCallback &callback,

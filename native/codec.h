@@ -9,6 +9,7 @@
 namespace webrtc {
 class AudioDecoderFactory;
 class AudioEncoderFactory;
+class VideoFrame;
 class VideoDecoderFactory;
 class VideoEncoderFactory;
 } // namespace webrtc
@@ -172,5 +173,7 @@ test_codec_roundtrip(const NativeVideoEncoderFactory &encoder,
                      std::uint32_t frames) noexcept;
 bool test_encoder_factory_cross_thread(
     const NativeVideoEncoderFactory &factory) noexcept;
+std::unique_ptr<NativeVideoFrame>
+wrap_video_frame(const webrtc::VideoFrame &frame) noexcept;
 
 } // namespace pulsebeam::webrtc_sys

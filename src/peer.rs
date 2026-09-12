@@ -3,7 +3,12 @@ use std::{cell::Cell, fmt, rc::Rc};
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, Environment, NetworkManagerProvider, NetworkThread,
     PacketSocketFactoryProvider, SignalingThread, VideoDecoderFactoryHandle,
-    VideoEncoderFactoryHandle, WorkerThread, data_channel::DataChannel, ffi,
+    VideoEncoderFactoryHandle, WorkerThread,
+    data_channel::DataChannel,
+    ffi,
+    video::{
+        RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoSource, VideoTrack,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -119,6 +124,8 @@ pub enum PeerConnectionEvent {
         message: String,
     },
     DataChannel(DataChannel),
+    Track(RtpTransceiver),
+    TrackRemoved(RtpReceiver),
     Closed,
 }
 
@@ -279,7 +286,7 @@ impl Default for PeerConnectionFactoryBuilder {
     }
 }
 
-struct FactoryInner {
+pub(crate) struct FactoryInner {
     native: cxx::UniquePtr<ffi::NativePeerConnectionFactory>,
     _environment: Environment,
     _network_thread: NetworkThread,
@@ -343,6 +350,39 @@ impl PeerConnectionFactory {
             })
         }
     }
+
+    pub fn create_video_source(&self) -> Result<VideoSource, PeerError> {
+        let native =
+            ffi::create_video_source(self.0.native.as_ref().expect("validated peer factory"));
+        if native.is_null() {
+            Err(native_build_error("failed to create video source"))
+        } else {
+            Ok(VideoSource::from_native(native, self.0.clone()))
+        }
+    }
+
+    pub fn create_video_track(
+        &self,
+        id: &str,
+        source: &VideoSource,
+    ) -> Result<VideoTrack, PeerError> {
+        if id.is_empty() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "video track id must not be empty".into(),
+            });
+        }
+        let native = ffi::create_video_track(
+            self.0.native.as_ref().expect("validated peer factory"),
+            source.native(),
+            id,
+        );
+        if native.is_null() {
+            Err(native_build_error("failed to create video track"))
+        } else {
+            Ok(VideoTrack::local(native, self.0.clone(), source))
+        }
+    }
 }
 
 /// A sequence-bound peer connection with a caller-polled owned event queue.
@@ -367,6 +407,46 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    pub fn add_video_transceiver(
+        &self,
+        track: &VideoTrack,
+        direction: RtpTransceiverDirection,
+    ) -> Result<RtpTransceiver, PeerError> {
+        let mut error_type = 0;
+        let mut message = String::new();
+        let native = ffi::peer_add_video_transceiver(
+            self.inner.native(),
+            track.native(),
+            direction as u8,
+            &mut error_type,
+            &mut message,
+        );
+        if native.is_null() {
+            Err(PeerError {
+                kind: error_kind(error_type),
+                message,
+            })
+        } else {
+            Ok(RtpTransceiver::from_native(native, self.inner.clone()))
+        }
+    }
+
+    pub fn remove_track(&self, sender: &RtpSender) -> Result<(), PeerError> {
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::peer_remove_track(
+            self.inner.native(),
+            sender.native(),
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
+    }
+
     pub fn create_offer(&self) -> OperationId {
         let id = self.next_operation();
         ffi::peer_create_offer(self.native(), id.0);
@@ -506,6 +586,25 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
                 "native adapter lost a remote data channel"
             );
             Some(PeerConnectionEvent::DataChannel(DataChannel::from_native(
+                native,
+                peer.clone(),
+            )))
+        }
+        10 => {
+            let native = ffi::peer_take_transceiver(peer.native(), event.operation_id);
+            assert!(
+                !native.is_null(),
+                "native adapter lost a remote transceiver"
+            );
+            Some(PeerConnectionEvent::Track(RtpTransceiver::from_native(
+                native,
+                peer.clone(),
+            )))
+        }
+        11 => {
+            let native = ffi::peer_take_receiver(peer.native(), event.operation_id);
+            assert!(!native.is_null(), "native adapter lost a removed receiver");
+            Some(PeerConnectionEvent::TrackRemoved(RtpReceiver::from_native(
                 native,
                 peer.clone(),
             )))

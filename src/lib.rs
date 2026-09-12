@@ -5,6 +5,7 @@ mod data_channel;
 mod execution;
 mod network;
 mod peer;
+mod video;
 
 pub(crate) use codec::{
     RustVideoDecoder, RustVideoDecoderFactory, RustVideoEncoder, RustVideoEncoderFactory,
@@ -42,6 +43,10 @@ pub use peer::{
     PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
     PeerConnectionFactoryBuilder, PeerError, PeerErrorKind, SessionDescription,
     SessionDescriptionType, SignalingState,
+};
+pub use video::{
+    RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoSink, VideoSource,
+    VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -197,6 +202,7 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/peer.h");
         include!("pulsebeam-webrtc-sys/native/data_channel.h");
+        include!("pulsebeam-webrtc-sys/native/video.h");
 
         type NativeEnvironment;
         type NativeManualClock;
@@ -222,6 +228,12 @@ mod ffi {
         type NativePeerConnectionFactory;
         type NativePeerConnection;
         type NativeDataChannel;
+        type NativeVideoSource;
+        type NativeVideoTrack;
+        type NativeVideoSink;
+        type NativeRtpSender;
+        type NativeRtpReceiver;
+        type NativeRtpTransceiver;
 
         fn bridge_identity() -> &'static str;
 
@@ -466,6 +478,71 @@ mod ffi {
         fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
+
+        fn create_video_source(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeVideoSource>;
+        fn close_video_source(source: &NativeVideoSource) -> bool;
+        fn video_source_state(source: &NativeVideoSource) -> u8;
+        fn video_source_push_frame(
+            source: &NativeVideoSource,
+            data: &[u8],
+            width: u32,
+            height: u32,
+            timestamp_us: i64,
+            rtp_timestamp: u32,
+        ) -> bool;
+        fn create_video_track(
+            factory: &NativePeerConnectionFactory,
+            source: &NativeVideoSource,
+            id: &str,
+        ) -> UniquePtr<NativeVideoTrack>;
+        fn video_track_id(track: &NativeVideoTrack) -> String;
+        fn video_track_enabled(track: &NativeVideoTrack) -> bool;
+        fn video_track_set_enabled(track: &NativeVideoTrack, enabled: bool) -> bool;
+        fn video_track_state(track: &NativeVideoTrack) -> u8;
+        fn video_track_attach_sink(track: &NativeVideoTrack) -> UniquePtr<NativeVideoSink>;
+        fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
+        fn close_video_sink(sink: &NativeVideoSink) -> bool;
+        fn peer_add_video_transceiver(
+            peer: &NativePeerConnection,
+            track: &NativeVideoTrack,
+            direction: u8,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_remove_track(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
+        fn peer_take_transceiver(
+            peer: &NativePeerConnection,
+            arrival_id: u64,
+        ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_take_receiver(
+            peer: &NativePeerConnection,
+            arrival_id: u64,
+        ) -> UniquePtr<NativeRtpReceiver>;
+        fn rtp_transceiver_sender(transceiver: &NativeRtpTransceiver)
+        -> UniquePtr<NativeRtpSender>;
+        fn rtp_transceiver_receiver(
+            transceiver: &NativeRtpTransceiver,
+        ) -> UniquePtr<NativeRtpReceiver>;
+        fn rtp_transceiver_direction(transceiver: &NativeRtpTransceiver) -> u8;
+        fn rtp_transceiver_current_direction(transceiver: &NativeRtpTransceiver) -> i8;
+        fn rtp_transceiver_stopped(transceiver: &NativeRtpTransceiver) -> bool;
+        fn rtp_transceiver_set_direction(
+            transceiver: &NativeRtpTransceiver,
+            direction: u8,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
+        fn rtp_sender_id(sender: &NativeRtpSender) -> String;
+        fn rtp_sender_track(sender: &NativeRtpSender) -> UniquePtr<NativeVideoTrack>;
+        fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
+        fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;
     }
 }
 

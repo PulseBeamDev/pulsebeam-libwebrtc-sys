@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "api/create_modular_peer_connection_factory.h"
+#include "api/audio_codecs/builtin_audio_decoder_factory.h"
+#include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/enable_media.h"
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
@@ -22,6 +24,8 @@
 #include "pulsebeam-webrtc-sys/native/data_channel.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/network.h"
+#include "pulsebeam-webrtc-sys/native/video.h"
+#include "modules/audio_device/include/audio_device_default.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/thread.h"
 
@@ -39,9 +43,15 @@ enum EventKind : std::uint8_t {
   kIceCandidateError = 7,
   kClosed = 8,
   kDataChannel = 9,
+  kTrack = 10,
+  kTrackRemoved = 11,
 };
 
 constexpr std::uint8_t kClosedError = 255;
+
+class HeadlessAudioDevice
+    : public webrtc::webrtc_impl::AudioDeviceModuleDefault<
+          webrtc::AudioDeviceModule> {};
 
 FfiPeerEvent EmptyEvent() { return FfiPeerEvent{}; }
 
@@ -125,10 +135,69 @@ struct EventState {
     return channel;
   }
 
+  void AddTransceiver(
+      webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
+    std::lock_guard lock(mutex);
+    if (closed) {
+      return;
+    }
+    const std::uint64_t arrival_id = next_media_id++;
+    transceivers.emplace(arrival_id, std::move(transceiver));
+    FfiPeerEvent event;
+    event.kind = kTrack;
+    event.operation_id = arrival_id;
+    events.push_back(std::move(event));
+  }
+
+  webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> TakeTransceiver(
+      std::uint64_t arrival_id) {
+    std::lock_guard lock(mutex);
+    auto found = transceivers.find(arrival_id);
+    if (found == transceivers.end()) {
+      return nullptr;
+    }
+    auto transceiver = std::move(found->second);
+    transceivers.erase(found);
+    return transceiver;
+  }
+
+  void RemoveReceiver(
+      webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) {
+    std::lock_guard lock(mutex);
+    if (closed) {
+      return;
+    }
+    const std::uint64_t arrival_id = next_media_id++;
+    receivers.emplace(arrival_id, std::move(receiver));
+    FfiPeerEvent event;
+    event.kind = kTrackRemoved;
+    event.operation_id = arrival_id;
+    events.push_back(std::move(event));
+  }
+
+  webrtc::scoped_refptr<webrtc::RtpReceiverInterface> TakeReceiver(
+      std::uint64_t arrival_id) {
+    std::lock_guard lock(mutex);
+    auto found = receivers.find(arrival_id);
+    if (found == receivers.end()) {
+      return nullptr;
+    }
+    auto receiver = std::move(found->second);
+    receivers.erase(found);
+    return receiver;
+  }
+
   void Close() {
     std::unordered_map<
         std::uint64_t,
         webrtc::scoped_refptr<webrtc::DataChannelInterface>> abandoned_channels;
+    std::unordered_map<
+        std::uint64_t,
+        webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>>
+        abandoned_transceivers;
+    std::unordered_map<std::uint64_t,
+                       webrtc::scoped_refptr<webrtc::RtpReceiverInterface>>
+        abandoned_receivers;
     {
       std::lock_guard lock(mutex);
       if (closed) {
@@ -140,6 +209,8 @@ struct EventState {
       }
       pending.clear();
       abandoned_channels.swap(data_channels);
+      abandoned_transceivers.swap(transceivers);
+      abandoned_receivers.swap(receivers);
       FfiPeerEvent event;
       event.kind = kClosed;
       events.push_back(std::move(event));
@@ -153,6 +224,13 @@ struct EventState {
                      webrtc::scoped_refptr<webrtc::DataChannelInterface>>
       data_channels;
   std::uint64_t next_data_channel_id = 1;
+  std::unordered_map<
+      std::uint64_t,
+      webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> transceivers;
+  std::unordered_map<std::uint64_t,
+                     webrtc::scoped_refptr<webrtc::RtpReceiverInterface>>
+      receivers;
+  std::uint64_t next_media_id = 1;
   bool closed = false;
 };
 
@@ -172,6 +250,16 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
   void OnDataChannel(
       webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {
     state_->AddDataChannel(std::move(channel));
+  }
+
+  void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>
+                   transceiver) override {
+    state_->AddTransceiver(std::move(transceiver));
+  }
+
+  void OnRemoveTrack(
+      webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) override {
+    state_->RemoveReceiver(std::move(receiver));
   }
 
   void OnNegotiationNeededEvent(std::uint32_t event_id) override {
@@ -404,6 +492,13 @@ const std::unique_ptr<NativePeerConnectionFactory::State>&
 NativePeerConnectionFactory::state() const noexcept {
   return state_;
 }
+webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
+NativePeerConnectionFactory::factory() const noexcept {
+  return state_->factory;
+}
+webrtc::Thread* NativePeerConnectionFactory::signaling_thread() const noexcept {
+  return state_->signaling_thread;
+}
 
 NativePeerConnection::NativePeerConnection(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
@@ -464,11 +559,18 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
       return nullptr;
     }
   }
-  if (audio_encoder) {
-    dependencies.audio_encoder_factory = audio_encoder->factory();
+  if ((video_encoder == nullptr) != (video_decoder == nullptr)) {
+    error = "video encoder and decoder factories must be supplied together";
+    return nullptr;
   }
-  if (audio_decoder) {
-    dependencies.audio_decoder_factory = audio_decoder->factory();
+  if (audio_encoder || audio_decoder || video_encoder || video_decoder) {
+    dependencies.adm = webrtc::make_ref_counted<HeadlessAudioDevice>();
+    dependencies.audio_encoder_factory =
+        audio_encoder ? audio_encoder->factory()
+                      : webrtc::CreateBuiltinAudioEncoderFactory();
+    dependencies.audio_decoder_factory =
+        audio_decoder ? audio_decoder->factory()
+                      : webrtc::CreateBuiltinAudioDecoderFactory();
   }
   if (video_encoder) {
     dependencies.video_encoder_factory =
@@ -628,6 +730,16 @@ std::unique_ptr<NativeDataChannel> peer_take_data_channel(
   auto channel = peer.state()->events->TakeDataChannel(arrival_id);
   return wrap_data_channel(std::move(channel), peer.peer(),
                            peer.signaling_thread());
+}
+
+std::unique_ptr<NativeRtpTransceiver> peer_take_transceiver(
+    const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept {
+  return wrap_rtp_transceiver(peer.state()->events->TakeTransceiver(arrival_id));
+}
+
+std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
+    const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept {
+  return wrap_rtp_receiver(peer.state()->events->TakeReceiver(arrival_id));
 }
 
 bool close_peer_connection(const NativePeerConnection& peer) noexcept {

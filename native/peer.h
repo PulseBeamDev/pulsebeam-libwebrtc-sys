@@ -7,6 +7,7 @@
 #include "rust/cxx.h"
 
 namespace webrtc {
+class PeerConnectionFactoryInterface;
 class PeerConnectionInterface;
 class Thread;
 }
@@ -35,6 +36,9 @@ class NativePeerConnectionFactory final {
       delete;
 
   const std::unique_ptr<State>& state() const noexcept;
+  webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory()
+      const noexcept;
+  webrtc::Thread* signaling_thread() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
