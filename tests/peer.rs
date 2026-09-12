@@ -111,11 +111,11 @@ fn two_peers_negotiate_owned_sdp_and_ice_without_sleeps() {
 
     for _ in 0..2_000_000 {
         while let Some(event) = alice.try_next_event() {
-            alice_observed.push(event.clone());
+            alice_observed.push(format!("{event:?}"));
             alice_connected |= collect_candidate(event, &mut alice_candidates);
         }
         while let Some(event) = bob.try_next_event() {
-            bob_observed.push(event.clone());
+            bob_observed.push(format!("{event:?}"));
             bob_connected |= collect_candidate(event, &mut bob_candidates);
         }
         for candidate in alice_candidates.drain(..) {

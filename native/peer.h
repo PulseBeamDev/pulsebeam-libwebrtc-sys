@@ -3,13 +3,20 @@
 #include <cstdint>
 #include <memory>
 
+#include "api/scoped_refptr.h"
 #include "rust/cxx.h"
+
+namespace webrtc {
+class PeerConnectionInterface;
+class Thread;
+}
 
 namespace pulsebeam::webrtc_sys {
 
 struct FfiPeerEvent;
 class NativeAudioDecoderFactory;
 class NativeAudioEncoderFactory;
+class NativeDataChannel;
 class NativeEnvironment;
 class NativeNetworkManagerProvider;
 class NativePacketSocketFactoryProvider;
@@ -43,6 +50,8 @@ class NativePeerConnection final {
   NativePeerConnection& operator=(const NativePeerConnection&) = delete;
 
   const std::unique_ptr<State>& state() const noexcept;
+  webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer() const noexcept;
+  webrtc::Thread* signaling_thread() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -85,6 +94,9 @@ void peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::int32_t sdp_mline_index,
                             rust::Str candidate) noexcept;
 FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept;
-bool close_peer_connection(NativePeerConnection& peer) noexcept;
+std::unique_ptr<NativeDataChannel> peer_take_data_channel(
+    const NativePeerConnection& peer,
+    std::uint64_t arrival_id) noexcept;
+bool close_peer_connection(const NativePeerConnection& peer) noexcept;
 
 }  // namespace pulsebeam::webrtc_sys

@@ -1,6 +1,7 @@
 //! Low-level Rust integration with PulseBeam's pinned libwebrtc artifact.
 
 mod codec;
+mod data_channel;
 mod execution;
 mod network;
 mod peer;
@@ -22,6 +23,10 @@ pub use codec::{
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoRateControl,
     VideoResolution,
+};
+pub use data_channel::{
+    DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
+    DataChannelMessageKind, DataChannelPriority, DataChannelSendResult, DataChannelState,
 };
 pub use execution::{
     BuildEnvironmentError, Environment, EnvironmentBuilder, ManualClock, NetworkThread,
@@ -109,6 +114,14 @@ mod ffi {
         message: String,
     }
 
+    struct FfiDataChannelEvent {
+        kind: u8,
+        state: u8,
+        binary: bool,
+        sent_data_size: u64,
+        data: Vec<u8>,
+    }
+
     #[allow(dead_code)]
     struct FfiCodecTestResult {
         status: i32,
@@ -183,6 +196,7 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/network.h");
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/peer.h");
+        include!("pulsebeam-webrtc-sys/native/data_channel.h");
 
         type NativeEnvironment;
         type NativeManualClock;
@@ -207,6 +221,7 @@ mod ffi {
         type NativeDecodedImageCallback;
         type NativePeerConnectionFactory;
         type NativePeerConnection;
+        type NativeDataChannel;
 
         fn bridge_identity() -> &'static str;
 
@@ -419,7 +434,38 @@ mod ffi {
             candidate: &str,
         );
         fn peer_take_event(peer: &NativePeerConnection) -> FfiPeerEvent;
-        fn close_peer_connection(peer: Pin<&mut NativePeerConnection>) -> bool;
+        fn peer_take_data_channel(
+            peer: &NativePeerConnection,
+            arrival_id: u64,
+        ) -> UniquePtr<NativeDataChannel>;
+        fn close_peer_connection(peer: &NativePeerConnection) -> bool;
+
+        fn create_data_channel(
+            peer: &NativePeerConnection,
+            label: &str,
+            ordered: bool,
+            max_retransmit_time_ms: i32,
+            max_retransmits: i32,
+            protocol: &str,
+            negotiated: bool,
+            id: i32,
+            priority: i8,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> UniquePtr<NativeDataChannel>;
+        fn data_channel_label(channel: &NativeDataChannel) -> String;
+        fn data_channel_ordered(channel: &NativeDataChannel) -> bool;
+        fn data_channel_max_retransmit_time_ms(channel: &NativeDataChannel) -> i32;
+        fn data_channel_max_retransmits(channel: &NativeDataChannel) -> i32;
+        fn data_channel_protocol(channel: &NativeDataChannel) -> String;
+        fn data_channel_negotiated(channel: &NativeDataChannel) -> bool;
+        fn data_channel_id(channel: &NativeDataChannel) -> i32;
+        fn data_channel_priority(channel: &NativeDataChannel) -> u8;
+        fn data_channel_state(channel: &NativeDataChannel) -> u8;
+        fn data_channel_buffered_amount(channel: &NativeDataChannel) -> u64;
+        fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
+        fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
+        fn close_data_channel(channel: &NativeDataChannel) -> bool;
     }
 }
 

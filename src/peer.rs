@@ -3,7 +3,7 @@ use std::{cell::Cell, fmt, rc::Rc};
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, Environment, NetworkManagerProvider, NetworkThread,
     PacketSocketFactoryProvider, SignalingThread, VideoDecoderFactoryHandle,
-    VideoEncoderFactoryHandle, WorkerThread, ffi,
+    VideoEncoderFactoryHandle, WorkerThread, data_channel::DataChannel, ffi,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -101,7 +101,7 @@ pub struct OperationCompletion {
     pub result: Result<Option<SessionDescription>, PeerError>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum PeerConnectionEvent {
     OperationComplete(OperationCompletion),
     IceCandidate(IceCandidate),
@@ -118,6 +118,7 @@ pub enum PeerConnectionEvent {
         error_code: i32,
         message: String,
     },
+    DataChannel(DataChannel),
     Closed,
 }
 
@@ -334,9 +335,11 @@ impl PeerConnectionFactory {
             })
         } else {
             Ok(PeerConnection {
-                native,
+                inner: Rc::new(PeerInner {
+                    native,
+                    _factory: self.0.clone(),
+                }),
                 next_operation_id: Cell::new(1),
-                _factory: self.0.clone(),
             })
         }
     }
@@ -354,8 +357,12 @@ impl PeerConnectionFactory {
 /// assert_sync::<pulsebeam_webrtc_sys::PeerConnection>();
 /// ```
 pub struct PeerConnection {
-    native: cxx::UniquePtr<ffi::NativePeerConnection>,
+    pub(crate) inner: Rc<PeerInner>,
     next_operation_id: Cell<u64>,
+}
+
+pub(crate) struct PeerInner {
+    native: cxx::UniquePtr<ffi::NativePeerConnection>,
     _factory: Rc<FactoryInner>,
 }
 
@@ -407,11 +414,11 @@ impl PeerConnection {
     }
 
     pub fn try_next_event(&self) -> Option<PeerConnectionEvent> {
-        event_from_ffi(ffi::peer_take_event(self.native()))
+        event_from_ffi(ffi::peer_take_event(self.native()), &self.inner)
     }
 
     pub fn close(&mut self) -> Result<(), PeerError> {
-        ffi::close_peer_connection(self.native.pin_mut())
+        ffi::close_peer_connection(self.native())
             .then_some(())
             .ok_or_else(|| PeerError {
                 kind: PeerErrorKind::Internal,
@@ -427,6 +434,12 @@ impl PeerConnection {
     }
 
     fn native(&self) -> &ffi::NativePeerConnection {
+        self.inner.native()
+    }
+}
+
+impl PeerInner {
+    pub(crate) fn native(&self) -> &ffi::NativePeerConnection {
         self.native.as_ref().expect("validated peer connection")
     }
 }
@@ -442,7 +455,7 @@ fn optional_ptr<T>(value: Option<&T>) -> *const T {
     value.map_or(std::ptr::null(), |value| value as *const T)
 }
 
-fn event_from_ffi(event: ffi::FfiPeerEvent) -> Option<PeerConnectionEvent> {
+fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<PeerConnectionEvent> {
     match event.kind {
         0 => None,
         1 => Some(PeerConnectionEvent::OperationComplete(
@@ -486,6 +499,17 @@ fn event_from_ffi(event: ffi::FfiPeerEvent) -> Option<PeerConnectionEvent> {
             message: event.message,
         }),
         8 => Some(PeerConnectionEvent::Closed),
+        9 => {
+            let native = ffi::peer_take_data_channel(peer.native(), event.operation_id);
+            assert!(
+                !native.is_null(),
+                "native adapter lost a remote data channel"
+            );
+            Some(PeerConnectionEvent::DataChannel(DataChannel::from_native(
+                native,
+                peer.clone(),
+            )))
+        }
         _ => unreachable!("native adapter returned an invalid peer event"),
     }
 }
@@ -533,7 +557,7 @@ fn gathering_state(value: u8) -> IceGatheringState {
     }
 }
 
-fn error_kind(value: u8) -> PeerErrorKind {
+pub(crate) fn error_kind(value: u8) -> PeerErrorKind {
     match value {
         1 => PeerErrorKind::UnsupportedOperation,
         2 => PeerErrorKind::UnsupportedParameter,

@@ -5,6 +5,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
+#include "pulsebeam-webrtc-sys/native/data_channel.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/network.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
@@ -36,6 +38,7 @@ enum EventKind : std::uint8_t {
   kNegotiationNeeded = 6,
   kIceCandidateError = 7,
   kClosed = 8,
+  kDataChannel = 9,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -96,24 +99,60 @@ struct EventState {
     return event;
   }
 
-  void Close() {
+  void AddDataChannel(
+      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
     std::lock_guard lock(mutex);
     if (closed) {
       return;
     }
-    closed = true;
-    for (std::uint64_t operation_id : pending) {
-      events.push_back(ClosedOperation(operation_id));
-    }
-    pending.clear();
+    const std::uint64_t arrival_id = next_data_channel_id++;
+    data_channels.emplace(arrival_id, std::move(channel));
     FfiPeerEvent event;
-    event.kind = kClosed;
+    event.kind = kDataChannel;
+    event.operation_id = arrival_id;
     events.push_back(std::move(event));
+  }
+
+  webrtc::scoped_refptr<webrtc::DataChannelInterface> TakeDataChannel(
+      std::uint64_t arrival_id) {
+    std::lock_guard lock(mutex);
+    auto found = data_channels.find(arrival_id);
+    if (found == data_channels.end()) {
+      return nullptr;
+    }
+    auto channel = std::move(found->second);
+    data_channels.erase(found);
+    return channel;
+  }
+
+  void Close() {
+    std::unordered_map<
+        std::uint64_t,
+        webrtc::scoped_refptr<webrtc::DataChannelInterface>> abandoned_channels;
+    {
+      std::lock_guard lock(mutex);
+      if (closed) {
+        return;
+      }
+      closed = true;
+      for (std::uint64_t operation_id : pending) {
+        events.push_back(ClosedOperation(operation_id));
+      }
+      pending.clear();
+      abandoned_channels.swap(data_channels);
+      FfiPeerEvent event;
+      event.kind = kClosed;
+      events.push_back(std::move(event));
+    }
   }
 
   std::mutex mutex;
   std::deque<FfiPeerEvent> events;
   std::set<std::uint64_t> pending;
+  std::unordered_map<std::uint64_t,
+                     webrtc::scoped_refptr<webrtc::DataChannelInterface>>
+      data_channels;
+  std::uint64_t next_data_channel_id = 1;
   bool closed = false;
 };
 
@@ -131,7 +170,9 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
   }
 
   void OnDataChannel(
-      webrtc::scoped_refptr<webrtc::DataChannelInterface>) override {}
+      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {
+    state_->AddDataChannel(std::move(channel));
+  }
 
   void OnNegotiationNeededEvent(std::uint32_t event_id) override {
     FfiPeerEvent event;
@@ -379,6 +420,13 @@ const std::unique_ptr<NativePeerConnection::State>&
 NativePeerConnection::state() const noexcept {
   return state_;
 }
+webrtc::scoped_refptr<webrtc::PeerConnectionInterface>
+NativePeerConnection::peer() const noexcept {
+  return state_->peer;
+}
+webrtc::Thread* NativePeerConnection::signaling_thread() const noexcept {
+  return state_->signaling_thread;
+}
 
 std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeEnvironment& environment,
@@ -574,7 +622,15 @@ FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept {
   return peer.state()->events->Take();
 }
 
-bool close_peer_connection(NativePeerConnection& peer) noexcept {
+std::unique_ptr<NativeDataChannel> peer_take_data_channel(
+    const NativePeerConnection& peer,
+    std::uint64_t arrival_id) noexcept {
+  auto channel = peer.state()->events->TakeDataChannel(arrival_id);
+  return wrap_data_channel(std::move(channel), peer.peer(),
+                           peer.signaling_thread());
+}
+
+bool close_peer_connection(const NativePeerConnection& peer) noexcept {
   const auto& state = peer.state();
   if (!state || state->closed) {
     return true;
