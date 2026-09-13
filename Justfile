@@ -177,6 +177,11 @@ _compile flavor target:
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" libc++ libc++abi; fi
     if [[ "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" buildtools/third_party/libunwind:libunwind; fi
 
+_export-predicate-failed flavor target invariant expected actual:
+    #!/usr/bin/env bash
+    printf 'export predicate failed: target=%s flavor=%s invariant=%s expected=%s actual=%s\n' "{{ target }}" "{{ flavor }}" "{{ invariant }}" "{{ expected }}" "{{ actual }}" >&2
+    exit 1
+
 _export flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -187,10 +192,14 @@ _export flavor target:
     base=$(mktemp); extra=$(mktemp); archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
     { printf '%s\n' //:webrtc; "$gn" desc --root="$src" "$out" //:webrtc deps --all; } | LC_ALL=C sort -u > "$base"
     while read -r root_label; do { printf '%s\n' "$root_label"; "$gn" desc --root="$src" "$out" "$root_label" deps --all; }; done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}") | LC_ALL=C sort -u > "$extra"
-    { "$gn" desc --root="$src" "$out" //:webrtc outputs; while read -r label; do "$gn" desc --root="$src" "$out" "$label" outputs 2>/dev/null || true; done < <(comm -23 "$extra" "$base"); } | grep -E '\.(a|lib)$' | LC_ALL=C sort -u > "$archives"
-    if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then "$gn" desc --root="$src" "$out" //buildtools/third_party/libc++ outputs >> "$archives"; "$gn" desc --root="$src" "$out" //buildtools/third_party/libc++abi outputs >> "$archives"; fi
+    gn_outputs() {
+      local label="$1"
+      "$gn" desc --root="$src" "$out" "$label" outputs || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label"
+    }
+    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | grep -E '\.(a|lib)$' | LC_ALL=C sort -u > "$archives"
+    if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then gn_outputs //buildtools/third_party/libc++ >> "$archives"; gn_outputs //buildtools/third_party/libc++abi >> "$archives"; fi
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
-    test -s "$archives" || { echo 'static closure is empty' >&2; exit 1; }
+    test -s "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
     roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
@@ -200,8 +209,11 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _bridge-objects "{{ flavor }}" "{{ target }}" "$stage" "$definitions_file" >> "$objects"
     library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
     { printf 'CREATE %s\n' "$library"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$input"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
-    members=$("$ar" t "$library"); for member in bridge execution network codec peer data_channel video probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null; done
-    "$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm" "$library" 2>/dev/null | grep -F "pulsebeam\$webrtc_sys\$cxxbridge1\$$cxx_abi\$bridge_identity" >/dev/null
+    members=$("$ar" t "$library") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "a readable member list for $library" 'llvm-ar could not list archive members'
+    for member in bridge execution network codec peer data_channel video probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "${member}.o or ${member}.obj in $library" "member ${member} is absent"; done
+    bridge_symbol="pulsebeam\$webrtc_sys\$cxxbridge1\$$cxx_abi\$bridge_identity"
+    nm_output=$("$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm" "$library") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" bridge-identity "$bridge_symbol in $library" 'llvm-nm could not inspect archive symbols'
+    grep -F "$bridge_symbol" <<< "$nm_output" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" bridge-identity "$bridge_symbol in $library" 'bridge identity symbol is absent'
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     license_targets=(); while IFS= read -r root_label; do license_targets+=(--target "$root_label"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
     vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"
@@ -218,7 +230,8 @@ _export flavor target:
     python3 "{{ root }}/tools/cxx_provenance.py" "$verify"
     just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$verify"
     just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$verify"
-    git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo 'source checkout is modified' >&2; exit 1; }
+    git -C "$src" diff --quiet || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" source-cleanliness "clean checkout at $src" 'checkout has unstaged changes'
+    git -C "$src" diff --cached --quiet || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" source-cleanliness "clean checkout at $src" 'checkout has staged changes'
 
 _bridge-objects flavor target stage definitions_file:
     #!/usr/bin/env bash
