@@ -158,6 +158,45 @@ class ReleaseWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(f'_export-predicate-failed "{{{{ flavor }}}}" "{{{{ target }}}}" {invariant}', justfile)
 
+    def test_static_closure_no_archive_reaches_diagnostic(self):
+        justfile = JUSTFILE.read_text(encoding="utf-8")
+        closure = re.search(
+            r'^    (?P<command>\{ gn_outputs //:webrtc;.* > "\$archives")$',
+            justfile,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(closure)
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    f'''\
+base=$(mktemp)
+extra=$(mktemp)
+archives=$(mktemp)
+trap 'rm -f "$base" "$extra" "$archives"' EXIT
+gn_outputs() {{ :; }}
+{closure.group("command")}
+test ! -s "$archives"
+set +e
+diagnostic=$(just --justfile "{JUSTFILE}" _export-predicate-failed core linux-x86_64 static-closure 'at least one static archive output' 'no matching .a or .lib output' 2>&1)
+status=$?
+set -e
+test "$status" -eq 1
+grep -Fq 'invariant=static-closure' <<< "$diagnostic"
+grep -Fq 'actual=no matching .a or .lib output' <<< "$diagnostic"
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "XDG_RUNTIME_DIR": runtime_dir},
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

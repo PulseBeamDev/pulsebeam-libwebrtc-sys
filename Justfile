@@ -196,7 +196,7 @@ _export flavor target:
       local label="$1"
       "$gn" desc --root="$src" "$out" "$label" outputs || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label"
     }
-    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | grep -E '\.(a|lib)$' | LC_ALL=C sort -u > "$archives"
+    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then gn_outputs //buildtools/third_party/libc++ >> "$archives"; gn_outputs //buildtools/third_party/libc++abi >> "$archives"; fi
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
     test -s "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
