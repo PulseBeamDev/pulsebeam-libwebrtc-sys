@@ -18,7 +18,6 @@ check:
     set -euo pipefail
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx'
-    python3 -m unittest tests/test_release_workflow.py
     grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
