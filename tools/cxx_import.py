@@ -378,6 +378,7 @@ def download(root: Path, package: dict) -> Path:
             socket.timeout,
             TimeoutError,
             ConnectionError,
+            http.client.HTTPException,
             http.client.IncompleteRead,
             http.client.RemoteDisconnected,
             ValueError,
