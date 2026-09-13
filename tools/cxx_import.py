@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 
 
@@ -25,6 +29,8 @@ IMPORTED_ROOT_FILES = {"LICENSE-APACHE", "LICENSE-MIT"}
 IMPORTED_PREFIXES = ("include/", "src/")
 GENERATED_FILES = {"Cargo.toml", "provenance.json"}
 GENERATOR_STAMP = "cxxbridge-provenance.json"
+DOWNLOAD_ATTEMPTS = 3
+RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
 class ImportError(Exception):
@@ -269,17 +275,128 @@ def verification_errors_for_staged(root: Path, staged: Path, provenance: dict) -
     return errors
 
 
-def download(root: Path, package: dict) -> Path:
+def package_identity(package: dict) -> str:
+    name = package.get("name")
+    version = package.get("version")
+    checksum = package.get("checksum")
+    if not isinstance(name, str) or not isinstance(version, str) or not isinstance(checksum, str):
+        raise ImportError("package provenance is missing name, version, or checksum")
+    if len(checksum) != 64:
+        raise ImportError("package provenance checksum must be SHA-256")
+    return f"{name}-{version}-{checksum}"
+
+
+def package_url(package: dict) -> str:
+    name = package["name"]
     version = package["version"]
-    url = f"https://static.crates.io/crates/cxx/cxx-{version}.crate"
-    destination = root / ".work" / "downloads" / f"cxx-{version}.crate"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url) as response:
-        data = response.read()
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_bytes(data)
-    os.replace(temporary, destination)
-    return destination
+    return f"https://static.crates.io/crates/{name}/{name}-{version}.crate"
+
+
+def cached_archive(root: Path, package: dict) -> Path:
+    return root / ".work" / "downloads" / f"{package_identity(package)}.crate"
+
+
+def verified_cache_state(archive: Path, checksum: str) -> str:
+    if not archive.is_file():
+        return "missing"
+    if archive.is_symlink():
+        return "corrupt"
+    try:
+        return "verified" if digest(archive.read_bytes()) == checksum else "corrupt"
+    except OSError:
+        return "unreadable"
+
+
+def retryable_transport_failure(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRYABLE_HTTP_STATUSES
+    if isinstance(error, urllib.error.URLError):
+        return retryable_transport_failure(error.reason)
+    return isinstance(
+        error,
+        (
+            socket.gaierror,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+            http.client.RemoteDisconnected,
+        ),
+    )
+
+
+def retrieval_error(
+    package: dict,
+    url: str,
+    attempts: int,
+    cache_state: str,
+    failure_class: str,
+    error: BaseException,
+) -> ImportError:
+    return ImportError(
+        f"cannot retrieve pinned input {package_identity(package)} from {url}: "
+        f"attempts={attempts}, cache={cache_state}, failure={failure_class}: {error}"
+    )
+
+
+def download(root: Path, package: dict) -> Path:
+    """Return a checksum-verified cached crate, fetching it with bounded recovery."""
+    expected_checksum = package.get("checksum")
+    if not isinstance(expected_checksum, str):
+        raise ImportError("package provenance is missing checksum")
+    archive = cached_archive(root, package)
+    cache_state = verified_cache_state(archive, expected_checksum)
+    if cache_state == "verified":
+        return archive
+
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    url = package_url(package)
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        temporary: Path | None = None
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                data = response.read()
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{archive.name}.", suffix=".tmp", dir=archive.parent, delete=False
+            ) as output:
+                temporary = Path(output.name)
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            if digest(temporary.read_bytes()) != expected_checksum:
+                raise ImportError("downloaded package checksum mismatch")
+            os.replace(temporary, archive)
+            return archive
+        except ImportError as error:
+            raise retrieval_error(
+                package, url, attempt, cache_state, "checksum", error
+            ) from error
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            socket.gaierror,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+            http.client.RemoteDisconnected,
+            ValueError,
+            OSError,
+        ) as error:
+            if not retryable_transport_failure(error):
+                raise retrieval_error(
+                    package, url, attempt, cache_state, "deterministic-retrieval", error
+                ) from error
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise retrieval_error(
+                    package, url, attempt, cache_state, "transient-transport-exhausted", error
+                ) from error
+            time.sleep(0.2 * attempt)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    raise AssertionError("bounded download loop unexpectedly ended")
 
 
 def generator_binary(install_root: Path) -> Path:
@@ -375,16 +492,7 @@ def install_generator(root: Path, install_root: Path, archive: Path | None) -> P
             pass
 
     if archive is None:
-        version = package["version"]
-        archive = root / ".work" / "downloads" / f"cxxbridge-cmd-{version}.crate"
-        if not archive.is_file() or digest(archive.read_bytes()) != package["checksum"]:
-            archive.parent.mkdir(parents=True, exist_ok=True)
-            url = f"https://static.crates.io/crates/cxxbridge-cmd/cxxbridge-cmd-{version}.crate"
-            with urllib.request.urlopen(url) as response:
-                data = response.read()
-            temporary = archive.with_suffix(".tmp")
-            temporary.write_bytes(data)
-            os.replace(temporary, archive)
+        archive = download(root, package)
 
     with tempfile.TemporaryDirectory(prefix="cxxbridge-package-") as temporary:
         source = unpack_generator(archive.resolve(), Path(temporary), package)
