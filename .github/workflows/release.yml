@@ -1,21 +1,22 @@
-name: Manual pulsebeam-webrtc-sys release
+name: PulseBeam WebRTC qualification and release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag that resolves to this workflow commit
-        required: true
+        description: Existing tag that resolves to this workflow commit (required to publish)
+        required: false
         type: string
 
 permissions: {}
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   validate:
+    name: Validate shared release control plane
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -24,17 +25,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate tagged workflow commit
+      - name: Validate release identity when publishing
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           WORKFLOW_COMMIT: ${{ github.sha }}
         run: |
+          test -z "$RELEASE_TAG" && exit 0
           [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid tag' >&2; exit 1; }
           tagged=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}") || { echo 'tag does not exist' >&2; exit 1; }
           test "$tagged" = "$WORKFLOW_COMMIT" || { echo 'tag does not resolve to the workflow commit' >&2; exit 1; }
 
-  build:
+  linux-build:
+    name: Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: validate
     strategy:
       fail-fast: false
@@ -46,59 +49,18 @@ jobs:
           - flavor: core
             target: linux-arm64
             runner: ubuntu-24.04
-          - flavor: core
-            target: windows-x86_64
-            runner: windows-2025
-          - flavor: core
-            target: macos-x86_64
-            runner: macos-15-intel
-          - flavor: core
-            target: macos-arm64
-            runner: macos-15
-          - flavor: core
-            target: android-x86_64
-            runner: ubuntu-24.04
-          - flavor: core
-            target: android-arm64-v8a
-            runner: ubuntu-24.04
-          - flavor: core
-            target: ios-arm64
-            runner: macos-15
-          - flavor: core
-            target: ios-simulator-arm64
-            runner: macos-15
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
           - flavor: native
             target: linux-arm64
             runner: ubuntu-24.04
-          - flavor: native
-            target: windows-x86_64
-            runner: windows-2025
-          - flavor: native
-            target: macos-x86_64
-            runner: macos-15-intel
-          - flavor: native
-            target: macos-arm64
-            runner: macos-15
-          - flavor: native
-            target: android-x86_64
-            runner: ubuntu-24.04
-          - flavor: native
-            target: android-arm64-v8a
-            runner: ubuntu-24.04
-          - flavor: native
-            target: ios-arm64
-            runner: macos-15
-          - flavor: native
-            target: ios-simulator-arm64
-            runner: macos-15
+
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
       contents: read
-    steps:
+    steps: &build-steps
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
@@ -137,42 +99,47 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  desktop-runtime:
-    name: Desktop runtime (${{ matrix.flavor }}, ${{ matrix.target }})
-    needs: build
+  non-linux-build:
+    name: Non-Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
-          - flavor: core
-            target: linux-x86_64
-            runner: ubuntu-24.04
-          - flavor: native
-            target: linux-x86_64
-            runner: ubuntu-24.04
-          - flavor: core
-            target: windows-x86_64
-            runner: windows-2025
-          - flavor: native
-            target: windows-x86_64
-            runner: windows-2025
-          - flavor: core
-            target: macos-x86_64
-            runner: macos-15-intel
-          - flavor: native
-            target: macos-x86_64
-            runner: macos-15-intel
-          - flavor: core
-            target: macos-arm64
-            runner: macos-15
-          - flavor: native
-            target: macos-arm64
-            runner: macos-15
+          - { flavor: core, target: windows-x86_64, runner: windows-2025 }
+          - { flavor: core, target: macos-x86_64, runner: macos-15-intel }
+          - { flavor: core, target: macos-arm64, runner: macos-15 }
+          - { flavor: core, target: android-x86_64, runner: ubuntu-24.04 }
+          - { flavor: core, target: android-arm64-v8a, runner: ubuntu-24.04 }
+          - { flavor: core, target: ios-arm64, runner: macos-15 }
+          - { flavor: core, target: ios-simulator-arm64, runner: macos-15 }
+          - { flavor: native, target: windows-x86_64, runner: windows-2025 }
+          - { flavor: native, target: macos-x86_64, runner: macos-15-intel }
+          - { flavor: native, target: macos-arm64, runner: macos-15 }
+          - { flavor: native, target: android-x86_64, runner: ubuntu-24.04 }
+          - { flavor: native, target: android-arm64-v8a, runner: ubuntu-24.04 }
+          - { flavor: native, target: ios-arm64, runner: macos-15 }
+          - { flavor: native, target: ios-simulator-arm64, runner: macos-15 }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps: *build-steps
+
+  linux-desktop-runtime:
+    name: Linux desktop runtime (${{ matrix.flavor }})
+    needs: linux-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { flavor: core, target: linux-x86_64, runner: ubuntu-24.04 }
+          - { flavor: native, target: linux-x86_64, runner: ubuntu-24.04 }
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
-    steps:
+    steps: &runtime-steps
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
@@ -193,6 +160,25 @@ jobs:
       - name: Run environment, network, signaling, data-channel, video, and teardown tests
         shell: bash
         run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
+
+  non-linux-desktop-runtime:
+    name: Non-Linux desktop runtime (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: non-linux-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { flavor: core, target: windows-x86_64, runner: windows-2025 }
+          - { flavor: native, target: windows-x86_64, runner: windows-2025 }
+          - { flavor: core, target: macos-x86_64, runner: macos-15-intel }
+          - { flavor: native, target: macos-x86_64, runner: macos-15-intel }
+          - { flavor: core, target: macos-arm64, runner: macos-15 }
+          - { flavor: native, target: macos-arm64, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps: *runtime-steps
 
   lifetime-sanitizers:
     name: ASan lifetime tests (${{ matrix.flavor }}, linux-x86_64)
@@ -239,7 +225,7 @@ jobs:
 
   rust-only-consumer:
     name: Cold Rust-only Git consumer
-    needs: build
+    needs: linux-build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -257,8 +243,94 @@ jobs:
       - name: Build and run a cold Git consumer without C/C++ compilers
         run: python3 tools/rust_only_consumer.py --artifact dist/webrtc-core-linux-x86_64.tar.gz
 
+  linux-audit:
+    needs: linux-build
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: "*-linux-*"
+          path: release
+          merge-multiple: true
+      - name: Generate Linux checksum index and audit exact scope
+        shell: bash
+        run: |
+          find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
+          python3 -m tools.audit_release --scope linux --archives release --checksums release/SHA256SUMS --output release/LINUX-RELEASE-MANIFEST.json
+
+  complete-audit:
+    needs: [linux-build, non-linux-build]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: release
+          merge-multiple: true
+      - name: Generate complete checksum index and audit exact scope
+        shell: bash
+        run: |
+          find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
+          python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
+
+  linux-qualification:
+    needs: [validate, linux-build, linux-desktop-runtime, lifetime-sanitizers, rust-only-consumer, linux-audit]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Report Linux qualification evidence
+        shell: bash
+        run: |
+          results=(
+            "validate=${{ needs.validate.result }}"
+            "linux-build=${{ needs.linux-build.result }}"
+            "linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}"
+            "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
+            "rust-only-consumer=${{ needs.rust-only-consumer.result }}"
+            "linux-audit=${{ needs.linux-audit.result }}"
+          )
+          printf '%s\n' "${results[@]}"
+          for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
+
+  complete-matrix-qualification:
+    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, rust-only-consumer, complete-audit]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Report complete matrix qualification evidence
+        shell: bash
+        run: |
+          results=(
+            "validate=${{ needs.validate.result }}"
+            "linux-build=${{ needs.linux-build.result }}"
+            "non-linux-build=${{ needs.non-linux-build.result }}"
+            "linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}"
+            "non-linux-desktop-runtime=${{ needs.non-linux-desktop-runtime.result }}"
+            "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
+            "rust-only-consumer=${{ needs.rust-only-consumer.result }}"
+            "complete-audit=${{ needs.complete-audit.result }}"
+          )
+          printf '%s\n' "${results[@]}"
+          for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
+
   publish:
-    needs: [build, desktop-runtime, lifetime-sanitizers, rust-only-consumer]
+    if: inputs.tag != ''
+    needs: [validate, complete-matrix-qualification]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -279,7 +351,7 @@ jobs:
           test "$(find . -maxdepth 1 -name 'webrtc-*.tar.gz' | wc -l)" -eq 18
           find . -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
       - name: Audit matrix identities, source pins, configurations, and licenses
-        run: python3 -m tools.audit_release --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
+        run: python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
       - name: Generate release-ready consumer lock
         env:
           RELEASE_TAG: ${{ inputs.tag }}

@@ -14,6 +14,10 @@ from tools.write_artifact_lock import read_checksums
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCOPES = {
+    "linux": frozenset({"linux-x86_64", "linux-arm64"}),
+    "complete": None,
+}
 
 
 class AuditError(Exception):
@@ -42,9 +46,17 @@ def read_member(archive: tarfile.TarFile, name: str) -> bytes:
     return source.read()
 
 
-def audit(archives: Path, checksums_path: Path, lock_path: Path) -> dict:
+def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "complete") -> dict:
+    try:
+        targets = SCOPES[scope]
+    except KeyError as error:
+        raise AuditError(f"unknown release scope: {scope}") from error
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    expected = {entry["asset_name"]: entry for entry in lock["artifacts"]}
+    expected = {
+        entry["asset_name"]: entry
+        for entry in lock["artifacts"]
+        if targets is None or entry["artifact_target"] in targets
+    }
     checksums = read_checksums(checksums_path)
     found = {path.name: path for path in archives.glob("webrtc-*.tar.gz")}
     if found.keys() != expected.keys() or checksums.keys() != expected.keys():
@@ -101,6 +113,7 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path) -> dict:
             )
     return {
         "schema_version": 1,
+        "scope": scope,
         "bridge": common_bridge,
         "sources": common_sources,
         "assets": assets,
@@ -112,10 +125,11 @@ def main() -> int:
     parser.add_argument("--archives", type=Path, required=True)
     parser.add_argument("--checksums", type=Path, required=True)
     parser.add_argument("--lock", type=Path, default=ROOT / "artifacts.lock.json")
+    parser.add_argument("--scope", choices=sorted(SCOPES), default="complete")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        report = audit(args.archives, args.checksums, args.lock)
+        report = audit(args.archives, args.checksums, args.lock, args.scope)
         args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tarfile.TarError, AuditError) as error:
         print(f"release audit: {error}", file=sys.stderr)

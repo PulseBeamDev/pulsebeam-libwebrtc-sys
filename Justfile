@@ -18,9 +18,7 @@ check:
     set -euo pipefail
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx'
-    test "$(sed -n '/^  build:/,/^  desktop-runtime:/p' .github/workflows/release.yml | grep -Ec '^[[:space:]]+- flavor:')" -eq 18
-    test "$(sed -n '/^  desktop-runtime:/,/^  lifetime-sanitizers:/p' .github/workflows/release.yml | grep -Ec '^[[:space:]]+- flavor:')" -eq 8
-    grep -Fq '  rust-only-consumer:' .github/workflows/release.yml
+    python3 -m unittest tests/test_release_workflow.py
     grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
