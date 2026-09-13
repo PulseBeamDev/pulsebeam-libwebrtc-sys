@@ -82,7 +82,10 @@ def link(kind, name):
 
 def links_for(flavor, target):
     if target.startswith("linux-"):
-        links = [link("link_arg", "-fuse-ld=lld")]
+        link_args = ["-fuse-ld=lld"]
+        if target == "linux-arm64":
+            link_args.append("--rtlib=compiler-rt")
+        links = [link("link_arg", arg) for arg in link_args]
         links += [link("dylib", name) for name in ("pthread", "dl", "rt", "m")]
         if flavor == "native":
             links += [
@@ -116,7 +119,10 @@ def links_for(flavor, target):
         names = ["log", "android", "GLESv2", "OpenSLES", "dl", "m"]
         if flavor == "native":
             names.append("aaudio")
-        return [link("link_arg", "-fuse-ld=lld")] + [link("dylib", name) for name in names]
+        return [
+            link("link_arg", "-fuse-ld=lld"),
+            link("link_arg", "--unwindlib=none"),
+        ] + [link("dylib", name) for name in names]
     frameworks = (
         "Foundation", "CoreFoundation", "CoreGraphics", "CoreMedia", "CoreVideo",
         "AudioToolbox", "AVFoundation", "VideoToolbox", "UIKit",
