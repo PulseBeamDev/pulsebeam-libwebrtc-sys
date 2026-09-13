@@ -27,7 +27,7 @@ check:
     grep -Fq 'rtc_build_libvpx=true' Justfile
     grep -Fq 'rtc_include_dav1d_in_internal_decoder_factory=true' Justfile
     grep -Eq '^set windows-shell := \["C:/Program Files/Git/bin/bash\.exe"' Justfile
-    grep -Eq '^[[:space:]]+python3 .*install-sysroot\.py" --arch=arm64$' Justfile
+    grep -Fq 'install-sysroot.py" --arch=arm64' Justfile
     grep -Eq '^[[:space:]]+while IFS= read -r root_label; do roots\+=' Justfile
     grep -Fq 'CreateModularPeerConnectionFactory' consumer/smoke.cc
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
@@ -142,12 +142,25 @@ _sync flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     depot="{{ work }}/depot_tools"; checkout="{{ work }}/checkout"; src="$checkout/src"
+    retry_acquisition() {
+      local input="$1" pin="$2" attempt; shift 2
+      for attempt in 1 2 3; do
+        if "$@"; then return 0; fi
+        if test "$attempt" -lt 3; then
+          echo "retrying pinned input=$input pin=$pin attempt=$attempt/3 failure=upstream-acquisition" >&2
+          sleep "$attempt"
+        fi
+      done
+      echo "pinned input retrieval failed input=$input pin=$pin attempts=3 failure=upstream-acquisition-exhausted" >&2
+      return 1
+    }
     target_os=''; sync_key=desktop; case "{{ target }}" in android-*) target_os="target_os = ['android']"; sync_key=android;; ios-*) target_os="target_os = ['ios']"; sync_key=ios;; esac
     mkdir -p "{{ work }}"
     if test ! -d "$depot/.git"; then git init -q "$depot"; git -C "$depot" remote add origin "{{ depot_tools_url }}"; fi
     if test "$(git -C "$depot" rev-parse HEAD 2>/dev/null || true)" != "{{ depot_tools_commit }}"; then
-      git -C "$depot" fetch --depth=1 origin "{{ depot_tools_commit }}"
+      retry_acquisition depot_tools "{{ depot_tools_commit }}" git -C "$depot" fetch --depth=1 origin "{{ depot_tools_commit }}"
       git -C "$depot" checkout --detach --force FETCH_HEAD
+      test "$(git -C "$depot" rev-parse HEAD)" = "{{ depot_tools_commit }}" || { echo "pinned input validation failed input=depot_tools pin={{ depot_tools_commit }} failure=invalid-checkout" >&2; exit 1; }
     fi
     if test "{{ target }}" = windows-x86_64; then
       depot_native=$(just --justfile "{{ root }}/Justfile" _native-path "$depot")
@@ -165,17 +178,17 @@ _sync flavor target:
     printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     if test "{{ target }}" = windows-x86_64; then
       vpython_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/vpython")
-      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
     else
       export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
       cd "$checkout"
-      gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     fi
     test "$(git -C "$src" rev-parse HEAD)" = "{{ webrtc_commit }}"
     if test "{{ target }}" = windows-x86_64; then
-      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
+      retry_acquisition webrtc_hooks "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
     else
-      gclient runhooks
+      retry_acquisition webrtc_hooks "{{ webrtc_commit }}" gclient runhooks
     fi
     printf '%s\n' "$sync_key" > "$checkout/.pulsebeam-sync-target"
     just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
@@ -185,7 +198,15 @@ _target-dependencies target:
     set -euo pipefail
     src="{{ work }}/checkout/src"
     if test "{{ target }}" = linux-arm64; then
-      python3 "$src/build/linux/sysroot_scripts/install-sysroot.py" --arch=arm64
+      for attempt in 1 2 3; do
+        if python3 "$src/build/linux/sysroot_scripts/install-sysroot.py" --arch=arm64; then exit 0; fi
+        if test "$attempt" -lt 3; then
+          echo "retrying pinned input=linux-arm64-sysroot pin={{ webrtc_commit }} attempt=$attempt/3 failure=upstream-acquisition" >&2
+          sleep "$attempt"
+        fi
+      done
+      echo "pinned input retrieval failed input=linux-arm64-sysroot pin={{ webrtc_commit }} attempts=3 failure=upstream-acquisition-exhausted" >&2
+      exit 1
     fi
 
 _gn-args flavor target:

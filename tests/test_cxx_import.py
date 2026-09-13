@@ -5,9 +5,13 @@ import io
 import json
 from pathlib import Path
 import shutil
+import socket
 import tarfile
 import tempfile
+import threading
 import unittest
+from unittest import mock
+import urllib.error
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,6 +176,91 @@ class CxxImportTests(unittest.TestCase):
             cxx_import.unpack_generator(
                 archive, self.root / "unpacked", self.provenance["generator"]
             )
+
+    def test_download_reuses_verified_cache_without_network(self):
+        archive = cxx_import.cached_archive(self.root, self.provenance["package"])
+        archive.parent.mkdir(parents=True)
+        shutil.copy(self.archive, archive)
+        with mock.patch.object(cxx_import.urllib.request, "urlopen") as urlopen:
+            self.assertEqual(cxx_import.download(self.root, self.provenance["package"]), archive)
+        urlopen.assert_not_called()
+
+    def test_download_replaces_corrupt_cache_after_transient_failure(self):
+        archive = cxx_import.cached_archive(self.root, self.provenance["package"])
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"corrupt")
+        response = mock.MagicMock()
+        response.read.return_value = self.archive.read_bytes()
+        response.__enter__.return_value = response
+        with (
+            mock.patch.object(
+                cxx_import.urllib.request,
+                "urlopen",
+                side_effect=[socket.timeout("temporary"), response],
+            ) as urlopen,
+            mock.patch.object(cxx_import.time, "sleep"),
+        ):
+            self.assertEqual(cxx_import.download(self.root, self.provenance["package"]), archive)
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(archive.read_bytes(), self.archive.read_bytes())
+
+    def test_download_does_not_retry_permanent_or_checksum_failures(self):
+        permanent = urllib.error.HTTPError("https://example.invalid", 404, "missing", {}, None)
+        with mock.patch.object(cxx_import.urllib.request, "urlopen", side_effect=permanent) as urlopen:
+            with self.assertRaisesRegex(cxx_import.ImportError, "deterministic-retrieval"):
+                cxx_import.download(self.root, self.provenance["package"])
+        permanent.close()
+        urlopen.assert_called_once()
+
+        response = mock.MagicMock()
+        response.read.return_value = b"wrong"
+        response.__enter__.return_value = response
+        with mock.patch.object(cxx_import.urllib.request, "urlopen", return_value=response) as urlopen:
+            with self.assertRaisesRegex(cxx_import.ImportError, "checksum"):
+                cxx_import.download(self.root, self.provenance["package"])
+        urlopen.assert_called_once()
+        archive = cxx_import.cached_archive(self.root, self.provenance["package"])
+        self.assertFalse(archive.exists())
+        self.assertEqual(list(archive.parent.glob("*.tmp")), [])
+
+    def test_download_exhausts_transient_failures_and_concurrent_success_converges(self):
+        with (
+            mock.patch.object(
+                cxx_import.urllib.request,
+                "urlopen",
+                side_effect=socket.timeout("temporary"),
+            ) as urlopen,
+            mock.patch.object(cxx_import.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(cxx_import.ImportError, "transient-transport-exhausted"):
+                cxx_import.download(self.root, self.provenance["package"])
+        self.assertEqual(urlopen.call_count, cxx_import.DOWNLOAD_ATTEMPTS)
+
+        barrier = threading.Barrier(2)
+        def response_for_concurrent_download(*_args, **_kwargs):
+            barrier.wait()
+            response = mock.MagicMock()
+            response.read.return_value = self.archive.read_bytes()
+            response.__enter__.return_value = response
+            return response
+
+        errors = []
+        with mock.patch.object(cxx_import.urllib.request, "urlopen", side_effect=response_for_concurrent_download):
+            threads = [threading.Thread(target=lambda: self._download_in_thread(errors)) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
+        archive = cxx_import.cached_archive(self.root, self.provenance["package"])
+        self.assertEqual(archive.read_bytes(), self.archive.read_bytes())
+        self.assertEqual(list(archive.parent.glob("*.tmp")), [])
+
+    def _download_in_thread(self, errors):
+        try:
+            cxx_import.download(self.root, self.provenance["package"])
+        except Exception as error:
+            errors.append(error)
 
 
 if __name__ == "__main__":

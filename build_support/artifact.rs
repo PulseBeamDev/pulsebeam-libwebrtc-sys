@@ -4,7 +4,10 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use flate2::read::GzDecoder;
@@ -16,6 +19,9 @@ use crate::manifest::{ArtifactManifest, SUPPORTED_CARGO_TARGETS, artifact_target
 pub(crate) const ARTIFACT_DIR_ENV: &str = "PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR";
 pub(crate) const CACHE_DIR_ENV: &str = "PULSEBEAM_WEBRTC_SYS_CACHE_DIR";
 pub(crate) const OFFLINE_ENV: &str = "PULSEBEAM_WEBRTC_SYS_OFFLINE";
+const DOWNLOAD_ATTEMPTS: usize = 3;
+const RETRYABLE_HTTP_STATUSES: &[u16] = &[408, 429, 500, 502, 503, 504];
+static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,7 +194,7 @@ pub(crate) fn resolve(
     let archive = cache.join(&entry.asset_name);
     let extracted = cache.join(expected_sha256);
 
-    if is_regular_file(&archive) && sha256_file(&archive)? == expected_sha256 {
+    let cache_state = if is_regular_file(&archive) && sha256_file(&archive)? == expected_sha256 {
         return ensure_extracted(
             &archive,
             &extracted,
@@ -197,10 +203,14 @@ pub(crate) fn resolve(
             artifact_target,
             cargo_target,
         );
-    }
+    } else if fs::symlink_metadata(&archive).is_ok() {
+        "corrupt"
+    } else {
+        "missing"
+    };
 
     if fs::symlink_metadata(&archive).is_ok() {
-        fs::remove_file(&archive).map_err(|error| {
+        remove_cache_entry(&archive).map_err(|error| {
             format!(
                 "failed to remove invalid cached artifact {}: {error}",
                 archive.display()
@@ -216,7 +226,7 @@ pub(crate) fn resolve(
         ));
     }
 
-    download(url, &archive, expected_sha256)?;
+    download(url, &archive, expected_sha256, cache_state)?;
     ensure_extracted(
         &archive,
         &extracted,
@@ -245,7 +255,50 @@ fn offline() -> bool {
         .any(|name| matches!(env::var(name).as_deref(), Ok("1" | "true")))
 }
 
-fn download(url: &str, destination: &Path, expected_sha256: &str) -> Result<(), String> {
+fn remove_cache_entry(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn temporary_path(destination: &Path) -> PathBuf {
+    destination.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn retryable_download_error(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::StatusCode(status) => RETRYABLE_HTTP_STATUSES.contains(status),
+        ureq::Error::Timeout(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => true,
+        ureq::Error::Io(error) => retryable_io_error(error),
+        _ => false,
+    }
+}
+
+fn retryable_io_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::UnexpectedEof
+    )
+}
+
+fn download(
+    url: &str,
+    destination: &Path,
+    expected_sha256: &str,
+    cache_state: &str,
+) -> Result<(), String> {
     let provider = Arc::new(oxitls_rustcrypto_provider::provider());
     let agent = ureq::Agent::config_builder()
         .tls_config(
@@ -256,40 +309,78 @@ fn download(url: &str, destination: &Path, expected_sha256: &str) -> Result<(), 
         )
         .build()
         .new_agent();
-    let response = agent
-        .get(url)
-        .call()
-        .map_err(|error| format!("failed to download {url}: {error}"))?;
-    let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
-    let result = (|| -> Result<(), String> {
-        let mut source = response.into_body().into_reader();
-        let mut output = File::create(&temporary)
-            .map_err(|error| format!("failed to create {}: {error}", temporary.display()))?;
-        io::copy(&mut source, &mut output)
-            .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
-        output
-            .sync_all()
-            .map_err(|error| format!("failed to sync {}: {error}", temporary.display()))?;
-        let actual = sha256_file(&temporary)?;
-        if actual != expected_sha256 {
-            return Err(format!(
-                "checksum mismatch for {url}: expected {expected_sha256}, got {actual}"
-            ));
-        }
-        if let Err(error) = fs::rename(&temporary, destination) {
-            if !is_regular_file(destination) || sha256_file(destination)? != expected_sha256 {
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        let response = match agent.get(url).call() {
+            Ok(response) => response,
+            Err(error) if retryable_download_error(&error) && attempt < DOWNLOAD_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+                continue;
+            }
+            Err(error) => {
+                let failure = if retryable_download_error(&error) {
+                    "transient-transport-exhausted"
+                } else {
+                    "deterministic-retrieval"
+                };
                 return Err(format!(
-                    "failed to install cached artifact {}: {error}",
-                    destination.display()
+                    "cannot retrieve pinned artifact {url}: attempts={attempt}, cache={cache_state}, failure={failure}: {error}"
                 ));
             }
+        };
+        let temporary = temporary_path(destination);
+        let result = (|| -> Result<(), String> {
+            let mut source = response.into_body().into_reader();
+            let mut output = File::create(&temporary)
+                .map_err(|error| format!("failed to create {}: {error}", temporary.display()))?;
+            if let Err(error) = io::copy(&mut source, &mut output) {
+                let prefix = if retryable_io_error(&error) {
+                    "retryable transfer interruption"
+                } else {
+                    "failed to write"
+                };
+                return Err(format!("{prefix} {}: {error}", temporary.display()));
+            }
+            output
+                .sync_all()
+                .map_err(|error| format!("failed to sync {}: {error}", temporary.display()))?;
+            let actual = sha256_file(&temporary)?;
+            if actual != expected_sha256 {
+                return Err(format!(
+                    "checksum mismatch for {url}: expected {expected_sha256}, got {actual}"
+                ));
+            }
+            if let Err(error) = fs::rename(&temporary, destination) {
+                if !is_regular_file(destination) || sha256_file(destination)? != expected_sha256 {
+                    return Err(format!(
+                        "failed to install cached artifact {}: {error}",
+                        destination.display()
+                    ));
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+            let retryable_interruption = result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.starts_with("retryable transfer interruption"));
+            if retryable_interruption && attempt < DOWNLOAD_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+                continue;
+            }
+            let failure = if retryable_interruption {
+                "transient-transport-exhausted"
+            } else {
+                "integrity-or-interruption"
+            };
+            return result.map_err(|error| format!(
+                "cannot retrieve pinned artifact {url}: attempts={attempt}, cache={cache_state}, failure={failure}: {error}"
+            ));
         }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        return result;
     }
-    result
+    unreachable!("bounded download loop unexpectedly ended")
 }
 
 fn ensure_extracted(
@@ -494,7 +585,11 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::{
+        io::{Cursor, Write},
+        net::TcpListener,
+        thread,
+    };
 
     const LOCK: &[u8] = include_bytes!("../artifacts.lock.json");
 
@@ -602,5 +697,104 @@ mod tests {
             assert!(validate_relative_path(path).is_err(), "{}", path.display());
         }
         assert!(validate_relative_path(Path::new("lib/libwebrtc.a")).is_ok());
+    }
+
+    fn artifact_test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "webrtc-artifact-{name}-{}-{}",
+            std::process::id(),
+            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        root
+    }
+
+    fn server(responses: Vec<String>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        format!("http://{address}/artifact")
+    }
+
+    fn http(status: &str, body: &[u8]) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        )
+    }
+
+    #[test]
+    fn download_retries_only_transient_statuses_and_publishes_verified_content() {
+        let root = artifact_test_root("retry");
+        let destination = root.join("artifact.tar.gz");
+        let body = b"verified artifact";
+        let expected = format!("{:x}", Sha256::digest(body));
+        let url = server(vec![
+            http("503 Service Unavailable", b"retry"),
+            http("200 OK", body),
+        ]);
+        download(&url, &destination, &expected, "missing").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), body);
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_does_not_publish_checksum_mismatch_or_retry_permanent_status() {
+        let root = artifact_test_root("integrity");
+        let destination = root.join("artifact.tar.gz");
+        let expected = "0".repeat(64);
+        let url = server(vec![http("200 OK", b"wrong")]);
+        assert!(
+            download(&url, &destination, &expected, "corrupt")
+                .unwrap_err()
+                .contains("integrity-or-interruption")
+        );
+        assert!(!destination.exists());
+
+        let url = server(vec![http("404 Not Found", b"missing")]);
+        assert!(
+            download(&url, &destination, &expected, "missing")
+                .unwrap_err()
+                .contains("deterministic-retrieval")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_verified_downloads_converge_without_temporary_collisions() {
+        let root = artifact_test_root("concurrent");
+        let destination = root.join("artifact.tar.gz");
+        let body = b"concurrent verified artifact";
+        let expected = format!("{:x}", Sha256::digest(body));
+        let url = server(vec![http("200 OK", body), http("200 OK", body)]);
+        thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| download(&url, &destination, &expected, "missing").unwrap());
+            }
+        });
+        assert_eq!(fs::read(&destination).unwrap(), body);
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+        fs::remove_dir_all(root).unwrap();
     }
 }
