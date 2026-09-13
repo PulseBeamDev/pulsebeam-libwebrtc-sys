@@ -76,6 +76,10 @@ TARGETS = {
 }
 
 
+def expected_source_state(flavor, target):
+    return "applied" if flavor == "core" and target in {"ios-arm64", "ios-simulator-arm64"} else "pristine"
+
+
 def link(kind, name):
     return {"kind": kind, "name": name}
 
@@ -142,6 +146,8 @@ def main():
     parser.add_argument("--bridge-identity", required=True)
     parser.add_argument("--source-repository", required=True)
     parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--source-patch-sha256", required=True)
+    parser.add_argument("--source-state", choices=("applied", "pristine"), required=True)
     parser.add_argument("--depot-tools-repository", required=True)
     parser.add_argument("--depot-tools-revision", required=True)
     parser.add_argument("--bridge-source", type=Path, required=True)
@@ -153,6 +159,9 @@ def main():
     parser.add_argument("--licenses", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+
+    if args.source_state != expected_source_state(args.flavor, args.target):
+        parser.error("source state does not match target/flavor applicability")
 
     target = TARGETS[args.target]
     toolchain = args.toolchain_file.read_text().strip()
@@ -167,6 +176,8 @@ def main():
         "bridge_identity": args.bridge_identity,
         "cxx": cxx,
         "source_revision": args.source_revision,
+        "source_patch_sha256": args.source_patch_sha256,
+        "source_state": args.source_state,
         "depot_tools_revision": args.depot_tools_revision,
         "flavor": args.flavor,
         "target": args.target,
@@ -186,7 +197,12 @@ def main():
         "schema_version": 2,
         "bridge": {"identity": args.bridge_identity, "cxx": cxx},
         "sources": {
-            "webrtc": {"repository": args.source_repository, "revision": args.source_revision},
+            "webrtc": {
+                "repository": args.source_repository,
+                "revision": args.source_revision,
+                "patch_sha256": args.source_patch_sha256,
+                "state": args.source_state,
+            },
             "depot_tools": {
                 "repository": args.depot_tools_repository,
                 "revision": args.depot_tools_revision,

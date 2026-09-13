@@ -2,6 +2,8 @@ use serde::Deserialize;
 
 const SOURCE_REPOSITORY: &str = "https://github.com/webrtc-sdk/webrtc.git";
 const SOURCE_REVISION: &str = "ba469aa2093ba950066258ca0a59a6fbd1295582";
+const CORE_IOS_PATCH_SHA256: &str =
+    "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037";
 const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
@@ -95,6 +97,10 @@ struct Sources {
 struct Source {
     repository: String,
     revision: String,
+    #[serde(default)]
+    patch_sha256: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +254,26 @@ impl ArtifactManifest {
         ] {
             if actual != expected {
                 return Err(format!("wrong {name}: expected {expected}, got {actual}"));
+            }
+        }
+        let expected_source_state = if expected_flavor == "core"
+            && matches!(expected_target, "ios-arm64" | "ios-simulator-arm64")
+        {
+            "applied"
+        } else {
+            "pristine"
+        };
+        match (
+            manifest.sources.webrtc.state.as_deref(),
+            manifest.sources.webrtc.patch_sha256.as_deref(),
+        ) {
+            (Some(state), Some(patch))
+                if state == expected_source_state && patch == CORE_IOS_PATCH_SHA256 => {}
+            (None, None) if expected_source_state == "pristine" => {}
+            (state, patch) => {
+                return Err(format!(
+                    "wrong WebRTC source state: expected {expected_source_state} with patch {CORE_IOS_PATCH_SHA256}, got state={state:?} patch={patch:?}"
+                ));
             }
         }
         let expected_member = if expected_target == "windows-x86_64" {

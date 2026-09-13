@@ -195,8 +195,12 @@ This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 The immutable commit
 `ba469aa2093ba950066258ca0a59a6fbd1295582` is the current WebRTC source
 identity; `m150_release` is branch context, not an input to the build. The
-source is built without a local patch stack, and only optimized release
-artifacts are published.
+source is built without a local patch stack except for the immutable
+`patches/core-ios-remove-framework-objc.patch`: core iOS device and simulator
+artifacts apply that pinned delta to remove `sdk:framework_objc`; native iOS
+and every other artifact use pristine upstream source. `build.txt` and
+`manifest.json` record the patch digest and applied/pristine source state, and
+only optimized release artifacts are published.
 
 Releases use two explicit phases:
 
@@ -247,7 +251,8 @@ arguments, private CXX definition, native adapters, low-level Rust package,
 artifact metadata, release workflow, consumer tests, and licenses needed to
 make releases trustworthy. Its own code is Apache-2.0 licensed. It must not
 vendor WebRTC, depot_tools, generated build trees, output archives, application
-or simulator code, production codec implementations, or a source patch stack.
+or simulator code, production codec implementations, or a source patch stack
+beyond the documented immutable core-iOS closure delta.
 Build workspaces and release artifacts are disposable local/CI output.
 
 Non-goals include:

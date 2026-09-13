@@ -27,7 +27,15 @@ class ReleaseAuditTests(unittest.TestCase):
         for index, entry in enumerate(entries):
             manifest = {
                 "bridge": {"identity": lock["bridge_identity"], "cxx": {"version": "1"}},
-                "sources": {"webrtc": {"revision": "source"}, "depot_tools": {"revision": "tools"}},
+                "sources": {
+                    "webrtc": {
+                        "repository": "source-repository",
+                        "revision": "source",
+                        "patch_sha256": audit_release.CORE_IOS_PATCH_SHA256,
+                        "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
+                    },
+                    "depot_tools": {"revision": "tools"},
+                },
                 "artifact": {
                     "cargo_target": entry["cargo_target"],
                     "target": entry["artifact_target"],
@@ -73,6 +81,9 @@ class ReleaseAuditTests(unittest.TestCase):
             self.assertEqual(len(report["assets"]), 18)
             self.assertEqual(report["scope"], "complete")
             self.assertEqual(report["bridge"]["identity"], "pulsebeam-webrtc-sys-bridge-v2")
+            self.assertEqual(
+                sum(asset["source_state"] == "applied" for asset in report["assets"]), 2
+            )
 
     def test_accepts_exact_linux_scope_only(self):
         with tempfile.TemporaryDirectory() as temporary:

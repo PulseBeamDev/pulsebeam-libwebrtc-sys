@@ -18,6 +18,7 @@ SCOPES = {
     "linux": frozenset({"linux-x86_64", "linux-arm64"}),
     "complete": None,
 }
+CORE_IOS_PATCH_SHA256 = "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"
 
 
 class AuditError(Exception):
@@ -83,9 +84,22 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             sources = manifest.get("sources")
             if not isinstance(bridge, dict) or bridge.get("identity") != lock["bridge_identity"]:
                 raise AuditError(f"wrong bridge identity in {name}")
+            webrtc = sources.get("webrtc") if isinstance(sources, dict) else None
+            depot_tools = sources.get("depot_tools") if isinstance(sources, dict) else None
+            expected_state = "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine"
+            if not isinstance(webrtc, dict) or webrtc.get("state") != expected_state:
+                raise AuditError(f"wrong WebRTC source state in {name}")
+            source_identity = {
+                "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256")},
+                "depot_tools": depot_tools,
+            }
+            if not all(source_identity["webrtc"].values()) or not isinstance(depot_tools, dict):
+                raise AuditError(f"missing WebRTC source identity in {name}")
+            if webrtc["patch_sha256"] != CORE_IOS_PATCH_SHA256:
+                raise AuditError(f"wrong WebRTC patch identity in {name}")
             if common_bridge is None:
-                common_bridge, common_sources = bridge, sources
-            elif bridge != common_bridge or sources != common_sources:
+                common_bridge, common_sources = bridge, source_identity
+            elif bridge != common_bridge or source_identity != common_sources:
                 raise AuditError(f"bridge or source pin differs in {name}")
             configuration = manifest.get("native_configuration_sha256")
             if not isinstance(configuration, str) or configuration in configurations:
@@ -109,6 +123,8 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
                     "sha256": archive_digest,
                     "native_configuration_sha256": configuration,
                     "license_inventory_sha256": licenses.get("sha256"),
+                    "source_state": expected_state,
+                    "source_patch_sha256": webrtc["patch_sha256"],
                 }
             )
     return {

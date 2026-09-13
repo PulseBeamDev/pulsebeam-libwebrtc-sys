@@ -8,6 +8,9 @@ dist := env_var_or_default("WEBRTC_DIST", root + "/dist")
 # Upgrade WebRTC by changing this commit. Change depot_tools only when required.
 webrtc_url := "https://github.com/webrtc-sdk/webrtc.git"
 webrtc_commit := "ba469aa2093ba950066258ca0a59a6fbd1295582"
+webrtc_core_ios_patch := root + "/patches/core-ios-remove-framework-objc.patch"
+webrtc_core_ios_patch_sha256 := "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"
+webrtc_core_ios_build_gn_sha256 := "ed533d68269e01a70f7c40567099cd9f7fd5c52c66ea8f8ef609d52c966c9a69"
 depot_tools_url := "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
 depot_tools_commit := "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
 default: check
@@ -66,7 +69,7 @@ build flavor target:
     just --justfile "$justfile" _validate-target "{{ target }}"
     just --justfile "$justfile" _validate-host "{{ target }}"
     just --justfile "$justfile" _prerequisites "{{ target }}"
-    just --justfile "$justfile" _sync "{{ target }}"
+    just --justfile "$justfile" _sync "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _target-dependencies "{{ target }}"
     just --justfile "$justfile" _configure "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _apple-host-protoc "{{ flavor }}" "{{ target }}"
@@ -99,7 +102,31 @@ _prerequisites target:
       macos-*|ios-*) command -v xcrun >/dev/null || { echo 'Apple builds require Xcode command-line tools' >&2; exit 1; } ;;
     esac
 
-_sync target:
+_source-state flavor target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{ work }}/checkout/src"; patch="{{ webrtc_core_ios_patch }}"; expected=pristine
+    case "{{ flavor }}:{{ target }}" in core:ios-arm64|core:ios-simulator-arm64) expected=applied;; esac
+    test "$(git -C "$src" rev-parse HEAD)" = "{{ webrtc_commit }}" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=revision expected={{ webrtc_commit }}" >&2; exit 1; }
+    test -f "$patch" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch expected={{ webrtc_core_ios_patch_sha256 }} actual=missing" >&2; exit 1; }
+    actual_patch=$(shasum -a 256 "$patch" | awk '{print $1}')
+    test "$actual_patch" = "{{ webrtc_core_ios_patch_sha256 }}" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch-digest expected={{ webrtc_core_ios_patch_sha256 }} actual=$actual_patch" >&2; exit 1; }
+    actual_build=$(shasum -a 256 "$src/BUILD.gn" | awk '{print $1}')
+    if test "$actual_build" = "{{ webrtc_core_ios_build_gn_sha256 }}"; then
+      test "$(git -C "$src" diff --name-only)" = BUILD.gn && git -C "$src" diff --cached --quiet || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=unexpected-modification" >&2; exit 1; }
+      actual=applied
+    else
+      git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=unexpected-modification" >&2; exit 1; }
+      git -C "$src" apply --check "$patch" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch-applicability expected=$expected actual=unexpected" >&2; exit 1; }
+      actual=pristine
+    fi
+    if test "$actual" = "$expected"; then exit 0; fi
+    rm -rf "{{ work }}/package/webrtc-{{ flavor }}-{{ target }}"
+    rm -f "{{ dist }}/webrtc-{{ flavor }}-{{ target }}.tar.gz"
+    if test "$actual" = pristine; then git -C "$src" apply "$patch"; else git -C "$src" apply --reverse "$patch"; fi
+    just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
+
+_sync flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     depot="{{ work }}/depot_tools"; checkout="{{ work }}/checkout"; src="$checkout/src"
@@ -111,18 +138,19 @@ _sync target:
       git -C "$depot" checkout --detach --force FETCH_HEAD
     fi
     if test "$(cat "$checkout/.pulsebeam-sync-target" 2>/dev/null || true)" = "$sync_key" && test "$(git -C "$src" rev-parse HEAD 2>/dev/null || true)" = "{{ webrtc_commit }}"; then
-      git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo 'source checkout is modified' >&2; exit 1; }
+      just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
       exit 0
     fi
     mkdir -p "$checkout"
+    if test -d "$src"; then just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"; fi
     printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     cd "$checkout"
     gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     test "$(git -C "$src" rev-parse HEAD)" = "{{ webrtc_commit }}"
-    git -C "$src" diff --quiet && git -C "$src" diff --cached --quiet || { echo 'source checkout is modified' >&2; exit 1; }
     gclient runhooks
     printf '%s\n' "$sync_key" > "$checkout/.pulsebeam-sync-target"
+    just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
 
 _target-dependencies target:
     #!/usr/bin/env bash
@@ -156,6 +184,7 @@ _configure flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     src="{{ work }}/checkout/src"; out="{{ work }}/out/{{ flavor }}/{{ target }}"
+    just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
     args=$(just --justfile "{{ root }}/Justfile" _gn-args "{{ flavor }}" "{{ target }}")
     mkdir -p "$out"
     "$(just --justfile "{{ root }}/Justfile" _gn)" gen "$out" --root="$src" --args="$args"
@@ -171,7 +200,7 @@ _apple-host-protoc flavor target:
     src="{{ work }}/checkout/src"; out="{{ work }}/out/{{ flavor }}/{{ target }}"; ar="$src/third_party/llvm-build/Release+Asserts/bin/llvm-ar"
     case "$(uname -m)" in x86_64) host_arch=x86_64;; arm64) host_arch=arm64;; *) echo "unsupported Apple host architecture: $(uname -m)" >&2; exit 1;; esac
     "$src/third_party/ninja/ninja" -C "$out" protoc
-    protoc="$out/protoc"; support="$out/obj/third_party/protobuf/libprotoc_lib.a"
+    protoc=$(find "$out" -type f -name protoc -perm -111 -print -quit); support=$(find "$out" -type f -path '*/obj/third_party/protobuf/libprotoc_lib.a' -print -quit)
     test -x "$protoc" || { echo "missing host protoc: $protoc" >&2; exit 1; }
     file "$protoc" | grep -Eq "Mach-O.*${host_arch}" || { echo "host protoc architecture mismatch: expected=$host_arch actual=$(file "$protoc")" >&2; exit 1; }
     test -f "$support" || { echo "missing host protoc support archive: $support" >&2; exit 1; }
@@ -216,7 +245,7 @@ _export flavor target:
       local label="$1"
       "$gn" desc --root="$src" "$out" "$label" outputs || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label"
     }
-    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ && !/(^|\\/)libprotoc_lib\\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
+    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ && $0 !~ /libprotoc_lib\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then gn_outputs //buildtools/third_party/libc++ >> "$archives"; gn_outputs //buildtools/third_party/libc++abi >> "$archives"; fi
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
     test -s "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
@@ -242,16 +271,17 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}" > "$stage/link.txt"
     just --justfile "{{ root }}/Justfile" _toolchain "{{ target }}" > "$toolchain_file"
     definitions=$(tr '\n' ' ' < "$definitions_file")
-    { printf 'webrtc_commit=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
-    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
+    just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
+    source_state=pristine; case "{{ flavor }}:{{ target }}" in core:ios-arm64|core:ios-simulator-arm64) source_state=applied;; esac
+    { printf 'webrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
+    python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
     verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
     python3 "{{ root }}/tools/cxx_provenance.py" "$verify"
     just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$verify"
     just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$verify"
-    git -C "$src" diff --quiet || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" source-cleanliness "clean checkout at $src" 'checkout has unstaged changes'
-    git -C "$src" diff --cached --quiet || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" source-cleanliness "clean checkout at $src" 'checkout has staged changes'
+    just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
 
 _bridge-objects flavor target stage definitions_file:
     #!/usr/bin/env bash
