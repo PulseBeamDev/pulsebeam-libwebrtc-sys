@@ -154,7 +154,7 @@ _sync flavor target:
       checkout_native=$(just --justfile "{{ root }}/Justfile" _native-path "$checkout")
       selected_platform=$(cat "$depot/.cipd_client_platform" 2>/dev/null || printf '%s' windows-amd64)
       test "$selected_platform" = windows-amd64 && grep -Eq '^windows-amd64[[:space:]]+sha256[[:space:]]+[0-9a-f]{64}$' "$depot/cipd_client_version.digests" || { echo "CIPD bootstrap unsupported: host=windows-amd64 selected=$selected_platform depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
-      cmd.exe /d /s /c "\"$depot_native\\cipd.bat\" version" || { echo "CIPD bootstrap failed: host=windows-amd64 depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
+      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "\"$depot_native\\cipd.bat\" version" || { echo "CIPD bootstrap failed: host=windows-amd64 depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
     fi
     if test "$(cat "$checkout/.pulsebeam-sync-target" 2>/dev/null || true)" = "$sync_key" && test "$(git -C "$src" rev-parse HEAD 2>/dev/null || true)" = "{{ webrtc_commit }}"; then
       just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
@@ -165,7 +165,7 @@ _sync flavor target:
     printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     if test "{{ target }}" = windows-x86_64; then
       vpython_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/vpython")
-      cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
+      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
     else
       export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
       cd "$checkout"
@@ -173,7 +173,7 @@ _sync flavor target:
     fi
     test "$(git -C "$src" rev-parse HEAD)" = "{{ webrtc_commit }}"
     if test "{{ target }}" = windows-x86_64; then
-      cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
+      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
     else
       gclient runhooks
     fi
@@ -299,7 +299,7 @@ _export flavor target:
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     license_targets=(); while IFS= read -r root_label; do license_targets+=(--target "$root_label"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
     stage_native=$(just --justfile "{{ root }}/Justfile" _native-path "$stage")
-    if test "{{ target }}" = windows-x86_64; then depot_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/depot_tools"); cmd.exe /d /s /c "\"$depot_native\\vpython3.bat\" \"$src_native\\tools_webrtc\\libs\\generate_licenses.py\" ${license_targets[*]} \"$stage_native\\LICENSES\" \"$out_native\""; else vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"; fi
+    if test "{{ target }}" = windows-x86_64; then depot_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/depot_tools"); MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "\"$depot_native\\vpython3.bat\" \"$src_native\\tools_webrtc\\libs\\generate_licenses.py\" ${license_targets[*]} \"$stage_native\\LICENSES\" \"$out_native\""; else vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"; fi
     cp "$src/LICENSE" "$stage/LICENSES/WEBRTC-BSD.txt"; test ! -f "$src/PATENTS" || cp "$src/PATENTS" "$stage/LICENSES/"; cp "{{ root }}/LICENSE" "$stage/LICENSES/REPOSITORY-APACHE-2.0.txt"
     cp "{{ root }}/vendor/cxx/LICENSE-APACHE" "$stage/LICENSES/CXX-APACHE-2.0.txt"; cp "{{ root }}/vendor/cxx/LICENSE-MIT" "$stage/LICENSES/CXX-MIT.txt"
     just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}" > "$stage/link.txt"
@@ -353,15 +353,14 @@ _bridge-objects flavor target stage definitions_file:
       windows-x86_64) cxx="$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl"; include=(-I"$stage_native/include"); args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
     esac
     if test "{{ target }}" = windows-x86_64; then
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\execution.cc" "/Fo$bridge_native\\obj\\execution.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network.cc" "/Fo$bridge_native\\obj\\network.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\codec.cc" "/Fo$bridge_native\\obj\\codec.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\peer.cc" "/Fo$bridge_native\\obj\\peer.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\data_channel.cc" "/Fo$bridge_native\\obj\\data_channel.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video.cc" "/Fo$bridge_native\\obj\\video.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\probe.cc" "/Fo$bridge_native\\obj\\probe.$suffix"
-      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\vendor\\cxx\\src\\cxx.cc" "/Fo$bridge_native\\obj\\cxx.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\execution.cc" "/Fo$bridge_native\\obj\\execution.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\codec.cc" "/Fo$bridge_native\\obj\\codec.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\peer.cc" "/Fo$bridge_native\\obj\\peer.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\data_channel.cc" "/Fo$bridge_native\\obj\\data_channel.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video.cc" "/Fo$bridge_native\\obj\\video.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\probe.cc" "/Fo$bridge_native\\obj\\probe.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\vendor\\cxx\\src\\cxx.cc" "/Fo$bridge_native\\obj\\cxx.$suffix"
     else
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/execution.cc" -o "$bridge/obj/execution.$suffix"
@@ -401,7 +400,7 @@ _cpp-smoke flavor target kit:
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1");;
       macos-x86_64|macos-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -DWEBRTC_POSIX -DWEBRTC_MAC);;
       ios-arm64|ios-simulator-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; sdk=$(case "{{ target }}" in ios-arm64) printf iphoneos;; *) printf iphonesimulator;; esac); minimum=$(case "{{ target }}" in ios-arm64) printf '%s' -miphoneos-version-min=18.0;; *) printf '%s' -mios-simulator-version-min=18.0;; esac); args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -DWEBRTC_POSIX -DWEBRTC_IOS -DWEBRTC_MAC);;
-      windows-x86_64) "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"$kit_native\\include" "$root_native\\consumer\\smoke.cc" "$kit_native\\lib\\webrtc.lib" "${link[@]}" "/Fe:$kit_native\\smoke.exe"; exit;;
+      windows-x86_64) MSYS2_ARG_CONV_EXCL='*' "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"$kit_native\\include" "$root_native\\consumer\\smoke.cc" "$kit_native\\lib\\webrtc.lib" "${link[@]}" "/Fe:$kit_native\\smoke.exe"; exit;;
     esac
     "$cxx" "${defs[@]}" "${args[@]}" -I"{{ kit }}/include" "{{ root }}/consumer/smoke.cc" "{{ kit }}/lib/libwebrtc.a" "${link[@]}" -o "{{ kit }}/smoke"
 
@@ -448,4 +447,4 @@ _toolchain target:
     #!/usr/bin/env bash
     set -euo pipefail
     src="{{ work }}/checkout/src"
-    case "{{ target }}" in windows-*) src=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); printf 'MSVC %s; Windows SDK %s; ' "$(cl.exe 2>&1 | sed -n '1p')" "${WindowsSDKVersion:-unknown}"; "$src\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" --version | head -1;; macos-*|ios-*) printf 'Xcode %s; ' "$(xcodebuild -version | tr '\n' ' ')"; "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; android-*) printf 'Android NDK API 26; '; "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; *) "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; esac
+    case "{{ target }}" in windows-*) src=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); printf 'MSVC %s; Windows SDK %s; ' "$(cl.exe 2>&1 | sed -n '1p')" "${WindowsSDKVersion:-unknown}"; MSYS2_ARG_CONV_EXCL='*' "$src\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" --version | head -1;; macos-*|ios-*) printf 'Xcode %s; ' "$(xcodebuild -version | tr '\n' ' ')"; "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; android-*) printf 'Android NDK API 26; '; "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; *) "$src/third_party/llvm-build/Release+Asserts/bin/clang++" --version | head -1;; esac
