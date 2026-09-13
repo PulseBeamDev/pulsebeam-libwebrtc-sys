@@ -165,7 +165,7 @@ lib/libwebrtc.a   self-contained static library (non-Windows)
 lib/webrtc.lib    self-contained static library (Windows)
 link.txt          required system libraries, frameworks, and link flags
 LICENSES/         applicable notices and licenses
-build.txt         source revision, flavor, target, toolchain, GN arguments,
+build.txt         source repository/revision, flavor, target, toolchain, GN arguments,
                   and exported C++ definitions
 manifest.json     versioned source and CXX producer provenance, native
                   configuration, ABI, archive, ordered link-input, and license

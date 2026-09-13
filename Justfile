@@ -111,6 +111,7 @@ _source-state flavor target:
     test -f "$patch" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch expected={{ webrtc_core_ios_patch_sha256 }} actual=missing" >&2; exit 1; }
     actual_patch=$(shasum -a 256 "$patch" | awk '{print $1}')
     test "$actual_patch" = "{{ webrtc_core_ios_patch_sha256 }}" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch-digest expected={{ webrtc_core_ios_patch_sha256 }} actual=$actual_patch" >&2; exit 1; }
+    test -z "$(git -C "$src" ls-files --others --exclude-standard)" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=untracked-files" >&2; exit 1; }
     actual_build=$(shasum -a 256 "$src/BUILD.gn" | awk '{print $1}')
     if test "$actual_build" = "{{ webrtc_core_ios_build_gn_sha256 }}"; then
       test "$(git -C "$src" diff --name-only)" = BUILD.gn && git -C "$src" diff --cached --quiet || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=unexpected-modification" >&2; exit 1; }
@@ -273,7 +274,7 @@ _export flavor target:
     definitions=$(tr '\n' ' ' < "$definitions_file")
     just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
     source_state=pristine; case "{{ flavor }}:{{ target }}" in core:ios-arm64|core:ios-simulator-arm64) source_state=applied;; esac
-    { printf 'webrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
+    { printf 'webrtc_repository=%s\nwebrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_url }}' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
     python3 "{{ root }}/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "{{ root }}/src/lib.rs" --generated-header "$stage/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc" --toolchain-file "$toolchain_file" --gn-args-file "$out/pulsebeam-gn-args.txt" --defines-file "$definitions_file" --licenses "$stage/LICENSES" --output "$stage/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
