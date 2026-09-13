@@ -33,6 +33,7 @@ check:
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
+    python3 -m unittest tests/test_justfile_input_retrieval.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
@@ -184,7 +185,8 @@ _sync flavor target:
       cd "$checkout"
       retry_acquisition webrtc_sync "{{ webrtc_commit }}" gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     fi
-    test "$(git -C "$src" rev-parse HEAD)" = "{{ webrtc_commit }}"
+    actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf '%s' missing)
+    test "$actual_webrtc" = "{{ webrtc_commit }}" || { echo "pinned input validation failed input=webrtc pin={{ webrtc_commit }} expected={{ webrtc_commit }} actual=$actual_webrtc failure=invalid-checkout" >&2; exit 1; }
     if test "{{ target }}" = windows-x86_64; then
       retry_acquisition webrtc_hooks "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
     else

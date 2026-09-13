@@ -416,14 +416,10 @@ fn ensure_extracted(
         })?;
     }
 
-    let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
-    if let Ok(metadata) = fs::symlink_metadata(&temporary) {
-        let remove = if metadata.file_type().is_dir() {
-            fs::remove_dir_all(&temporary)
-        } else {
-            fs::remove_file(&temporary)
-        };
-        remove.map_err(|error| format!("failed to clear {}: {error}", temporary.display()))?;
+    let temporary = temporary_path(destination);
+    if fs::symlink_metadata(&temporary).is_ok() {
+        remove_cache_entry(&temporary)
+            .map_err(|error| format!("failed to clear {}: {error}", temporary.display()))?;
     }
     fs::create_dir(&temporary)
         .map_err(|error| format!("failed to create {}: {error}", temporary.display()))?;
@@ -445,8 +441,12 @@ fn ensure_extracted(
             )),
         }
     })();
-    if fs::symlink_metadata(&temporary).is_ok() {
-        let _ = fs::remove_dir_all(&temporary);
+    if let Ok(metadata) = fs::symlink_metadata(&temporary) {
+        let _ = if metadata.file_type().is_dir() {
+            fs::remove_dir_all(&temporary)
+        } else {
+            fs::remove_file(&temporary)
+        };
     }
     result?;
     validate_extracted(
@@ -588,10 +588,12 @@ mod tests {
     use std::{
         io::{Cursor, Write},
         net::TcpListener,
+        sync::Mutex,
         thread,
     };
 
     const LOCK: &[u8] = include_bytes!("../artifacts.lock.json");
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn lock_has_all_eighteen_exact_selections() {
@@ -705,11 +707,12 @@ mod tests {
             std::process::id(),
             TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
+        let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         root
     }
 
-    fn server(responses: Vec<String>) -> String {
+    fn server(responses: Vec<Vec<u8>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         thread::spawn(move || {
@@ -717,18 +720,67 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = [0; 1024];
                 let _ = stream.read(&mut request);
-                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(&response).unwrap();
             }
         });
         format!("http://{address}/artifact")
     }
 
-    fn http(status: &str, body: &[u8]) -> String {
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            String::from_utf8_lossy(body)
+    fn resolver_server(responses: Vec<Vec<u8>>) -> String {
+        server(responses).replace("/artifact", "/webrtc-core-linux-x86_64.tar.gz")
+    }
+
+    fn http(status: &str, body: &[u8]) -> Vec<u8> {
+        let mut response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
         )
+        .into_bytes();
+        response.extend_from_slice(body);
+        response
+    }
+
+    fn released_lock(url: &str, sha256: &str) -> Vec<u8> {
+        String::from_utf8(LOCK.to_vec())
+            .unwrap()
+            .replacen(
+                r#""url": null,
+      "sha256": null"#,
+                &format!(
+                    r#""url": "{url}",
+      "sha256": "{sha256}""#
+                ),
+                1,
+            )
+            .into_bytes()
+    }
+
+    fn fixture_archive() -> Vec<u8> {
+        fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/webrtc-core-linux-x86_64.tar.gz"),
+        )
+        .unwrap()
+    }
+
+    fn resolve_core(lock: &[u8]) -> Result<PathBuf, String> {
+        resolve(
+            lock,
+            "pulsebeam-webrtc-sys-bridge-v2",
+            "x86_64-unknown-linux-gnu",
+            "core",
+        )
+    }
+
+    fn configure_test_environment(cache: &Path, offline: bool) {
+        unsafe {
+            env::set_var(CACHE_DIR_ENV, cache);
+            if offline {
+                env::set_var(OFFLINE_ENV, "1");
+            } else {
+                env::remove_var(OFFLINE_ENV);
+            }
+        }
     }
 
     #[test]
@@ -795,6 +847,119 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp-")
         }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolve_reuses_verified_cache_offline_and_rejects_corrupt_cache() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let artifact_override = env::var_os(ARTIFACT_DIR_ENV);
+        unsafe { env::remove_var(ARTIFACT_DIR_ENV) };
+        let root = artifact_test_root("resolve-cache");
+        let cache = root.join("cache");
+        let archive = fixture_archive();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        let lock = released_lock(&resolver_server(vec![http("200 OK", &archive)]), &digest);
+
+        configure_test_environment(&cache, false);
+        let resolved = resolve_core(&lock).unwrap();
+        assert!(resolved.is_dir());
+        configure_test_environment(&cache, true);
+        assert_eq!(resolve_core(&lock).unwrap(), resolved);
+
+        let corrupt_cache = root.join("corrupt-cache");
+        fs::create_dir(&corrupt_cache).unwrap();
+        fs::write(
+            corrupt_cache.join("webrtc-core-linux-x86_64.tar.gz"),
+            b"corrupt",
+        )
+        .unwrap();
+        configure_test_environment(&corrupt_cache, true);
+        let error = resolve_core(&lock).unwrap_err();
+        assert!(error.contains("offline artifact cache miss"));
+        assert!(
+            !corrupt_cache
+                .join("webrtc-core-linux-x86_64.tar.gz")
+                .exists()
+        );
+
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+            if let Some(path) = artifact_override {
+                env::set_var(ARTIFACT_DIR_ENV, path);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolve_retries_interrupted_transfers_exhausts_them_and_converges() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let artifact_override = env::var_os(ARTIFACT_DIR_ENV);
+        unsafe { env::remove_var(ARTIFACT_DIR_ENV) };
+        let root = artifact_test_root("resolve-retry");
+        let archive = fixture_archive();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        let interrupted = {
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                archive.len() + 1
+            )
+            .into_bytes();
+            response.extend_from_slice(&archive);
+            response
+        };
+
+        let retry_cache = root.join("retry-cache");
+        configure_test_environment(&retry_cache, false);
+        let retry_lock = released_lock(
+            &resolver_server(vec![interrupted.clone(), http("200 OK", &archive)]),
+            &digest,
+        );
+        assert!(resolve_core(&retry_lock).unwrap().is_dir());
+
+        let exhausted_cache = root.join("exhausted-cache");
+        configure_test_environment(&exhausted_cache, false);
+        let exhausted_lock = released_lock(
+            &resolver_server(vec![interrupted.clone(), interrupted.clone(), interrupted]),
+            &digest,
+        );
+        let error = resolve_core(&exhausted_lock).unwrap_err();
+        assert!(error.contains("attempts=3"));
+        assert!(error.contains("transient-transport-exhausted"));
+        assert!(fs::read_dir(&exhausted_cache).unwrap().next().is_none());
+
+        let concurrent_cache = root.join("concurrent-cache");
+        configure_test_environment(&concurrent_cache, false);
+        let concurrent_lock = released_lock(
+            &resolver_server(vec![http("200 OK", &archive), http("200 OK", &archive)]),
+            &digest,
+        );
+        thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| assert!(resolve_core(&concurrent_lock).unwrap().is_dir()));
+            }
+        });
+        assert!(fs::read_dir(&concurrent_cache).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+            if let Some(path) = artifact_override {
+                env::set_var(ARTIFACT_DIR_ENV, path);
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
