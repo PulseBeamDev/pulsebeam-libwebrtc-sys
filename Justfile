@@ -69,6 +69,7 @@ build flavor target:
     just --justfile "$justfile" _sync "{{ target }}"
     just --justfile "$justfile" _target-dependencies "{{ target }}"
     just --justfile "$justfile" _configure "{{ flavor }}" "{{ target }}"
+    just --justfile "$justfile" _apple-host-protoc "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _compile "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _export "{{ flavor }}" "{{ target }}"
 
@@ -160,6 +161,26 @@ _configure flavor target:
     "$(just --justfile "{{ root }}/Justfile" _gn)" gen "$out" --root="$src" --args="$args"
     printf '%s\n' "$args" > "$out/pulsebeam-gn-args.txt"
 
+# Build and validate the host-only protobuf bootstrap before compiling an Apple
+# target. GN resolves this target through host_toolchain, independently of the
+# target SDK and CPU.
+_apple-host-protoc flavor target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in macos-*|ios-*) ;; *) exit 0;; esac
+    src="{{ work }}/checkout/src"; out="{{ work }}/out/{{ flavor }}/{{ target }}"; ar="$src/third_party/llvm-build/Release+Asserts/bin/llvm-ar"
+    case "$(uname -m)" in x86_64) host_arch=x86_64;; arm64) host_arch=arm64;; *) echo "unsupported Apple host architecture: $(uname -m)" >&2; exit 1;; esac
+    "$src/third_party/ninja/ninja" -C "$out" protoc
+    protoc="$out/protoc"; support="$out/obj/third_party/protobuf/libprotoc_lib.a"
+    test -x "$protoc" || { echo "missing host protoc: $protoc" >&2; exit 1; }
+    file "$protoc" | grep -Eq "Mach-O.*${host_arch}" || { echo "host protoc architecture mismatch: expected=$host_arch actual=$(file "$protoc")" >&2; exit 1; }
+    test -f "$support" || { echo "missing host protoc support archive: $support" >&2; exit 1; }
+    support_members=$("$ar" t "$support") || { echo "unreadable host protoc support archive: $support" >&2; exit 1; }
+    ! grep -Fqx '__.SYMDEF' <<< "$support_members" || { echo "invalid host protoc support archive member: $support:__.SYMDEF" >&2; exit 1; }
+    support_member=$(head -n 1 <<< "$support_members"); test -n "$support_member" || { echo "empty host protoc support archive: $support" >&2; exit 1; }
+    support_format=$("$ar" p "$support" "$support_member" | file -) || { echo "unreadable host protoc support member: $support:$support_member" >&2; exit 1; }
+    grep -Eq "Mach-O.*${host_arch}" <<< "$support_format" || { echo "host protoc support architecture mismatch: expected=$host_arch actual=$support_format" >&2; exit 1; }
+
 _roots flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -195,7 +216,7 @@ _export flavor target:
       local label="$1"
       "$gn" desc --root="$src" "$out" "$label" outputs || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label"
     }
-    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
+    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ && !/(^|\\/)libprotoc_lib\\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then gn_outputs //buildtools/third_party/libc++ >> "$archives"; gn_outputs //buildtools/third_party/libc++abi >> "$archives"; fi
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
     test -s "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
@@ -253,8 +274,18 @@ _bridge-objects flavor target stage definitions_file:
       linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1"); suffix=o;;
-      macos-x86_64|macos-arm64) arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness); suffix=o;;
-      ios-arm64|ios-simulator-arm64) sdk=$(case "{{ target }}" in ios-arm64) printf iphoneos;; *) printf iphonesimulator;; esac); minimum=$(case "{{ target }}" in ios-arm64) printf '%s' -miphoneos-version-min=18.0;; *) printf '%s' -mios-simulator-version-min=18.0;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness); suffix=o;;
+      macos-x86_64|macos-arm64)
+        case "{{ target }}" in macos-x86_64) arch=x86_64;; *) arch=arm64;; esac
+        sdk_path=$(xcrun --sdk macosx --show-sdk-path)
+        cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+        args=(-arch "$arch" -isysroot "$sdk_path" -mmacosx-version-min=12.0 -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness)
+        suffix=o;;
+      ios-arm64|ios-simulator-arm64)
+        case "{{ target }}" in ios-arm64) sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac
+        sdk_path=$(xcrun --sdk "$sdk" --show-sdk-path)
+        cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+        args=(-arch arm64 -isysroot "$sdk_path" "$minimum" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness)
+        suffix=o;;
       windows-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang-cl"; args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
     esac
     if test "{{ target }}" = windows-x86_64; then
