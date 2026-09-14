@@ -21,12 +21,16 @@ pub(crate) const CACHE_DIR_ENV: &str = "PULSEBEAM_WEBRTC_SYS_CACHE_DIR";
 pub(crate) const OFFLINE_ENV: &str = "PULSEBEAM_WEBRTC_SYS_OFFLINE";
 const DOWNLOAD_ATTEMPTS: usize = 3;
 const RETRYABLE_HTTP_STATUSES: &[u16] = &[408, 429, 500, 502, 503, 504];
+const RELEASE_URL_PREFIX: &str =
+    "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/";
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(crate) struct ArtifactLock {
     bridge_identity: String,
     release_scope: ReleaseScope,
+    enforce_release_scope: bool,
+    canonical_urls: bool,
     artifacts: Vec<LockedArtifact>,
 }
 
@@ -89,6 +93,8 @@ impl ArtifactLock {
                     } else {
                         ReleaseScope::None
                     },
+                    enforce_release_scope: lock.release_ready,
+                    canonical_urls: false,
                     artifacts: lock.artifacts,
                 }
             }
@@ -101,6 +107,8 @@ impl ArtifactLock {
                 Self {
                     bridge_identity: lock.bridge_identity,
                     release_scope: lock.release_scope,
+                    enforce_release_scope: true,
+                    canonical_urls: true,
                     artifacts: lock.artifacts,
                 }
             }
@@ -140,10 +148,13 @@ impl ArtifactLock {
             }
             match (&entry.url, &entry.sha256) {
                 (Some(url), Some(hash)) => {
-                    let secure = url.starts_with("https://");
                     let loopback_test =
                         url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:");
-                    if !(secure || loopback_test) || !url.ends_with(&entry.asset_name) {
+                    if !(loopback_test && url.ends_with(&entry.asset_name))
+                        && (!url.starts_with("https://")
+                            || (lock.canonical_urls
+                                && !is_canonical_release_url(url, &entry.asset_name)))
+                    {
                         return Err(format!(
                             "artifact URL is not an immutable HTTPS asset URL: {url}"
                         ));
@@ -177,35 +188,37 @@ impl ArtifactLock {
         if selections.len() != SUPPORTED_CARGO_TARGETS.len() * 2 {
             return Err("artifact lock contains unexpected selections".into());
         }
-        let available = lock
-            .artifacts
-            .iter()
-            .filter(|entry| entry.url.is_some())
-            .count();
-        let expected_available = match lock.release_scope {
-            ReleaseScope::None => 0,
-            ReleaseScope::Linux => lock
+        if lock.enforce_release_scope {
+            let available = lock
                 .artifacts
                 .iter()
-                .filter(|entry| entry.artifact_target.starts_with("linux-"))
-                .count(),
-            ReleaseScope::Complete => lock.artifacts.len(),
-        };
-        if available != expected_available {
-            return Err(format!(
-                "release scope {:?} has {available} available selections; expected {expected_available}",
-                lock.release_scope
-            ));
-        }
-        if lock.release_scope == ReleaseScope::Linux
-            && lock
-                .artifacts
-                .iter()
-                .any(|entry| entry.url.is_some() != entry.artifact_target.starts_with("linux-"))
-        {
-            return Err(
-                "linux release scope contains non-Linux or missing Linux selections".into(),
-            );
+                .filter(|entry| entry.url.is_some())
+                .count();
+            let expected_available = match lock.release_scope {
+                ReleaseScope::None => 0,
+                ReleaseScope::Linux => lock
+                    .artifacts
+                    .iter()
+                    .filter(|entry| entry.artifact_target.starts_with("linux-"))
+                    .count(),
+                ReleaseScope::Complete => lock.artifacts.len(),
+            };
+            if available != expected_available {
+                return Err(format!(
+                    "release scope {:?} has {available} available selections; expected {expected_available}",
+                    lock.release_scope
+                ));
+            }
+            if lock.release_scope == ReleaseScope::Linux
+                && lock
+                    .artifacts
+                    .iter()
+                    .any(|entry| entry.url.is_some() != entry.artifact_target.starts_with("linux-"))
+            {
+                return Err(
+                    "linux release scope contains non-Linux or missing Linux selections".into(),
+                );
+            }
         }
         Ok(lock)
     }
@@ -216,6 +229,20 @@ impl ArtifactLock {
             .find(|entry| entry.cargo_target == cargo_target && entry.flavor == flavor)
             .expect("validated artifact lock contains every target/flavor selection")
     }
+}
+
+fn is_canonical_release_url(url: &str, asset_name: &str) -> bool {
+    let Some((tag, asset)) = url
+        .strip_prefix(RELEASE_URL_PREFIX)
+        .and_then(|path| path.split_once('/'))
+    else {
+        return false;
+    };
+    !tag.is_empty()
+        && asset == asset_name
+        && tag.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphanumeric() || (index > 0 && matches!(character, '.' | '_' | '-'))
+        })
 }
 
 impl LockedArtifact {
@@ -701,13 +728,79 @@ mod tests {
 
     #[test]
     fn legacy_schema_one_development_lock_remains_readable() {
-        let lock = String::from_utf8(LOCK.to_vec())
-            .unwrap()
-            .replacen(r#""schema_version": 2"#, r#""schema_version": 1"#, 1)
-            .replacen(r#""release_scope": "none""#, r#""release_ready": false"#, 1);
+        let mut lock: serde_json::Value = serde_json::from_slice(LOCK).unwrap();
+        lock["schema_version"] = serde_json::Value::from(1);
+        let object = lock.as_object_mut().unwrap();
+        object.remove("release_scope");
+        object.insert("release_ready".into(), serde_json::Value::Bool(false));
+        let entry = &mut lock["artifacts"].as_array_mut().unwrap()[0];
+        entry["url"] = serde_json::Value::String(
+            "https://legacy.invalid/webrtc-core-linux-x86_64.tar.gz".into(),
+        );
+        entry["sha256"] = serde_json::Value::String("1".repeat(64));
         assert!(
-            ArtifactLock::parse_and_validate(lock.as_bytes(), "pulsebeam-webrtc-sys-bridge-v2")
-                .is_ok()
+            ArtifactLock::parse_and_validate(
+                &serde_json::to_vec(&lock).unwrap(),
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn legacy_schema_one_complete_lock_remains_readable() {
+        let mut lock: serde_json::Value = serde_json::from_slice(LOCK).unwrap();
+        lock["schema_version"] = serde_json::Value::from(1);
+        let object = lock.as_object_mut().unwrap();
+        object.remove("release_scope");
+        object.insert("release_ready".into(), serde_json::Value::Bool(true));
+        for entry in lock["artifacts"].as_array_mut().unwrap() {
+            let asset = entry["asset_name"].as_str().unwrap();
+            entry["url"] = serde_json::Value::String(format!("http://127.0.0.1:1/{asset}"));
+            entry["sha256"] = serde_json::Value::String("1".repeat(64));
+        }
+        assert!(
+            ArtifactLock::parse_and_validate(
+                &serde_json::to_vec(&lock).unwrap(),
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_hybrid_unknown_and_noncanonical_lock_metadata() {
+        let hybrid = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
+            r#""release_scope": "none""#,
+            r#""release_scope": "none", "release_ready": false"#,
+            1,
+        );
+        assert!(
+            ArtifactLock::parse_and_validate(hybrid.as_bytes(), "pulsebeam-webrtc-sys-bridge-v2")
+                .is_err()
+        );
+        let unknown = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
+            r#""schema_version": 2"#,
+            r#""schema_version": 3"#,
+            1,
+        );
+        assert!(
+            ArtifactLock::parse_and_validate(unknown.as_bytes(), "pulsebeam-webrtc-sys-bridge-v2")
+                .unwrap_err()
+                .contains("unsupported artifact lock schema 3")
+        );
+        let noncanonical = String::from_utf8(released_lock(
+            "https://example.invalid/webrtc-core-linux-x86_64.tar.gz",
+            &"1".repeat(64),
+        ))
+        .unwrap();
+        assert!(
+            ArtifactLock::parse_and_validate(
+                noncanonical.as_bytes(),
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap_err()
+            .contains("not an immutable")
         );
     }
 

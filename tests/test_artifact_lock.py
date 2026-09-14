@@ -74,4 +74,33 @@ class ArtifactLockTests(unittest.TestCase):
             linux = self.render_report(root, "linux")
             self.assertEqual(sum(item["url"] is not None for item in linux["artifacts"]), 4)
 
+    def test_rejects_noncanonical_template_and_weakened_linux_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            template = json.loads((ROOT / "artifacts.lock.json").read_text())
+            template["artifacts"][0]["cargo_target"] = "not-a-supported-target"
+            template_path = root / "template.json"
+            template_path.write_text(json.dumps(template))
+            with self.assertRaisesRegex(write_artifact_lock.LockError, "noncanonical"):
+                write_artifact_lock.render(template_path, None, "tag", self.report(root, "linux"))
+
+            report = json.loads(self.report(root, "linux").read_text())
+            report["sources"]["depot_tools"]["repository"] = ""
+            bad = root / "bad.json"
+            bad.write_text(json.dumps(report))
+            with self.assertRaisesRegex(write_artifact_lock.LockError, "source identity"):
+                write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "tag", bad)
+
+            report = json.loads(self.report(root, "linux").read_text())
+            report["assets"][1]["native_configuration_sha256"] = report["assets"][0]["native_configuration_sha256"]
+            bad.write_text(json.dumps(report))
+            with self.assertRaisesRegex(write_artifact_lock.LockError, "duplicate native configuration"):
+                write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "tag", bad)
+
+            report = json.loads(self.report(root, "linux").read_text())
+            report["assets"][0]["source_state"] = "applied"
+            bad.write_text(json.dumps(report))
+            with self.assertRaisesRegex(write_artifact_lock.LockError, "inconsistent audit source"):
+                write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "tag", bad)
+
 if __name__ == "__main__": unittest.main()

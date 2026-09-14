@@ -58,16 +58,15 @@ def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None
     lock_path = destination / "artifacts.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    evidence = "1" * 64
     assets = []
-    for entry in lock["artifacts"]:
+    for index, entry in enumerate(lock["artifacts"]):
         if entry["artifact_target"] not in {"linux-x86_64", "linux-arm64"}:
             continue
         assets.append({
             "name": entry["asset_name"],
-            "sha256": digest if entry["asset_name"] == "webrtc-core-linux-x86_64.tar.gz" else evidence,
-            "native_configuration_sha256": evidence,
-            "license_inventory_sha256": evidence,
+            "sha256": digest if entry["asset_name"] == "webrtc-core-linux-x86_64.tar.gz" else "1" * 64,
+            "native_configuration_sha256": f"{index + 1:064x}",
+            "license_inventory_sha256": f"{index + 101:064x}",
             "source_state": "pristine",
             "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
         })
@@ -75,7 +74,7 @@ def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None
         "schema_version": 1,
         "scope": "linux",
         "bridge": {"identity": lock["bridge_identity"]},
-        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"}, "depot_tools": {"revision": "fixture"}},
+        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}},
         "assets": assets,
     }
     report_path = destination / "linux-audit.json"
@@ -111,7 +110,7 @@ def extract_artifact(source_artifact: Path, destination: Path) -> None:
                 shutil.copyfileobj(source, sink)
 
 
-def compiler_environment(marker: Path, sentinel_directory: Path) -> dict[str, str]:
+def cold_consumer_environment(marker: Path, sentinel_directory: Path, work: Path) -> dict[str, str]:
     sentinel_directory.mkdir()
     sentinels = {}
     for language in ("c", "cxx"):
@@ -126,6 +125,18 @@ def compiler_environment(marker: Path, sentinel_directory: Path) -> dict[str, st
         sentinel.chmod(0o755)
         sentinels[language] = str(sentinel)
     environment = os.environ.copy()
+    for tool in ("gn", "ninja"):
+        sentinel = sentinel_directory / tool
+        sentinel.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$0 $*\" >> {str(marker)!r}\n"
+            f"echo '{tool} invocation is forbidden in the Rust-only consumer proof' >&2\n"
+            "exit 97\n",
+            encoding="utf-8",
+        )
+        sentinel.chmod(0o755)
+    environment["PATH"] = str(sentinel_directory) + os.pathsep + environment["PATH"]
+    environment["WEBRTC_WORK"] = str(work)
     target = "x86_64-unknown-linux-gnu"
     for compiler, language in (("CC", "c"), ("CXX", "cxx")):
         environment[compiler] = sentinels[language]
@@ -180,6 +191,16 @@ def expect_failure(command: list[str], *, cwd: Path, env: dict[str, str], messag
         raise ProofError(f"failure did not contain {message!r}:\n{output}")
 
 
+def write_consumer(destination: Path, repository: Path, cargo_config: str) -> None:
+    shutil.copytree(CONSUMER / "src", destination / "src")
+    manifest = (CONSUMER / "Cargo.toml.in").read_text(encoding="utf-8")
+    (destination / "Cargo.toml").write_text(
+        manifest.replace("@REPOSITORY@", repository.resolve().as_uri()), encoding="utf-8"
+    )
+    (destination / ".cargo").mkdir()
+    (destination / ".cargo/config.toml").write_text(cargo_config, encoding="utf-8")
+
+
 def prove(source_artifact: Path) -> None:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise ProofError("the checked-in Rust-only artifact fixture requires Linux x86_64")
@@ -197,25 +218,18 @@ def prove(source_artifact: Path) -> None:
             artifact = temporary_root / "artifact"
             extract_artifact(source_artifact, artifact)
 
-            consumer = temporary_root / "consumer"
-            shutil.copytree(CONSUMER / "src", consumer / "src")
-            repository_url = repository.resolve().as_uri()
-            manifest = (CONSUMER / "Cargo.toml.in").read_text(encoding="utf-8")
-            (consumer / "Cargo.toml").write_text(
-                manifest.replace("@REPOSITORY@", repository_url), encoding="utf-8"
-            )
-
             vendor = temporary_root / "registry"
             cargo_config = run(
                 ["cargo", "vendor", "--quiet", "--locked", "--offline", str(vendor)],
                 cwd=ROOT,
                 capture=True,
             ).stdout
-            (consumer / ".cargo").mkdir()
-            (consumer / ".cargo/config.toml").write_text(cargo_config, encoding="utf-8")
+            consumer = temporary_root / "consumer"
+            write_consumer(consumer, repository, cargo_config)
 
             marker = temporary_root / "compiler-invocations"
-            environment = compiler_environment(marker, temporary_root / "compiler-sentinels")
+            work = temporary_root / "no-producer-work"
+            environment = cold_consumer_environment(marker, temporary_root / "consumer-sentinels", work)
             environment["CARGO_TARGET_DIR"] = str(temporary_root / "target")
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-cache")
 
@@ -234,6 +248,38 @@ def prove(source_artifact: Path) -> None:
 
             # The release proof starts with no override, artifact cache, or target cache.
             run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+            if (work / "checkout").exists() or (work / "depot_tools").exists():
+                raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
+
+            unavailable_repository = temporary_root / "unavailable-repository"
+            shutil.copytree(repository, unavailable_repository, ignore=shutil.ignore_patterns(".git"))
+            unavailable_lock = unavailable_repository / "artifacts.lock.json"
+            unavailable = json.loads(unavailable_lock.read_text(encoding="utf-8"))
+            for entry in unavailable["artifacts"]:
+                entry["url"] = entry["sha256"] = None
+            unavailable["release_scope"] = "none"
+            unavailable_lock.write_text(json.dumps(unavailable, indent=2) + "\n", encoding="utf-8")
+            run(["git", "init", "--quiet"], cwd=unavailable_repository)
+            run(["git", "config", "user.name", "Rust-only consumer proof"], cwd=unavailable_repository)
+            run(["git", "config", "user.email", "rust-only@example.invalid"], cwd=unavailable_repository)
+            run(["git", "add", "."], cwd=unavailable_repository)
+            run(["git", "commit", "--quiet", "-m", "unavailable"], cwd=unavailable_repository)
+            unavailable_consumer = temporary_root / "unavailable-consumer"
+            write_consumer(unavailable_consumer, unavailable_repository, cargo_config)
+            unavailable_environment = environment.copy()
+            unavailable_environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "unavailable-cache")
+            expect_failure(
+                ["cargo", "run"],
+                cwd=unavailable_consumer,
+                env=unavailable_environment,
+                message="unavailable in this release scope",
+            )
+            expect_failure(
+                [str(next((temporary_root / "target" / "debug" / "build").glob("pulsebeam-webrtc-sys-*/build-script-build")))],
+                cwd=consumer,
+                env={**environment, "TARGET": "x86_64-unknown-linux-musl"},
+                message="unsupported Cargo target x86_64-unknown-linux-musl",
+            )
 
             environment["PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR"] = str(artifact)
             environment["CARGO_NET_OFFLINE"] = "true"
@@ -307,7 +353,7 @@ def main() -> int:
     except (OSError, subprocess.CalledProcessError, ProofError) as error:
         print(f"Rust-only consumer proof: {error}", file=sys.stderr)
         return 1
-    print("Rust-only Git consumer passed override, cache, download, offline, and mismatch proofs")
+    print("Rust-only Git consumer passed cold download, unavailable/unsupported selection, cache, offline, mismatch, and producer-sentinel proofs")
     return 0
 
 

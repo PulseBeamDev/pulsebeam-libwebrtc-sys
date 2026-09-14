@@ -34,7 +34,7 @@ class ReleaseAuditTests(unittest.TestCase):
                         "patch_sha256": audit_release.CORE_IOS_PATCH_SHA256,
                         "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
                     },
-                    "depot_tools": {"revision": "tools"},
+                    "depot_tools": {"repository": "tools-repository", "revision": "tools"},
                 },
                 "artifact": {
                     "cargo_target": entry["cargo_target"],
