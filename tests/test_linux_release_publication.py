@@ -82,3 +82,25 @@ class LinuxPublicationTests(unittest.TestCase):
             bundle = self.prepared_bundle(Path(temp))
             with self.assertRaisesRegex(publication.PublicationError, "published release is incomplete"):
                 publication.plan(bundle, "published", None)
+
+    def test_noncanonical_repository_fails_before_publication_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self.prepared_bundle(Path(temp))
+            with self.assertRaisesRegex(publication.PublicationError, "publication repository must be"):
+                publication.plan(bundle, "absent", None, repository="fork/pulsebeam-libwebrtc-sys")
+
+    def test_workflow_finalizes_only_after_attestation_reverification(self):
+        workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+        publish = workflow[workflow.index("  publish-linux:"):]
+        self.assertIn('test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY"', publish)
+        self.assertIn('gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}"', publish)
+        self.assertNotIn("${GITHUB_REPOSITORY}", publish)
+        self.assertGreaterEqual(publish.count("--repo \"$CANONICAL_REPOSITORY\""), 7)
+        gate = "if: steps.publication-plan.outputs.finalize == 'true'"
+        self.assertEqual(publish.count(gate), 5)
+        attestation = publish.index("      - name: Attest final release assets")
+        reverify = publish.index("      - name: Reverify the complete attested draft immediately before advertisement")
+        advertise = publish.index("      - name: Advertise only the verified complete Linux release")
+        self.assertLess(attestation, reverify)
+        self.assertLess(reverify, advertise)
+        self.assertIn('attested-publication-plan.json', publish[reverify:advertise])

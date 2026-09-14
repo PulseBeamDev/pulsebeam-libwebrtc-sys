@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "artifacts.lock.json"
 TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-BASE_URL = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download"
+REPOSITORY = "PulseBeamDev/pulsebeam-libwebrtc-sys"
+BASE_URL = f"https://github.com/{REPOSITORY}/releases/download"
 LINUX_TARGETS = frozenset({"linux-x86_64", "linux-arm64"})
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu": "linux-x86_64",

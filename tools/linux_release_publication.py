@@ -21,6 +21,7 @@ ARCHIVES = frozenset({
 })
 METADATA = frozenset({"SHA256SUMS", "LINUX-RELEASE-MANIFEST.json", "artifacts.lock.json", "PULSEBEAM-APACHE-2.0.txt"})
 EXPECTED_BUNDLE = ARCHIVES | METADATA
+CANONICAL_REPOSITORY = write_artifact_lock.REPOSITORY
 
 
 class PublicationError(Exception):
@@ -58,7 +59,11 @@ def prepare(archives: Path, checksums: Path, audit: Path, tag: str, output: Path
     return bundle_inventory(output)
 
 
-def plan(bundle: Path, release_state: str, observed: Path | None, remote_names: list[str] | None = None) -> dict[str, Any]:
+def plan(bundle: Path, release_state: str, observed: Path | None, remote_names: list[str] | None = None, repository: str = CANONICAL_REPOSITORY) -> dict[str, Any]:
+    if repository != CANONICAL_REPOSITORY:
+        raise PublicationError(
+            f"publication repository must be {CANONICAL_REPOSITORY!r}, got {repository!r}"
+        )
     intended = bundle_inventory(bundle)
     actual = {} if observed is None else {path.name: sha256(path) for path in observed.iterdir() if path.is_file()}
     if remote_names is not None:
@@ -101,11 +106,12 @@ def main() -> int:
     plan_parser.add_argument("--release-state", required=True)
     plan_parser.add_argument("--observed", type=Path)
     plan_parser.add_argument("--remote-names", type=Path)
+    plan_parser.add_argument("--repository", default=CANONICAL_REPOSITORY)
     plan_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         remote_names = None if args.command == "prepare" or args.remote_names is None else json.loads(args.remote_names.read_text(encoding="utf-8"))
-        result = prepare(args.archives, args.checksums, args.audit, args.tag, args.output) if args.command == "prepare" else plan(args.bundle, args.release_state, args.observed, remote_names)
+        result = prepare(args.archives, args.checksums, args.audit, args.tag, args.output) if args.command == "prepare" else plan(args.bundle, args.release_state, args.observed, remote_names, args.repository)
         if args.command == "plan":
             args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         else:

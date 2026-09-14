@@ -405,13 +405,17 @@ jobs:
           name: linux-release-bundle
           path: release
       - name: Classify the immutable release identity before mutation
+        id: publication-plan
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+          RUNTIME_REPOSITORY: ${{ github.repository }}
         run: |
+          test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY" || { echo "refusing publication from $RUNTIME_REPOSITORY; expected $CANONICAL_REPOSITORY" >&2; exit 1; }
           set +e
-          gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
+          gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
           status=$?
           set -e
           if test "$status" -eq 0; then
@@ -419,7 +423,7 @@ jobs:
             if test "$(python3 -c 'import json, sys; print(str(json.load(sys.stdin)["draft"]).lower())' < release.json)" = true; then release_state=draft; else release_state=published; fi
             python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
             mkdir observed
-            gh release download "$RELEASE_TAG" --dir observed
+            gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed
           elif head -n 1 release-query | grep -Eq 'HTTP/[0-9.]+ 404'; then
             release_state=absent
           else
@@ -428,34 +432,56 @@ jobs:
           fi
           observed_args=()
           if test "$release_state" != absent; then observed_args=(--observed observed --remote-names remote-names.json); fi
-          python3 -m tools.linux_release_publication plan --bundle release --release-state "$release_state" "${observed_args[@]}" --output publication-plan.json
+          python3 -m tools.linux_release_publication plan --bundle release --release-state "$release_state" --repository "$RUNTIME_REPOSITORY" "${observed_args[@]}" --output publication-plan.json
+          echo "finalize=$(python3 -c 'import json; print(str(json.load(open("publication-plan.json"))["finalize"]).lower())')" >> "$GITHUB_OUTPUT"
       - name: Create a non-advertised draft and add only verified missing assets
+        if: steps.publication-plan.outputs.finalize == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: |
           create=$(python3 -c 'import json; print(json.load(open("publication-plan.json"))["create_draft"])')
-          if test "$create" = True; then gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG"; fi
-          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
+          if test "$create" = True; then gh release create "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft --verify-tag --title "$RELEASE_TAG"; fi
+          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
       - name: Reverify the full draft inventory without replacement
+        if: steps.publication-plan.outputs.finalize == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: |
           mkdir observed-final
-          gh release view "$RELEASE_TAG" --json assets > observed-final-release.json
+          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-final-release.json
           python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-final-release.json > observed-final-names.json
-          gh release download "$RELEASE_TAG" --dir observed-final
-          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --observed observed-final --remote-names observed-final-names.json --output final-publication-plan.json
+          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-final
+          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-final --remote-names observed-final-names.json --output final-publication-plan.json
           test "$(python3 -c 'import json; print(json.load(open("final-publication-plan.json"))["upload"])')" = '[]'
       - name: Attest final release assets
+        if: steps.publication-plan.outputs.finalize == 'true'
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: release/*
-      - name: Advertise only the verified complete Linux release
+      - name: Reverify the complete attested draft immediately before advertisement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --generate-notes
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: |
+          mkdir observed-attested
+          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-attested-release.json
+          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-attested-release.json > observed-attested-names.json
+          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-attested
+          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-attested --remote-names observed-attested-names.json --output attested-publication-plan.json
+          test "$(python3 -c 'import json; print(json.load(open("attested-publication-plan.json"))["upload"])')" = '[]'
+      - name: Advertise only the verified complete Linux release
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: gh release edit "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft=false --generate-notes
