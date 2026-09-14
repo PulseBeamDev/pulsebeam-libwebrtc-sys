@@ -1,4 +1,5 @@
 import base64
+import gzip
 import io
 from pathlib import Path
 import subprocess
@@ -66,6 +67,14 @@ class TrackedPayloadTests(unittest.TestCase):
 
     def test_rejects_base64_payload(self):
         self.assert_rejected({"encoded.txt": base64.b64encode(b"!<arch>\n")})
+
+    def test_rejects_recognized_container_at_depth_limit(self):
+        payload = tar_bytes({"lib/object.o": b"!<arch>\n"})
+        for _ in range(5):
+            payload = gzip.compress(payload)
+        result = self.scan({"nested-containers": payload})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("nesting-depth limit", result.stderr)
 
     def test_allows_source_and_untracked_artifact(self):
         result = self.scan({"fixture.json": b'{"source": true}', "README": b"ordinary source"}, {"dist/external": b"\x7fELFcompiled"})

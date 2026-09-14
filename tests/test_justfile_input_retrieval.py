@@ -46,6 +46,16 @@ class InputRetrievalBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(len(re.findall(r"retry_acquisition (?:depot_tools|webrtc_sync|webrtc_hooks)", sync)), 5)
 
+    def test_artifact_proof_verifies_its_snapshot_before_execution(self):
+        proof = self._recipe("verify-artifact archive='' sha256='':", "# Download, checksum")
+        copy = proof.index('cp -- "{{ archive }}" "$snapshot"')
+        digest = proof.index('actual=$(sha256sum "$snapshot"')
+        runtime = proof.index(' _runtime-test core linux-x86_64 "$snapshot"')
+        consumer = proof.index('tools/rust_only_consumer.py --artifact "$snapshot"')
+        self.assertLess(copy, digest)
+        self.assertLess(digest, runtime)
+        self.assertLess(digest, consumer)
+
     def _recipe(self, start, end):
         beginning = self.justfile.index(start)
         return self.justfile[beginning : self.justfile.index(end, beginning)]

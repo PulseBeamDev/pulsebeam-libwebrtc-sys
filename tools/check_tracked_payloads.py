@@ -44,12 +44,17 @@ def scan(path: str, data: bytes, chain: list[str] = [], depth: int = 0) -> None:
         raise PayloadError(f"tracked container exceeds expanded-byte limit: path={path} member={' -> '.join([path, *chain])}")
     if detected := kind(data):
         fail(path, chain, detected)
-    if depth >= MAX_DEPTH:
-        return
     try:
-        if data.startswith(b"\x1f\x8b"):
+        is_gzip = data.startswith(b"\x1f\x8b")
+        is_zip = zipfile.is_zipfile(io.BytesIO(data))
+        is_tar = len(data) >= 262 and data[257:262] == b"ustar"
+        if depth >= MAX_DEPTH and (is_gzip or is_zip or is_tar):
+            raise PayloadError(f"tracked container exceeds nesting-depth limit: path={path} member={' -> '.join([path, *chain])}")
+        if depth >= MAX_DEPTH:
+            return
+        if is_gzip:
             scan(path, gzip.decompress(data), [*chain, "gzip"], depth + 1)
-        elif zipfile.is_zipfile(io.BytesIO(data)):
+        elif is_zip:
             with zipfile.ZipFile(io.BytesIO(data)) as container:
                 for item in container.infolist():
                     if item.is_dir():
@@ -57,7 +62,7 @@ def scan(path: str, data: bytes, chain: list[str] = [], depth: int = 0) -> None:
                     if item.file_size > MAX_EXPANDED:
                         raise PayloadError(f"tracked container exceeds expanded-byte limit: path={path} member={' -> '.join([path, *chain, item.filename])}")
                     scan(path, container.read(item), [*chain, item.filename], depth + 1)
-        elif len(data) >= 262 and data[257:262] == b"ustar":
+        elif is_tar:
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as container:
                 for item in container:
                     if not item.isfile():

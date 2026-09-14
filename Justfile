@@ -64,10 +64,10 @@ verify-artifact archive='' sha256='':
     test ! -L "{{ archive }}" || { echo "core linux-x86_64 artifact must be a regular file: {{ archive }}" >&2; exit 1; }
     relative=$(realpath --relative-to="$PWD" "{{ archive }}")
     ! git ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 || { echo "core linux-x86_64 artifact is tracked and rejected: $relative" >&2; exit 1; }
-    actual=$(sha256sum "{{ archive }}" | awk '{print $1}')
-    test "$actual" = "{{ sha256 }}" || { echo "core linux-x86_64 checksum mismatch: expected={{ sha256 }} actual=$actual" >&2; exit 1; }
     snapshot=$(mktemp); trap 'rm -f "$snapshot"' EXIT
     cp -- "{{ archive }}" "$snapshot"
+    actual=$(sha256sum "$snapshot" | awk '{print $1}')
+    test "$actual" = "{{ sha256 }}" || { echo "core linux-x86_64 checksum mismatch: expected={{ sha256 }} actual=$actual" >&2; exit 1; }
     just --justfile "{{ root }}/Justfile" _runtime-test core linux-x86_64 "$snapshot"
     CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py --artifact "$snapshot" --sha256 "{{ sha256 }}"
 
