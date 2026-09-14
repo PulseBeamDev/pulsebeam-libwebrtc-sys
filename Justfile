@@ -34,6 +34,7 @@ check:
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_justfile_input_retrieval.py
+    python3 -m unittest tests/test_apple_host_protoc_archive.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
@@ -274,8 +275,10 @@ _apple-host-protoc flavor target:
     file "$protoc" | grep -Eq "Mach-O.*${host_arch}" || { echo "host protoc architecture mismatch: expected=$host_arch actual=$(file "$protoc")" >&2; exit 1; }
     test -f "$support" || { echo "missing host protoc support archive: $support" >&2; exit 1; }
     support_members=$("$ar" t "$support") || { echo "unreadable host protoc support archive: $support" >&2; exit 1; }
-    ! grep -Fqx '__.SYMDEF' <<< "$support_members" || { echo "invalid host protoc support archive member: $support:__.SYMDEF" >&2; exit 1; }
-    support_member=$(head -n 1 <<< "$support_members"); test -n "$support_member" || { echo "empty host protoc support archive: $support" >&2; exit 1; }
+    test -n "$support_members" || { echo "empty host protoc support archive: $support" >&2; exit 1; }
+    support_member=$(printf '%s\n' "$support_members" | awk '$0 != "__.SYMDEF" && $0 != "__.SYMDEF SORTED" { print; exit }')
+    test -n "$support_member" || { echo "invalid host protoc support archive: $support has no linkable object member" >&2; exit 1; }
+    support_member=${support_member##*/}
     support_format=$("$ar" p "$support" "$support_member" | file -) || { echo "unreadable host protoc support member: $support:$support_member" >&2; exit 1; }
     grep -Eq "Mach-O.*${host_arch}" <<< "$support_format" || { echo "host protoc support architecture mismatch: expected=$host_arch actual=$support_format" >&2; exit 1; }
 
