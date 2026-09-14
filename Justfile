@@ -40,11 +40,13 @@ check:
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
     python3 -m unittest tests/test_release_audit.py
+    python3 -m unittest tests/test_linux_release_publication.py
     python3 -m unittest tests/test_tracked_payloads.py
     python3 tools/check_tracked_payloads.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
     python3 tools/write_artifact_lock.py --help >/dev/null
     python3 -m tools.audit_release --help >/dev/null
+    python3 -m tools.linux_release_publication --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline

@@ -274,9 +274,9 @@ jobs:
         name: Generate Linux checksum index and audit exact scope
         shell: bash
         run: |
-          find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
+          (cd release && find . -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS)
           python3 -m tools.audit_release --scope linux --archives release --checksums release/SHA256SUMS --output release/LINUX-RELEASE-MANIFEST.json
-          core_linux_x86_64_sha256=$(awk '$2 == "release/webrtc-core-linux-x86_64.tar.gz" { print $1 }' release/SHA256SUMS)
+          core_linux_x86_64_sha256=$(awk '$2 == "webrtc-core-linux-x86_64.tar.gz" { print $1 }' release/SHA256SUMS)
           [[ "$core_linux_x86_64_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo 'missing core Linux x86_64 audit checksum' >&2; exit 1; }
           echo "core_linux_x86_64_sha256=$core_linux_x86_64_sha256" >> "$GITHUB_OUTPUT"
 
@@ -344,9 +344,53 @@ jobs:
           printf '%s\n' "${results[@]}"
           for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
 
-  publish:
+  linux-release-bundle:
     if: inputs.tag != ''
-    needs: [validate, complete-matrix-qualification]
+    needs: linux-qualification
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: core-linux-x86_64
+          path: release-input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: core-linux-arm64
+          path: release-input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: native-linux-x86_64
+          path: release-input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: native-linux-arm64
+          path: release-input
+      - name: Construct one closed audited Linux publication bundle
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          expected=(webrtc-core-linux-x86_64.tar.gz webrtc-core-linux-arm64.tar.gz webrtc-native-linux-x86_64.tar.gz webrtc-native-linux-arm64.tar.gz)
+          test "$(find release-input -maxdepth 1 -type f -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort)" = "$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
+          (cd release-input && printf '%s\n' "${expected[@]}" | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS)
+          python3 -m tools.audit_release --scope linux --archives release-input --checksums release-input/SHA256SUMS --output release-input/LINUX-RELEASE-MANIFEST.json
+          python3 -m tools.linux_release_publication prepare --archives release-input --checksums release-input/SHA256SUMS --audit release-input/LINUX-RELEASE-MANIFEST.json --tag "$RELEASE_TAG" --output linux-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-bundle
+          path: linux-release
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-linux:
+    if: inputs.tag != ''
+    needs: [validate, linux-qualification, linux-release-bundle]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -358,29 +402,60 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
+          name: linux-release-bundle
           path: release
-          merge-multiple: true
-      - name: Generate release checksum index
+      - name: Classify the immutable release identity before mutation
         shell: bash
-        working-directory: release
-        run: |
-          test "$(find . -maxdepth 1 -name 'webrtc-*.tar.gz' | wc -l)" -eq 18
-          find . -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
-      - name: Audit matrix identities, source pins, configurations, and licenses
-        run: python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
-      - name: Generate release-ready consumer lock
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          python3 tools/write_artifact_lock.py --tag "$RELEASE_TAG" --checksums release/SHA256SUMS --output release/artifacts.lock.json
-      - name: Include the repository license
-        run: cp LICENSE release/PULSEBEAM-APACHE-2.0.txt
+          set +e
+          gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
+          status=$?
+          set -e
+          if test "$status" -eq 0; then
+            sed -n '/^{/,$p' release-query > release.json
+            if test "$(python3 -c 'import json, sys; print(str(json.load(sys.stdin)["draft"]).lower())' < release.json)" = true; then release_state=draft; else release_state=published; fi
+            python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
+            mkdir observed
+            gh release download "$RELEASE_TAG" --dir observed
+          elif head -n 1 release-query | grep -Eq 'HTTP/[0-9.]+ 404'; then
+            release_state=absent
+          else
+            cat release-query >&2
+            exit 1
+          fi
+          observed_args=()
+          if test "$release_state" != absent; then observed_args=(--observed observed --remote-names remote-names.json); fi
+          python3 -m tools.linux_release_publication plan --bundle release --release-state "$release_state" "${observed_args[@]}" --output publication-plan.json
+      - name: Create a non-advertised draft and add only verified missing assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          create=$(python3 -c 'import json; print(json.load(open("publication-plan.json"))["create_draft"])')
+          if test "$create" = True; then gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG"; fi
+          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
+      - name: Reverify the full draft inventory without replacement
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          mkdir observed-final
+          gh release view "$RELEASE_TAG" --json assets > observed-final-release.json
+          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-final-release.json > observed-final-names.json
+          gh release download "$RELEASE_TAG" --dir observed-final
+          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --observed observed-final --remote-names observed-final-names.json --output final-publication-plan.json
+          test "$(python3 -c 'import json; print(json.load(open("final-publication-plan.json"))["upload"])')" = '[]'
       - name: Attest final release assets
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: release/*
-      - name: Create GitHub Release
+      - name: Advertise only the verified complete Linux release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-        run: gh release create "$RELEASE_TAG" release/* --verify-tag --title "$RELEASE_TAG" --generate-notes
+        run: gh release edit "$RELEASE_TAG" --draft=false --generate-notes

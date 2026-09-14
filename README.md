@@ -197,23 +197,31 @@ and every other artifact use pristine upstream source. `build.txt` and
 `manifest.json` record the patch digest and applied/pristine source state, and
 only optimized release artifacts are published.
 
-Releases use two explicit phases:
+Linux releases use two explicit phases. The independently qualified Linux group
+is exactly `core` and `native` for `linux-x86_64` and `linux-arm64`; registry
+publication remains deferred (`pulsebeam-webrtc-sys` is not a crates.io
+dependency).
 
-1. Run the source-pin upgrade rehearsal for any new WebRTC pin. Create and push
-   an immutable producer tag at the reviewed revision, then dispatch **Manual
-   pulsebeam-webrtc-sys release** with that exact tag. The workflow builds and
-   compile/link-checks all 18 archives, runs all eight desktop flavor/target
-   runtime jobs and both Linux AddressSanitizer jobs, and runs the cold
-   Rust-only Git consumer against the newly built core Linux archive. It audits
-   the 18 manifests and embedded license inventories, creates `SHA256SUMS`,
-   `RELEASE-MANIFEST.json`, the repository license, and an
-   `artifacts.lock.json` candidate, attests every final asset, and creates the
-   release only after every required job succeeds.
-2. Download `SHA256SUMS` from that immutable release and run
-   `python3 tools/write_artifact_lock.py --tag <tag> --checksums SHA256SUMS`.
-   Confirm that all 18 entries have URLs and hashes, run `just check`, commit
-   only the resulting lock update, and give PulseBeam that release-ready Git
-   revision. Consumers use this second-phase revision, not the producer tag.
+1. After explicit authorization for a named immutable producer tag and target
+   repository, dispatch **Manual pulsebeam-webrtc-sys release** with that tag.
+   The Linux publication path depends only on Linux qualification: all four
+   Linux builds, the Linux desktop/runtime and ASan checks, cold Rust-only
+   consumer, and the closed Linux audit. It produces four archives,
+   `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository license, and a
+   schema-2 `artifacts.lock.json` candidate containing four Linux URLs/digests
+   and fourteen explicitly unavailable selections. Non-Linux jobs remain
+   visible in complete-matrix qualification but do not block this path.
+2. The workflow first creates a draft if no release exists, downloads and hashes
+   any existing assets, and uploads only missing byte-verified assets. It never
+   deletes, replaces, or clobbers an asset; a conflicting or unexpected asset
+   fails closed. It rechecks the complete inventory, attests the closed bundle,
+   and only then advertises the release. An interrupted draft is recoverable by
+   rerunning the exact same tag with identical bytes.
+3. After the real release exists, review a separate consumer revision containing
+   the generated Linux lock. That revision—not the producer tag and not the
+   checked-in development lock with `release_scope: none`—is what fresh Git
+   consumers use. Confirm its four URLs/hashes and fourteen null selections,
+   run `just check`, then commit only that post-publication lock update.
 
 Never replace an asset on an existing release. If publication is incomplete or
 incorrect, use a new producer tag. Provenance, rather than byte-for-byte archive
