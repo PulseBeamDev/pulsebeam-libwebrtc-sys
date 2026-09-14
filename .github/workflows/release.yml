@@ -233,7 +233,7 @@ jobs:
 
   rust-only-consumer:
     name: Cold Rust-only Git consumer
-    needs: linux-build
+    needs: [linux-build, linux-audit]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -249,10 +249,14 @@ jobs:
       - name: Prime pinned Rust dependencies
         run: cargo fetch --locked
       - name: Build and run a cold Git consumer without C/C++ compilers
-        run: python3 tools/rust_only_consumer.py --artifact dist/webrtc-core-linux-x86_64.tar.gz
+        env:
+          CORE_LINUX_X86_64_SHA256: ${{ needs.linux-audit.outputs.core_linux_x86_64_sha256 }}
+        run: python3 tools/rust_only_consumer.py --artifact dist/webrtc-core-linux-x86_64.tar.gz --sha256 "$CORE_LINUX_X86_64_SHA256"
 
   linux-audit:
     needs: linux-build
+    outputs:
+      core_linux_x86_64_sha256: ${{ steps.audit.outputs.core_linux_x86_64_sha256 }}
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -266,11 +270,15 @@ jobs:
           pattern: "*-linux-*"
           path: release
           merge-multiple: true
-      - name: Generate Linux checksum index and audit exact scope
+      - id: audit
+        name: Generate Linux checksum index and audit exact scope
         shell: bash
         run: |
           find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
           python3 -m tools.audit_release --scope linux --archives release --checksums release/SHA256SUMS --output release/LINUX-RELEASE-MANIFEST.json
+          core_linux_x86_64_sha256=$(awk '$2 == "release/webrtc-core-linux-x86_64.tar.gz" { print $1 }' release/SHA256SUMS)
+          [[ "$core_linux_x86_64_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo 'missing core Linux x86_64 audit checksum' >&2; exit 1; }
+          echo "core_linux_x86_64_sha256=$core_linux_x86_64_sha256" >> "$GITHUB_OUTPUT"
 
   complete-audit:
     needs: [linux-build, non-linux-build]

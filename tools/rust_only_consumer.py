@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -18,7 +19,6 @@ import tempfile
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ARTIFACT = ROOT / "tests/fixtures/webrtc-core-linux-x86_64.tar.gz"
 CONSUMER = ROOT / "consumer/rust-only"
 
 sys.path.insert(0, str(ROOT))
@@ -40,9 +40,9 @@ def run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None, cap
     )
 
 
-def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None:
+def clean_snapshot(destination: Path, download_url: str, digest: str) -> None:
     listing = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
     )
     for encoded in listing.split(b"\0"):
@@ -57,7 +57,6 @@ def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None
         shutil.copy2(source, output)
     lock_path = destination / "artifacts.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     assets = []
     for index, entry in enumerate(lock["artifacts"]):
         if entry["artifact_target"] not in {"linux-x86_64", "linux-arm64"}:
@@ -201,11 +200,14 @@ def write_consumer(destination: Path, repository: Path, cargo_config: str) -> No
     (destination / ".cargo/config.toml").write_text(cargo_config, encoding="utf-8")
 
 
-def prove(source_artifact: Path) -> None:
+def prove(source_artifact: Path, expected_digest: str) -> None:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
-        raise ProofError("the checked-in Rust-only artifact fixture requires Linux x86_64")
+        raise ProofError("the Rust-only artifact proof requires Linux x86_64")
     if not source_artifact.is_file():
-        raise ProofError(f"missing host artifact: {source_artifact}")
+        raise ProofError(f"missing core Linux x86_64 artifact: {source_artifact}")
+    actual_digest = hashlib.sha256(source_artifact.read_bytes()).hexdigest()
+    if actual_digest != expected_digest:
+        raise ProofError(f"core Linux x86_64 checksum mismatch: expected={expected_digest} actual={actual_digest}")
 
     with tempfile.TemporaryDirectory(prefix="pulsebeam-rust-only-") as temporary:
         temporary_root = Path(temporary)
@@ -213,7 +215,7 @@ def prove(source_artifact: Path) -> None:
         with ArtifactServer(payload) as server:
             repository = temporary_root / "repository"
             repository.mkdir()
-            clean_snapshot(repository, server.url, source_artifact)
+            clean_snapshot(repository, server.url, expected_digest)
 
             artifact = temporary_root / "artifact"
             extract_artifact(source_artifact, artifact)
@@ -346,10 +348,13 @@ def prove(source_artifact: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--artifact", type=Path, default=DEFAULT_ARTIFACT)
+    parser.add_argument("--artifact", type=Path, required=True)
+    parser.add_argument("--sha256", required=True)
     args = parser.parse_args()
     try:
-        prove(args.artifact.resolve())
+        if not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
+            raise ProofError(f"core Linux x86_64 expected SHA-256 is invalid: {args.sha256}")
+        prove(args.artifact.resolve(), args.sha256)
     except (OSError, subprocess.CalledProcessError, ProofError) as error:
         print(f"Rust-only consumer proof: {error}", file=sys.stderr)
         return 1

@@ -20,7 +20,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ root }}"
-    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx'
+    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx\nverify-artifact'
     grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
@@ -40,24 +40,36 @@ check:
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
     python3 -m unittest tests/test_release_audit.py
+    python3 -m unittest tests/test_tracked_payloads.py
+    python3 tools/check_tracked_payloads.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
     python3 tools/write_artifact_lock.py --help >/dev/null
     python3 -m tools.audit_release --help >/dev/null
     ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
     cargo fmt --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
-    runtime_artifact=$(mktemp -d); trap 'rm -rf "$runtime_artifact"' EXIT
-    tar -C "$runtime_artifact" -xzf tests/fixtures/webrtc-core-linux-x86_64.tar.gz manifest.json lib/libwebrtc.a
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --lib --locked --offline -- --test-threads=1
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test execution --locked --offline -- --test-threads=1
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test network --locked --offline -- --test-threads=1
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test peer --locked --offline -- --test-threads=1
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test data_channel --locked --offline -- --test-threads=1
-    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$runtime_artifact" cargo test --test video --locked --offline -- --test-threads=1
-    rm -rf "$runtime_artifact"
-    trap - EXIT
-    CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py
+    CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --test artifact_support --locked --offline
+    echo 'source/control-plane check passed; native proof requires: just verify-artifact <archive> <sha256>'
     git diff --check
+
+# Verify one untracked, checksum-pinned core Linux x86_64 artifact with all native proofs.
+verify-artifact archive='' sha256='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{ root }}"
+    test -n "{{ archive }}" || { echo 'core linux-x86_64 artifact path is required' >&2; exit 1; }
+    test -n "{{ sha256 }}" || { echo 'core linux-x86_64 expected SHA-256 is required' >&2; exit 1; }
+    [[ "{{ sha256 }}" =~ ^[0-9a-f]{64}$ ]] || { echo "core linux-x86_64 expected SHA-256 is invalid: {{ sha256 }}" >&2; exit 1; }
+    test -f "{{ archive }}" || { echo "missing core linux-x86_64 artifact: {{ archive }}" >&2; exit 1; }
+    test ! -L "{{ archive }}" || { echo "core linux-x86_64 artifact must be a regular file: {{ archive }}" >&2; exit 1; }
+    relative=$(realpath --relative-to="$PWD" "{{ archive }}")
+    ! git ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 || { echo "core linux-x86_64 artifact is tracked and rejected: $relative" >&2; exit 1; }
+    actual=$(sha256sum "{{ archive }}" | awk '{print $1}')
+    test "$actual" = "{{ sha256 }}" || { echo "core linux-x86_64 checksum mismatch: expected={{ sha256 }} actual=$actual" >&2; exit 1; }
+    snapshot=$(mktemp); trap 'rm -f "$snapshot"' EXIT
+    cp -- "{{ archive }}" "$snapshot"
+    just --justfile "{{ root }}/Justfile" _runtime-test core linux-x86_64 "$snapshot"
+    CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py --artifact "$snapshot" --sha256 "{{ sha256 }}"
 
 # Download, checksum, and mechanically refresh the pinned Rust-only CXX import.
 refresh-cxx:

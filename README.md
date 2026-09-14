@@ -10,20 +10,18 @@ The complete local interface is:
 
 ```console
 just check
+just verify-artifact <archive> <sha256>
 just build <core|native> <target>
 just refresh-cxx
 ```
 
-`just check` is fast and offline once the pinned Rust dependencies are cached.
-On Linux x86_64 it also creates a clean temporary Git snapshot, resolves the
-checked-in downstream fixture through a `file://` Git dependency, inspects
-Cargo metadata, and builds and runs the bridge identity probe against the
-checked-in core artifact with C and C++ compiler variables routed to failing
-sentinels. The proof has no producer checkout or build-state dependency. The
-harness makes the already-cached, locked Rust packages available as a temporary
-local Cargo source, then acquires the local Git repository before the locked
-consumer build switches to offline mode; no remote repository is configured or
-involved.
+`just check` is the fast, offline source/control-plane gate once the pinned Rust
+dependencies are cached. It does not require or extract native bytes. Native
+runtime, ABI, resolver, and cold-consumer proof is explicit: pass an untracked
+core Linux x86_64 archive and its trusted lowercase SHA-256 to `just
+verify-artifact`. The archive can be built at this revision with `just build
+core linux-x86_64`, using the producer-recorded SHA-256, or be an immutable
+release/workflow artifact accompanied by its matching trusted audit checksum.
 
 The tested Rust-only contract excludes downstream C and C++ compilation. Rust
 still invokes the platform linker, and the target must provide the system
@@ -33,9 +31,6 @@ C or C++ source is not. The metadata check separately rejects a custom build
 target on the local `cxx` runtime and any `cc` or `cxx-build` package reachable
 from the bridge dependency graph. These checks are reusable by later artifact
 download, cache, offline, and release consumer jobs.
-Refresh `tests/fixtures/webrtc-core-linux-x86_64.tar.gz` from the matching
-`just build core linux-x86_64` output whenever the bridge or host artifact
-identity changes.
 
 `just build` validates the flavor, target, and host before it synchronizes the
 pinned sources, configures and compiles WebRTC, exports the static closure, and

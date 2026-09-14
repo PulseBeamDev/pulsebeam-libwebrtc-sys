@@ -556,13 +556,3 @@ mod ffi {
 pub fn bridge_identity() -> &'static str {
     ffi::bridge_identity()
 }
-
-#[cfg(test)]
-#[path = "../build_support/manifest.rs"]
-#[allow(dead_code)]
-mod manifest;
-
-#[cfg(test)]
-#[path = "../build_support/artifact.rs"]
-#[allow(dead_code)]
-mod artifact;

@@ -961,11 +961,26 @@ mod tests {
     }
 
     fn fixture_archive() -> Vec<u8> {
-        fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/webrtc-core-linux-x86_64.tar.gz"),
-        )
-        .unwrap()
+        let mut bytes = Vec::new();
+        let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, contents) in [
+            (
+                "manifest.json",
+                include_bytes!("../tests/fixtures/artifact-support-manifest.json").as_slice(),
+            ),
+            ("lib/libwebrtc.a", b"artifact-support-sentinel".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, Cursor::new(contents))
+                .unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        bytes
     }
 
     fn resolve_core(lock: &[u8]) -> Result<PathBuf, String> {
