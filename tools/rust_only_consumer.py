@@ -17,10 +17,12 @@ import tarfile
 import tempfile
 import threading
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT = ROOT / "tests/fixtures/webrtc-core-linux-x86_64.tar.gz"
 CONSUMER = ROOT / "consumer/rust-only"
+
+sys.path.insert(0, str(ROOT))
+from tools import write_artifact_lock
 
 
 class ProofError(Exception):
@@ -55,14 +57,33 @@ def clean_snapshot(destination: Path, download_url: str, artifact: Path) -> None
         shutil.copy2(source, output)
     lock_path = destination / "artifacts.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    entry = next(
-        item
-        for item in lock["artifacts"]
-        if item["cargo_target"] == "x86_64-unknown-linux-gnu"
-        and item["flavor"] == "core"
-    )
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    evidence = "1" * 64
+    assets = []
+    for entry in lock["artifacts"]:
+        if entry["artifact_target"] not in {"linux-x86_64", "linux-arm64"}:
+            continue
+        assets.append({
+            "name": entry["asset_name"],
+            "sha256": digest if entry["asset_name"] == "webrtc-core-linux-x86_64.tar.gz" else evidence,
+            "native_configuration_sha256": evidence,
+            "license_inventory_sha256": evidence,
+            "source_state": "pristine",
+            "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+        })
+    report = {
+        "schema_version": 1,
+        "scope": "linux",
+        "bridge": {"identity": lock["bridge_identity"]},
+        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"}, "depot_tools": {"revision": "fixture"}},
+        "assets": assets,
+    }
+    report_path = destination / "linux-audit.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "consumer-proof", report_path))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    entry = next(item for item in lock["artifacts"] if item["asset_name"] == "webrtc-core-linux-x86_64.tar.gz")
     entry["url"] = download_url
-    entry["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     run(["git", "init", "--quiet"], cwd=destination)
     run(["git", "config", "user.name", "Rust-only consumer proof"], cwd=destination)
