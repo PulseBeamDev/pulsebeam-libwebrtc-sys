@@ -35,6 +35,7 @@ check:
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_justfile_input_retrieval.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
+    python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
@@ -286,6 +287,38 @@ _export-predicate-failed flavor target invariant expected actual:
     printf 'export predicate failed: target=%s flavor=%s invariant=%s expected=%s actual=%s\n' "{{ target }}" "{{ flavor }}" "{{ invariant }}" "{{ expected }}" "{{ actual }}" >&2
     exit 1
 
+_export-static-closure flavor target src out src_native out_native archives objects:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gn=$(just --justfile "{{ root }}/Justfile" _gn)
+    base=$(mktemp); extra=$(mktemp); trap 'rm -f "$base" "$extra"' EXIT
+    { printf '%s\n' //:webrtc; "$gn" desc --root="{{ src_native }}" "{{ out_native }}" //:webrtc deps --all; } | LC_ALL=C sort -u > "$base"
+    while read -r root_label; do { printf '%s\n' "$root_label"; "$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$root_label" deps --all; }; done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}") | LC_ALL=C sort -u > "$extra"
+    gn_outputs() {
+      local label="$1" output
+      if ! output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" outputs 2>&1); then
+        just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label: $output"
+      fi
+      printf '%s\n' "$output"
+    }
+    static_archives() { awk '/\.(a|lib)$/ && $0 !~ /libprotoc_lib\.(a|lib)$/ {print}'; }
+    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | static_archives | LC_ALL=C sort -u > "{{ archives }}"
+    if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then
+      gn_outputs //buildtools/third_party/libc++ | static_archives >> "{{ archives }}"
+      if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+        label=//buildtools/third_party/libc++abi
+        if ! source_output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" sources 2>&1); then
+          just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "GN source query failed for $label: $source_output"
+        fi
+        object_dir="{{ out }}/obj/buildtools/third_party/libc++abi"
+        if test -d "$object_dir"; then find "$object_dir" -type f -name '*.o' -print | LC_ALL=C sort -u >> "{{ objects }}"; fi
+        test -s "{{ objects }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" 'no libc++abi object output'
+      else
+        gn_outputs //buildtools/third_party/libc++abi | static_archives >> "{{ archives }}"
+      fi
+    fi
+    test -s "{{ archives }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
+
 _export flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -293,17 +326,9 @@ _export flavor target:
     stage="{{ work }}/package/webrtc-{{ flavor }}-{{ target }}"; archive="{{ dist }}/webrtc-{{ flavor }}-{{ target }}.tar.gz"
     gn=$(just --justfile "{{ root }}/Justfile" _gn); ar=$(just --justfile "{{ root }}/Justfile" _native-path "$src/third_party/llvm-build/Release+Asserts/bin/llvm-ar")
     rm -rf "$stage"; mkdir -p "$stage/include" "$stage/lib" "$stage/LICENSES" "{{ dist }}"
-    base=$(mktemp); extra=$(mktemp); archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
-    { printf '%s\n' //:webrtc; "$gn" desc --root="$src_native" "$out_native" //:webrtc deps --all; } | LC_ALL=C sort -u > "$base"
-    while read -r root_label; do { printf '%s\n' "$root_label"; "$gn" desc --root="$src_native" "$out_native" "$root_label" deps --all; }; done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}") | LC_ALL=C sort -u > "$extra"
-    gn_outputs() {
-      local label="$1"
-      "$gn" desc --root="$src_native" "$out_native" "$label" outputs || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN outputs for $label" "GN output query failed for $label"
-    }
-    { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | awk '/\.(a|lib)$/ && $0 !~ /libprotoc_lib\.(a|lib)$/ {print}' | LC_ALL=C sort -u > "$archives"
-    if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then gn_outputs //buildtools/third_party/libc++ >> "$archives"; gn_outputs //buildtools/third_party/libc++abi >> "$archives"; fi
+    archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
+    just --justfile "{{ root }}/Justfile" _export-static-closure "{{ flavor }}" "{{ target }}" "$src" "$out" "$src_native" "$out_native" "$archives" "$objects"
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
-    test -s "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
     roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
