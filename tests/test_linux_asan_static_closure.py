@@ -38,7 +38,17 @@ if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = failure && test "$label" = '//build
   echo 'GN fixture: libc++abi source metadata is unavailable' >&2
   exit 29
 fi
-if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = nonarchive && test "$what" = outputs; then
+if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = empty-libcxx && test "$label" = '//buildtools/third_party/libc++' && test "$what" = outputs; then
+  exit 0
+fi
+if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = nonarchive-libcxx && test "$label" = '//buildtools/third_party/libc++' && test "$what" = outputs; then
+  printf '%s\\n' "$PWD/not-an-archive.txt"
+  exit 0
+fi
+if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = empty-libcxxabi && test "$label" = '//buildtools/third_party/libc++abi' && test "$what" = outputs; then
+  exit 0
+fi
+if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = nonarchive-libcxxabi && test "$label" = '//buildtools/third_party/libc++abi' && test "$what" = outputs; then
   printf '%s\\n' "$PWD/not-an-archive.txt"
   exit 0
 fi
@@ -113,23 +123,24 @@ esac
         self.assertIn(f"actual=GN output query failed for {LABEL}", result.stderr)
 
     def test_ordinary_linux_closure_still_uses_libcxxabi_archive(self):
-        with tempfile.TemporaryDirectory() as temp:
-            directory = Path(temp)
-            src, out, _ = self._workspace(directory)
-            archives = directory / "archives"
-            objects = directory / "objects"
-            runtime = directory / "runtime"
-            runtime.mkdir()
-            result = subprocess.run(
-                ["just", "--justfile", str(JUSTFILE), "_export-static-closure", "core", "linux-x86_64", str(src), str(out), str(src), str(out), str(archives), str(objects)],
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, "WEBRTC_WORK": str(directory), "XDG_RUNTIME_DIR": str(runtime)},
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("libc++abi/libfixture.a", archives.read_text())
-            self.assertFalse(objects.exists())
+        for flavor in ("core", "native"):
+            with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                src, out, _ = self._workspace(directory)
+                archives = directory / "archives"
+                objects = directory / "objects"
+                runtime = directory / "runtime"
+                runtime.mkdir()
+                result = subprocess.run(
+                    ["just", "--justfile", str(JUSTFILE), "_export-static-closure", flavor, "linux-x86_64", str(src), str(out), str(src), str(out), str(archives), str(objects)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "WEBRTC_WORK": str(directory), "XDG_RUNTIME_DIR": str(runtime)},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("libc++abi/libfixture.a", archives.read_text())
+                self.assertFalse(objects.exists())
 
     def test_genuine_gn_failure_preserves_diagnostic_context(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,14 +149,35 @@ esac
         for expected in ("GN fixture: libc++abi source metadata is unavailable", "target=linux-x86_64", "flavor=core", "invariant=static-closure", f"expected=GN sources for {LABEL}", f"actual=GN source query failed for {LABEL}"):
             self.assertIn(expected, result.stderr)
 
-    def test_empty_or_nonarchive_closure_is_rejected(self):
-        with tempfile.TemporaryDirectory() as temp:
-            directory = Path(temp)
-            result = self._closure("native", directory, "nonarchive")
-            archives = (directory / "archives").read_text() if (directory / "archives").exists() else "missing"
-            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr + archives)
-        self.assertIn("invariant=static-closure", result.stderr)
-        self.assertIn("actual=no matching .a or .lib output", result.stderr)
+    def test_required_libcxx_output_is_not_silently_omitted(self):
+        for mode in ("empty-libcxx", "nonarchive-libcxx"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                result = self._closure("native", Path(temp), mode)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("invariant=static-closure", result.stderr)
+                self.assertIn("expected=a static archive output for //buildtools/third_party/libc++", result.stderr)
+                self.assertIn("actual=no matching .a or .lib output for //buildtools/third_party/libc++", result.stderr)
+
+    def test_required_ordinary_libcxxabi_output_is_not_silently_omitted(self):
+        for mode in ("empty-libcxxabi", "nonarchive-libcxxabi"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                src, out, _ = self._workspace(directory)
+                archives = directory / "archives"
+                objects = directory / "objects"
+                runtime = directory / "runtime"
+                runtime.mkdir()
+                result = subprocess.run(
+                    ["just", "--justfile", str(JUSTFILE), "_export-static-closure", "native", "linux-x86_64", str(src), str(out), str(src), str(out), str(archives), str(objects)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "WEBRTC_WORK": str(directory), "PULSEBEAM_TEST_GN_MODE": mode, "XDG_RUNTIME_DIR": str(runtime)},
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("invariant=static-closure", result.stderr)
+                self.assertIn("expected=a static archive output for //buildtools/third_party/libc++abi", result.stderr)
+                self.assertIn("actual=no matching .a or .lib output for //buildtools/third_party/libc++abi", result.stderr)
 
 
 if __name__ == "__main__":

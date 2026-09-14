@@ -302,9 +302,16 @@ _export-static-closure flavor target src out src_native out_native archives obje
       printf '%s\n' "$output"
     }
     static_archives() { awk '/\.(a|lib)$/ && $0 !~ /libprotoc_lib\.(a|lib)$/ {print}'; }
+    required_static_archives() {
+      local label="$1" output archives
+      output=$(gn_outputs "$label")
+      archives=$(printf '%s\n' "$output" | static_archives)
+      test -n "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "a static archive output for $label" "no matching .a or .lib output for $label"
+      printf '%s\n' "$archives"
+    }
     { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | static_archives | LC_ALL=C sort -u > "{{ archives }}"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then
-      gn_outputs //buildtools/third_party/libc++ | static_archives >> "{{ archives }}"
+      required_static_archives //buildtools/third_party/libc++ >> "{{ archives }}"
       if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
         label=//buildtools/third_party/libc++abi
         if ! source_output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" sources 2>&1); then
@@ -314,7 +321,7 @@ _export-static-closure flavor target src out src_native out_native archives obje
         if test -d "$object_dir"; then find "$object_dir" -type f -name '*.o' -print | LC_ALL=C sort -u >> "{{ objects }}"; fi
         test -s "{{ objects }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" 'no libc++abi object output'
       else
-        gn_outputs //buildtools/third_party/libc++abi | static_archives >> "{{ archives }}"
+        required_static_archives //buildtools/third_party/libc++abi >> "{{ archives }}"
       fi
     fi
     test -s "{{ archives }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
@@ -360,7 +367,7 @@ _export flavor target:
     python3 "$root_native/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "$root_native/src/lib.rs" --generated-header "$stage_native/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc")" --toolchain-file "$(just --justfile "{{ root }}/Justfile" _native-path "$toolchain_file")" --gn-args-file "$out_native/pulsebeam-gn-args.txt" --defines-file "$(just --justfile "{{ root }}/Justfile" _native-path "$definitions_file")" --licenses "$stage_native/LICENSES" --output "$stage_native/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
-    verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$base" "$extra" "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
+    verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
     python3 "$root_native/tools/cxx_provenance.py" "$(just --justfile "{{ root }}/Justfile" _native-path "$verify")"
     just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$verify"
     just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$verify"
