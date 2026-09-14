@@ -52,6 +52,14 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
                     self.assertEqual(self._link_flags_policy(target, flavor), expected)
                     self.assertEqual(write_artifact_manifest.links_for(flavor, target), self._manifest_policy(target, flavor))
 
+    def test_link_flags_policy_rejects_trailing_linux_arm64_library(self):
+        recipe = self._recipe("_link-flags flavor target:", "_cpp-smoke flavor target kit:")
+        branch = self._case_branch(recipe, "linux-arm64")
+        mutated_recipe = recipe.replace(branch, branch + "; flags+=' -lbad'", 1)
+
+        with self.assertRaisesRegex(AssertionError, "unparseable link policy"):
+            self._link_flags_policy("linux-arm64", "core", mutated_recipe)
+
     def test_affected_targets_bind_complete_ordered_policies_to_smoke_branches(self):
         cxx = self._recipe("_cpp-smoke flavor target kit:", "_rust-smoke flavor target kit:")
         rust = self._recipe("_rust-smoke flavor target kit:", "_runtime-test flavor target archive:")
@@ -162,10 +170,11 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
         return cls._case_branch(recipe, pattern)
 
     @staticmethod
-    def _link_flags_policy(target, flavor):
-        recipe = CrossTargetRuntimePolicyTests._recipe("_link-flags flavor target:", "_cpp-smoke flavor target kit:")
+    def _link_flags_policy(target, flavor, recipe=None):
+        if recipe is None:
+            recipe = CrossTargetRuntimePolicyTests._recipe("_link-flags flavor target:", "_cpp-smoke flavor target kit:")
         branch = CrossTargetRuntimePolicyTests._case_branch(recipe, CrossTargetRuntimePolicyTests._target_pattern(target))
-        match = re.match(r"flags='(?P<core>[^']+)'(?:; test \"\{\{ flavor \}\}\" = core \|\| flags\+=' (?P<native>[^']+)')?", branch)
+        match = re.fullmatch(r"flags='(?P<core>[^']+)'(?:; test \"\{\{ flavor \}\}\" = core \|\| flags\+=' (?P<native>[^']+)')?", branch)
         if match is None:
             raise AssertionError(f"unparseable link policy for {target}: {branch}")
         return match.group("core") if flavor == "core" or match.group("native") is None else match.group("core") + " " + match.group("native")
