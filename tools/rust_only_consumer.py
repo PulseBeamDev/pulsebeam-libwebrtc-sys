@@ -154,6 +154,7 @@ def cold_consumer_environment(marker: Path, sentinel_directory: Path, work: Path
         sentinel.chmod(0o755)
         sentinels[language] = str(sentinel)
     environment = os.environ.copy()
+    environment.pop("PULSEBEAM_WEBRTC_SYS_SKIP_LINK", None)
     for tool in ("gn", "ninja"):
         sentinel = sentinel_directory / tool
         sentinel.write_text(
@@ -265,9 +266,9 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
 
             vendor = temporary_root / "registry"
             bootstrap_environment = os.environ.copy()
-            bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
+            bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
             cargo_config = run(
-                ["cargo", "vendor", "--quiet", "--locked", str(vendor)],
+                ["cargo", "vendor", "--locked", str(vendor)],
                 cwd=ROOT,
                 env=bootstrap_environment,
                 capture=True,
@@ -408,6 +409,57 @@ def validate_released(repository: str, revision: str, target: str, flavor: str, 
         raise ProofError(f"selected {asset_name} has an invalid digest")
 
 
+def prove_released_fixture(
+    repository: str,
+    revision: str,
+    target: str,
+    flavor: str,
+    message: str,
+    cargo_config: str | None = None,
+    cargo_target_dir: Path | None = None,
+) -> None:
+    """Exercise released-consumer mechanics against an isolated Git/HTTP fixture.
+
+    The public CLI validates its canonical repository and checked-in public lock
+    before calling any proof mechanics. This helper intentionally accepts the
+    temporary fixture coordinates used by focused tests.
+    """
+    cargo_target, _ = coordinate(target, flavor)
+    require_host(target)
+    with tempfile.TemporaryDirectory(prefix="pulsebeam-rust-only-released-fixture-") as temporary:
+        temporary_root = Path(temporary)
+        bootstrap_environment = os.environ.copy()
+        bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+        if cargo_config is None:
+            vendor = temporary_root / "registry"
+            cargo_config = run(
+                ["cargo", "vendor", "--locked", str(vendor)],
+                cwd=ROOT,
+                env=bootstrap_environment,
+                capture=True,
+            ).stdout
+        consumer = temporary_root / "consumer"
+        write_consumer(consumer, repository, revision, target, flavor, cargo_config)
+        marker = temporary_root / "compiler-invocations"
+        work = temporary_root / "no-producer-work"
+        environment = cold_consumer_environment(marker, temporary_root / "consumer-sentinels", work, cargo_target)
+        environment["CARGO_HOME"] = bootstrap_environment["CARGO_HOME"]
+        environment["CARGO_TARGET_DIR"] = str(cargo_target_dir or temporary_root / "target")
+        environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-cache")
+        metadata = run(
+            ["cargo", "metadata", "--format-version=1"],
+            cwd=consumer,
+            env=environment,
+            capture=True,
+        ).stdout
+        validate_consumer_metadata(metadata, temporary_root)
+        expect_failure(["cargo", "run", "--locked"], cwd=consumer, env=environment, message=message)
+        if (work / "checkout").exists() or (work / "depot_tools").exists():
+            raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
+        if marker.exists():
+            raise ProofError(f"C/C++ compiler sentinel was invoked:\n{marker.read_text(encoding='utf-8').strip()}")
+
+
 def prove_released(repository: str, revision: str, target: str, flavor: str) -> None:
     cargo_target, asset_name = coordinate(target, flavor)
     require_host(target)
@@ -416,8 +468,8 @@ def prove_released(repository: str, revision: str, target: str, flavor: str) -> 
         temporary_root = Path(temporary)
         vendor = temporary_root / "registry"
         bootstrap_environment = os.environ.copy()
-        bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
-        cargo_config = run(["cargo", "vendor", "--quiet", "--locked", str(vendor)], cwd=ROOT, env=bootstrap_environment, capture=True).stdout
+        bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+        cargo_config = run(["cargo", "vendor", "--locked", str(vendor)], cwd=ROOT, env=bootstrap_environment, capture=True).stdout
         consumer = temporary_root / "consumer"
         write_consumer(consumer, repository, revision, target, flavor, cargo_config)
         marker = temporary_root / "compiler-invocations"
@@ -458,32 +510,6 @@ def prove_released(repository: str, revision: str, target: str, flavor: str) -> 
         environment.pop("CARGO_NET_OFFLINE")
         environment["CARGO_TARGET_DIR"] = str(temporary_root / "repeat-download-target")
         run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
-
-        lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
-        entry = next(item for item in lock["artifacts"] if item["asset_name"] == asset_name)
-        manifest_path = cache / entry["sha256"] / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for field, wrong, expected_message in [
-            ("bridge_identity", "wrong-bridge", "wrong bridge identity"),
-            ("flavor", "core" if flavor == "native" else "native", "wrong flavor"),
-            ("target", "linux-arm64" if target == "linux-x86_64" else "linux-x86_64", "wrong target"),
-        ]:
-            mismatch = json.loads(json.dumps(manifest))
-            if field == "bridge_identity":
-                mismatch["bridge"]["identity"] = wrong
-            else:
-                mismatch["artifact"][field] = wrong
-            manifest_path.write_text(json.dumps(mismatch), encoding="utf-8")
-            environment["CARGO_NET_OFFLINE"] = "true"
-            environment["CARGO_TARGET_DIR"] = str(temporary_root / f"mismatch-{field}-target")
-            expect_failure(
-                ["cargo", "run", "--locked", "--offline"],
-                cwd=consumer,
-                env=environment,
-                message=expected_message,
-            )
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        environment.pop("CARGO_NET_OFFLINE")
 
         build_scripts = temporary_root / "repeat-download-target" / "debug" / "build"
         build_script = next(build_scripts.glob("pulsebeam-webrtc-sys-*/build-script-build"), None)

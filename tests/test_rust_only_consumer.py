@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest import mock
 
@@ -18,6 +22,23 @@ SPEC.loader.exec_module(rust_only_consumer)
 
 
 class RustOnlyConsumerTests(unittest.TestCase):
+    def write_mismatched_archive(self, source: Path, destination: Path, field: str, value: str) -> None:
+        with tarfile.open(source, "r:gz") as input_archive, tarfile.open(destination, "w:gz") as output_archive:
+            for member in input_archive.getmembers():
+                content = input_archive.extractfile(member) if member.isfile() else None
+                if member.name == "manifest.json":
+                    assert content is not None
+                    manifest = json.loads(content.read())
+                    if field == "bridge_identity":
+                        manifest["bridge"]["identity"] = value
+                    else:
+                        manifest["artifact"][field] = value
+                    payload = json.dumps(manifest).encode("utf-8")
+                    member.size = len(payload)
+                    output_archive.addfile(member, io.BytesIO(payload))
+                else:
+                    output_archive.addfile(member, content)
+
     def test_renders_each_linux_coordinate(self):
         for target, flavor, cargo_target in [
             ("linux-x86_64", "core", "x86_64-unknown-linux-gnu"),
@@ -97,6 +118,48 @@ class RustOnlyConsumerTests(unittest.TestCase):
                 rust_only_consumer.prove_released(
                     rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "core"
                 )
+
+    def test_released_fixture_rejects_mismatched_archives(self):
+        source = ROOT / "dist/webrtc-core-linux-x86_64.tar.gz"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cargo_home = ROOT / ".work/cargo-home"
+            vendor = root / "registry"
+            cargo_config = subprocess.run(
+                ["cargo", "vendor", "--locked", str(vendor)],
+                cwd=ROOT,
+                env={**os.environ, "CARGO_HOME": str(cargo_home)},
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout
+            for field, value, message in [
+                ("bridge_identity", "wrong-bridge", "wrong bridge identity"),
+                ("flavor", "native", "wrong flavor"),
+                ("target", "linux-arm64", "wrong target"),
+            ]:
+                with self.subTest(field=field):
+                    artifact = root / "fixture.tar.gz"
+                    self.write_mismatched_archive(source, artifact, field, value)
+                    with tarfile.open(artifact, "r:gz") as archive:
+                        manifest_member = archive.getmember("manifest.json")
+                        manifest_file = archive.extractfile(manifest_member)
+                        assert manifest_file is not None
+                        manifest = json.loads(manifest_file.read())
+                    actual = manifest["bridge"]["identity"] if field == "bridge_identity" else manifest["artifact"][field]
+                    self.assertEqual(actual, value)
+                    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    with rust_only_consumer.ArtifactServer(artifact.read_bytes(), "webrtc-core-linux-x86_64.tar.gz") as server:
+                        repository = root / f"repository-{field}"
+                        repository.mkdir()
+                        revision = rust_only_consumer.clean_snapshot(
+                            repository, server.url, digest, "linux-x86_64", "core"
+                        )
+                        with mock.patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}):
+                            rust_only_consumer.prove_released_fixture(
+                                repository.resolve().as_uri(), revision, "linux-x86_64", "core", message,
+                                cargo_config,
+                            )
 
     def test_modes_do_not_accept_each_others_inputs(self):
         result = subprocess.run(
