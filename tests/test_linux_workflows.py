@@ -5,6 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "linux.yml"
+CONSUMER_WORKFLOW = ROOT / ".github" / "workflows" / "linux-consumer.yml"
 
 
 class LinuxWorkflowTests(unittest.TestCase):
@@ -117,6 +118,57 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("actions/attest-build-provenance@", publish)
         self.assertLess(publish.index("Attest final release assets"), publish.index("Reverify the complete attested draft"))
         self.assertLess(publish.index("Reverify the complete attested draft"), publish.index("Advertise only the verified complete Linux release"))
+
+    def _job(self, name):
+        start = self.contents.index(f"  {name}:")
+        following = re.search(r"\n  [^ \n][^\n]*:\n", self.contents[start + 1:])
+        end = len(self.contents) if following is None else start + 1 + following.start()
+        return self.contents[start:end]
+
+
+class LinuxConsumerWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contents = CONSUMER_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_dispatch_only_released_consumer_proof_is_read_only_and_native(self):
+        self.assertIn("  workflow_dispatch:\n", self.contents)
+        self.assertNotIn("  pull_request:\n", self.contents)
+        self.assertNotIn("  push:\n", self.contents)
+        self.assertIn("      revision:\n", self.contents)
+        self.assertIn("        required: true\n", self.contents)
+        self.assertIn("permissions:\n  contents: read\n", self.contents)
+        self.assertIn("^[0-9a-f]{40}$", self.contents)
+
+        consumer = self._job("released-consumer")
+        self.assertEqual(consumer.count("target: linux-"), 4)
+        self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", consumer)
+        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", consumer)
+        self.assertIn("ref: ${{ inputs.revision }}", consumer)
+        self.assertIn("just-version: 1.43.1", consumer)
+        self.assertIn("command -v podman", consumer)
+        self.assertIn("podman --version", consumer)
+        self.assertIn(".Host.Security.Rootless", consumer)
+        self.assertIn("just linux-image pulsebeam-linux-${{ inputs.revision }}", consumer)
+        self.assertIn("just linux-run pulsebeam-linux-${{ inputs.revision }} python3 -m tools.rust_only_consumer released", consumer)
+        self.assertIn("https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", consumer)
+        self.assertIn("--revision '${{ inputs.revision }}'", consumer)
+
+        aggregate = self._job("linux-consumer")
+        self.assertIn("needs: released-consumer", aggregate)
+        self.assertIn("if: always()", aggregate)
+        self.assertIn('"released-consumer=${{ needs.released-consumer.result }}"', aggregate)
+        self.assertIn('test "${result#*=}" = success', aggregate)
+
+        forbidden = (
+            "apt", "docker", "podman push", "podman save", "podman load", "qemu", "binfmt",
+            "--privileged", "podman.sock", "podman --remote", "container_host", "container:",
+            "tools/linux_container.py", "upload-artifact", "attest", "gh release",
+        )
+        lowered = self.contents.lower()
+        for token in forbidden:
+            with self.subTest(token=token):
+                self.assertNotIn(token, lowered)
 
     def _job(self, name):
         start = self.contents.index(f"  {name}:")
