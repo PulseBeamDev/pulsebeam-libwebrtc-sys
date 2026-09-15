@@ -56,6 +56,24 @@ class LinuxContainerTests(unittest.TestCase):
                     ["build", "--file", str(CONTAINERFILE), "--tag", "example:test", str(ROOT)],
                 )
 
+    def test_image_arguments_are_shell_data_and_rejected_engines_have_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            marker = temp_path / "expanded"
+            image = f"example:$(touch {marker})"
+            command = self._invoke_engine(temp_path, "podman", "linux-image", "podman", image)
+            self.assertEqual(
+                command,
+                ["build", "--file", str(CONTAINERFILE), "--tag", image, str(ROOT)],
+            )
+            self.assertFalse(marker.exists())
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            result = self._run(temp_path, "invalid", "linux-image", "invalid", "example:test")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((temp_path / "engine-command.json").exists())
+
     def test_run_preserves_arguments_and_uses_only_allowed_environment(self):
         for engine, namespace_args in (("docker", []), ("podman", ["--userns=keep-id"])):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temp:

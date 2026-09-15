@@ -83,11 +83,12 @@ refresh-cxx:
     python3 "{{ root }}/tools/cxx_import.py" refresh
 
 # Build the native Linux development image with an explicit local engine and tag.
+[positional-arguments]
 linux-image engine image:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{ engine }}" in docker|podman) ;; *) echo "unsupported container engine: {{ engine }}" >&2; exit 1;; esac
-    "{{ engine }}" build --file "{{ root }}/Containerfile" --tag "{{ image }}" "{{ root }}"
+    case "$1" in docker|podman) ;; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
+    exec "$1" build --file "{{ root }}/Containerfile" --tag "$2" "{{ root }}"
 
 # Run one command in the native Linux development image with caller-owned outputs.
 [positional-arguments]
