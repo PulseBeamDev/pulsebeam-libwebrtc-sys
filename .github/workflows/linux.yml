@@ -1,0 +1,192 @@
+name: Linux automatic qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Reserved release tag; qualification only in this workflow revision
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: linux-qualification-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Linux control plane
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Run source and control-plane checks
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just check
+
+  linux-build:
+    name: Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Build and link-smoke the native artifact
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  linux-runtime:
+    name: Linux runtime (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: linux-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist
+      - name: Run environment, network, signaling, data-channel, video, and teardown tests
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
+
+  lifetime-sanitizers:
+    name: ASan lifetime tests (${{ matrix.flavor }}, linux-x86_64)
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [core, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      PULSEBEAM_WEBRTC_SANITIZER: address
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Build ASan artifact and run lifetime-sensitive suite
+        run: |
+          just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
+          just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
+
+  linux-qualification:
+    needs: [validate, linux-build, linux-runtime, lifetime-sanitizers]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Report Linux qualification evidence
+        shell: bash
+        run: |
+          results=(
+            "validate=${{ needs.validate.result }}"
+            "linux-build=${{ needs.linux-build.result }}"
+            "linux-runtime=${{ needs.linux-runtime.result }}"
+            "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
+          )
+          printf '%s\n' "${results[@]}"
+          for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
