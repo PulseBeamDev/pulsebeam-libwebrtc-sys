@@ -90,7 +90,7 @@ class LinuxPublicationTests(unittest.TestCase):
                 publication.plan(bundle, "absent", None, repository="fork/pulsebeam-libwebrtc-sys")
 
     def test_workflow_finalizes_only_after_attestation_reverification(self):
-        workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+        workflow = Path(".github/workflows/linux.yml").read_text(encoding="utf-8")
         publish = workflow[workflow.index("  publish-linux:"):]
         self.assertIn('test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY"', publish)
         self.assertIn('gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}"', publish)

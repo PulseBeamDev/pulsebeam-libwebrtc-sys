@@ -56,23 +56,60 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just build", asan)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test", asan)
 
-    def test_aggregate_is_fail_closed_and_no_release_or_runtime_escape_hatch_exists(self):
+    def test_aggregate_is_fail_closed_and_no_runtime_escape_hatch_exists(self):
         aggregate = self._job("linux-qualification")
-        self.assertIn("needs: [validate, linux-build, linux-runtime, lifetime-sanitizers]", aggregate)
+        self.assertIn("needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]", aggregate)
         self.assertIn("if: always()", aggregate)
-        for job in ("validate", "linux-build", "linux-runtime", "lifetime-sanitizers"):
+        for job in ("validate", "linux-build", "linux-runtime", "lifetime-sanitizers", "linux-audit", "candidate-consumer"):
             self.assertIn(f'"{job}=${{{{ needs.{job}.result }}}}"', aggregate)
         self.assertIn('test "${result#*=}" = success', aggregate)
         forbidden = (
             "apt", "docker", "podman push", "podman save", "podman load", "qemu", "binfmt",
-            "--privileged", "podman.sock", "--remote", "CONTAINER_HOST", "container:",
-            "tools/linux_container.py", "linux-release-bundle", "publish-linux", "attest",
-            "gh release", "id-token: write", "contents: write",
+            "--privileged", "podman.sock", "podman --remote", "CONTAINER_HOST", "container:",
+            "tools/linux_container.py",
         )
         lowered = self.contents.lower()
         for token in forbidden:
             with self.subTest(token=token):
                 self.assertNotIn(token, lowered)
+
+    def test_closed_audit_and_cold_candidate_consumers_use_matching_native_images(self):
+        audit = self._job("linux-audit")
+        consumer = self._job("candidate-consumer")
+        self.assertIn("needs: linux-build", audit)
+        self.assertIn("name: linux-audit", audit)
+        self.assertIn("SHA256SUMS", audit)
+        self.assertIn("LINUX-RELEASE-MANIFEST.json", audit)
+        self.assertIn("tools.audit_release", audit)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", audit)
+        self.assertIn("needs: [linux-build, linux-audit]", consumer)
+        self.assertEqual(consumer.count("target: linux-"), 4)
+        self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", consumer)
+        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", consumer)
+        self.assertIn("tools.rust_only_consumer candidate", consumer)
+        self.assertIn("SHA256SUMS", consumer)
+        self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", consumer)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", consumer)
+
+    def test_explicit_tag_publication_is_serialized_and_mutation_is_isolated(self):
+        bundle = self._job("linux-release-bundle")
+        publish = self._job("publish-linux")
+        condition = "github.event_name == 'workflow_dispatch' && inputs.tag != ''"
+        self.assertIn(condition, bundle)
+        self.assertIn(condition, publish)
+        self.assertIn("needs: linux-qualification", bundle)
+        self.assertIn("needs: [linux-qualification, linux-release-bundle]", publish)
+        self.assertIn("cancel-in-progress: false", self.contents)
+        self.assertIn("contents: write", publish)
+        self.assertIn("id-token: write", publish)
+        self.assertIn("attestations: write", publish)
+        self.assertNotIn("contents: write", bundle)
+        self.assertIn("tools.linux_release_publication prepare", bundle)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", bundle)
+        self.assertIn("tools.linux_release_publication plan", publish)
+        self.assertIn("actions/attest-build-provenance@", publish)
+        self.assertLess(publish.index("Attest final release assets"), publish.index("Reverify the complete attested draft"))
+        self.assertLess(publish.index("Reverify the complete attested draft"), publish.index("Advertise only the verified complete Linux release"))
 
     def _job(self, name):
         start = self.contents.index(f"  {name}:")

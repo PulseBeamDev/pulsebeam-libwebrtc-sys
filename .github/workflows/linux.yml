@@ -173,7 +173,7 @@ jobs:
           just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
 
   linux-qualification:
-    needs: [validate, linux-build, linux-runtime, lifetime-sanitizers]
+    needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -187,6 +187,267 @@ jobs:
             "linux-build=${{ needs.linux-build.result }}"
             "linux-runtime=${{ needs.linux-runtime.result }}"
             "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
+            "linux-audit=${{ needs.linux-audit.result }}"
+            "candidate-consumer=${{ needs.candidate-consumer.result }}"
           )
           printf '%s\n' "${results[@]}"
           for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
+
+  linux-audit:
+    needs: linux-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: '*-linux-*'
+          path: release-input
+          merge-multiple: true
+      - name: Audit exactly the four Linux archives
+        run: >-
+          just linux-run pulsebeam-linux-${{ github.sha }} bash -c
+          'expected=(webrtc-core-linux-x86_64.tar.gz webrtc-core-linux-arm64.tar.gz webrtc-native-linux-x86_64.tar.gz webrtc-native-linux-arm64.tar.gz);
+          test "$(find release-input -maxdepth 1 -type f -name "webrtc-*.tar.gz" -printf "%f\\n" | LC_ALL=C sort)" = "$(printf "%s\\n" "${expected[@]}" | LC_ALL=C sort)";
+          (cd release-input && printf "%s\\n" "${expected[@]}" | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS);
+          python3 -m tools.audit_release --scope linux --archives release-input --checksums release-input/SHA256SUMS --output release-input/LINUX-RELEASE-MANIFEST.json'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-audit
+          path: |
+            release-input/SHA256SUMS
+            release-input/LINUX-RELEASE-MANIFEST.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  candidate-consumer:
+    needs: [linux-build, linux-audit]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-audit
+          path: audit
+      - name: Prove the cold Rust consumer against the audited candidate
+        run: >-
+          just linux-run pulsebeam-linux-${{ github.sha }} bash -c
+          'archive="dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz";
+          digest="$(awk -v name="$(basename "$archive")" "$2 == name { print $1 }" audit/SHA256SUMS)";
+          test -n "$digest";
+          python3 -m tools.rust_only_consumer candidate --artifact "$archive" --sha256 "$digest" --target "${{ matrix.target }}" --flavor "${{ matrix.flavor }}"'
+
+  linux-release-bundle:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    needs: linux-qualification
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: '*-linux-*'
+          path: release-input
+          merge-multiple: true
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-audit
+          path: release-input
+      - name: Validate the requested immutable release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid tag' >&2; exit 1; }
+          tagged=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}") || { echo 'tag does not exist' >&2; exit 1; }
+          test "$tagged" = "$WORKFLOW_COMMIT" || { echo 'tag does not resolve to the workflow commit' >&2; exit 1; }
+          printf '%s' "$RELEASE_TAG" > release-input/.release-tag
+      - name: Construct one closed audited Linux publication bundle
+        run: >-
+          just linux-run pulsebeam-linux-${{ github.sha }} bash -c
+          'python3 -m tools.linux_release_publication prepare --archives release-input --checksums release-input/SHA256SUMS --audit release-input/LINUX-RELEASE-MANIFEST.json --tag "$(cat release-input/.release-tag)" --output linux-release'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-bundle
+          path: linux-release
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-linux:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    needs: [linux-qualification, linux-release-bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        shell: bash
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-release-bundle
+          path: release
+      - name: Classify the immutable release identity before mutation
+        id: publication-plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+          RUNTIME_REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY" || { echo "refusing publication from $RUNTIME_REPOSITORY; expected $CANONICAL_REPOSITORY" >&2; exit 1; }
+          set +e
+          gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
+          status=$?
+          set -e
+          if test "$status" -eq 0; then
+            sed -n '/^{/,$p' release-query > release.json
+            if test "$(python3 -c 'import json, sys; print(str(json.load(sys.stdin)["draft"]).lower())' < release.json)" = true; then release_state=draft; else release_state=published; fi
+            python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
+            mkdir observed
+            gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed
+          elif head -n 1 release-query | grep -Eq 'HTTP/[0-9.]+ 404'; then
+            release_state=absent
+          else
+            cat release-query >&2
+            exit 1
+          fi
+          observed_args=()
+          if test "$release_state" != absent; then observed_args=(--observed observed --remote-names remote-names.json); fi
+          just linux-run pulsebeam-linux-${{ github.sha }} python3 -m tools.linux_release_publication plan --bundle release --release-state "$release_state" --repository "$RUNTIME_REPOSITORY" "${observed_args[@]}" --output publication-plan.json
+          echo "finalize=$(python3 -c 'import json; print(str(json.load(open("publication-plan.json"))["finalize"]).lower())')" >> "$GITHUB_OUTPUT"
+      - name: Create a non-advertised draft and add only verified missing assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: |
+          create=$(python3 -c 'import json; print(json.load(open("publication-plan.json"))["create_draft"])')
+          if test "$create" = True; then gh release create "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft --verify-tag --title "$RELEASE_TAG"; fi
+          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
+      - name: Reverify the full draft inventory without replacement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: |
+          mkdir observed-final
+          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-final-release.json
+          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-final-release.json > observed-final-names.json
+          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-final
+          just linux-run pulsebeam-linux-${{ github.sha }} python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-final --remote-names observed-final-names.json --output final-publication-plan.json
+          test "$(python3 -c 'import json; print(json.load(open("final-publication-plan.json"))["upload"])')" = '[]'
+      - name: Attest final release assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: release/*
+      - name: Reverify the complete attested draft immediately before advertisement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: |
+          mkdir observed-attested
+          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-attested-release.json
+          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-attested-release.json > observed-attested-names.json
+          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-attested
+          just linux-run pulsebeam-linux-${{ github.sha }} python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-attested --remote-names observed-attested-names.json --output attested-publication-plan.json
+          test "$(python3 -c 'import json; print(json.load(open("attested-publication-plan.json"))["upload"])')" = '[]'
+      - name: Advertise only the verified complete Linux release
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: gh release edit "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft=false --generate-notes
