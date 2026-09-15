@@ -220,6 +220,16 @@ def expect_failure(command: list[str], *, cwd: Path, env: dict[str, str], messag
         raise ProofError(f"failure did not contain {message!r}:\n{output}")
 
 
+def validate_consumer_metadata(metadata: str, temporary_root: Path) -> None:
+    """Run the repository's downstream consumer graph policy on Cargo output."""
+    metadata_path = temporary_root / "metadata.json"
+    metadata_path.write_text(metadata, encoding="utf-8")
+    run(
+        [sys.executable, str(ROOT / "tools/check_consumer_metadata.py"), str(metadata_path)],
+        cwd=ROOT,
+    )
+
+
 def write_consumer(destination: Path, repository: str, revision: str, target: str, flavor: str, cargo_config: str) -> None:
     shutil.copytree(CONSUMER / "src", destination / "src")
     (destination / "Cargo.toml").write_text(render_consumer_manifest(repository, revision, target, flavor), encoding="utf-8")
@@ -278,12 +288,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
                 env=environment,
                 capture=True,
             ).stdout
-            metadata_path = temporary_root / "metadata.json"
-            metadata_path.write_text(metadata, encoding="utf-8")
-            run(
-                [sys.executable, str(ROOT / "tools/check_consumer_metadata.py"), str(metadata_path)],
-                cwd=ROOT,
-            )
+            validate_consumer_metadata(metadata, temporary_root)
 
             # The release proof starts with no override, artifact cache, or target cache.
             run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
@@ -404,7 +409,7 @@ def validate_released(repository: str, revision: str, target: str, flavor: str, 
 
 
 def prove_released(repository: str, revision: str, target: str, flavor: str) -> None:
-    cargo_target, _ = coordinate(target, flavor)
+    cargo_target, asset_name = coordinate(target, flavor)
     require_host(target)
     validate_released(repository, revision, target, flavor)
     with tempfile.TemporaryDirectory(prefix="pulsebeam-rust-only-released-") as temporary:
@@ -420,8 +425,76 @@ def prove_released(repository: str, revision: str, target: str, flavor: str) -> 
         environment["CARGO_HOME"] = bootstrap_environment["CARGO_HOME"]
         environment["CARGO_TARGET_DIR"] = str(temporary_root / "target")
         environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-cache")
-        run(["cargo", "metadata", "--format-version=1"], cwd=consumer, env=environment)
+        metadata = run(
+            ["cargo", "metadata", "--format-version=1"],
+            cwd=consumer,
+            env=environment,
+            capture=True,
+        ).stdout
+        validate_consumer_metadata(metadata, temporary_root)
         run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+        work = Path(environment["WEBRTC_WORK"])
+        if (work / "checkout").exists() or (work / "depot_tools").exists():
+            raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
+
+        # A released archive must be reusable offline after its verified initial download.
+        environment["CARGO_NET_OFFLINE"] = "true"
+        environment["CARGO_TARGET_DIR"] = str(temporary_root / "warm-target")
+        run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
+
+        cold_environment = environment.copy()
+        cold_environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-offline-cache")
+        cold_environment["CARGO_TARGET_DIR"] = str(temporary_root / "cold-offline-target")
+        expect_failure(
+            ["cargo", "run", "--locked", "--offline"],
+            cwd=consumer,
+            env=cold_environment,
+            message="offline artifact cache miss",
+        )
+
+        # A corrupt archive is discarded and downloaded again when the network is available.
+        cache = Path(environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"])
+        (cache / asset_name).write_bytes(b"corrupt released artifact")
+        environment.pop("CARGO_NET_OFFLINE")
+        environment["CARGO_TARGET_DIR"] = str(temporary_root / "repeat-download-target")
+        run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+
+        lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
+        entry = next(item for item in lock["artifacts"] if item["asset_name"] == asset_name)
+        manifest_path = cache / entry["sha256"] / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for field, wrong, expected_message in [
+            ("bridge_identity", "wrong-bridge", "wrong bridge identity"),
+            ("flavor", "core" if flavor == "native" else "native", "wrong flavor"),
+            ("target", "linux-arm64" if target == "linux-x86_64" else "linux-x86_64", "wrong target"),
+        ]:
+            mismatch = json.loads(json.dumps(manifest))
+            if field == "bridge_identity":
+                mismatch["bridge"]["identity"] = wrong
+            else:
+                mismatch["artifact"][field] = wrong
+            manifest_path.write_text(json.dumps(mismatch), encoding="utf-8")
+            environment["CARGO_NET_OFFLINE"] = "true"
+            environment["CARGO_TARGET_DIR"] = str(temporary_root / f"mismatch-{field}-target")
+            expect_failure(
+                ["cargo", "run", "--locked", "--offline"],
+                cwd=consumer,
+                env=environment,
+                message=expected_message,
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        environment.pop("CARGO_NET_OFFLINE")
+
+        build_scripts = temporary_root / "repeat-download-target" / "debug" / "build"
+        build_script = next(build_scripts.glob("pulsebeam-webrtc-sys-*/build-script-build"), None)
+        if build_script is None:
+            raise ProofError("released consumer did not produce a pulsebeam-webrtc-sys build script")
+        expect_failure(
+            [str(build_script)],
+            cwd=consumer,
+            env={**environment, "TARGET": "x86_64-unknown-linux-musl"},
+            message="unsupported Cargo target x86_64-unknown-linux-musl",
+        )
         if marker.exists():
             raise ProofError(f"C/C++ compiler sentinel was invoked:\n{marker.read_text(encoding='utf-8').strip()}")
 

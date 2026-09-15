@@ -60,6 +60,13 @@ class RustOnlyConsumerTests(unittest.TestCase):
                 rust_only_consumer.validate_released(
                     rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
                 )
+            lock["artifacts"][1]["url"] = None
+            lock["artifacts"][1]["sha256"] = None
+            path.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaisesRegex(rust_only_consumer.ProofError, "unavailable"):
+                rust_only_consumer.validate_released(
+                    rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
+                )
 
     def test_rejects_host_that_does_not_match_selection(self):
         with mock.patch.object(rust_only_consumer.platform, "system", return_value="Linux"), mock.patch.object(
@@ -67,6 +74,29 @@ class RustOnlyConsumerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(rust_only_consumer.ProofError, "does not match"):
                 rust_only_consumer.require_host("linux-arm64")
+
+    def test_released_rejects_consumer_metadata_graph_failure(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            rust_only_consumer, "require_host"
+        ), mock.patch.object(rust_only_consumer, "validate_released"), mock.patch.object(
+            rust_only_consumer, "run"
+        ) as run:
+            def invoke(command, **_kwargs):
+                if command[:2] == ["cargo", "vendor"]:
+                    return subprocess.CompletedProcess(command, 0, "")
+                if command[:2] == ["cargo", "metadata"]:
+                    return subprocess.CompletedProcess(command, 0, '{"packages": []}')
+                if command[0] == sys.executable:
+                    metadata = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+                    self.assertEqual(metadata, {"packages": []})
+                    raise subprocess.CalledProcessError(1, command)
+                self.fail(f"released proof continued after rejected metadata: {command}")
+
+            run.side_effect = invoke
+            with self.assertRaises(subprocess.CalledProcessError):
+                rust_only_consumer.prove_released(
+                    rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "core"
+                )
 
     def test_modes_do_not_accept_each_others_inputs(self):
         result = subprocess.run(
