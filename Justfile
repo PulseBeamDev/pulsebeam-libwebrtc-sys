@@ -37,6 +37,7 @@ check:
     python3 -m unittest tests/test_apple_host_protoc_archive.py
     python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
+    python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
@@ -451,6 +452,7 @@ _bridge-objects flavor target stage definitions_file:
         suffix=o;;
       windows-x86_64) cxx="$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl"; include=(-I"$stage_native/include"); args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
     esac
+    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then args+=(-fsanitize=address); fi
     if test "{{ target }}" = windows-x86_64; then
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\execution.cc" "/Fo$bridge_native\\obj\\execution.$suffix"
@@ -494,6 +496,7 @@ _cpp-smoke flavor target kit:
     src="{{ work }}/checkout/src"; root_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ root }}"); src_native=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); kit_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ kit }}"); read -r -a link <<< "$(just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}")"
     read -r -a exported_defines <<< "$(sed -n 's/^cxx_defines=//p' "{{ kit }}/build.txt")"
     defs=(-std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness "${exported_defines[@]}")
+    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then defs+=(-fsanitize=address); fi
     case "{{ target }}" in
       linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
