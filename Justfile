@@ -152,12 +152,12 @@ _linux-toolchain target:
       revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision) || return 1
       test -n "$revision" && test -r "$toolchain/cr_build_revision" || return 1
       test "$(cat "$toolchain/cr_build_revision")" = "$revision" || return 1
-      for tool in "${tools[@]}"; do "$toolchain/bin/$tool" --version >/dev/null; done
+      for tool in "${tools[@]}"; do "$toolchain/bin/$tool" --version >/dev/null || return 1; done
     }
     rebuilt=accepted
     if ! validate; then
       test "{{ target }}" = linux-arm64 || { echo "invalid pinned Chromium LLVM toolchain: $toolchain" >&2; exit 1; }
-      python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --preserve-gcs-signature
+      PATH="{{ work }}/depot_tools:$PATH" python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --preserve-gcs-signature
       rebuilt=rebuilt
       validate || { echo "rebuilt pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
     fi

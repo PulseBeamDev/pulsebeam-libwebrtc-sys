@@ -66,6 +66,11 @@ class LinuxToolchainHostTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(fixture.build_log.exists())
 
+    def test_early_tool_version_failure_fails_closed(self):
+        with self._fixture("x86-64", version_fail_tool="clang") as fixture:
+            result = fixture.run("linux-x86_64")
+            self.assertNotEqual(result.returncode, 0)
+
     def test_arm64_build_and_post_build_validation_failures_propagate(self):
         with self._fixture("x86-64", build_exit=35) as fixture:
             result = fixture.run("linux-arm64")
@@ -102,12 +107,13 @@ class LinuxToolchainHostTests(unittest.TestCase):
 
 
 class ToolchainFixture:
-    def __init__(self, temporary, arch, rebuild_arch=None, problem=None, build_exit=0):
+    def __init__(self, temporary, arch, rebuild_arch=None, problem=None, build_exit=0, version_fail_tool=None):
         self.root = Path(temporary)
         self.work = self.root / "work"
         self.src = self.work / "checkout" / "src"
         self.bin = self.root / "bin"
         self.arch, self.rebuild_arch, self.problem, self.build_exit = arch, rebuild_arch, problem, build_exit
+        self.version_fail_tool = version_fail_tool
         self.tool_log = self.root / "tool.log"
         self.build_log = self.root / "build.log"
 
@@ -115,9 +121,11 @@ class ToolchainFixture:
         scripts = self.src / "tools" / "clang" / "scripts"
         scripts.mkdir(parents=True)
         self.bin.mkdir()
+        (self.work / "depot_tools").mkdir(parents=True)
         (scripts / "update.py").write_text("print('pinned-revision')\n", encoding="utf-8")
         (scripts / "build.py").write_text(
             "import os, pathlib, sys\n"
+            "if str(pathlib.Path(os.environ['WEBRTC_WORK'], 'depot_tools')) not in os.environ['PATH'].split(os.pathsep): raise SystemExit(49)\n"
             "pathlib.Path(os.environ['BUILD_LOG']).write_text('\\n'.join(sys.argv[1:]) + '\\n')\n"
             "pathlib.Path(os.environ['WEBRTC_WORK'], 'checkout', 'src', 'rebuilt').touch()\n"
             "raise SystemExit(int(os.environ['BUILD_EXIT']))\n",
@@ -131,7 +139,7 @@ class ToolchainFixture:
                 continue
             LinuxToolchainHostTests._executable(
                 toolchain / "bin" / tool,
-                f"#!/usr/bin/env bash\nprintf '%s %s\\n' '{tool}' \"$*\" >> \"$TOOL_LOG\"\n",
+                f"#!/usr/bin/env bash\nprintf '%s %s\\n' '{tool}' \"$*\" >> \"$TOOL_LOG\"\nif test '{tool}' = \"$VERSION_FAIL_TOOL\" && test \"$1\" = --version; then exit 47; fi\n",
             )
         if self.problem == "not-executable":
             path = toolchain / "bin" / "clang"
@@ -152,6 +160,7 @@ class ToolchainFixture:
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "WEBRTC_WORK": str(self.work),
             "TOOL_LOG": str(self.tool_log), "BUILD_LOG": str(self.build_log), "BUILD_EXIT": str(self.build_exit),
             "INITIAL_ARCH": self.arch, "REBUILD_ARCH": self.rebuild_arch or self.arch,
+            "VERSION_FAIL_TOOL": self.version_fail_tool or "",
             "XDG_RUNTIME_DIR": str(self.root),
         }
         return subprocess.run(
