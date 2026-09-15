@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-pulsebeam-webrtc-sys = { git = "@REPOSITORY@" }
+pulsebeam-webrtc-sys = { git = "@REPOSITORY@", rev = "@REVISION@"@FEATURES@ }
