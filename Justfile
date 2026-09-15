@@ -35,6 +35,7 @@ check:
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_justfile_input_retrieval.py
     python3 -m unittest tests/test_apple_host_protoc_archive.py
+    python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
@@ -410,7 +411,12 @@ _bridge-objects flavor target stage definitions_file:
     case "{{ target }}" in
       linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
-      android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1"); suffix=o;;
+      android-x86_64|android-arm64-v8a)
+        prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1)
+        case "{{ target }}" in android-x86_64) triple=x86_64;; *) triple=aarch64;; esac
+        cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+        args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1")
+        suffix=o;;
       macos-x86_64|macos-arm64)
         case "{{ target }}" in macos-x86_64) arch=x86_64;; *) arch=arm64;; esac
         sdk_path=$(xcrun --sdk macosx --show-sdk-path)
