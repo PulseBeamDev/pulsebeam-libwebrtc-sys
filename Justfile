@@ -94,8 +94,8 @@ linux-image engine image:
 linux-run engine image command *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$1" in docker|podman) ;; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
-    exec "$1" run --rm --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$2" "$3" "${@:4}"
+    case "$1" in docker) userns=();; podman) userns=(--userns=keep-id);; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
+    exec "$1" run --rm "${userns[@]}" --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw,z" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$2" "$3" "${@:4}"
 
 # Synchronize, build, export, archive, and compile/link-check one complete crate artifact.
 build flavor target:

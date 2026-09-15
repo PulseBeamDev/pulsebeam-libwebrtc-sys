@@ -57,20 +57,23 @@ class LinuxContainerTests(unittest.TestCase):
                 )
 
     def test_run_preserves_arguments_and_uses_only_allowed_environment(self):
-        with tempfile.TemporaryDirectory() as temp:
-            command = self._invoke_engine(
-                Path(temp), "podman", "linux-run", "podman", "example:test", "env",
-                "argument with spaces", "--literal",
+        for engine, namespace_args in (("docker", []), ("podman", ["--userns=keep-id"])):
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temp:
+                command = self._invoke_engine(
+                    Path(temp), engine, "linux-run", engine, "pulsebeam-linux-task3", "env",
+                    "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core", "linux-x86_64",
+                )
+            self.assertEqual(
+                command,
+                [
+                    "run", "--rm", *namespace_args, "--user", f"{os.getuid()}:{os.getgid()}",
+                    "--volume", f"{ROOT}:/workspace:rw,z", "--workdir", "/workspace", "--env",
+                    "HOME=/tmp", "--env", "XDG_RUNTIME_DIR=/tmp", "--env",
+                    "PULSEBEAM_WEBRTC_SANITIZER", "--env", "ASAN_OPTIONS", "pulsebeam-linux-task3",
+                    "env", "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core",
+                    "linux-x86_64",
+                ],
             )
-        self.assertEqual(
-            command,
-            [
-                "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--volume",
-                f"{ROOT}:/workspace:rw", "--workdir", "/workspace", "--env", "HOME=/tmp",
-                "--env", "XDG_RUNTIME_DIR=/tmp", "--env", "PULSEBEAM_WEBRTC_SANITIZER",
-                "--env", "ASAN_OPTIONS", "example:test", "env", "argument with spaces", "--literal",
-            ],
-        )
 
     def test_run_propagates_engine_exit_and_rejects_bad_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
