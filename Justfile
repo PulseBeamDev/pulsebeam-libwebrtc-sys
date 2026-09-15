@@ -20,7 +20,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ root }}"
-    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nrefresh-cxx\nverify-artifact'
+    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
     grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
@@ -38,6 +38,7 @@ check:
     python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_runtime_host.py
+    python3 -m unittest tests/test_linux_container.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
@@ -80,6 +81,21 @@ verify-artifact archive='' sha256='':
 # Download, checksum, and mechanically refresh the pinned Rust-only CXX import.
 refresh-cxx:
     python3 "{{ root }}/tools/cxx_import.py" refresh
+
+# Build the native Linux development image with an explicit local engine and tag.
+linux-image engine image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ engine }}" in docker|podman) ;; *) echo "unsupported container engine: {{ engine }}" >&2; exit 1;; esac
+    "{{ engine }}" build --file "{{ root }}/Containerfile" --tag "{{ image }}" "{{ root }}"
+
+# Run one command in the native Linux development image with caller-owned outputs.
+[positional-arguments]
+linux-run engine image command *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in docker|podman) ;; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
+    exec "$1" run --rm --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$2" "$3" "${@:4}"
 
 # Synchronize, build, export, archive, and compile/link-check one complete crate artifact.
 build flavor target:

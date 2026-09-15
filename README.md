@@ -202,6 +202,23 @@ is exactly `core` and `native` for `linux-x86_64` and `linux-arm64`; registry
 publication remains deferred (`pulsebeam-webrtc-sys` is not a crates.io
 dependency).
 
+## Linux container development
+
+Native Linux builds run in the repository-owned development image. Build the
+image explicitly with the engine you use, then run the normal build or runtime
+recipe inside it; the checkout is mounted read/write so generated outputs stay
+owned by the calling developer.
+
+```bash
+just linux-image docker pulsebeam-linux
+just linux-run docker pulsebeam-linux just build core linux-x86_64
+just linux-run docker pulsebeam-linux just _runtime-test core linux-x86_64 dist/webrtc-core-linux-x86_64.tar.gz
+
+just linux-image podman pulsebeam-linux
+just linux-run podman pulsebeam-linux just build native linux-x86_64
+just linux-run podman pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
+```
+
 1. After explicit authorization for a named immutable producer tag and target
    repository, dispatch **Manual pulsebeam-webrtc-sys release** with that tag.
    The Linux publication path depends only on Linux qualification: all four

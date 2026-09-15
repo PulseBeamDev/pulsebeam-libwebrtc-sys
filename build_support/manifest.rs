@@ -17,7 +17,7 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "5ee92fbc9424bf340d64e4ba3ac50ac14dafba56dd1dde86a7a40674ed61802c";
+    "0b77308c6e5bf0fb1c9fe07212b0f6d9cccf19a28d4ebccb9024b2bdf118dc83";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
     "5e3c106dc3a5d9afd1f05a2470bc9e548f22d0d468a1690977854439a321e59b";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
@@ -352,9 +352,10 @@ impl ArtifactManifest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactManifest, CXX_PACKAGE_SHA256, CXXBRIDGE_CMD_PACKAGE_SHA256,
+        ArtifactManifest, BRIDGE_SOURCE_SHA256, CXX_PACKAGE_SHA256, CXXBRIDGE_CMD_PACKAGE_SHA256,
         SUPPORTED_CARGO_TARGETS, artifact_target,
     };
+    use sha2::{Digest, Sha256};
 
     const FIXTURE: &[u8] = include_bytes!("../native/manifest.core-linux-x86_64.json");
 
@@ -371,6 +372,12 @@ mod tests {
     #[test]
     fn accepts_host_fixture() {
         validate(FIXTURE).unwrap();
+    }
+
+    #[test]
+    fn bridge_source_digest_matches_tracked_bridge_source() {
+        let digest = Sha256::digest(include_bytes!("../src/lib.rs"));
+        assert_eq!(format!("{digest:x}"), BRIDGE_SOURCE_SHA256);
     }
 
     #[test]
