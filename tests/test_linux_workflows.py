@@ -17,10 +17,14 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("  push:\n    branches: [main]\n", self.contents)
         self.assertIn("  workflow_dispatch:\n", self.contents)
         self.assertIn("      tag:\n", self.contents)
+        self.assertIn("nonempty tag requests qualified Linux publication", self.contents)
         self.assertIn("        required: false\n", self.contents)
         self.assertIn("permissions: {}\n", self.contents)
         self.assertIn("group: linux-qualification-", self.contents)
-        self.assertIn("cancel-in-progress: false", self.contents)
+        concurrency = self.contents[self.contents.index("concurrency:"):self.contents.index("jobs:")]
+        self.assertIn("group: linux-qualification-", concurrency)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.tag", concurrency)
+        self.assertIn("cancel-in-progress: false", concurrency)
 
     def test_qualification_jobs_use_checked_out_native_podman_images(self):
         for job in ("validate", "linux-build", "linux-runtime", "lifetime-sanitizers"):
@@ -98,6 +102,9 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn(condition, bundle)
         self.assertIn(condition, publish)
         self.assertIn("needs: linux-qualification", bundle)
+        self.assertIn("fetch-depth: 0", bundle)
+        self.assertIn('git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}"', bundle)
+        self.assertIn('test "$tagged" = "$WORKFLOW_COMMIT"', bundle)
         self.assertIn("needs: [linux-qualification, linux-release-bundle]", publish)
         self.assertIn("cancel-in-progress: false", self.contents)
         self.assertIn("contents: write", publish)
