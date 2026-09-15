@@ -157,7 +157,7 @@ _linux-toolchain target:
     rebuilt=accepted
     if ! validate; then
       test "{{ target }}" = linux-arm64 || { echo "invalid pinned Chromium LLVM toolchain: $toolchain" >&2; exit 1; }
-      PATH="{{ work }}/depot_tools:$PATH" python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --preserve-gcs-signature
+      PATH="{{ work }}/depot_tools:$PATH" python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --with-ml-inliner-model= --preserve-gcs-signature
       rebuilt=rebuilt
       validate || { echo "rebuilt pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
     fi

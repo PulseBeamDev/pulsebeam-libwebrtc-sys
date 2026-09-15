@@ -46,7 +46,7 @@ class LinuxToolchainHostTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(fixture.build_log.read_text(encoding="utf-8").splitlines(), [
                 "--host-cc=/usr/bin/gcc", "--host-cxx=/usr/bin/g++", "--no-tools", "--without-android",
-                "--without-fuchsia", "--use-system-cmake", "--preserve-gcs-signature",
+                "--without-fuchsia", "--use-system-cmake", "--with-ml-inliner-model=", "--preserve-gcs-signature",
             ])
             self.assertNotIn("wrong", fixture.tool_log.read_text(encoding="utf-8"))
             self.assertEqual(fixture.tool_log.read_text(encoding="utf-8").splitlines(), [
@@ -126,6 +126,7 @@ class ToolchainFixture:
         (scripts / "build.py").write_text(
             "import os, pathlib, sys\n"
             "if str(pathlib.Path(os.environ['WEBRTC_WORK'], 'depot_tools')) not in os.environ['PATH'].split(os.pathsep): raise SystemExit(49)\n"
+            "if '--with-ml-inliner-model=' not in sys.argv[1:]: raise SystemExit(51)\n"
             "pathlib.Path(os.environ['BUILD_LOG']).write_text('\\n'.join(sys.argv[1:]) + '\\n')\n"
             "pathlib.Path(os.environ['WEBRTC_WORK'], 'checkout', 'src', 'rebuilt').touch()\n"
             "raise SystemExit(int(os.environ['BUILD_EXIT']))\n",
