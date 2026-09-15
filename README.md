@@ -205,9 +205,9 @@ dependency).
 ## Linux container development
 
 Native Linux builds run in the repository-owned development image. Build the
-image explicitly with the engine you use, then run the normal build or runtime
-recipe inside it; the checkout is mounted read/write so generated outputs stay
-owned by the calling developer.
+image explicitly with Podman, then run the normal build or runtime recipe
+inside it; the checkout is mounted read/write so generated outputs stay owned
+by the calling developer.
 
 ```bash
 just linux-image pulsebeam-linux
