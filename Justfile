@@ -82,21 +82,19 @@ verify-artifact archive='' sha256='':
 refresh-cxx:
     python3 "{{ root }}/tools/cxx_import.py" refresh
 
-# Build the native Linux development image with an explicit local engine and tag.
+# Build the native Linux development image with a local Podman tag.
 [positional-arguments]
-linux-image engine image:
+linux-image image:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$1" in docker|podman) ;; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
-    exec "$1" build --file "{{ root }}/Containerfile" --tag "$2" "{{ root }}"
+    exec podman build --file "{{ root }}/Containerfile" --tag "$1" "{{ root }}"
 
 # Run one command in the native Linux development image with caller-owned outputs.
 [positional-arguments]
-linux-run engine image command *args:
+linux-run image command *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$1" in docker) userns=();; podman) userns=(--userns=keep-id);; *) echo "unsupported container engine: $1" >&2; exit 1;; esac
-    exec "$1" run --rm "${userns[@]}" --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw,z" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$2" "$3" "${@:4}"
+    exec podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw,z" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$1" "$2" "${@:3}"
 
 # Synchronize, build, export, archive, and compile/link-check one complete crate artifact.
 build flavor target:

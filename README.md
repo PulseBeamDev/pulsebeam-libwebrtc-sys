@@ -210,13 +210,11 @@ recipe inside it; the checkout is mounted read/write so generated outputs stay
 owned by the calling developer.
 
 ```bash
-just linux-image docker pulsebeam-linux
-just linux-run docker pulsebeam-linux just build core linux-x86_64
-just linux-run docker pulsebeam-linux just _runtime-test core linux-x86_64 dist/webrtc-core-linux-x86_64.tar.gz
-
-just linux-image podman pulsebeam-linux
-just linux-run podman pulsebeam-linux just build native linux-x86_64
-just linux-run podman pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
+just linux-image pulsebeam-linux
+just linux-run pulsebeam-linux just build core linux-x86_64
+just linux-run pulsebeam-linux just _runtime-test core linux-x86_64 dist/webrtc-core-linux-x86_64.tar.gz
+just linux-run pulsebeam-linux just build native linux-x86_64
+just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
 ```
 
 1. After explicit authorization for a named immutable producer tag and target

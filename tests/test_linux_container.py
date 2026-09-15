@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINERFILE = ROOT / "Containerfile"
-DOCKERIGNORE = ROOT / ".dockerignore"
+CONTAINERIGNORE = ROOT / ".containerignore"
 
 NATIVE_PACKAGES = (
     "libdrm-dev", "libgbm-dev", "libglib2.0-dev", "libx11-dev",
@@ -38,30 +38,33 @@ class LinuxContainerTests(unittest.TestCase):
         self.assertNotIn("COPY", contents)
         self.assertNotIn("PULSEBEAM", contents)
         self.assertNotIn("EXPOSE", contents)
-        self.assertEqual(DOCKERIGNORE.read_text(encoding="utf-8"), "*\n!Containerfile\n")
+        self.assertEqual(CONTAINERIGNORE.read_text(encoding="utf-8"), "*\n!Containerfile\n")
+        self.assertFalse((ROOT / ("." + "dock" + "erignore")).exists())
 
-    def test_public_recipes_are_direct_engine_interfaces(self):
+    def test_public_recipes_are_direct_podman_interfaces(self):
         recipes = (ROOT / "Justfile").read_text(encoding="utf-8")
-        self.assertIn("linux-image engine image:", recipes)
-        self.assertIn("linux-run engine image command *args:", recipes)
+        self.assertIn("linux-image image:", recipes)
+        self.assertIn("linux-run image command *args:", recipes)
+        self.assertNotIn("linux-image engine image:", recipes)
+        self.assertNotIn("linux-run engine image command *args:", recipes)
+        self.assertNotIn("dock" + "er", recipes.lower())
         self.assertNotIn("tools/linux_container.py", recipes)
         self.assertFalse((ROOT / "tools" / "linux_container.py").exists())
 
-    def test_build_uses_root_containerfile_and_context_for_both_engines(self):
-        for engine in ("docker", "podman"):
-            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temp:
-                command = self._invoke_engine(Path(temp), engine, "linux-image", engine, "example:test")
-                self.assertEqual(
-                    command,
-                    ["build", "--file", str(CONTAINERFILE), "--tag", "example:test", str(ROOT)],
-                )
+    def test_build_uses_root_containerfile_and_context_with_podman(self):
+        with tempfile.TemporaryDirectory() as temp:
+            command = self._invoke_podman(Path(temp), "linux-image", "example:test")
+        self.assertEqual(
+            command,
+            ["build", "--file", str(CONTAINERFILE), "--tag", "example:test", str(ROOT)],
+        )
 
     def test_image_arguments_are_shell_data_and_rejected_engines_have_no_side_effects(self):
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)
             marker = temp_path / "expanded"
             image = f"example:$(touch {marker})"
-            command = self._invoke_engine(temp_path, "podman", "linux-image", "podman", image)
+            command = self._invoke_podman(temp_path, "linux-image", image)
             self.assertEqual(
                 command,
                 ["build", "--file", str(CONTAINERFILE), "--tag", image, str(ROOT)],
@@ -70,59 +73,58 @@ class LinuxContainerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)
-            result = self._run(temp_path, "invalid", "linux-image", "invalid", "example:test")
+            result = self._run(temp_path, "linux-image")
             self.assertNotEqual(result.returncode, 0)
-            self.assertFalse((temp_path / "engine-command.json").exists())
+            self.assertFalse((temp_path / "podman-command.json").exists())
+            extra = self._run(temp_path, "linux-image", "example:test", "unexpected")
+            self.assertNotEqual(extra.returncode, 0)
 
     def test_run_preserves_arguments_and_uses_only_allowed_environment(self):
-        for engine, namespace_args in (("docker", []), ("podman", ["--userns=keep-id"])):
-            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temp:
-                command = self._invoke_engine(
-                    Path(temp), engine, "linux-run", engine, "pulsebeam-linux-task3", "env",
-                    "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core", "linux-x86_64",
-                )
-            self.assertEqual(
-                command,
-                [
-                    "run", "--rm", *namespace_args, "--user", f"{os.getuid()}:{os.getgid()}",
-                    "--volume", f"{ROOT}:/workspace:rw,z", "--workdir", "/workspace", "--env",
-                    "HOME=/tmp", "--env", "XDG_RUNTIME_DIR=/tmp", "--env",
-                    "PULSEBEAM_WEBRTC_SANITIZER", "--env", "ASAN_OPTIONS", "pulsebeam-linux-task3",
-                    "env", "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core",
-                    "linux-x86_64",
-                ],
+        with tempfile.TemporaryDirectory() as temp:
+            command = self._invoke_podman(
+                Path(temp), "linux-run", "pulsebeam-linux-task3", "env", "-u",
+                "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core", "linux-x86_64",
             )
+        self.assertEqual(
+            command,
+            [
+                "run", "--rm", "--userns=keep-id", "--user", f"{os.getuid()}:{os.getgid()}",
+                "--volume", f"{ROOT}:/workspace:rw,z", "--workdir", "/workspace", "--env",
+                "HOME=/tmp", "--env", "XDG_RUNTIME_DIR=/tmp", "--env",
+                "PULSEBEAM_WEBRTC_SANITIZER", "--env", "ASAN_OPTIONS", "pulsebeam-linux-task3",
+                "env", "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core",
+                "linux-x86_64",
+            ],
+        )
 
     def test_run_propagates_engine_exit_and_rejects_bad_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)
-            result = self._run(temp_path, "podman", "linux-run", "podman", "example:test", "true", exit_code=37)
+            result = self._run(temp_path, "linux-run", "example:test", "true", exit_code=37)
             self.assertEqual(result.returncode, 37, result.stderr)
-            missing = self._run(temp_path, "podman", "linux-run", "podman", "example:test")
+            missing = self._run(temp_path, "linux-run", "example:test")
             self.assertNotEqual(missing.returncode, 0)
-            unsupported = self._run(temp_path, "podman", "linux-image", "invalid", "example:test")
-            self.assertNotEqual(unsupported.returncode, 0)
 
-    def _invoke_engine(self, temp, engine, *arguments):
-        result = self._run(temp, engine, *arguments)
+    def _invoke_podman(self, temp, *arguments):
+        result = self._run(temp, *arguments)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads((temp / "engine-command.json").read_text(encoding="utf-8"))
+        return json.loads((temp / "podman-command.json").read_text(encoding="utf-8"))
 
-    def _run(self, temp, engine, *arguments, exit_code=0):
-        output = temp / "engine-command.json"
-        executable = temp / engine
+    def _run(self, temp, *arguments, exit_code=0):
+        output = temp / "podman-command.json"
+        executable = temp / "podman"
         executable.write_text(
             "#!/usr/bin/env python3\nimport json, os, sys\n"
             "Path = __import__('pathlib').Path\n"
-            "Path(os.environ['ENGINE_OUTPUT']).write_text(json.dumps(sys.argv[1:]))\n"
-            "raise SystemExit(int(os.environ.get('ENGINE_EXIT', '0')))\n",
+            "Path(os.environ['PODMAN_OUTPUT']).write_text(json.dumps(sys.argv[1:]))\n"
+            "raise SystemExit(int(os.environ.get('PODMAN_EXIT', '0')))\n",
             encoding="utf-8",
         )
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
         environment = os.environ | {
             "PATH": f"{temp}{os.pathsep}{os.environ['PATH']}",
-            "ENGINE_OUTPUT": str(output),
-            "ENGINE_EXIT": str(exit_code),
+            "PODMAN_OUTPUT": str(output),
+            "PODMAN_EXIT": str(exit_code),
             "XDG_RUNTIME_DIR": str(temp),
         }
         return subprocess.run(
