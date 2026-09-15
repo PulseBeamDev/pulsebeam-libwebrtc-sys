@@ -4,6 +4,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         build-essential \
         ca-certificates \
+        cmake \
         curl \
         file \
         git \
@@ -19,6 +20,7 @@ RUN apt-get update \
         libxrender-dev \
         libxtst-dev \
         lsb-release \
+        ninja-build \
         perl \
         pkg-config \
         python3 \
@@ -26,4 +28,5 @@ RUN apt-get update \
         unzip \
         xz-utils \
     && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt \
     && cargo install just --version 1.43.1 --locked

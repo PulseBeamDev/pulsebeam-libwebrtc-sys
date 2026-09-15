@@ -45,6 +45,17 @@ class LinuxWorkflowTests(unittest.TestCase):
                 self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", section)
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
 
+    def test_validate_checkout_retains_the_control_plane_baseline(self):
+        self.assertIn("fetch-depth: 0", self._job("validate"))
+
+    def test_validate_primes_the_mounted_cache_before_offline_checks(self):
+        validate = self._job("validate")
+        prime = "just linux-run pulsebeam-linux-${{ github.sha }} env CARGO_HOME=/workspace/.work/cargo-home cargo fetch --locked"
+        checks = "just linux-run pulsebeam-linux-${{ github.sha }} just check"
+        self.assertIn(prime, validate)
+        self.assertIn(checks, validate)
+        self.assertLess(validate.index(prime), validate.index(checks))
+
     def test_native_architecture_matrices_and_all_required_proofs_exist(self):
         build = self._job("linux-build")
         runtime = self._job("linux-runtime")
