@@ -30,6 +30,7 @@ class LinuxContainerTests(unittest.TestCase):
             contents,
         )
         self.assertIn("cargo install just --version 1.43.1 --locked", contents)
+        self.assertIn("rustup component add rustfmt", contents)
         for package in (*NATIVE_PACKAGES, *BUILD_TOOLS):
             with self.subTest(package=package):
                 self.assertIn(package, contents)

@@ -26,4 +26,5 @@ RUN apt-get update \
         unzip \
         xz-utils \
     && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt \
     && cargo install just --version 1.43.1 --locked
