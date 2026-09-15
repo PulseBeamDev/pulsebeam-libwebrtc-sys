@@ -573,7 +573,10 @@ _rust-smoke flavor target kit:
       ios-arm64|ios-simulator-arm64) case "{{ target }}" in ios-arm64) cargo_target=aarch64-apple-ios; sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) cargo_target=aarch64-apple-ios-sim; sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=-arch -C link-arg=arm64 -C link-arg=-isysroot -C "link-arg=$(xcrun --sdk "$sdk" --show-sdk-path)" -C "link-arg=$minimum");;
       windows-x86_64) cargo_target=x86_64-pc-windows-msvc; cxx=''; rustflags=(-C target-feature=+crt-static);;
     esac
-    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags+=(-C link-arg=-fsanitize=address); fi
+    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+      rustflags+=(-C link-arg=-fsanitize=address)
+      if test "{{ target }}" = linux-x86_64; then cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+    fi
     linker_env="CARGO_TARGET_$(printf '%s' "$cargo_target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$smoke_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$kit_native")
     test -z "$cxx" || command+=("$linker_env=$cxx")
@@ -593,9 +596,15 @@ _runtime-test flavor target archive:
     artifact=$(mktemp -d); trap 'rm -rf "$artifact"' EXIT
     tar -C "$artifact" -xzf "{{ archive }}"
     features=(); test "{{ flavor }}" = core || features=(--features native)
-    rustflags=(); if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags=(-C link-arg=-fsanitize=address); fi
+    src="{{ work }}/checkout/src"
+    rustflags=(); linker=''; if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+      rustflags=(-C link-arg=-fsanitize=address)
+      if test "{{ target }}" = linux-x86_64; then linker="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+    fi
     cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); runtime_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/runtime/{{ flavor }}/{{ target }}"); artifact_native=$(just --justfile "{{ root }}/Justfile" _native-path "$artifact")
-    RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native" cargo test --locked "${features[@]}" --tests -- --test-threads=1
+    command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native")
+    test -z "$linker" || command+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$linker")
+    "${command[@]}" cargo test --locked "${features[@]}" --tests -- --test-threads=1
 
 _gn:
     @case "$(uname -s)" in Linux) path='{{ work }}/checkout/src/buildtools/linux64/gn';; Darwin) path='{{ work }}/checkout/src/buildtools/mac/gn';; *) path='{{ work }}/checkout/src/buildtools/win/gn.exe';; esac; test -x "$path" || { echo 'pinned GN is missing' >&2; exit 1; }; just --justfile '{{ root }}/Justfile' _native-path "$path"
