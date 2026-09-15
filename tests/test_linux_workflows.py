@@ -45,6 +45,9 @@ class LinuxWorkflowTests(unittest.TestCase):
                 self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", section)
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
 
+    def test_validate_checkout_retains_the_control_plane_baseline(self):
+        self.assertIn("fetch-depth: 0", self._job("validate"))
+
     def test_native_architecture_matrices_and_all_required_proofs_exist(self):
         build = self._job("linux-build")
         runtime = self._job("linux-runtime")
