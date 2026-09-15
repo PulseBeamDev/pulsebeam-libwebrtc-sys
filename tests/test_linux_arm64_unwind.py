@@ -11,6 +11,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "Justfile"
 LABEL = "//buildtools/third_party/libunwind:libunwind"
+UNWIND_OBJECTS = (
+    "UnwindLevel1-gcc-ext.o",
+    "UnwindLevel1.o",
+    "UnwindRegistersSave.o",
+)
 
 
 class LinuxArm64UnwindTests(unittest.TestCase):
@@ -21,11 +26,15 @@ class LinuxArm64UnwindTests(unittest.TestCase):
         gn.parent.mkdir(parents=True)
         abi = out / "obj" / "buildtools" / "third_party" / "libc++abi"
         unwind = out / "obj" / "buildtools" / "third_party" / "libunwind" / "libunwind"
+        host_unwind = out / "clang_x64" / "obj" / "buildtools" / "third_party" / "libunwind" / "libunwind"
         abi.mkdir(parents=True)
         unwind.mkdir(parents=True)
+        host_unwind.mkdir(parents=True)
         (abi / "cxa_exception.o").touch()
-        if mode != "missing-object":
-            (unwind / "UnwindLevel1-gcc-ext.o").touch()
+        for object_name in UNWIND_OBJECTS:
+            if mode != "partial-missing-object" or object_name != "UnwindLevel1.o":
+                (unwind / object_name).touch()
+        (host_unwind / "host-only.o").touch()
         gn.write_text(
             """#!/usr/bin/env bash
 set -euo pipefail
@@ -40,7 +49,7 @@ fi
 if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = missing-source && test "$label" = '//buildtools/third_party/libunwind:libunwind' && test "$what" = sources; then exit 0; fi
 case "$what" in
   deps) printf '%s\\n' "$label";;
-  sources) if test "$label" = '//buildtools/third_party/libunwind:libunwind'; then printf '%s\\n' '//buildtools/third_party/libunwind/src/UnwindLevel1-gcc-ext.c'; else printf '%s\\n' '//third_party/libc++abi/src/src/cxa_exception.cpp'; fi;;
+  sources) if test "$label" = '//buildtools/third_party/libunwind:libunwind'; then printf '%s\\n' '//buildtools/third_party/libunwind/src/UnwindLevel1-gcc-ext.c' '//buildtools/third_party/libunwind/src/UnwindLevel1.c' '//buildtools/third_party/libunwind/src/UnwindRegistersSave.S'; else printf '%s\\n' '//third_party/libc++abi/src/src/cxa_exception.cpp'; fi;;
   outputs) printf '%s\\n' "$PWD/obj/${label#//}/libfixture.a";;
 esac
 """,
@@ -67,10 +76,15 @@ esac
             with self.subTest(flavor=flavor):
                 result, directory = self._closure(flavor, "valid")
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("UnwindLevel1-gcc-ext.o", (directory / "objects").read_text())
+                objects = (directory / "objects").read_text().splitlines()
+                self.assertEqual(
+                    objects,
+                    [str(directory / "out" / "obj" / "buildtools" / "third_party" / "libunwind" / "libunwind" / object_name) for object_name in UNWIND_OBJECTS],
+                )
+                self.assertNotIn("host-only.o", "\n".join(objects))
 
     def test_linux_arm64_libunwind_source_set_fails_closed(self):
-        expected = {"gn-error": "GN source query failed", "missing-source": "no libunwind source metadata", "missing-object": "no libunwind object output"}
+        expected = {"gn-error": "GN source query failed", "missing-source": "no libunwind source metadata", "partial-missing-object": "missing libunwind object output: UnwindLevel1.o"}
         for mode, actual in expected.items():
             with self.subTest(mode=mode):
                 result, _ = self._closure("core", mode)

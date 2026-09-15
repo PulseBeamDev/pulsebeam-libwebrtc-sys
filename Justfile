@@ -329,14 +329,26 @@ _export-static-closure flavor target src out src_native out_native archives obje
       printf '%s\n' "$archives"
     }
     required_source_set_objects() {
-      local label="$1" object_root="$2" object_suffix="$3" description="$4" source_output object_output
+      local label="$1" object_root="$2" object_suffix="$3" description="$4" source_output object_dir source_path object_name
+      local -a expected_objects missing_objects
       if ! source_output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" sources 2>&1); then
         just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "GN source query failed for $label: $source_output"
       fi
       test -n "$source_output" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "no $description source metadata"
-      object_output=$(test -d "$object_root" && find "$object_root" -path "*/obj/$object_suffix/*" -type f -name '*.o' -print | LC_ALL=C sort -u || true)
-      test -n "$object_output" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" "no $description object output"
-      printf '%s\n' "$object_output" >> "{{ objects }}"
+      expected_objects=(); missing_objects=()
+      while IFS= read -r source_path; do
+        object_name=${source_path##*/}; object_name=${object_name%.*}.o
+        expected_objects+=("$object_name")
+      done <<< "$source_output"
+      object_dir="$object_root/obj/$object_suffix"
+      for object_name in "${expected_objects[@]}"; do
+        if test -f "$object_dir/$object_name"; then
+          printf '%s\n' "$object_dir/$object_name" >> "{{ objects }}"
+        else
+          missing_objects+=("$object_name")
+        fi
+      done
+      test "${#missing_objects[@]}" -eq 0 || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" "missing $description object output: ${missing_objects[*]}"
     }
     { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | static_archives | LC_ALL=C sort -u > "{{ archives }}"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then
