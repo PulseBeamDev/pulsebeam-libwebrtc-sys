@@ -354,7 +354,7 @@ _export-static-closure flavor target src out src_native out_native archives obje
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then
       required_static_archives //buildtools/third_party/libc++ >> "{{ archives }}"
       if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
-        required_source_set_objects //buildtools/third_party/libc++abi "{{ out }}" buildtools/third_party/libc++abi libc++abi
+        required_source_set_objects //buildtools/third_party/libc++abi "{{ out }}" buildtools/third_party/libc++abi/libc++abi libc++abi
       else
         required_static_archives //buildtools/third_party/libc++abi >> "{{ archives }}"
       fi

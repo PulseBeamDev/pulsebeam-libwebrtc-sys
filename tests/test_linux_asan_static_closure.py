@@ -12,16 +12,23 @@ ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "Justfile"
 BASELINE = "3daeec8ab2bfe396eed7fdcb38311abeb79e6880"
 LABEL = "//buildtools/third_party/libc++abi"
+LIBCXXABI_OBJECTS = ("cxa_exception.o", "cxa_guard.o")
 
 
 class LinuxAsanStaticClosureTests(unittest.TestCase):
-    def _workspace(self, directory: Path) -> tuple[Path, Path, Path]:
+    def _workspace(self, directory: Path, mode: str = "valid") -> tuple[Path, Path, Path]:
         src = directory / "checkout" / "src"
         out = directory / "out"
         gn = src / "buildtools" / "linux64" / "gn"
         gn.parent.mkdir(parents=True)
-        (out / "obj" / "buildtools" / "third_party" / "libc++abi").mkdir(parents=True)
-        (out / "obj" / "buildtools" / "third_party" / "libc++abi" / "cxa_exception.o").touch()
+        libcxxabi = out / "obj" / "buildtools" / "third_party" / "libc++abi" / "libc++abi"
+        host_libcxxabi = out / "clang_x64" / "obj" / "buildtools" / "third_party" / "libc++abi" / "libc++abi"
+        libcxxabi.mkdir(parents=True)
+        host_libcxxabi.mkdir(parents=True)
+        for object_name in LIBCXXABI_OBJECTS:
+            if mode != "missing-target-object" or object_name != "cxa_guard.o":
+                (libcxxabi / object_name).touch()
+            (host_libcxxabi / object_name).touch()
         gn.write_text(
             """#!/usr/bin/env bash
 set -euo pipefail
@@ -54,7 +61,7 @@ if test "${PULSEBEAM_TEST_GN_MODE:-valid}" = nonarchive-libcxxabi && test "$labe
 fi
 case "$what" in
   deps) printf '%s\\n' "$label";;
-  sources) printf '%s\\n' '//third_party/libc++abi/src/src/cxa_exception.cpp';;
+  sources) printf '%s\\n' '//third_party/libc++abi/src/src/cxa_exception.cpp' '//third_party/libc++abi/src/src/cxa_guard.cpp';;
   outputs) printf '%s\\n' "$PWD/obj/${label#//}/libfixture.a";;
 esac
 """,
@@ -64,7 +71,7 @@ esac
         return src, out, gn
 
     def _closure(self, flavor: str, directory: Path, mode: str = "valid") -> subprocess.CompletedProcess[str]:
-        src, out, _ = self._workspace(directory)
+        src, out, _ = self._workspace(directory, mode)
         archives = directory / "archives"
         objects = directory / "objects"
         runtime = directory / "runtime"
@@ -93,7 +100,17 @@ esac
                 result = self._closure(flavor, directory)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("libfixture.a", (directory / "archives").read_text())
-                self.assertIn("cxa_exception.o", (directory / "objects").read_text())
+                self.assertEqual(
+                    (directory / "objects").read_text().splitlines(),
+                    [str(directory / "out" / "obj" / "buildtools" / "third_party" / "libc++abi" / "libc++abi" / object_name) for object_name in LIBCXXABI_OBJECTS],
+                )
+
+    def test_asan_libcxxabi_source_set_fails_closed_without_host_object_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = self._closure("core", Path(temp), "missing-target-object")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        for expected in ("target=linux-x86_64", "flavor=core", "invariant=static-closure", LABEL, "missing libc++abi object output: cxa_guard.o"):
+            self.assertIn(expected, result.stderr)
 
     def test_observed_baseline_output_query_fails_executably(self):
         with tempfile.TemporaryDirectory() as temp:
