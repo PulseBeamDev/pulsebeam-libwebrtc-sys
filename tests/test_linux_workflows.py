@@ -6,6 +6,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "linux.yml"
 CONSUMER_WORKFLOW = ROOT / ".github" / "workflows" / "linux-consumer.yml"
+LEGACY_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+CHECK_WORKFLOW = ROOT / ".github" / "workflows" / "check.yml"
+UPGRADE_WORKFLOW = ROOT / ".github" / "workflows" / "upgrade-rehearsal.yml"
 
 
 class LinuxWorkflowTests(unittest.TestCase):
@@ -175,6 +178,67 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
         following = re.search(r"\n  [^ \n][^\n]*:\n", self.contents[start + 1:])
         end = len(self.contents) if following is None else start + 1 + following.start()
         return self.contents[start:end]
+
+
+class LinuxWorkflowMigrationTests(unittest.TestCase):
+    def test_legacy_workflow_has_no_linux_publication_authority_or_shared_concurrency(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("concurrency:", contents)
+        self.assertNotIn("  linux-release-bundle:", contents)
+        self.assertNotIn("  publish-linux:", contents)
+        self.assertNotIn("contents: write", contents)
+        self.assertNotIn("id-token: write", contents)
+        self.assertNotIn("attestations: write", contents)
+
+    def test_legacy_linux_jobs_use_direct_native_podman_recipes(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        for job in ("linux-build", "linux-desktop-runtime", "lifetime-sanitizers"):
+            with self.subTest(job=job):
+                section = self._job(contents, job)
+                self.assertIn("extractions/setup-just@", section)
+                self.assertIn("just-version: 1.43.1", section)
+                self.assertIn("command -v podman", section)
+                self.assertIn("podman --version", section)
+                self.assertIn(".Host.Security.Rootless", section)
+                self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", section)
+                self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
+        build = self._job(contents, "linux-build")
+        self.assertIn("target: linux-arm64, runner: ubuntu-24.04-arm", build)
+        self.assertNotIn("apt", contents.lower())
+        self.assertNotIn("linux_release_publication", contents)
+
+    def test_fast_checks_and_upgrade_rehearsal_run_repository_commands_in_image(self):
+        check = CHECK_WORKFLOW.read_text(encoding="utf-8")
+        upgrade = UPGRADE_WORKFLOW.read_text(encoding="utf-8")
+        for contents in (check, upgrade):
+            self.assertIn("extractions/setup-just@", contents)
+            self.assertIn("just-version: 1.43.1", contents)
+            self.assertIn("command -v podman", contents)
+            self.assertIn("podman --version", contents)
+            self.assertIn(".Host.Security.Rootless", contents)
+            self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", contents)
+            self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", contents)
+            self.assertIsNone(re.search(r"\bapt(?:-get)?\b", contents.lower()))
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} cargo fetch --locked", check)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just check", check)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx", upgrade)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just build core linux-x86_64", upgrade)
+
+    def test_linux_container_docs_and_check_wiring_cover_workflow_proofs(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+        self.assertIn("Linux automatic qualification", readme)
+        self.assertIn("linux-consumer.yml", readme)
+        self.assertIn("exact 40-character revision", readme)
+        self.assertIn("locally built", readme)
+        self.assertIn("tests/test_linux_workflows.py", justfile)
+
+    @staticmethod
+    def _job(contents, name):
+        start = contents.index(f"  {name}:")
+        following = re.search(r"\n  [^ \n][^\n]*:\n", contents[start + 1:])
+        end = len(contents) if following is None else start + 1 + following.start()
+        return contents[start:end]
 
 
 if __name__ == "__main__":

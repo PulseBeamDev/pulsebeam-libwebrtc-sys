@@ -1,487 +1,127 @@
-name: PulseBeam WebRTC qualification and release
-
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag that resolves to this workflow commit (required to publish)
-        required: false
-        type: string
-
+name: PulseBeam WebRTC complete-matrix qualification
+on: {workflow_dispatch:}
 permissions: {}
-
-concurrency:
-  group: release-${{ inputs.tag || github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   validate:
-    name: Validate shared release control plane
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
+    permissions: {contents: read}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Validate release identity when publishing
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          WORKFLOW_COMMIT: ${{ github.sha }}
-        run: |
-          test -z "$RELEASE_TAG" && exit 0
-          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid tag' >&2; exit 1; }
-          tagged=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}") || { echo 'tag does not exist' >&2; exit 1; }
-          test "$tagged" = "$WORKFLOW_COMMIT" || { echo 'tag does not resolve to the workflow commit' >&2; exit 1; }
-
+        with: {persist-credentials: false}
   linux-build:
-    name: Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
-          - flavor: core
-            target: linux-x86_64
-            runner: ubuntu-24.04
-          - flavor: core
-            target: linux-arm64
-            runner: ubuntu-24.04
-          - flavor: native
-            target: linux-x86_64
-            runner: ubuntu-24.04
-          - flavor: native
-            target: linux-arm64
-            runner: ubuntu-24.04
-
+          - {flavor: core, target: linux-x86_64, runner: ubuntu-24.04}
+          - {flavor: core, target: linux-arm64, runner: ubuntu-24.04-arm}
+          - {flavor: native, target: linux-x86_64, runner: ubuntu-24.04}
+          - {flavor: native, target: linux-arm64, runner: ubuntu-24.04-arm}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
-    permissions:
-      contents: read
-    steps: &build-steps
+    permissions: {contents: read}
+    steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with:
-          just-version: 1.43.1
+        with: {just-version: 1.43.1}
+      - name: Prove rootless Podman is available
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
+  non-linux-build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {flavor: core, target: windows-x86_64, runner: windows-2025}
+          - {flavor: core, target: macos-x86_64, runner: macos-15-intel}
+          - {flavor: core, target: macos-arm64, runner: macos-15}
+          - {flavor: core, target: android-x86_64, runner: ubuntu-24.04}
+          - {flavor: core, target: android-arm64-v8a, runner: ubuntu-24.04}
+          - {flavor: core, target: ios-arm64, runner: macos-15}
+          - {flavor: core, target: ios-simulator-arm64, runner: macos-15}
+          - {flavor: native, target: windows-x86_64, runner: windows-2025}
+          - {flavor: native, target: macos-x86_64, runner: macos-15-intel}
+          - {flavor: native, target: macos-arm64, runner: macos-15}
+          - {flavor: native, target: android-x86_64, runner: ubuntu-24.04}
+          - {flavor: native, target: android-arm64-v8a, runner: ubuntu-24.04}
+          - {flavor: native, target: ios-arm64, runner: macos-15}
+          - {flavor: native, target: ios-simulator-arm64, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
-      - name: Install Rust target for artifact link smoke
-        shell: bash
-        run: |
-          case '${{ matrix.target }}' in
-            linux-x86_64) cargo_target=x86_64-unknown-linux-gnu ;;
-            linux-arm64) cargo_target=aarch64-unknown-linux-gnu ;;
-            windows-x86_64) cargo_target=x86_64-pc-windows-msvc ;;
-            macos-x86_64) cargo_target=x86_64-apple-darwin ;;
-            macos-arm64) cargo_target=aarch64-apple-darwin ;;
-            android-x86_64) cargo_target=x86_64-linux-android ;;
-            android-arm64-v8a) cargo_target=aarch64-linux-android ;;
-            ios-arm64) cargo_target=aarch64-apple-ios ;;
-            ios-simulator-arm64) cargo_target=aarch64-apple-ios-sim ;;
-          esac
-          rustup target add "$cargo_target"
-      - name: Reclaim known expendable Linux runner caches
-        if: runner.os == 'Linux'
-        shell: bash
-        run: sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - name: Build native artifact
-        shell: bash
-        run: just build '${{ matrix.flavor }}' '${{ matrix.target }}' 2>&1 | tee artifact-${{ matrix.flavor }}-${{ matrix.target }}.log
-      - name: Preserve artifact build failure log
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: artifact-${{ matrix.flavor }}-${{ matrix.target }}-failure-log
-          path: artifact-${{ matrix.flavor }}-${{ matrix.target }}.log
-          if-no-files-found: error
-          retention-days: 14
+      - run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ matrix.flavor }}-${{ matrix.target }}
-          path: dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  non-linux-build:
-    name: Non-Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
-    needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { flavor: core, target: windows-x86_64, runner: windows-2025 }
-          - { flavor: core, target: macos-x86_64, runner: macos-15-intel }
-          - { flavor: core, target: macos-arm64, runner: macos-15 }
-          - { flavor: core, target: android-x86_64, runner: ubuntu-24.04 }
-          - { flavor: core, target: android-arm64-v8a, runner: ubuntu-24.04 }
-          - { flavor: core, target: ios-arm64, runner: macos-15 }
-          - { flavor: core, target: ios-simulator-arm64, runner: macos-15 }
-          - { flavor: native, target: windows-x86_64, runner: windows-2025 }
-          - { flavor: native, target: macos-x86_64, runner: macos-15-intel }
-          - { flavor: native, target: macos-arm64, runner: macos-15 }
-          - { flavor: native, target: android-x86_64, runner: ubuntu-24.04 }
-          - { flavor: native, target: android-arm64-v8a, runner: ubuntu-24.04 }
-          - { flavor: native, target: ios-arm64, runner: macos-15 }
-          - { flavor: native, target: ios-simulator-arm64, runner: macos-15 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
-    permissions:
-      contents: read
-    steps: *build-steps
-
+        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
   linux-desktop-runtime:
-    name: Linux desktop runtime (${{ matrix.flavor }})
     needs: linux-build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { flavor: core, target: linux-x86_64, runner: ubuntu-24.04 }
-          - { flavor: native, target: linux-x86_64, runner: ubuntu-24.04 }
+    strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps: &runtime-steps
+    permissions: {contents: read}
+    steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with:
-          just-version: 1.43.1
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: ${{ matrix.flavor }}-${{ matrix.target }}
-          path: dist
-      - name: Install Linux native link inputs
-        if: matrix.flavor == 'native' && runner.os == 'Linux'
+        with: {just-version: 1.43.1}
+      - name: Prove rootless Podman is available
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends libdrm-dev libgbm-dev libglib2.0-dev libx11-dev libxcomposite-dev libxdamage-dev libxext-dev libxfixes-dev libxrandr-dev libxrender-dev libxtst-dev
-      - name: Prime pinned Rust dependencies
-        run: cargo fetch --locked
-      - name: Run environment, network, signaling, data-channel, video, and teardown tests
-        shell: bash
-        run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
-
-  non-linux-desktop-runtime:
-    name: Non-Linux desktop runtime (${{ matrix.flavor }}, ${{ matrix.target }})
-    needs: non-linux-build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { flavor: core, target: windows-x86_64, runner: windows-2025 }
-          - { flavor: native, target: windows-x86_64, runner: windows-2025 }
-          - { flavor: core, target: macos-x86_64, runner: macos-15-intel }
-          - { flavor: native, target: macos-x86_64, runner: macos-15-intel }
-          - { flavor: core, target: macos-arm64, runner: macos-15 }
-          - { flavor: native, target: macos-arm64, runner: macos-15 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps: *runtime-steps
-
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ matrix.flavor }}-linux-x86_64', path: dist}
+      - run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
   lifetime-sanitizers:
-    name: ASan lifetime tests (${{ matrix.flavor }}, linux-x86_64)
     needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        flavor: [core, native]
+    strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    permissions:
-      contents: read
-    env:
-      PULSEBEAM_WEBRTC_SANITIZER: address
+    permissions: {contents: read}
+    env: {PULSEBEAM_WEBRTC_SANITIZER: address, ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with:
-          just-version: 1.43.1
-      - name: Reclaim known expendable Linux runner caches
-        run: sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - name: Install Linux native link inputs
-        if: matrix.flavor == 'native'
+        with: {just-version: 1.43.1}
+      - name: Prove rootless Podman is available
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends libdrm-dev libgbm-dev libglib2.0-dev libx11-dev libxcomposite-dev libxdamage-dev libxext-dev libxfixes-dev libxrandr-dev libxrender-dev libxtst-dev
-      - name: Build ASan artifact and run lifetime-sensitive suite
-        shell: bash
-        env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
-        run: |
-          just build '${{ matrix.flavor }}' linux-x86_64 2>&1 | tee sanitizer-${{ matrix.flavor }}.log
-          just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz' 2>&1 | tee -a sanitizer-${{ matrix.flavor }}.log
-      - name: Preserve sanitizer failure log
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: sanitizer-${{ matrix.flavor }}-failure-log
-          path: sanitizer-${{ matrix.flavor }}.log
-          if-no-files-found: error
-          retention-days: 14
-
-  rust-only-consumer:
-    name: Cold Rust-only Git consumer
-    needs: [linux-build, linux-audit]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: core-linux-x86_64
-          path: dist
-      - name: Prime pinned Rust dependencies
-        run: cargo fetch --locked
-      - name: Build and run a cold Git consumer without C/C++ compilers
-        env:
-          CORE_LINUX_X86_64_SHA256: ${{ needs.linux-audit.outputs.core_linux_x86_64_sha256 }}
-        run: python3 tools/rust_only_consumer.py --artifact dist/webrtc-core-linux-x86_64.tar.gz --sha256 "$CORE_LINUX_X86_64_SHA256"
-
-  linux-audit:
-    needs: linux-build
-    outputs:
-      core_linux_x86_64_sha256: ${{ steps.audit.outputs.core_linux_x86_64_sha256 }}
-    if: always()
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          pattern: "*-linux-*"
-          path: release
-          merge-multiple: true
-      - id: audit
-        name: Generate Linux checksum index and audit exact scope
-        shell: bash
-        run: |
-          (cd release && find . -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS)
-          python3 -m tools.audit_release --scope linux --archives release --checksums release/SHA256SUMS --output release/LINUX-RELEASE-MANIFEST.json
-          core_linux_x86_64_sha256=$(awk '$2 == "webrtc-core-linux-x86_64.tar.gz" { print $1 }' release/SHA256SUMS)
-          [[ "$core_linux_x86_64_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo 'missing core Linux x86_64 audit checksum' >&2; exit 1; }
-          echo "core_linux_x86_64_sha256=$core_linux_x86_64_sha256" >> "$GITHUB_OUTPUT"
-
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
+      - run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
   complete-audit:
     needs: [linux-build, non-linux-build]
     if: always()
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
+    permissions: {contents: read}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          path: release
-          merge-multiple: true
-      - name: Generate complete checksum index and audit exact scope
-        shell: bash
-        run: |
+        with: {path: release, merge-multiple: true}
+      - run: |
           find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
           python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
-
-  linux-qualification:
-    needs: [validate, linux-build, linux-desktop-runtime, lifetime-sanitizers, rust-only-consumer, linux-audit]
-    if: always()
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - name: Report Linux qualification evidence
-        shell: bash
-        run: |
-          results=(
-            "validate=${{ needs.validate.result }}"
-            "linux-build=${{ needs.linux-build.result }}"
-            "linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}"
-            "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
-            "rust-only-consumer=${{ needs.rust-only-consumer.result }}"
-            "linux-audit=${{ needs.linux-audit.result }}"
-          )
-          printf '%s\n' "${results[@]}"
-          for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
-
   complete-matrix-qualification:
-    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, rust-only-consumer, complete-audit]
+    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, lifetime-sanitizers, complete-audit]
     if: always()
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
+    permissions: {contents: read}
     steps:
-      - name: Report complete matrix qualification evidence
-        shell: bash
-        run: |
-          results=(
-            "validate=${{ needs.validate.result }}"
-            "linux-build=${{ needs.linux-build.result }}"
-            "non-linux-build=${{ needs.non-linux-build.result }}"
-            "linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}"
-            "non-linux-desktop-runtime=${{ needs.non-linux-desktop-runtime.result }}"
-            "lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}"
-            "rust-only-consumer=${{ needs.rust-only-consumer.result }}"
-            "complete-audit=${{ needs.complete-audit.result }}"
-          )
-          printf '%s\n' "${results[@]}"
-          for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
-
-  linux-release-bundle:
-    if: inputs.tag != ''
-    needs: linux-qualification
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: core-linux-x86_64
-          path: release-input
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: core-linux-arm64
-          path: release-input
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: native-linux-x86_64
-          path: release-input
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: native-linux-arm64
-          path: release-input
-      - name: Construct one closed audited Linux publication bundle
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          expected=(webrtc-core-linux-x86_64.tar.gz webrtc-core-linux-arm64.tar.gz webrtc-native-linux-x86_64.tar.gz webrtc-native-linux-arm64.tar.gz)
-          test "$(find release-input -maxdepth 1 -type f -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort)" = "$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
-          (cd release-input && printf '%s\n' "${expected[@]}" | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS)
-          python3 -m tools.audit_release --scope linux --archives release-input --checksums release-input/SHA256SUMS --output release-input/LINUX-RELEASE-MANIFEST.json
-          python3 -m tools.linux_release_publication prepare --archives release-input --checksums release-input/SHA256SUMS --audit release-input/LINUX-RELEASE-MANIFEST.json --tag "$RELEASE_TAG" --output linux-release
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: linux-release-bundle
-          path: linux-release
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  publish-linux:
-    if: inputs.tag != ''
-    needs: [validate, linux-qualification, linux-release-bundle]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: linux-release-bundle
-          path: release
-      - name: Classify the immutable release identity before mutation
-        id: publication-plan
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
-          RUNTIME_REPOSITORY: ${{ github.repository }}
-        run: |
-          test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY" || { echo "refusing publication from $RUNTIME_REPOSITORY; expected $CANONICAL_REPOSITORY" >&2; exit 1; }
-          set +e
-          gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
-          status=$?
-          set -e
-          if test "$status" -eq 0; then
-            sed -n '/^{/,$p' release-query > release.json
-            if test "$(python3 -c 'import json, sys; print(str(json.load(sys.stdin)["draft"]).lower())' < release.json)" = true; then release_state=draft; else release_state=published; fi
-            python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
-            mkdir observed
-            gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed
-          elif head -n 1 release-query | grep -Eq 'HTTP/[0-9.]+ 404'; then
-            release_state=absent
-          else
-            cat release-query >&2
-            exit 1
-          fi
-          observed_args=()
-          if test "$release_state" != absent; then observed_args=(--observed observed --remote-names remote-names.json); fi
-          python3 -m tools.linux_release_publication plan --bundle release --release-state "$release_state" --repository "$RUNTIME_REPOSITORY" "${observed_args[@]}" --output publication-plan.json
-          echo "finalize=$(python3 -c 'import json; print(str(json.load(open("publication-plan.json"))["finalize"]).lower())')" >> "$GITHUB_OUTPUT"
-      - name: Create a non-advertised draft and add only verified missing assets
-        if: steps.publication-plan.outputs.finalize == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
-        run: |
-          create=$(python3 -c 'import json; print(json.load(open("publication-plan.json"))["create_draft"])')
-          if test "$create" = True; then gh release create "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft --verify-tag --title "$RELEASE_TAG"; fi
-          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
-      - name: Reverify the full draft inventory without replacement
-        if: steps.publication-plan.outputs.finalize == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
-        run: |
-          mkdir observed-final
-          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-final-release.json
-          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-final-release.json > observed-final-names.json
-          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-final
-          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-final --remote-names observed-final-names.json --output final-publication-plan.json
-          test "$(python3 -c 'import json; print(json.load(open("final-publication-plan.json"))["upload"])')" = '[]'
-      - name: Attest final release assets
-        if: steps.publication-plan.outputs.finalize == 'true'
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
-        with:
-          subject-path: release/*
-      - name: Reverify the complete attested draft immediately before advertisement
-        if: steps.publication-plan.outputs.finalize == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
-        run: |
-          mkdir observed-attested
-          gh release view "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --json assets > observed-attested-release.json
-          python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < observed-attested-release.json > observed-attested-names.json
-          gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed-attested
-          python3 -m tools.linux_release_publication plan --bundle release --release-state draft --repository "$CANONICAL_REPOSITORY" --observed observed-attested --remote-names observed-attested-names.json --output attested-publication-plan.json
-          test "$(python3 -c 'import json; print(json.load(open("attested-publication-plan.json"))["upload"])')" = '[]'
-      - name: Advertise only the verified complete Linux release
-        if: steps.publication-plan.outputs.finalize == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
-        run: gh release edit "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft=false --generate-notes
+      - run: |
+          for result in '${{ needs.validate.result }}' '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done

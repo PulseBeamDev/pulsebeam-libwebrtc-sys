@@ -204,7 +204,7 @@ dependency).
 
 ## Linux container development
 
-Native Linux builds run in the repository-owned development image. Build the
+Native Linux builds run in the locally built, repository-owned development image. Build the
 image explicitly with Podman, then run the normal build or runtime recipe
 inside it; the checkout is mounted read/write so generated outputs stay owned
 by the calling developer.
@@ -217,8 +217,11 @@ just linux-run pulsebeam-linux just build native linux-x86_64
 just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
 ```
 
-1. After explicit authorization for a named immutable producer tag and target
-   repository, dispatch **Manual pulsebeam-webrtc-sys release** with that tag.
+1. **Linux automatic qualification** runs on pull requests and pushes to `main`.
+   It builds native x86_64 and arm64 job-local images, then qualifies all four
+   archives, both arm64 runtimes, ASan, audit, and cold candidate consumers.
+   Explicit publication is dispatched only from `linux.yml` with a validated tag;
+   the legacy complete-matrix workflow has no Linux release authority.
    The Linux publication path depends only on Linux qualification: all four
    Linux builds, the Linux desktop/runtime and ASan checks, cold Rust-only
    consumer, and the closed Linux audit. It produces four archives,
@@ -232,7 +235,9 @@ just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrt
    fails closed. It rechecks the complete inventory, attests the closed bundle,
    and only then advertises the release. An interrupted draft is recoverable by
    rerunning the exact same tag with identical bytes.
-3. After the real release exists, review a separate consumer revision containing
+3. After the real release exists, dispatch `linux-consumer.yml` with the exact
+   40-character revision (the exact 40-character revision is required) to run the read-only four-way released-consumer proof.
+   Then review a separate consumer revision containing
    the generated Linux lock. That revision—not the producer tag and not the
    checked-in development lock with `release_scope: none`—is what fresh Git
    consumers use. Confirm its four URLs/hashes and fourteen null selections,

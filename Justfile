@@ -41,6 +41,7 @@ check:
     python3 -m unittest tests/test_linux_container.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
+    python3 -m unittest tests/test_linux_workflows.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py

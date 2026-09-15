@@ -20,7 +20,13 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with:
           just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        run: |
+          command -v podman
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Prime pinned Rust dependencies
-        run: cargo fetch --locked
+        run: just linux-run pulsebeam-linux-${{ github.sha }} cargo fetch --locked
       - name: Run fast offline checks
-        run: just check
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just check
