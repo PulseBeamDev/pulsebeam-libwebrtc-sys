@@ -217,6 +217,17 @@ just linux-run pulsebeam-linux just build native linux-x86_64
 just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
 ```
 
+After publication, use the reviewed consumer revision in either canonical HTTPS
+Git dependency form (replace `<consumer-revision>` with that exact revision):
+
+```toml
+# Default core artifact.
+pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>" }
+
+# Native artifact feature.
+pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>", features = ["native"] }
+```
+
 1. **Linux automatic qualification** runs on pull requests and pushes to `main`.
    It builds native x86_64 and arm64 job-local images, then qualifies all four
    archives, both arm64 runtimes, ASan, audit, and cold candidate consumers.

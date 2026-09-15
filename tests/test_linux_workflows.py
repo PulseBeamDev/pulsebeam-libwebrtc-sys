@@ -181,6 +181,28 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
 
 
 class LinuxWorkflowMigrationTests(unittest.TestCase):
+    def test_legacy_non_linux_build_and_runtime_contracts_are_preserved(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        build = self._job(contents, "non-linux-build")
+        for target, rust_target in (
+            ("windows-x86_64", "x86_64-pc-windows-msvc"),
+            ("macos-x86_64", "x86_64-apple-darwin"),
+            ("macos-arm64", "aarch64-apple-darwin"),
+            ("android-x86_64", "x86_64-linux-android"),
+            ("android-arm64-v8a", "aarch64-linux-android"),
+            ("ios-arm64", "aarch64-apple-ios"),
+            ("ios-simulator-arm64", "aarch64-apple-ios-sim"),
+        ):
+            self.assertIn(f"{target}) cargo_target={rust_target}", build)
+        self.assertIn('rustup target add "$cargo_target"', build)
+        runtime = self._job(contents, "non-linux-desktop-runtime")
+        self.assertIn("needs: non-linux-build", runtime)
+        self.assertEqual(runtime.count("target:"), 6)
+        self.assertIn("just _runtime-test", runtime)
+        aggregate = self._job(contents, "complete-matrix-qualification")
+        self.assertIn("non-linux-desktop-runtime", aggregate)
+        self.assertIn("needs.non-linux-desktop-runtime.result", aggregate)
+
     def test_legacy_workflow_has_no_linux_publication_authority_or_shared_concurrency(self):
         contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("concurrency:", contents)
@@ -219,10 +241,13 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
             self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", contents)
             self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", contents)
             self.assertIsNone(re.search(r"\bapt(?:-get)?\b", contents.lower()))
-        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} cargo fetch --locked", check)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} env CARGO_HOME=/workspace/.work/cargo-home cargo fetch --locked", check)
+        self.assertIn("CARGO_HOME=/workspace/.work/cargo-home", check)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just check", check)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx", upgrade)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just build core linux-x86_64", upgrade)
+        self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} bash -c", upgrade)
+        self.assertIn("-- '${{ inputs.webrtc_commit }}'", upgrade)
 
     def test_linux_container_docs_and_check_wiring_cover_workflow_proofs(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -230,6 +255,8 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
         self.assertIn("Linux automatic qualification", readme)
         self.assertIn("linux-consumer.yml", readme)
         self.assertIn("exact 40-character revision", readme)
+        self.assertIn('pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>" }', readme)
+        self.assertIn('features = ["native"]', readme)
         self.assertIn("locally built", readme)
         self.assertIn("tests/test_linux_workflows.py", justfile)
 

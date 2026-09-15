@@ -63,6 +63,19 @@ jobs:
         with: {just-version: 1.43.1}
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
+      - name: Install Rust target for artifact link smoke
+        shell: bash
+        run: |
+          case '${{ matrix.target }}' in
+            windows-x86_64) cargo_target=x86_64-pc-windows-msvc ;;
+            macos-x86_64) cargo_target=x86_64-apple-darwin ;;
+            macos-arm64) cargo_target=aarch64-apple-darwin ;;
+            android-x86_64) cargo_target=x86_64-linux-android ;;
+            android-arm64-v8a) cargo_target=aarch64-linux-android ;;
+            ios-arm64) cargo_target=aarch64-apple-ios ;;
+            ios-simulator-arm64) cargo_target=aarch64-apple-ios-sim ;;
+          esac
+          rustup target add "$cargo_target"
       - run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
@@ -85,6 +98,30 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with: {name: '${{ matrix.flavor }}-linux-x86_64', path: dist}
       - run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
+  non-linux-desktop-runtime:
+    needs: non-linux-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {flavor: core, target: windows-x86_64, runner: windows-2025}
+          - {flavor: native, target: windows-x86_64, runner: windows-2025}
+          - {flavor: core, target: macos-x86_64, runner: macos-15-intel}
+          - {flavor: native, target: macos-x86_64, runner: macos-15-intel}
+          - {flavor: core, target: macos-arm64, runner: macos-15}
+          - {flavor: native, target: macos-arm64, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: dist}
+      - name: Prime pinned Rust dependencies
+        run: cargo fetch --locked
+      - run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
   lifetime-sanitizers:
     needs: validate
     strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
@@ -118,10 +155,10 @@ jobs:
           find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
           python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
   complete-matrix-qualification:
-    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, lifetime-sanitizers, complete-audit]
+    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, complete-audit]
     if: always()
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
       - run: |
-          for result in '${{ needs.validate.result }}' '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done
+          for result in '${{ needs.validate.result }}' '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.non-linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done

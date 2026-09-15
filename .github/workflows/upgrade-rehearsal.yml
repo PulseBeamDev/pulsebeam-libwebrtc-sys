@@ -30,16 +30,17 @@ jobs:
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
       - name: Select the candidate source pin
         shell: bash
-        env:
-          CANDIDATE_COMMIT: ${{ inputs.webrtc_commit }}
-        run: |
-          [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate must be a lowercase 40-character commit' >&2; exit 1; }
-          current=$(sed -n 's/^webrtc_commit := "\([0-9a-f]\{40\}\)"$/\1/p' Justfile)
-          test -n "$current" && test "$current" != "$CANDIDATE_COMMIT" || { echo 'candidate must differ from the checked-in pin' >&2; exit 1; }
-          sed -i "s/$current/$CANDIDATE_COMMIT/" Justfile
-      - name: Verify the pinned CXX import refresh is mechanical
         run: |
           just linux-image pulsebeam-linux-${{ github.sha }}
+          just linux-run pulsebeam-linux-${{ github.sha }} bash -c '
+            candidate=$1
+            [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate must be a lowercase 40-character commit" >&2; exit 1; }
+            current=$(sed -n "s/^webrtc_commit := \"\\([0-9a-f]\\{40\\}\)\"$/\\1/p" Justfile)
+            test -n "$current" && test "$current" != "$candidate" || { echo "candidate must differ from the checked-in pin" >&2; exit 1; }
+            sed -i "s/$current/$candidate/" Justfile
+          ' -- '${{ inputs.webrtc_commit }}'
+      - name: Verify the pinned CXX import refresh is mechanical
+        run: |
           just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx
           just linux-run pulsebeam-linux-${{ github.sha }} git diff --exit-code -- vendor/cxx Cargo.toml Cargo.lock
       - name: Regenerate the bridge and compile the complete adapter
