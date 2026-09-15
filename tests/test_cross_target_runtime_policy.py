@@ -25,7 +25,7 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
     )
     expected_cxx = {
         "linux-x86_64": "-fuse-ld=lld -nostdlib++ -pthread -ldl -lrt -lm",
-        "linux-arm64": "-fuse-ld=lld --rtlib=compiler-rt -nostdlib++ -pthread -ldl -lrt -lm",
+        "linux-arm64": "-fuse-ld=lld --rtlib=compiler-rt --unwindlib=none -nostdlib++ -pthread -ldl -lrt -lm",
         "windows-x86_64": "advapi32.lib bcrypt.lib crypt32.lib d3d11.lib dmoguids.lib dwmapi.lib dxgi.lib iphlpapi.lib msdmo.lib ole32.lib oleaut32.lib secur32.lib shcore.lib strmiids.lib user32.lib winmm.lib wmcodecdspuuid.lib ws2_32.lib",
         "macos-x86_64": "-framework Foundation -framework AppKit -framework ApplicationServices -framework CoreAudio -framework CoreFoundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework AudioToolbox -framework AVFoundation -framework IOKit -framework IOSurface -framework OpenGL -framework VideoToolbox -weak_framework ScreenCaptureKit",
         "macos-arm64": "-framework Foundation -framework AppKit -framework ApplicationServices -framework CoreAudio -framework CoreFoundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework AudioToolbox -framework AVFoundation -framework IOKit -framework IOSurface -framework OpenGL -framework VideoToolbox -weak_framework ScreenCaptureKit",
@@ -35,7 +35,7 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
         "ios-simulator-arm64": "-framework Foundation -framework CoreFoundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework AudioToolbox -framework AVFoundation -framework VideoToolbox -framework UIKit",
     }
     expected_rust = {
-        "linux-arm64": "rustflags=(-C link-arg=--target=aarch64-linux-gnu -C \"link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot\" -C link-arg=-fuse-ld=lld -C link-arg=--rtlib=compiler-rt)",
+        "linux-arm64": "rustflags=(-C link-arg=--target=aarch64-linux-gnu -C \"link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot\" -C link-arg=-fuse-ld=lld -C link-arg=--rtlib=compiler-rt -C link-arg=--unwindlib=none)",
         "android-x86_64": "rustflags=(-C \"link-arg=--target=${triple}-linux-android26\" -C \"link-arg=--sysroot=$prebuilt/sysroot\" -C link-arg=-fuse-ld=lld -C link-arg=--unwindlib=none)",
         "android-arm64-v8a": "rustflags=(-C \"link-arg=--target=${triple}-linux-android26\" -C \"link-arg=--sysroot=$prebuilt/sysroot\" -C link-arg=-fuse-ld=lld -C link-arg=--unwindlib=none)",
     }
@@ -80,8 +80,8 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
     def test_android_libunwind_is_android_guarded_once_without_host_runtime_admission(self):
         compile_recipe = self._recipe("_compile flavor target:", "_export-predicate-failed")
         export_recipe = self._recipe("_export flavor target:", "_bridge-objects flavor target stage definitions_file:")
-        self.assertEqual(JUSTFILE.count("buildtools/third_party/libunwind:libunwind"), 1)
-        self.assertEqual(JUSTFILE.count("obj/buildtools/third_party/libunwind/libunwind"), 1)
+        self.assertEqual(compile_recipe.count("buildtools/third_party/libunwind:libunwind"), 1)
+        self.assertEqual(export_recipe.count("obj/buildtools/third_party/libunwind/libunwind"), 1)
         self.assertEqual(self._guarded_command(compile_recipe, "buildtools/third_party/libunwind:libunwind"), 'if [[ "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" buildtools/third_party/libunwind:libunwind; fi')
         self.assertEqual(self._guarded_command(export_recipe, "obj/buildtools/third_party/libunwind/libunwind"), 'if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name \'*.o\' -print > "$objects"; fi')
         for target in self.affected[:2]:
@@ -91,16 +91,29 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
         self.assertNotIn("-lunwind", JUSTFILE)
 
     def test_linux_arm64_uses_its_bullseye_compiler_rt_branch(self):
+        compile_recipe = self._recipe("_compile flavor target:", "_export-predicate-failed")
         cxx = self._recipe("_cpp-smoke flavor target kit:", "_rust-smoke flavor target kit:")
         rust = self._recipe("_rust-smoke flavor target kit:", "_runtime-test flavor target archive:")
         self.assertIn('--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot"', self._case_branch_for_target(cxx, "linux-arm64"))
         self.assertIn("debian_bullseye_arm64-sysroot", self._case_branch_for_target(rust, "linux-arm64"))
+        self.assertIn(
+            'if test "{{ target }}" = linux-arm64; then "$src/third_party/ninja/ninja" -C "$out" phony/buildtools/third_party/libunwind/libunwind.linkdeps; fi',
+            compile_recipe,
+        )
         self.assertNotIn("--rtlib=libgcc", JUSTFILE)
+        self.assertIn(
+            'linux-arm64) platform=\'target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true\'',
+            JUSTFILE,
+        )
+        self.assertEqual(
+            write_artifact_manifest.TARGETS["linux-arm64"]["cxx_runtime"],
+            "bundled libc++, libc++abi, and libunwind",
+        )
 
     @classmethod
     def _manifest_policy(cls, target, flavor):
         if target.startswith("linux-"):
-            flags = ["-fuse-ld=lld"] + (["--rtlib=compiler-rt"] if target == "linux-arm64" else [])
+            flags = ["-fuse-ld=lld"] + (["--rtlib=compiler-rt", "--unwindlib=none"] if target == "linux-arm64" else [])
             libraries = ["pthread", "dl", "rt", "m"] + ([name[2:] for name in cls.linux_native.split()] if flavor == "native" else [])
             return [{"kind": "link_arg", "name": flag} for flag in flags] + [{"kind": "dylib", "name": name} for name in libraries]
         if target == "windows-x86_64":
@@ -122,7 +135,7 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
         return {
             "android-x86_64": ("-fuse-ld=lld", "--unwindlib=none"),
             "android-arm64-v8a": ("-fuse-ld=lld", "--unwindlib=none"),
-            "linux-arm64": ("-fuse-ld=lld", "--rtlib=compiler-rt"),
+            "linux-arm64": ("-fuse-ld=lld", "--rtlib=compiler-rt", "--unwindlib=none"),
         }[target]
 
     @staticmethod

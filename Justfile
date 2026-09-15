@@ -237,7 +237,7 @@ _gn-args flavor target:
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
     case "{{ target }}" in
       linux-x86_64) platform='target_os="linux" target_cpu="x64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_amd64-sysroot" use_custom_libcxx=true' ;;
-      linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true' ;;
+      linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true' ;;
       windows-x86_64) platform='target_os="win" target_cpu="x64" is_clang=true use_lld=true' ;;
       macos-x86_64) platform='target_os="mac" target_cpu="x64" mac_deployment_target="12.0" use_lld=true use_custom_libcxx=false' ;;
       macos-arm64) platform='target_os="mac" target_cpu="arm64" mac_deployment_target="12.0" use_lld=true use_custom_libcxx=false' ;;
@@ -299,6 +299,7 @@ _compile flavor target:
     "$src/third_party/ninja/ninja" -C "$out" "${roots[@]}"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" libc++ libc++abi; fi
     if [[ "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" buildtools/third_party/libunwind:libunwind; fi
+    if test "{{ target }}" = linux-arm64; then "$src/third_party/ninja/ninja" -C "$out" phony/buildtools/third_party/libunwind/libunwind.linkdeps; fi
 
 _export-predicate-failed flavor target invariant expected actual:
     #!/usr/bin/env bash
@@ -327,20 +328,27 @@ _export-static-closure flavor target src out src_native out_native archives obje
       test -n "$archives" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "a static archive output for $label" "no matching .a or .lib output for $label"
       printf '%s\n' "$archives"
     }
+    required_source_set_objects() {
+      local label="$1" object_root="$2" object_suffix="$3" description="$4" source_output object_output
+      if ! source_output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" sources 2>&1); then
+        just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "GN source query failed for $label: $source_output"
+      fi
+      test -n "$source_output" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "no $description source metadata"
+      object_output=$(test -d "$object_root" && find "$object_root" -path "*/obj/$object_suffix/*" -type f -name '*.o' -print | LC_ALL=C sort -u || true)
+      test -n "$object_output" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" "no $description object output"
+      printf '%s\n' "$object_output" >> "{{ objects }}"
+    }
     { gn_outputs //:webrtc; while read -r label; do gn_outputs "$label"; done < <(comm -23 "$extra" "$base"); } | static_archives | LC_ALL=C sort -u > "{{ archives }}"
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then
       required_static_archives //buildtools/third_party/libc++ >> "{{ archives }}"
       if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
-        label=//buildtools/third_party/libc++abi
-        if ! source_output=$("$gn" desc --root="{{ src_native }}" "{{ out_native }}" "$label" sources 2>&1); then
-          just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "GN sources for $label" "GN source query failed for $label: $source_output"
-        fi
-        object_dir="{{ out }}/obj/buildtools/third_party/libc++abi"
-        if test -d "$object_dir"; then find "$object_dir" -type f -name '*.o' -print | LC_ALL=C sort -u >> "{{ objects }}"; fi
-        test -s "{{ objects }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure "compiled object outputs for $label" 'no libc++abi object output'
+        required_source_set_objects //buildtools/third_party/libc++abi "{{ out }}" buildtools/third_party/libc++abi libc++abi
       else
         required_static_archives //buildtools/third_party/libc++abi >> "{{ archives }}"
       fi
+    fi
+    if test "{{ target }}" = linux-arm64; then
+      required_source_set_objects //buildtools/third_party/libunwind:libunwind "{{ out }}" buildtools/third_party/libunwind/libunwind libunwind
     fi
     test -s "{{ archives }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
 
@@ -460,7 +468,7 @@ _link-flags flavor target:
     set -euo pipefail
     case "{{ target }}" in
       linux-x86_64) flags='-fuse-ld=lld -nostdlib++ -pthread -ldl -lrt -lm'; test "{{ flavor }}" = core || flags+=' -lX11 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lXcomposite -lXdamage -lXext -lXfixes -lXrandr -lXrender -lXtst -lgbm -ldrm';;
-      linux-arm64) flags='-fuse-ld=lld --rtlib=compiler-rt -nostdlib++ -pthread -ldl -lrt -lm'; test "{{ flavor }}" = core || flags+=' -lX11 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lXcomposite -lXdamage -lXext -lXfixes -lXrandr -lXrender -lXtst -lgbm -ldrm';;
+      linux-arm64) flags='-fuse-ld=lld --rtlib=compiler-rt --unwindlib=none -nostdlib++ -pthread -ldl -lrt -lm'; test "{{ flavor }}" = core || flags+=' -lX11 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lXcomposite -lXdamage -lXext -lXfixes -lXrandr -lXrender -lXtst -lgbm -ldrm';;
       windows-*) flags='advapi32.lib bcrypt.lib crypt32.lib d3d11.lib dmoguids.lib dwmapi.lib dxgi.lib iphlpapi.lib msdmo.lib ole32.lib oleaut32.lib secur32.lib shcore.lib strmiids.lib user32.lib winmm.lib wmcodecdspuuid.lib ws2_32.lib';;
       macos-*) flags='-framework Foundation -framework AppKit -framework ApplicationServices -framework CoreAudio -framework CoreFoundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework AudioToolbox -framework AVFoundation -framework IOKit -framework IOSurface -framework OpenGL -framework VideoToolbox -weak_framework ScreenCaptureKit';;
       android-*) flags='-fuse-ld=lld -nostdlib++ --unwindlib=none -llog -landroid -lGLESv2 -lOpenSLES -ldl -lm'; test "{{ flavor }}" = core || flags+=' -laaudio';;
@@ -490,7 +498,7 @@ _rust-smoke flavor target kit:
     src="{{ work }}/checkout/src"; kit_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ kit }}"); cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); smoke_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/rust-smoke/{{ flavor }}/{{ target }}")
     case "{{ target }}" in
       linux-x86_64) cargo_target=x86_64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=x86_64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_amd64-sysroot" -C link-arg=-fuse-ld=lld);;
-      linux-arm64) cargo_target=aarch64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=aarch64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot" -C link-arg=-fuse-ld=lld -C link-arg=--rtlib=compiler-rt);;
+      linux-arm64) cargo_target=aarch64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=aarch64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot" -C link-arg=-fuse-ld=lld -C link-arg=--rtlib=compiler-rt -C link-arg=--unwindlib=none);;
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); case "{{ target }}" in android-x86_64) cargo_target=x86_64-linux-android; triple=x86_64;; *) cargo_target=aarch64-linux-android; triple=aarch64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=--target=${triple}-linux-android26" -C "link-arg=--sysroot=$prebuilt/sysroot" -C link-arg=-fuse-ld=lld -C link-arg=--unwindlib=none);;
       macos-x86_64|macos-arm64) case "{{ target }}" in macos-x86_64) cargo_target=x86_64-apple-darwin; arch=x86_64;; *) cargo_target=aarch64-apple-darwin; arch=arm64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=-arch" -C "link-arg=$arch" -C "link-arg=-isysroot" -C "link-arg=$(xcrun --sdk macosx --show-sdk-path)" -C link-arg=-mmacosx-version-min=12.0);;
       ios-arm64|ios-simulator-arm64) case "{{ target }}" in ios-arm64) cargo_target=aarch64-apple-ios; sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) cargo_target=aarch64-apple-ios-sim; sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=-arch -C link-arg=arm64 -C link-arg=-isysroot -C "link-arg=$(xcrun --sdk "$sdk" --show-sdk-path)" -C "link-arg=$minimum");;

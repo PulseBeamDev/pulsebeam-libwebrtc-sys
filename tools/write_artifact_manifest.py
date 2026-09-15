@@ -20,7 +20,7 @@ TARGETS = {
     "linux-arm64": {
         "cargo_target": "aarch64-unknown-linux-gnu",
         "minimum_runtime": "glibc 2.31 (Debian Bullseye sysroot)",
-        "cxx_runtime": "bundled libc++ and libc++abi",
+        "cxx_runtime": "bundled libc++, libc++abi, and libunwind",
         "crt": "glibc",
         "archive_member": "lib/libwebrtc.a",
     },
@@ -89,6 +89,7 @@ def links_for(flavor, target):
         link_args = ["-fuse-ld=lld"]
         if target == "linux-arm64":
             link_args.append("--rtlib=compiler-rt")
+            link_args.append("--unwindlib=none")
         links = [link("link_arg", arg) for arg in link_args]
         links += [link("dylib", name) for name in ("pthread", "dl", "rt", "m")]
         if flavor == "native":
