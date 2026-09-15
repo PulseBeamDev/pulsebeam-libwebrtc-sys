@@ -37,6 +37,7 @@ check:
     python3 -m unittest tests/test_apple_host_protoc_archive.py
     python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
+    python3 -m unittest tests/test_linux_runtime_host.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_cxx_provenance.py
@@ -532,7 +533,7 @@ _runtime-test flavor target archive:
     set -euo pipefail
     just --justfile "{{ root }}/Justfile" _validate-flavor "{{ flavor }}"
     case "{{ target }}:$(uname -s):$(uname -m)" in
-      linux-x86_64:Linux:x86_64|windows-x86_64:*MINGW*:x86_64|windows-x86_64:*MSYS*:x86_64|macos-x86_64:Darwin:x86_64|macos-arm64:Darwin:arm64) ;;
+      linux-x86_64:Linux:x86_64|linux-arm64:Linux:aarch64|windows-x86_64:*MINGW*:x86_64|windows-x86_64:*MSYS*:x86_64|macos-x86_64:Darwin:x86_64|macos-arm64:Darwin:arm64) ;;
       *) echo "{{ target }} is not native to this runtime host" >&2; exit 1;;
     esac
     test -f "{{ archive }}" || { echo "missing runtime artifact: {{ archive }}" >&2; exit 1; }
