@@ -198,6 +198,7 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
         runtime = self._job(contents, "non-linux-desktop-runtime")
         self.assertIn("needs: non-linux-build", runtime)
         self.assertEqual(runtime.count("target:"), 6)
+        self.assertIn("timeout-minutes: 45", runtime)
         self.assertIn("just _runtime-test", runtime)
         aggregate = self._job(contents, "complete-matrix-qualification")
         self.assertIn("non-linux-desktop-runtime", aggregate)
@@ -247,7 +248,12 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx", upgrade)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} just build core linux-x86_64", upgrade)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }} bash -c", upgrade)
-        self.assertIn("-- '${{ inputs.webrtc_commit }}'", upgrade)
+        self.assertIn("CANDIDATE_COMMIT: ${{ inputs.webrtc_commit }}", upgrade)
+        select_start = upgrade.index("      - name: Select the candidate source pin")
+        select_end = upgrade.index("      - name: Verify the pinned CXX import refresh is mechanical")
+        select = upgrade[select_start:select_end]
+        self.assertNotIn("inputs.webrtc_commit", select[select.index("run:"):])
+        self.assertIn('-- "$CANDIDATE_COMMIT"', select)
 
     def test_linux_container_docs_and_check_wiring_cover_workflow_proofs(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -19,6 +19,7 @@ jobs:
           - {flavor: native, target: linux-x86_64, runner: ubuntu-24.04}
           - {flavor: native, target: linux-arm64, runner: ubuntu-24.04-arm}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
     permissions: {contents: read}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -111,6 +112,7 @@ jobs:
           - {flavor: core, target: macos-arm64, runner: macos-15}
           - {flavor: native, target: macos-arm64, runner: macos-15}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     permissions: {contents: read}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
