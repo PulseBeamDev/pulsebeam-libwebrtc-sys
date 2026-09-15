@@ -38,6 +38,7 @@ check:
     python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_runtime_host.py
+    python3 -m unittest tests/test_linux_toolchain_host.py
     python3 -m unittest tests/test_linux_container.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
@@ -107,6 +108,7 @@ build flavor target:
     just --justfile "$justfile" _validate-host "{{ target }}"
     just --justfile "$justfile" _prerequisites "{{ target }}"
     just --justfile "$justfile" _sync "{{ flavor }}" "{{ target }}"
+    just --justfile "$justfile" _linux-toolchain "{{ target }}"
     just --justfile "$justfile" _target-dependencies "{{ target }}"
     just --justfile "$justfile" _configure "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _apple-host-protoc "{{ flavor }}" "{{ target }}"
@@ -122,10 +124,45 @@ _validate-target target:
 _validate-host target:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{ target }}:$(uname -s)" in
-      linux-*:Linux|windows-*:*MINGW*|windows-*:*MSYS*|windows-*:*CYGWIN*|macos-*:Darwin|ios-*:Darwin|android-*:Linux|android-*:Darwin) ;;
+    case "{{ target }}:$(uname -s):$(uname -m)" in
+      linux-x86_64:Linux:x86_64|linux-arm64:Linux:aarch64|windows-*:*MINGW*:*|windows-*:*MSYS*:*|windows-*:*CYGWIN*:*|macos-*:Darwin:*|ios-*:Darwin:*|android-*:Linux:*|android-*:Darwin:*) ;;
       *) echo "unsupported build host for {{ target }}" >&2; exit 1 ;;
     esac
+
+_linux-toolchain target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in
+      linux-x86_64) machine=x86-64 ;;
+      linux-arm64) machine='ARM aarch64' ;;
+      *) exit 0 ;;
+    esac
+    src="{{ work }}/checkout/src"
+    toolchain="$src/third_party/llvm-build/Release+Asserts"
+    tools=(clang clang++ llvm-ar llvm-nm)
+    validate() {
+      local tool path details revision
+      for tool in "${tools[@]}"; do
+        path="$toolchain/bin/$tool"
+        test -x "$path" || return 1
+        details=$(file -L -b "$path") || return 1
+        [[ "$details" == ELF\ 64-bit\ LSB* && "$details" == *"$machine"* ]] || return 1
+        if test "$tool" = clang; then clang_details="$details"; fi
+      done
+      revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision) || return 1
+      test -n "$revision" && test -r "$toolchain/cr_build_revision" || return 1
+      test "$(cat "$toolchain/cr_build_revision")" = "$revision" || return 1
+      for tool in "${tools[@]}"; do "$toolchain/bin/$tool" --version >/dev/null; done
+    }
+    rebuilt=accepted
+    if ! validate; then
+      test "{{ target }}" = linux-arm64 || { echo "invalid pinned Chromium LLVM toolchain: $toolchain" >&2; exit 1; }
+      python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --preserve-gcs-signature
+      rebuilt=rebuilt
+      validate || { echo "rebuilt pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
+    fi
+    revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision)
+    printf 'linux toolchain host=%s revision=%s clang=%s executable=%s package=%s\n' "$(uname -m)" "$revision" "$toolchain/bin/clang" "$clang_details" "$rebuilt"
 
 _prerequisites target:
     #!/usr/bin/env bash

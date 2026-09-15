@@ -4,6 +4,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         build-essential \
         ca-certificates \
+        cmake \
         curl \
         file \
         git \
@@ -19,6 +20,7 @@ RUN apt-get update \
         libxrender-dev \
         libxtst-dev \
         lsb-release \
+        ninja-build \
         perl \
         pkg-config \
         python3 \
