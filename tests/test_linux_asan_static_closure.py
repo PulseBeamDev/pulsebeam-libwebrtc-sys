@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import unittest
@@ -10,7 +9,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "Justfile"
-BASELINE = "3daeec8ab2bfe396eed7fdcb38311abeb79e6880"
 LABEL = "//buildtools/third_party/libc++abi"
 LIBCXXABI_OBJECTS = ("cxa_exception.o", "cxa_guard.o")
 
@@ -118,16 +116,11 @@ esac
             src, out, gn = self._workspace(directory)
             runtime = directory / "runtime"
             runtime.mkdir()
-            baseline = subprocess.run(
-                ["git", "show", f"{BASELINE}:Justfile"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
-            match = re.search(r"    gn_outputs\(\) \{\n(?P<body>.*?)\n    \}", baseline, re.DOTALL)
-            self.assertIsNotNone(match)
-            historical_function = match.group(0).replace("{{ root }}", str(ROOT)).replace("{{ flavor }}", "core").replace("{{ target }}", "linux-x86_64")
+            # Reproduce the old unconditional outputs query without depending on Git history.
+            historical_function = f'''gn_outputs() {{
+  local label="$1"
+  "$gn" desc --root="$src_native" "$out_native" "$label" outputs || just --justfile "{JUSTFILE}" _export-predicate-failed core linux-x86_64 static-closure "GN outputs for $label" "GN output query failed for $label"
+}}'''
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", f'gn="{gn}"\nsrc_native="{src}"\nout_native="{out}"\n{historical_function}\ngn_outputs {LABEL}'],
                 check=False,
