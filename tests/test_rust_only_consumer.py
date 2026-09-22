@@ -67,7 +67,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
             lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
             lock["release_scope"] = "linux"
             for entry in lock["artifacts"]:
-                if entry["artifact_target"].startswith("linux-"):
+                if entry["artifact_target"] == "linux-x86_64":
                     entry["url"] = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/" + entry["asset_name"]
                     entry["sha256"] = "b" * 64
             path = Path(temporary) / "artifacts.lock.json"
@@ -75,6 +75,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
             rust_only_consumer.validate_released(
                 rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
             )
+            self.assertEqual(sum(entry["url"] is not None for entry in lock["artifacts"]), 2)
             lock["artifacts"][1]["url"] = "https://example.invalid/substitution"
             path.write_text(json.dumps(lock), encoding="utf-8")
             with self.assertRaisesRegex(rust_only_consumer.ProofError, "noncanonical"):
@@ -160,6 +161,24 @@ class RustOnlyConsumerTests(unittest.TestCase):
                                 repository.resolve().as_uri(), revision, "linux-x86_64", "core", message,
                                 cargo_config,
                             )
+
+    def test_candidate_snapshot_populates_only_primary_linux(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            revision = rust_only_consumer.clean_snapshot(
+                repository, "http://127.0.0.1:1234/webrtc-core-linux-x86_64.tar.gz",
+                "a" * 64, "linux-x86_64", "core",
+            )
+            self.assertRegex(revision, r"^[0-9a-f]{40}$")
+            lock = json.loads((repository / "artifacts.lock.json").read_text())
+            self.assertEqual(lock["release_scope"], "linux")
+            self.assertEqual(
+                {entry["asset_name"] for entry in lock["artifacts"] if entry["url"] is not None},
+                {"webrtc-core-linux-x86_64.tar.gz", "webrtc-native-linux-x86_64.tar.gz"},
+            )
+            self.assertTrue(all(entry["sha256"] is None for entry in lock["artifacts"] if entry["artifact_target"] != "linux-x86_64"))
+            report = json.loads((repository / "linux-audit.json").read_text())
+            self.assertEqual(len(report["assets"]), 2)
 
     def test_modes_do_not_accept_each_others_inputs(self):
         result = subprocess.run(

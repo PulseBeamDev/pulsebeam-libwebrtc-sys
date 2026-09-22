@@ -86,7 +86,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     assets = []
     for index, entry in enumerate(lock["artifacts"]):
-        if entry["artifact_target"] not in {"linux-x86_64", "linux-arm64"}:
+        if entry["artifact_target"] != "linux-x86_64":
             continue
         assets.append({
             "name": entry["asset_name"],
@@ -108,7 +108,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "consumer-proof", report_path))
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     for entry in lock["artifacts"]:
-        if entry["artifact_target"] in {"linux-x86_64", "linux-arm64"}:
+        if entry["artifact_target"] == "linux-x86_64":
             entry["url"] = download_url.rsplit("/", 1)[0] + "/" + entry["asset_name"]
             entry["sha256"] = digest if entry["asset_name"] == selected_asset else "1" * 64
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")

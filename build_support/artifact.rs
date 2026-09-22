@@ -199,7 +199,7 @@ impl ArtifactLock {
                 ReleaseScope::Linux => lock
                     .artifacts
                     .iter()
-                    .filter(|entry| entry.artifact_target.starts_with("linux-"))
+                    .filter(|entry| entry.artifact_target == "linux-x86_64")
                     .count(),
                 ReleaseScope::Complete => lock.artifacts.len(),
             };
@@ -213,10 +213,10 @@ impl ArtifactLock {
                 && lock
                     .artifacts
                     .iter()
-                    .any(|entry| entry.url.is_some() != entry.artifact_target.starts_with("linux-"))
+                    .any(|entry| entry.url.is_some() != (entry.artifact_target == "linux-x86_64"))
             {
                 return Err(
-                    "linux release scope contains non-Linux or missing Linux selections".into(),
+                    "linux release scope contains non-x86_64 or missing x86_64 selections".into(),
                 );
             }
         }
@@ -727,6 +727,45 @@ mod tests {
     }
 
     #[test]
+    fn linux_scope_requires_exactly_primary_x86_selections() {
+        let valid = released_lock(
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            &"1".repeat(64),
+        );
+        assert!(ArtifactLock::parse_and_validate(&valid, "pulsebeam-webrtc-sys-bridge-v2").is_ok());
+        let baseline: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        for (target, available) in [
+            ("linux-x86_64", false),
+            ("linux-arm64", true),
+            ("windows-x86_64", true),
+        ] {
+            let mut lock = baseline.clone();
+            let entry = lock["artifacts"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["artifact_target"] == target)
+                .unwrap();
+            if available {
+                let asset = entry["asset_name"].as_str().unwrap();
+                entry["url"] = format!("https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/{asset}").into();
+                entry["sha256"] = "1".repeat(64).into();
+            } else {
+                entry["url"] = serde_json::Value::Null;
+                entry["sha256"] = serde_json::Value::Null;
+            }
+            assert!(
+                ArtifactLock::parse_and_validate(
+                    &serde_json::to_vec(&lock).unwrap(),
+                    "pulsebeam-webrtc-sys-bridge-v2"
+                )
+                .is_err(),
+                "unexpected availability for {target}"
+            );
+        }
+    }
+
+    #[test]
     fn legacy_schema_one_development_lock_remains_readable() {
         let mut lock: serde_json::Value = serde_json::from_slice(LOCK).unwrap();
         lock["schema_version"] = serde_json::Value::from(1);
@@ -949,7 +988,7 @@ mod tests {
         lock["release_scope"] = serde_json::Value::String("linux".into());
         for entry in lock["artifacts"].as_array_mut().unwrap() {
             let target = entry["artifact_target"].as_str().unwrap();
-            if target.starts_with("linux-") {
+            if target == "linux-x86_64" {
                 let asset = entry["asset_name"].as_str().unwrap();
                 entry["url"] = serde_json::Value::String(
                     url.replace("webrtc-core-linux-x86_64.tar.gz", asset),
