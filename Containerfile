@@ -25,6 +25,7 @@ RUN apt-get update \
         perl \
         pkg-config \
         python3 \
+        sccache \
         tar \
         unzip \
         xz-utils \

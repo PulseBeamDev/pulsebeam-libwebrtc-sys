@@ -52,7 +52,8 @@ class LinuxToolchainHostTests(unittest.TestCase):
             self.assertNotIn("wrong", fixture.tool_log.read_text(encoding="utf-8"))
             self.assertEqual(fixture.tool_log.read_text(encoding="utf-8").splitlines(), [
                 "clang --version", "clang++ --version", "ld.lld --version", "llvm-ar --version",
-                "llvm-nm --version",
+                "llvm-nm --version", "clang --version", "clang++ --version", "ld.lld --version",
+                "llvm-ar --version", "llvm-nm --version",
             ])
 
     def test_arm64_reuses_valid_rebuilt_toolchain(self):

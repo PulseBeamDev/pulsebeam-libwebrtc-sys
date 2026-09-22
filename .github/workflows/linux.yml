@@ -82,8 +82,23 @@ jobs:
           command -v podman
           podman --version
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Restore compiler object cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .work/sccache/${{ matrix.target }}
+          key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: linux-sccache-v1-${{ matrix.target }}-
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Prepare ARM64 checkout for toolchain restore
+        if: matrix.target == 'linux-arm64'
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _sync '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - name: Restore pinned ARM64 Chromium LLVM toolchain
+        if: matrix.target == 'linux-arm64'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .work/checkout/src/third_party/llvm-build/Release+Asserts
+          key: linux-arm64-llvm-v1-${{ hashFiles('Justfile', 'Containerfile') }}
       - name: Build and link-smoke the native artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

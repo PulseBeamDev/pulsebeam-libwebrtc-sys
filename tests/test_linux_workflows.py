@@ -56,6 +56,19 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn(checks, validate)
         self.assertLess(validate.index(prime), validate.index(checks))
 
+    def test_builds_restore_bounded_compiler_and_native_arm64_toolchain_caches(self):
+        build = self._job("linux-build")
+        self.assertEqual(build.count("actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"), 2)
+        self.assertIn("path: .work/sccache/${{ matrix.target }}", build)
+        self.assertIn("key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}", build)
+        self.assertIn("restore-keys: linux-sccache-v1-${{ matrix.target }}-", build)
+        self.assertIn("if: matrix.target == 'linux-arm64'", build)
+        self.assertIn("just _sync '${{ matrix.flavor }}' '${{ matrix.target }}'", build)
+        self.assertIn("path: .work/checkout/src/third_party/llvm-build/Release+Asserts", build)
+        self.assertIn("key: linux-arm64-llvm-v1-${{ hashFiles('Justfile', 'Containerfile') }}", build)
+        self.assertLess(build.index("Prepare ARM64 checkout"), build.index("Restore pinned ARM64"))
+        self.assertLess(build.index("Restore pinned ARM64"), build.index("Build and link-smoke"))
+
     def test_native_architecture_matrices_and_all_required_proofs_exist(self):
         build = self._job("linux-build")
         runtime = self._job("linux-runtime")
@@ -238,6 +251,9 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
         build = self._job(contents, "linux-build")
         self.assertIn("target: linux-arm64, runner: ubuntu-24.04-arm", build)
+        self.assertIn("path: .work/sccache/${{ matrix.target }}", build)
+        self.assertIn("Prepare ARM64 checkout for toolchain restore", build)
+        self.assertIn("path: .work/checkout/src/third_party/llvm-build/Release+Asserts", build)
         self.assertNotIn("apt", contents.lower())
         self.assertNotIn("linux_release_publication", contents)
 

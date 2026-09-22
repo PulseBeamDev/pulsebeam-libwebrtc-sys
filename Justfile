@@ -103,6 +103,12 @@ build flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     justfile="{{ root }}/Justfile"
+    case "{{ target }}" in
+      linux-*)
+        export SCCACHE_DIR="{{ work }}/sccache/{{ target }}" SCCACHE_CACHE_SIZE=2G
+        mkdir -p "$SCCACHE_DIR"
+        ;;
+    esac
     just --justfile "$justfile" _validate-flavor "{{ flavor }}"
     just --justfile "$justfile" _validate-target "{{ target }}"
     just --justfile "$justfile" _validate-host "{{ target }}"
@@ -114,6 +120,7 @@ build flavor target:
     just --justfile "$justfile" _apple-host-protoc "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _compile "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _export "{{ flavor }}" "{{ target }}"
+    if [[ "{{ target }}" = linux-* ]]; then sccache --show-stats; sccache --stop-server; fi
 
 _validate-flavor flavor:
     @case "{{ flavor }}" in core|native) ;; *) echo "unsupported flavor: {{ flavor }}" >&2; exit 1;; esac
@@ -160,6 +167,8 @@ _linux-toolchain target:
       PATH="{{ work }}/depot_tools:$PATH" python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --with-ml-inliner-model= --preserve-gcs-signature
       rebuilt=rebuilt
       validate || { echo "rebuilt pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
+      find "$toolchain" -mindepth 1 -maxdepth 1 ! -name bin ! -name lib ! -name cr_build_revision -exec rm -rf {} +
+      validate || { echo "pruned pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
     fi
     revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision)
     printf 'linux toolchain host=%s revision=%s clang=%s executable=%s package=%s\n' "$(uname -m)" "$revision" "$toolchain/bin/clang" "$clang_details" "$rebuilt"
@@ -171,6 +180,9 @@ _prerequisites target:
       command -v "$tool" >/dev/null || { echo "missing prerequisite: $tool" >&2; exit 1; }
     done
     command -v cargo >/dev/null || { echo 'missing prerequisite: cargo' >&2; exit 1; }
+    case "{{ target }}" in
+      linux-*) command -v sccache >/dev/null || { echo 'Linux builds require sccache' >&2; exit 1; } ;;
+    esac
     case "{{ target }}" in
       windows-*)
         command -v cl.exe >/dev/null || { echo 'Windows builds require an MSVC developer shell' >&2; exit 1; }
@@ -290,6 +302,7 @@ _gn-args flavor target:
     common='is_debug=false is_component_build=false use_rtti=false rtc_include_tests=false rtc_build_examples=false rtc_build_tools=false rtc_use_h264=false rtc_include_opus=true rtc_build_opus=true rtc_build_libvpx=true rtc_libvpx_build_vp9=true rtc_include_builtin_audio_codecs=true rtc_include_dav1d_in_internal_decoder_factory=true rtc_enable_protobuf=false symbol_level=0 use_siso=false treat_warnings_as_errors=false'
     case "${PULSEBEAM_WEBRTC_SANITIZER:-}" in '') ;; address) common+=' is_asan=true dcheck_always_on=true';; *) echo 'PULSEBEAM_WEBRTC_SANITIZER must be empty or address' >&2; exit 1;; esac
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
+    case "{{ target }}" in linux-*) common+=' cc_wrapper="/usr/bin/sccache"';; esac
     case "{{ target }}" in
       linux-x86_64) platform='target_os="linux" target_cpu="x64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_amd64-sysroot" use_custom_libcxx=true' ;;
       linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true' ;;
