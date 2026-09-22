@@ -266,7 +266,8 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
 
             vendor = temporary_root / "registry"
             bootstrap_environment = os.environ.copy()
-            bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+            # The image's default Cargo home can be root-owned; proof cache must be writable and isolated.
+            bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
             cargo_config = run(
                 ["cargo", "vendor", "--locked", str(vendor)],
                 cwd=ROOT,
@@ -468,7 +469,7 @@ def prove_released(repository: str, revision: str, target: str, flavor: str) -> 
         temporary_root = Path(temporary)
         vendor = temporary_root / "registry"
         bootstrap_environment = os.environ.copy()
-        bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+        bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
         cargo_config = run(["cargo", "vendor", "--locked", str(vendor)], cwd=ROOT, env=bootstrap_environment, capture=True).stdout
         consumer = temporary_root / "consumer"
         write_consumer(consumer, repository, revision, target, flavor, cargo_config)
