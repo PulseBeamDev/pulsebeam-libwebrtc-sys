@@ -139,7 +139,7 @@ _linux-toolchain target:
     esac
     src="{{ work }}/checkout/src"
     toolchain="$src/third_party/llvm-build/Release+Asserts"
-    tools=(clang clang++ llvm-ar llvm-nm)
+    tools=(clang clang++ ld.lld llvm-ar llvm-nm)
     validate() {
       local tool path details revision
       for tool in "${tools[@]}"; do

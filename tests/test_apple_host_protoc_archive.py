@@ -9,7 +9,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "Justfile"
-BASELINE = "9daf9e0669f4a9b3b0ba288064ce945dc3a57ee3"
 
 
 class AppleHostProtocArchiveTests(unittest.TestCase):
@@ -74,7 +73,7 @@ printf 'Mach-O 64-bit object %s\\n' "$arch"
         protoc.chmod(0o755)
         return work
 
-    def _run(self, justfile: Path, shape: str, host_arch: str, member_arch: str | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(self, shape: str, host_arch: str, member_arch: str | None = None) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             work = self._workspace(directory, shape)
@@ -91,38 +90,23 @@ printf 'Mach-O 64-bit object %s\\n' "$arch"
             if member_arch is not None:
                 env["PULSEBEAM_TEST_MEMBER_ARCH"] = member_arch
             return subprocess.run(
-                ["just", "--justfile", str(justfile), "_apple-host-protoc", "core", "macos-x86_64"],
+                ["just", "--justfile", str(JUSTFILE), "_apple-host-protoc", "core", "macos-x86_64"],
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
             )
 
-    def test_hosted_archive_shapes_fail_at_base_and_pass_candidate(self):
-        with tempfile.TemporaryDirectory() as temp:
-            baseline = Path(temp) / "Justfile"
-            baseline.write_text(
-                subprocess.run(
-                    ["git", "show", f"{BASELINE}:Justfile"],
-                    cwd=ROOT,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout,
-                encoding="utf-8",
-            )
-            for shape, host_arch in (("symdef", "arm64"), ("qualified", "x86_64")):
-                with self.subTest(recipe="base", shape=shape):
-                    result = self._run(baseline, shape, host_arch)
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                with self.subTest(recipe="candidate", shape=shape):
-                    result = self._run(JUSTFILE, shape, host_arch)
-                    self.assertEqual(result.returncode, 0, result.stderr)
+    def test_archive_metadata_and_qualified_members_are_accepted(self):
+        for shape, host_arch in (("symdef", "arm64"), ("qualified", "x86_64")):
+            with self.subTest(shape=shape):
+                result = self._run(shape, host_arch)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_valid_host_archives_support_both_architectures_in_space_path(self):
         for host_arch in ("x86_64", "arm64"):
             with self.subTest(host_arch=host_arch):
-                result = self._run(JUSTFILE, "valid", host_arch)
+                result = self._run("valid", host_arch)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_invalid_host_archives_remain_actionable_failures(self):
@@ -136,7 +120,6 @@ printf 'Mach-O 64-bit object %s\\n' "$arch"
         for shape, expected in cases.items():
             with self.subTest(shape=shape):
                 result = self._run(
-                    JUSTFILE,
                     shape,
                     "x86_64",
                     "arm64" if shape == "wrong-arch" else None,

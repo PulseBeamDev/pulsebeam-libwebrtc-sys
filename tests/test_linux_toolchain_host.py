@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "Justfile"
-TOOLS = ("clang", "clang++", "llvm-ar", "llvm-nm")
+TOOLS = ("clang", "clang++", "ld.lld", "llvm-ar", "llvm-nm")
 
 
 class LinuxToolchainHostTests(unittest.TestCase):
@@ -37,7 +37,8 @@ class LinuxToolchainHostTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(fixture.build_log.exists())
             self.assertEqual(fixture.tool_log.read_text(encoding="utf-8").splitlines(), [
-                "clang --version", "clang++ --version", "llvm-ar --version", "llvm-nm --version",
+                "clang --version", "clang++ --version", "ld.lld --version", "llvm-ar --version",
+                "llvm-nm --version",
             ])
 
     def test_arm64_rejects_wrong_elf_before_execution_then_rebuilds_with_pinned_script(self):
@@ -50,7 +51,8 @@ class LinuxToolchainHostTests(unittest.TestCase):
             ])
             self.assertNotIn("wrong", fixture.tool_log.read_text(encoding="utf-8"))
             self.assertEqual(fixture.tool_log.read_text(encoding="utf-8").splitlines(), [
-                "clang --version", "clang++ --version", "llvm-ar --version", "llvm-nm --version",
+                "clang --version", "clang++ --version", "ld.lld --version", "llvm-ar --version",
+                "llvm-nm --version",
             ])
 
     def test_arm64_reuses_valid_rebuilt_toolchain(self):
@@ -136,7 +138,7 @@ class ToolchainFixture:
         (toolchain / "bin").mkdir(parents=True)
         (toolchain / "cr_build_revision").write_text("stale" if self.problem == "stale" else "pinned-revision", encoding="utf-8")
         for tool in TOOLS:
-            if self.problem == "missing" and tool == "llvm-nm":
+            if self.problem == "missing" and tool == "ld.lld":
                 continue
             LinuxToolchainHostTests._executable(
                 toolchain / "bin" / tool,

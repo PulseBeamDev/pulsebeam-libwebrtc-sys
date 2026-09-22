@@ -126,12 +126,14 @@ std::vector<std::uint8_t> CopyI420(const webrtc::VideoFrame &frame) {
 class RustEncoder final : public webrtc::VideoEncoder {
 public:
   RustEncoder(rust::Box<RustVideoEncoder> encoder,
-              const webrtc::SdpVideoFormat& format) noexcept
+              const webrtc::SdpVideoFormat &format) noexcept
       : encoder_(std::move(encoder)),
         callback_(std::make_shared<NativeEncodedImageCallback>(
-            std::make_shared<NativeEncodedImageCallback::State>())) {
+            std::make_shared<NativeEncodedImageCallback::State>())),
+        failed_(!encoder_is_valid(*encoder_)) {
     callback_->state()->h264 = format.name == "H264";
-    const auto packetization_mode = format.parameters.find("packetization-mode");
+    const auto packetization_mode =
+        format.parameters.find("packetization-mode");
     if (packetization_mode != format.parameters.end() &&
         packetization_mode->second == "0") {
       callback_->state()->h264_packetization_mode =
@@ -145,6 +147,11 @@ public:
     if (codec == nullptr || released_)
       return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
     std::lock_guard lock(mutex_);
+    // Keep the failed sentinel alive through WebRTC's encoder lifecycle. An
+    // InitEncode error requests no format while default fallback is disabled,
+    // which hits a DCHECK in this pinned revision. Encode can fail safely.
+    if (failed_)
+      return WEBRTC_VIDEO_CODEC_OK;
     return encoder_init(
         *encoder_, FfiEncoderSettings{
                        static_cast<std::uint32_t>(codec->width),
@@ -164,7 +171,7 @@ public:
   Encode(const webrtc::VideoFrame &frame,
          const std::vector<webrtc::VideoFrameType> *frame_types) override {
     std::lock_guard lock(mutex_);
-    if (released_)
+    if (released_ || failed_)
       return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
     auto state = std::make_unique<NativeVideoFrame::State>();
     state->width = static_cast<std::uint32_t>(frame.width());
@@ -184,7 +191,7 @@ public:
 
   void SetRates(const RateControlParameters &parameters) override {
     std::lock_guard lock(mutex_);
-    if (!released_) {
+    if (!released_ && !failed_) {
       encoder_set_rates(
           *encoder_,
           FfiRateControl{parameters.bitrate.get_sum_bps(),
@@ -209,6 +216,7 @@ private:
   rust::Box<RustVideoEncoder> encoder_;
   std::shared_ptr<NativeEncodedImageCallback> callback_;
   bool released_ = false;
+  const bool failed_;
 };
 
 class RustDecoder final : public webrtc::VideoDecoder {
@@ -291,8 +299,6 @@ public:
   Create(const webrtc::Environment &,
          const webrtc::SdpVideoFormat &format) override {
     auto encoder = encoder_factory_create(*factory_, FromNative(format));
-    if (!encoder_is_valid(*encoder))
-      return nullptr;
     return std::make_unique<RustEncoder>(std::move(encoder), format);
   }
 
@@ -409,7 +415,7 @@ int32_t RustEncoder::RegisterEncodeCompleteCallback(
     callback_->state()->callback = callback;
     callback_->state()->active = callback != nullptr;
   }
-  return encoder_register_callback(*encoder_);
+  return failed_ ? WEBRTC_VIDEO_CODEC_OK : encoder_register_callback(*encoder_);
 }
 int32_t RustEncoder::Release() {
   std::lock_guard lock(mutex_);
@@ -421,7 +427,7 @@ int32_t RustEncoder::Release() {
     callback_->state()->callback = nullptr;
   }
   released_ = true;
-  return encoder_release(*encoder_);
+  return failed_ ? WEBRTC_VIDEO_CODEC_OK : encoder_release(*encoder_);
 }
 int32_t RustDecoder::RegisterDecodeCompleteCallback(
     webrtc::DecodedImageCallback *callback) {

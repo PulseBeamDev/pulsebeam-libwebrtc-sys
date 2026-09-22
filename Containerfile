@@ -19,6 +19,7 @@ RUN apt-get update \
         libxrandr-dev \
         libxrender-dev \
         libxtst-dev \
+        lld \
         lsb-release \
         ninja-build \
         perl \
