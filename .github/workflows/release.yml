@@ -1,5 +1,6 @@
 name: PulseBeam WebRTC complete-matrix qualification
-on: {workflow_dispatch:}
+on:
+  workflow_dispatch:
 permissions: {}
 jobs:
   validate:

@@ -206,6 +206,10 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
 
 
 class LinuxWorkflowMigrationTests(unittest.TestCase):
+    def test_legacy_workflow_is_manually_dispatchable(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("on:\n  workflow_dispatch:\n", contents)
+
     def test_legacy_non_linux_build_and_runtime_contracts_are_preserved(self):
         contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
         build = self._job(contents, "non-linux-build")
