@@ -55,15 +55,9 @@ jobs:
           - flavor: core
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: core
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: native
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
@@ -90,15 +84,6 @@ jobs:
           restore-keys: linux-sccache-v1-${{ matrix.target }}-
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - name: Prepare ARM64 checkout for toolchain restore
-        if: matrix.target == 'linux-arm64'
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just _sync '${{ matrix.flavor }}' '${{ matrix.target }}'
-      - name: Restore pinned ARM64 Chromium LLVM toolchain
-        if: matrix.target == 'linux-arm64'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: .work/checkout/src/third_party/llvm-build/Release+Asserts
-          key: linux-arm64-llvm-v1-${{ hashFiles('Justfile', 'Containerfile') }}
       - name: Build and link-smoke the native artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,15 +104,9 @@ jobs:
           - flavor: core
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: core
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: native
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -237,10 +216,10 @@ jobs:
           pattern: '*-linux-*'
           path: release-input
           merge-multiple: true
-      - name: Audit exactly the four Linux archives
+      - name: Audit exactly the two primary Linux x86_64 archives
         run: >-
           just linux-run pulsebeam-linux-${{ github.sha }} bash -c
-          'expected=(webrtc-core-linux-x86_64.tar.gz webrtc-core-linux-arm64.tar.gz webrtc-native-linux-x86_64.tar.gz webrtc-native-linux-arm64.tar.gz);
+          'expected=(webrtc-core-linux-x86_64.tar.gz webrtc-native-linux-x86_64.tar.gz);
           test "$(find release-input -maxdepth 1 -type f -name "webrtc-*.tar.gz" -printf "%f\\n" | LC_ALL=C sort)" = "$(printf "%s\\n" "${expected[@]}" | LC_ALL=C sort)";
           (cd release-input && printf "%s\\n" "${expected[@]}" | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS);
           python3 -m tools.audit_release --scope linux --archives release-input --checksums release-input/SHA256SUMS --output release-input/LINUX-RELEASE-MANIFEST.json'
@@ -263,15 +242,9 @@ jobs:
           - flavor: core
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: core
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: native
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

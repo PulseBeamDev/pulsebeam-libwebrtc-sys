@@ -11,7 +11,7 @@ from tools import audit_release, linux_release_publication as publication
 
 class LinuxPublicationTests(unittest.TestCase):
     def prepared_bundle(self, root: Path) -> Path:
-        checksums, _ = ReleaseAuditTests().build_release(root, {"linux-x86_64", "linux-arm64"})
+        checksums, _ = ReleaseAuditTests().build_release(root, {"linux-x86_64"})
         archives = root
         report = audit_release.audit(archives, checksums, Path("artifacts.lock.json"), "linux")
         audit = root / "LINUX-RELEASE-MANIFEST.json"
@@ -27,8 +27,8 @@ class LinuxPublicationTests(unittest.TestCase):
             self.assertEqual(set(inventory), publication.EXPECTED_BUNDLE)
             lock = json.loads((bundle / "artifacts.lock.json").read_text())
             self.assertEqual(lock["release_scope"], "linux")
-            self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 4)
-            self.assertEqual(sum(item["url"] is None for item in lock["artifacts"]), 14)
+            self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 2)
+            self.assertEqual(sum(item["url"] is None for item in lock["artifacts"]), 16)
             state = publication.plan(bundle, "absent", None)
             self.assertTrue(state["create_draft"])
             self.assertEqual(state["upload"], sorted(publication.EXPECTED_BUNDLE))

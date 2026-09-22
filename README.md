@@ -197,10 +197,10 @@ and every other artifact use pristine upstream source. `build.txt` and
 `manifest.json` record the patch digest and applied/pristine source state, and
 only optimized release artifacts are published.
 
-Linux releases use two explicit phases. The independently qualified Linux group
-is exactly `core` and `native` for `linux-x86_64` and `linux-arm64`; registry
-publication remains deferred (`pulsebeam-webrtc-sys` is not a crates.io
-dependency).
+Linux releases use two explicit phases. The independently qualified primary
+Linux group is exactly `core` and `native` for `linux-x86_64`; Linux arm64 is a
+secondary tier. Registry publication remains deferred (`pulsebeam-webrtc-sys`
+is not a crates.io dependency).
 
 ## Linux container development
 
@@ -229,17 +229,17 @@ pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-lib
 ```
 
 1. **Linux automatic qualification** runs on pull requests and pushes to `main`.
-   It builds native x86_64 and arm64 job-local images, then qualifies all four
-   archives, both arm64 runtimes, ASan, audit, and cold candidate consumers.
-   Explicit publication is dispatched only from `linux.yml` with a validated tag;
-   the legacy complete-matrix workflow has no Linux release authority.
-   The Linux publication path depends only on Linux qualification: all four
-   Linux builds, the Linux desktop/runtime and ASan checks, cold Rust-only
-   consumer, and the closed Linux audit. It produces four archives,
-   `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository license, and a
-   schema-2 `artifacts.lock.json` candidate containing four Linux URLs/digests
-   and fourteen explicitly unavailable selections. Non-Linux jobs remain
-   visible in complete-matrix qualification but do not block this path.
+   It qualifies the two primary x86_64 archives, runtime tests, ASan, audit, and
+   cold candidate consumers in native job-local images. Linux arm64 is a
+   secondary tier and does not gate this workflow. Explicit publication is
+   dispatched only from `linux.yml` with a validated tag; the legacy
+   complete-matrix workflow has no Linux release authority. The Linux
+   publication path depends only on that primary qualification. It produces two
+   archives, `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository
+   license, and a schema-2 `artifacts.lock.json` candidate containing two Linux
+   x86_64 URLs/digests and sixteen explicitly unavailable selections. Non-Linux
+   and secondary-tier jobs remain visible in complete-matrix qualification but
+   do not block this path.
 2. The workflow first creates a draft if no release exists, downloads and hashes
    any existing assets, and uploads only missing byte-verified assets. It never
    deletes, replaces, or clobbers an asset; a conflicting or unexpected asset
@@ -247,12 +247,13 @@ pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-lib
    and only then advertises the release. An interrupted draft is recoverable by
    rerunning the exact same tag with identical bytes.
 3. After the real release exists, dispatch `linux-consumer.yml` with the exact
-   40-character revision (the exact 40-character revision is required) to run the read-only four-way released-consumer proof.
-   Then review a separate consumer revision containing
-   the generated Linux lock. That revision—not the producer tag and not the
-   checked-in development lock with `release_scope: none`—is what fresh Git
-   consumers use. Confirm its four URLs/hashes and fourteen null selections,
-   run `just check`, then commit only that post-publication lock update.
+   40-character revision (the exact 40-character revision is required) to run
+   the read-only primary x86_64 released-consumer proof. Then review a separate
+   consumer revision containing the generated Linux lock. That revision—not the
+   producer tag and not the checked-in development lock with
+   `release_scope: none`—is what fresh Git consumers use. Confirm its two
+   URLs/hashes and sixteen null selections, run `just check`, then commit only
+   that post-publication lock update.
 
 Never replace an asset on an existing release. If publication is incomplete or
 incorrect, use a new producer tag. Provenance, rather than byte-for-byte archive

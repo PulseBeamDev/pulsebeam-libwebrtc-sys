@@ -16,8 +16,8 @@ from tools import audit_release, write_artifact_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHIVES = frozenset({
-    "webrtc-core-linux-x86_64.tar.gz", "webrtc-core-linux-arm64.tar.gz",
-    "webrtc-native-linux-x86_64.tar.gz", "webrtc-native-linux-arm64.tar.gz",
+    "webrtc-core-linux-x86_64.tar.gz",
+    "webrtc-native-linux-x86_64.tar.gz",
 })
 METADATA = frozenset({"SHA256SUMS", "LINUX-RELEASE-MANIFEST.json", "artifacts.lock.json", "PULSEBEAM-APACHE-2.0.txt"})
 EXPECTED_BUNDLE = ARCHIVES | METADATA

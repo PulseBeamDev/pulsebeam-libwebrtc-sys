@@ -18,7 +18,7 @@ SPEC.loader.exec_module(write_artifact_lock)
 
 class ArtifactLockTests(unittest.TestCase):
     def report(self, root: Path, scope: str) -> Path:
-        checksums, lock = ReleaseAuditTests().build_release(root, {"linux-x86_64", "linux-arm64"} if scope == "linux" else None)
+        checksums, lock = ReleaseAuditTests().build_release(root, {"linux-x86_64"} if scope == "linux" else None)
         report = audit_release.audit(root, checksums, lock, scope)
         path = root / "audit.json"
         path.write_text(json.dumps(report), encoding="utf-8")
@@ -27,13 +27,13 @@ class ArtifactLockTests(unittest.TestCase):
     def render_report(self, root: Path, scope: str) -> dict:
         return json.loads(write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "webrtc-bridge-v1", self.report(root, scope)))
 
-    def test_closed_linux_audit_renders_only_four_available_entries(self):
+    def test_closed_linux_audit_renders_only_two_x86_64_available_entries(self):
         with tempfile.TemporaryDirectory() as temporary:
             lock = self.render_report(Path(temporary), "linux")
         self.assertEqual(lock["schema_version"], 2)
         self.assertEqual(lock["release_scope"], "linux")
-        self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 4)
-        self.assertTrue(all((item["url"] is None) == (item["artifact_target"] not in {"linux-x86_64", "linux-arm64"}) for item in lock["artifacts"]))
+        self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 2)
+        self.assertTrue(all((item["url"] is None) == (item["artifact_target"] != "linux-x86_64") for item in lock["artifacts"]))
 
     def test_closed_complete_audit_and_checksum_compatibility_are_complete(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -72,7 +72,7 @@ class ArtifactLockTests(unittest.TestCase):
             with self.assertRaisesRegex(write_artifact_lock.LockError, "malformed"):
                 write_artifact_lock.render(ROOT / "artifacts.lock.json", checksums, "tag")
             linux = self.render_report(root, "linux")
-            self.assertEqual(sum(item["url"] is not None for item in linux["artifacts"]), 4)
+            self.assertEqual(sum(item["url"] is not None for item in linux["artifacts"]), 2)
 
     def test_rejects_noncanonical_template_and_weakened_linux_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

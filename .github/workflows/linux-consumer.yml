@@ -21,15 +21,9 @@ jobs:
           - flavor: core
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: core
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
-          - flavor: native
-            target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
