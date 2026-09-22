@@ -261,14 +261,16 @@ _sync flavor target:
     fi
     mkdir -p "$checkout"
     if test -d "$src"; then just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"; fi
-    printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {}}]\n%s\n" "$target_os" > "$checkout/.gclient"
+    # PGO coverage assets are not build inputs. Their CIPD fetch has stalled indefinitely
+    # on hosted Linux runners, so explicitly exclude it while retaining the pinned source.
+    printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {'checkout_instrumented_libraries': False}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     if test "{{ target }}" = windows-x86_64; then
       vpython_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/vpython")
       retry_acquisition webrtc_sync "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
     else
       export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
       cd "$checkout"
-      retry_acquisition webrtc_sync "{{ webrtc_commit }}" gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" timeout --foreground 20m gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     fi
     actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf '%s' missing)
     test "$actual_webrtc" = "{{ webrtc_commit }}" || { echo "pinned input validation failed input=webrtc pin={{ webrtc_commit }} expected={{ webrtc_commit }} actual=$actual_webrtc failure=invalid-checkout" >&2; exit 1; }

@@ -18,6 +18,11 @@ class InputRetrievalBoundaryTests(unittest.TestCase):
         self.assertIn('fetch --depth=1 origin "{{ depot_tools_commit }}"', sync)
         self.assertIn('retry_acquisition webrtc_sync "{{ webrtc_commit }}"', sync)
         self.assertIn('--revision "src@{{ webrtc_commit }}"', sync)
+        self.assertIn("'checkout_instrumented_libraries': False", sync)
+        self.assertIn(
+            'timeout --foreground 20m gclient sync --no-history --shallow --nohooks --force',
+            sync,
+        )
         self.assertIn('retry_acquisition webrtc_hooks "{{ webrtc_commit }}"', sync)
         self.assertIn(
             'actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf \'%s\' missing)',
