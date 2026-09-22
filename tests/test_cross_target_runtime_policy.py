@@ -102,7 +102,7 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
         )
         self.assertNotIn("--rtlib=libgcc", JUSTFILE)
         self.assertIn(
-            'linux-arm64) platform=\'target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true\'',
+            'linux-arm64) platform=\'target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true clang_use_chrome_plugins=false\'',
             JUSTFILE,
         )
         self.assertEqual(
