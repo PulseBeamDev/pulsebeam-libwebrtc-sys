@@ -45,8 +45,9 @@ class LinuxWorkflowTests(unittest.TestCase):
                 self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", section)
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
 
-    def test_validate_checkout_retains_the_control_plane_baseline(self):
+    def test_validation_checkouts_retain_the_control_plane_baseline(self):
         self.assertIn("fetch-depth: 0", self._job("validate"))
+        self.assertIn("fetch-depth: 0", CHECK_WORKFLOW.read_text(encoding="utf-8"))
 
     def test_validate_primes_the_mounted_cache_before_offline_checks(self):
         validate = self._job("validate")
