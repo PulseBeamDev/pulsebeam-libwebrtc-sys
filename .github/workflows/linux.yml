@@ -276,7 +276,8 @@ jobs:
         run: >-
           just linux-run pulsebeam-linux-${{ github.sha }} bash -c
           'archive="dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz";
-          digest="$(awk -v name="$(basename "$archive")" "$2 == name { print $1 }" audit/SHA256SUMS)";
+          checksum_line="$(grep -F "  $(basename "$archive")" audit/SHA256SUMS)";
+          digest="${checksum_line%% *}";
           test -n "$digest";
           python3 -m tools.rust_only_consumer candidate --artifact "$archive" --sha256 "$digest" --target "${{ matrix.target }}" --flavor "${{ matrix.flavor }}"'
 

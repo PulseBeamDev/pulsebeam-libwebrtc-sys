@@ -116,7 +116,9 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", consumer)
         self.assertNotIn("linux-arm64", consumer)
         self.assertIn("tools.rust_only_consumer candidate", consumer)
-        self.assertIn("SHA256SUMS", consumer)
+        self.assertIn('checksum_line="$(grep -F "  $(basename "$archive")" audit/SHA256SUMS)"', consumer)
+        self.assertIn('digest="${checksum_line%% *}"', consumer)
+        self.assertNotIn('"$2 == name { print $1 }"', consumer)
         self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", consumer)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", consumer)
 
