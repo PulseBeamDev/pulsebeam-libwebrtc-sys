@@ -25,30 +25,18 @@ jobs:
         with:
           just-version: 1.43.1
       - name: Prove rootless Podman is available
-        run: |
-          command -v podman
-          podman --version
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
-      - name: Select the candidate source pin
-        shell: bash
+        run: just ci podman
+      - name: Select the candidate source pin before building the image
         env:
           CANDIDATE_COMMIT: ${{ inputs.webrtc_commit }}
-        run: |
-          just linux-image pulsebeam-linux-${{ github.sha }}
-          just linux-run pulsebeam-linux-${{ github.sha }} bash -c '
-            candidate=$1
-            [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate must be a lowercase 40-character commit" >&2; exit 1; }
-            current=$(sed -n "s/^webrtc_commit := \"\\([0-9a-f]\\{40\\}\)\"$/\\1/p" Justfile)
-            test -n "$current" && test "$current" != "$candidate" || { echo "candidate must differ from the checked-in pin" >&2; exit 1; }
-            sed -i "s/$current/$candidate/" Justfile
-          ' -- "$CANDIDATE_COMMIT"
+        run: just ci upgrade-pin "$CANDIDATE_COMMIT"
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Verify the pinned CXX import refresh is mechanical
-        run: |
-          just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx
-          just linux-run pulsebeam-linux-${{ github.sha }} git diff --exit-code -- vendor/cxx Cargo.toml Cargo.lock
+        run: just ci upgrade-refresh pulsebeam-linux-${{ github.sha }}
       - name: Build candidate adapter
         shell: bash
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just build core linux-x86_64
+        run: just ci upgrade-build pulsebeam-linux-${{ github.sha }}
       - name: Save adapter failure log
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

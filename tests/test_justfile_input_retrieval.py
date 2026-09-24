@@ -50,6 +50,7 @@ class InputRetrievalBoundaryTests(unittest.TestCase):
             r"pinned input retrieval failed input=\$input pin=\$pin attempts=3",
         )
         self.assertEqual(len(re.findall(r"retry_acquisition (?:depot_tools|webrtc_sync|webrtc_hooks)", sync)), 5)
+        self.assertIn('if test "$input" = webrtc_sync; then python3 "{{ root }}/tools/repair_incomplete_git.py" "$src"; fi', sync)
 
     def test_artifact_proof_verifies_its_snapshot_before_execution(self):
         proof = self._recipe("verify-artifact archive='' sha256='':", "# Download, checksum")

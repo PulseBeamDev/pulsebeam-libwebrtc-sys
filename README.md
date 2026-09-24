@@ -10,10 +10,32 @@ The complete local interface is:
 
 ```console
 just check
+just ci-preflight
+just ci --help
+just ci-release --help
 just verify-artifact <archive> <sha256>
 just build <core|native> <target>
 just refresh-cxx
 ```
+
+`just ci-preflight` checks every release CLI option used by the workflows
+against the locally installed `gh` (also run on the GitHub runner before the
+Linux image build). It needs neither network nor a GitHub token. Run it before
+starting a long local build; unlike `just check`, it requires `gh` on the host.
+
+All five workflows call repository-owned `just` commands for validation,
+artifact audit, result qualification, candidate-pin rehearsal, and release
+planning/publication. Their YAML retains job dependencies, runner selection,
+credential transport, caching, artifact transfer, and GitHub attestation.
+Run the same operations locally with `just ci <task> ...` (see `just ci --help`),
+for example `just ci revision <40-character-revision>` or `just ci audit linux
+release-input release-input/SHA256SUMS release-input/LINUX-RELEASE-MANIFEST.json`.
+`just ci-release --help` lists publication stages. The release commands require
+an authenticated `gh` and contact GitHub; the local tests fake the CLI and
+never publish a release. Bundle preparation and audit run on the host without
+building a Podman image. Only the actual WebRTC builds need the Linux image.
+The released-consumer job retains two small host guards because it checks out
+an arbitrary historical revision whose Justfile might not yet provide `just ci`.
 
 `just check` is the fast, offline source/control-plane gate once the pinned Rust
 dependencies are cached. It does not require or extract native bytes. Native
@@ -34,9 +56,11 @@ download, cache, offline, and release consumer jobs.
 
 `just build` validates the flavor, target, and host before it synchronizes the
 pinned sources, configures and compiles WebRTC, exports the static closure, and
-performs C++ and Rust compile/link-only consumer checks. Every flavor/target
-artifact carries the same generated bridge and portable adapter sources,
-compiled with that job's target toolchain and ABI configuration.
+performs C++ and Rust compile/link-only consumer checks. After a failed
+`gclient sync`, it removes only incomplete dependency Git checkouts without a
+usable HEAD before retrying; a real upstream timeout can still fail the build.
+Every flavor/target artifact carries the same generated bridge and portable
+adapter sources, compiled with that job's target toolchain and ABI configuration.
 
 The release workflow separately runs the full Rust runtime suite for both
 flavors on Linux x86_64, Windows x86_64, macOS x86_64, and macOS arm64. Linux
@@ -210,12 +234,17 @@ inside it; the checkout is mounted read/write so generated outputs stay owned
 by the calling developer.
 
 ```bash
+just ci-preflight
 just linux-image pulsebeam-linux
 just linux-run pulsebeam-linux just build core linux-x86_64
 just linux-run pulsebeam-linux just _runtime-test core linux-x86_64 dist/webrtc-core-linux-x86_64.tar.gz
 just linux-run pulsebeam-linux just build native linux-x86_64
 just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrtc-native-linux-x86_64.tar.gz
 ```
+
+For a manual upgrade rehearsal, run `python3 tools/select_upgrade_pin.py
+<40-character-commit>` in a disposable checkout before building the image.
+This changes the local Justfile pin, exactly as the hosted rehearsal does.
 
 After publication, use the reviewed consumer revision in either canonical HTTPS
 Git dependency form (replace `<consumer-revision>` with that exact revision):

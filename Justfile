@@ -20,7 +20,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ root }}"
-    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
+    test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nci\nci-preflight\nci-release\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
     grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
@@ -48,6 +48,11 @@ check:
     python3 -m unittest tests/test_artifact_lock.py
     python3 -m unittest tests/test_release_audit.py
     python3 -m unittest tests/test_linux_release_publication.py
+    python3 -m unittest tests/test_ci_preflight.py
+    python3 -m unittest tests/test_ci_tasks.py
+    python3 -m unittest tests/test_github_release.py
+    python3 -m unittest tests/test_select_upgrade_pin.py
+    python3 -m unittest tests/test_repair_incomplete_git.py
     python3 -m unittest tests/test_tracked_payloads.py
     python3 tools/check_tracked_payloads.py
     python3 tools/write_artifact_manifest.py --help >/dev/null
@@ -60,6 +65,27 @@ check:
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --test artifact_support --locked --offline
     echo 'source/control-plane check passed; native proof requires: just verify-artifact <archive> <sha256>'
     git diff --check
+
+# Offline, host-side CLI compatibility check before building the CI image.
+# Requires gh, just as the hosted release job does; never calls GitHub APIs.
+ci-preflight:
+    cd "{{ root }}" && python3 -m tools.ci_preflight
+
+# Run the same repository-owned task used by the CI workflows.
+[positional-arguments]
+ci *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{ root }}"
+    exec python3 -m tools.ci_tasks "$@"
+
+# Live GitHub release operations. Run locally with gh authentication or a fake gh.
+[positional-arguments]
+ci-release *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{ root }}"
+    exec python3 -m tools.github_release "$@"
 
 # Verify one untracked, checksum-pinned core Linux x86_64 artifact with all native proofs.
 verify-artifact archive='' sha256='':
@@ -232,6 +258,10 @@ _sync flavor target:
       local input="$1" pin="$2" attempt; shift 2
       for attempt in 1 2 3; do
         if "$@"; then return 0; fi
+        # A timed-out gclient can leave newly initialized dependencies without
+        # HEAD. The next sync will fail immediately unless those partial Git
+        # checkouts are removed. Preserve every valid checkout and source pin.
+        if test "$input" = webrtc_sync; then python3 "{{ root }}/tools/repair_incomplete_git.py" "$src"; fi
         if test "$attempt" -lt 3; then
           echo "retrying pinned input=$input pin=$pin attempt=$attempt/3 failure=upstream-acquisition" >&2
           sleep "$attempt"

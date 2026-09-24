@@ -22,10 +22,7 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with: {just-version: 1.43.1}
       - name: Prove rootless Podman is available
-        run: |
-          command -v podman
-          podman --version
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+        run: just ci podman
       - name: Restore compiler object cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -77,17 +74,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
       - name: Install Rust target for artifact link smoke
         shell: bash
-        run: |
-          case '${{ matrix.target }}' in
-            windows-x86_64) cargo_target=x86_64-pc-windows-msvc ;;
-            macos-x86_64) cargo_target=x86_64-apple-darwin ;;
-            macos-arm64) cargo_target=aarch64-apple-darwin ;;
-            android-x86_64) cargo_target=x86_64-linux-android ;;
-            android-arm64-v8a) cargo_target=aarch64-linux-android ;;
-            ios-arm64) cargo_target=aarch64-apple-ios ;;
-            ios-simulator-arm64) cargo_target=aarch64-apple-ios-sim ;;
-          esac
-          rustup target add "$cargo_target"
+        run: just ci rust-target '${{ matrix.target }}'
       - name: Build and smoke-link artifact
         run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -104,10 +91,7 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with: {just-version: 1.43.1}
       - name: Prove rootless Podman is available
-        run: |
-          command -v podman
-          podman --version
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+        run: just ci podman
       - run: just linux-image pulsebeam-linux-${{ github.sha }}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with: {name: '${{ matrix.flavor }}-linux-x86_64', path: dist}
@@ -152,10 +136,7 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with: {just-version: 1.43.1}
       - name: Prove rootless Podman is available
-        run: |
-          command -v podman
-          podman --version
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+        run: just ci podman
       - run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Build ASan artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
@@ -170,12 +151,12 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: {persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with: {path: release, merge-multiple: true}
       - name: Audit artifacts
-        run: |
-          find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
-          python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
+        run: just ci audit complete release release/SHA256SUMS release/RELEASE-MANIFEST.json
   complete-matrix-qualification:
     name: Complete-matrix qualification
     needs: [linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, complete-audit]
@@ -183,6 +164,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
       - name: Require all matrix checks to pass
-        run: |
-          for result in '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.non-linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done
+        run: >-
+          just ci require-success
+          'linux-build=${{ needs.linux-build.result }}'
+          'non-linux-build=${{ needs.non-linux-build.result }}'
+          'linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}'
+          'non-linux-desktop-runtime=${{ needs.non-linux-desktop-runtime.result }}'
+          'lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}'
+          'complete-audit=${{ needs.complete-audit.result }}'

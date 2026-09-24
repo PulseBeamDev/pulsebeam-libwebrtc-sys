@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-import re
-import subprocess
 import tempfile
 import unittest
 
@@ -95,10 +92,9 @@ class LinuxPublicationTests(unittest.TestCase):
     def test_workflow_finalizes_only_after_attestation_reverification(self):
         workflow = Path(".github/workflows/linux.yml").read_text(encoding="utf-8")
         publish = workflow[workflow.index("  publish-linux:"):]
-        self.assertIn('test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY"', publish)
-        self.assertIn('gh api --paginate "repos/${CANONICAL_REPOSITORY}/releases?per_page=100"', publish)
+        self.assertIn('RUNTIME_REPOSITORY: ${{ github.repository }}', publish)
         self.assertNotIn("${GITHUB_REPOSITORY}", publish)
-        self.assertGreaterEqual(publish.count("--repo \"$CANONICAL_REPOSITORY\""), 7)
+        self.assertNotIn('gh release ', publish)
         gate = "if: steps.publication-plan.outputs.finalize == 'true'"
         self.assertEqual(publish.count(gate), 5)
         attestation = publish.index("      - name: Attest final release assets")
@@ -106,33 +102,8 @@ class LinuxPublicationTests(unittest.TestCase):
         advertise = publish.index("      - name: Advertise only the verified complete Linux release")
         self.assertLess(attestation, reverify)
         self.assertLess(reverify, advertise)
+        self.assertIn('just ci-release classify', publish)
+        self.assertIn('just ci-release upload', publish)
+        self.assertIn('just ci-release verify', publish[reverify:advertise])
         self.assertIn('attested-publication-plan.json', publish[reverify:advertise])
-
-    def test_workflow_discovers_existing_draft_in_paginated_inventory(self):
-        publish = Path('.github/workflows/linux.yml').read_text(encoding='utf-8').split('  publish-linux:', 1)[1]
-        script = re.search(r"python3 -c '([^']+)' < releases.jsonl > release.json", publish)
-        self.assertIsNotNone(script)
-        releases = [
-            {'tag_name': 'v0.5.2', 'draft': False, 'assets': []},
-            {'tag_name': 'v0.5.3', 'draft': True, 'assets': []},
-        ]
-        result = subprocess.run(
-            ['python3', '-c', script.group(1)],
-            input='\n'.join(map(json.dumps, releases)) + '\n',
-            text=True, capture_output=True, check=True,
-            env={**os.environ, 'RELEASE_TAG': 'v0.5.3'},
-        )
-        self.assertEqual(json.loads(result.stdout), releases[1])
-        self.assertIn('if test "$(python3 -c \'import json; print(bool(json.load(open("release.json"))["assets"]))\')" = True', publish)
-
-    def test_workflow_uploads_one_asset_per_line(self):
-        publish = Path('.github/workflows/linux.yml').read_text(encoding='utf-8').split('  publish-linux:', 1)[1]
-        script = re.search(r"done < <\(python3 -c '([^']+)'\)", publish)
-        self.assertIsNotNone(script)
-        with tempfile.TemporaryDirectory() as temp:
-            Path(temp, 'publication-plan.json').write_text(json.dumps({'upload': ['SHA256SUMS', 'webrtc-core-linux-x86_64.tar.gz']}))
-            result = subprocess.run(['python3', '-c', script.group(1)], cwd=temp, text=True, capture_output=True, check=True)
-            Path(temp, 'publication-plan.json').write_text(json.dumps({'upload': []}))
-            empty = subprocess.run(['python3', '-c', script.group(1)], cwd=temp, text=True, capture_output=True, check=True)
-        self.assertEqual(result.stdout.splitlines(), ['SHA256SUMS', 'webrtc-core-linux-x86_64.tar.gz'])
-        self.assertEqual(empty.stdout, '')
+        self.assertIn('just ci-release advertise --tag "$RELEASE_TAG" --plan attested-publication-plan.json', publish[advertise:])
