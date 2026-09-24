@@ -75,12 +75,16 @@ jobs:
           command -v podman
           podman --version
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      # A shared core/native key lets the faster native job win the save race,
+      # leaving core-only objects uncached on every subsequent run.
       - name: Restore compiler object cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .work/sccache/${{ matrix.target }}
-          key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: linux-sccache-v1-${{ matrix.target }}-
+          key: linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-
+            linux-sccache-v1-${{ matrix.target }}-
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Build and smoke-link artifact
@@ -161,6 +165,12 @@ jobs:
           command -v podman
           podman --version
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+      - name: Restore ASan compiler object cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .work/sccache/linux-x86_64
+          key: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-${{ github.sha }}
+          restore-keys: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Build and run ASan tests
@@ -377,21 +387,19 @@ jobs:
           RUNTIME_REPOSITORY: ${{ github.repository }}
         run: |
           test "$RUNTIME_REPOSITORY" = "$CANONICAL_REPOSITORY" || { echo "refusing publication from $RUNTIME_REPOSITORY; expected $CANONICAL_REPOSITORY" >&2; exit 1; }
-          set +e
-          gh api --include "repos/${CANONICAL_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-query
-          status=$?
-          set -e
-          if test "$status" -eq 0; then
-            sed -n '/^{/,$p' release-query > release.json
-            if test "$(python3 -c 'import json, sys; print(str(json.load(sys.stdin)["draft"]).lower())' < release.json)" = true; then release_state=draft; else release_state=published; fi
-            python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
-            mkdir observed
-            gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed
-          elif head -n 1 release-query | grep -Eq 'HTTP/[0-9.]+ 404'; then
+          # The releases/tags endpoint returns 404 for drafts, even with contents: write.
+          # Enumerate releases instead so an interrupted draft is never mistaken for absent.
+          gh api --paginate "repos/${CANONICAL_REPOSITORY}/releases?per_page=100" --jq '.[] | {tag_name,draft,assets:[.assets[]|{name}]} | @json' > releases.jsonl
+          python3 -c 'import json, os, sys; matches = [item for line in sys.stdin if (item := json.loads(line))["tag_name"] == os.environ["RELEASE_TAG"]]; len(matches) <= 1 or sys.exit("ambiguous release identity"); print(json.dumps(matches[0] if matches else None))' < releases.jsonl > release.json
+          if test "$(python3 -c 'import json; print(json.load(open("release.json")) is None)')" = True; then
             release_state=absent
           else
-            cat release-query >&2
-            exit 1
+            if test "$(python3 -c 'import json; print(json.load(open("release.json"))["draft"])')" = True; then release_state=draft; else release_state=published; fi
+            python3 -c 'import json, sys; print(json.dumps([asset["name"] for asset in json.load(sys.stdin)["assets"]]))' < release.json > remote-names.json
+            mkdir observed
+            if test "$(python3 -c 'import json; print(bool(json.load(open("release.json"))["assets"]))')" = True; then
+              gh release download "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --dir observed
+            fi
           fi
           observed_args=()
           if test "$release_state" != absent; then observed_args=(--observed observed --remote-names remote-names.json); fi
@@ -407,7 +415,7 @@ jobs:
         run: |
           create=$(python3 -c 'import json; print(json.load(open("publication-plan.json"))["create_draft"])')
           if test "$create" = True; then gh release create "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" --draft --verify-tag --title "$RELEASE_TAG"; fi
-          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" "release/$asset"; done < <(python3 -c 'import json; print("\\n".join(json.load(open("publication-plan.json"))["upload"]))')
+          while IFS= read -r asset; do gh release upload "$RELEASE_TAG" --repo "$CANONICAL_REPOSITORY" "release/$asset"; done < <(python3 -c 'import json, sys; sys.stdout.writelines(name + "\n" for name in json.load(open("publication-plan.json"))["upload"])')
       - name: Reverify the full draft inventory without replacement
         if: steps.publication-plan.outputs.finalize == 'true'
         shell: bash

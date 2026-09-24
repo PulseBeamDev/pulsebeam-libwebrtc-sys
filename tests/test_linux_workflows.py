@@ -62,10 +62,19 @@ class LinuxWorkflowTests(unittest.TestCase):
         build = self._job("linux-build")
         self.assertEqual(build.count("actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"), 1)
         self.assertIn("path: .work/sccache/${{ matrix.target }}", build)
-        self.assertIn("key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}", build)
-        self.assertIn("restore-keys: linux-sccache-v1-${{ matrix.target }}-", build)
+        self.assertIn("key: linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-${{ github.sha }}", build)
+        self.assertIn("linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-", build)
+        self.assertIn("linux-sccache-v1-${{ matrix.target }}-", build)
         self.assertNotIn("linux-arm64", build)
         self.assertNotIn("ubuntu-24.04-arm", build)
+
+    def test_asan_builds_persist_separate_compiler_caches(self):
+        asan = self._job("lifetime-sanitizers")
+        self.assertEqual(asan.count("actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"), 1)
+        self.assertIn("path: .work/sccache/linux-x86_64", asan)
+        self.assertIn("key: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-${{ github.sha }}", asan)
+        self.assertIn("restore-keys: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-", asan)
+        self.assertLess(asan.index("Restore ASan compiler object cache"), asan.index("Build and run ASan tests"))
 
     def test_native_architecture_matrices_and_all_required_proofs_exist(self):
         build = self._job("linux-build")
