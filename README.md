@@ -231,9 +231,13 @@ pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-lib
 1. **Linux qualification + manual release** runs qualification on pull requests
    and pushes to `main`. It qualifies the two primary x86_64 archives, runtime
    tests, ASan, audit, and cold candidate consumers in native job-local images.
-   Linux arm64 is a secondary tier and does not gate this workflow. Explicit publication is
-   dispatched only from `linux.yml` with a validated tag; the legacy
-   complete-matrix workflow has no Linux release authority. The Linux
+   Linux arm64 is a secondary tier and does not gate this workflow. A manual
+   `linux.yml` dispatch with a nonempty `tag` reruns the same qualification;
+   publication depends on that dispatch's successful qualification, not a prior
+   automatic run. The tag must already exist and resolve to the dispatched
+   revision. Set `tag` to an existing release tag, then run `gh workflow run
+   linux.yml --ref "$tag" -f tag="$tag"` (selecting a ref alone does not
+   supply the tag input). The legacy complete-matrix workflow has no Linux release authority. The Linux
    publication path depends only on that primary qualification. It produces two
    archives, `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository
    license, and a schema-2 `artifacts.lock.json` candidate containing two Linux

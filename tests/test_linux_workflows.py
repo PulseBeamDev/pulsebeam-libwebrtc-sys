@@ -123,7 +123,7 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", consumer)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", consumer)
 
-    def test_explicit_tag_publication_is_serialized_and_mutation_is_isolated(self):
+    def test_explicit_tag_publication_requires_same_run_qualification(self):
         bundle = self._job("linux-release-bundle")
         publish = self._job("publish-linux")
         condition = "github.event_name == 'workflow_dispatch' && inputs.tag != ''"
@@ -135,11 +135,11 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn('test "$tagged" = "$WORKFLOW_COMMIT"', bundle)
         self.assertIn("needs: [linux-qualification, linux-release-bundle]", publish)
         self.assertIn("cancel-in-progress: false", self.contents)
-        self.assertIn("actions: read", bundle)
-        self.assertIn("tools.linux_release_publication qualify", bundle)
-        self.assertIn("--paginate --slurp", bundle)
+        self.assertNotIn("actions: read", bundle)
+        self.assertNotIn("tools.linux_release_publication qualify", bundle)
+        self.assertNotIn("actions/workflows/linux.yml/runs", bundle)
         self.assertIn("test \"$RELEASE_TAG\" != v0.5.0", bundle)
-        self.assertLess(bundle.index("Verify prior automatic qualification"), bundle.index("Construct one closed audited"))
+        self.assertLess(bundle.index("Validate the requested immutable release tag"), bundle.index("Construct one closed audited"))
         self.assertIn("contents: write", publish)
         self.assertIn("id-token: write", publish)
         self.assertIn("attestations: write", publish)
