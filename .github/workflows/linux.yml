@@ -1,4 +1,4 @@
-name: Linux automatic qualification
+name: Linux qualification + manual release
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate Linux control plane
+    name: Source checks
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -45,7 +45,7 @@ jobs:
         run: just linux-run pulsebeam-linux-${{ github.sha }} just check
 
   linux-build:
-    name: Linux artifact (${{ matrix.flavor }}, ${{ matrix.target }})
+    name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: validate
     strategy:
       fail-fast: false
@@ -83,7 +83,7 @@ jobs:
           restore-keys: linux-sccache-v1-${{ matrix.target }}-
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - name: Build and link-smoke the native artifact
+      - name: Build and smoke-link artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -94,7 +94,7 @@ jobs:
           compression-level: 0
 
   linux-runtime:
-    name: Linux runtime (${{ matrix.flavor }}, ${{ matrix.target }})
+    name: Runtime (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: linux-build
     strategy:
       fail-fast: false
@@ -130,11 +130,11 @@ jobs:
         with:
           name: ${{ matrix.flavor }}-${{ matrix.target }}
           path: dist
-      - name: Run environment, network, signaling, data-channel, video, and teardown tests
+      - name: Run runtime tests
         run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
 
   lifetime-sanitizers:
-    name: ASan lifetime tests (${{ matrix.flavor }}, linux-x86_64)
+    name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
     needs: validate
     strategy:
       fail-fast: false
@@ -163,12 +163,13 @@ jobs:
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
       - name: Build the local Linux image
         run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - name: Build ASan artifact and run lifetime-sensitive suite
+      - name: Build and run ASan tests
         run: |
           just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
           just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
 
   linux-qualification:
+    name: Linux qualification
     needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]
     if: always()
     runs-on: ubuntu-24.04
@@ -190,6 +191,7 @@ jobs:
           for result in "${results[@]}"; do test "${result#*=}" = success || exit 1; done
 
   linux-audit:
+    name: Audit Linux artifacts
     needs: linux-build
     runs-on: ubuntu-24.04
     permissions:
@@ -233,6 +235,7 @@ jobs:
           compression-level: 0
 
   candidate-consumer:
+    name: Candidate consumer (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: [linux-build, linux-audit]
     strategy:
       fail-fast: false
@@ -281,6 +284,7 @@ jobs:
           python3 -m tools.rust_only_consumer candidate --artifact "$archive" --sha256 "$digest" --target "${{ matrix.target }}" --flavor "${{ matrix.flavor }}"'
 
   linux-release-bundle:
+    name: Prepare Linux release
     if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
     needs: linux-qualification
     runs-on: ubuntu-24.04
@@ -348,6 +352,7 @@ jobs:
           compression-level: 0
 
   publish-linux:
+    name: Publish Linux release
     if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
     needs: [linux-qualification, linux-release-bundle]
     runs-on: ubuntu-24.04

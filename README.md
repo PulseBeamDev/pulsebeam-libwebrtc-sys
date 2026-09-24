@@ -228,10 +228,10 @@ pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-lib
 pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>", features = ["native"] }
 ```
 
-1. **Linux automatic qualification** runs on pull requests and pushes to `main`.
-   It qualifies the two primary x86_64 archives, runtime tests, ASan, audit, and
-   cold candidate consumers in native job-local images. Linux arm64 is a
-   secondary tier and does not gate this workflow. Explicit publication is
+1. **Linux qualification + manual release** runs qualification on pull requests
+   and pushes to `main`. It qualifies the two primary x86_64 archives, runtime
+   tests, ASan, audit, and cold candidate consumers in native job-local images.
+   Linux arm64 is a secondary tier and does not gate this workflow. Explicit publication is
    dispatched only from `linux.yml` with a validated tag; the legacy
    complete-matrix workflow has no Linux release authority. The Linux
    publication path depends only on that primary qualification. It produces two
@@ -303,10 +303,10 @@ Non-goals include:
 
 ## Upgrades
 
-For a routine WebRTC upgrade, first dispatch **WebRTC source-pin upgrade
-rehearsal** with the proposed 40-character commit. That job substitutes only
-`webrtc_commit`, checksum-refreshes the pinned CXX import and requires it to
-stay byte-identical, then regenerates the CXX bridge and compiles/links the full
+For a routine WebRTC upgrade, first dispatch **WebRTC upgrade check** with
+the proposed 40-character commit. That job substitutes only `webrtc_commit`,
+checksum-refreshes the pinned CXX import and requires it to stay
+byte-identical, then regenerates the CXX bridge and compiles/links the full
 core Linux adapter. Upstream API drift therefore fails at a focused adapter or
 compiler step. Once reviewed, change only `webrtc_commit` near the top of the
 `Justfile`, run `just check`, and use the two-phase release procedure above.
@@ -332,9 +332,9 @@ Upgrade CXX as one reviewable change:
 | Contract | Automated job or release check |
 |---|---|
 | Offline schemas, extraction, target/flavor substitution, link translation, source cleanliness, CXX inventory, and Rust-only dependency graph | **Fast checks / check** (`just check`) |
-| Complete bridge and extracted-artifact C++/Rust compile/link for all 18 identities | **Manual release / build** matrix plus `audit_release.py` |
-| Deterministic execution/network, signaling, data channel, injected video path, and ordered teardown for both desktop flavors | Eight **Desktop runtime** matrix jobs |
-| Observer, callback, partial-construction, close/drop, and provider lifetime under instrumentation | Two **ASan lifetime tests** jobs |
-| Fresh Git dependency, cold artifact and target caches, identity probe, host runtime smoke, and forbidden C/C++ compiler sentinels | **Cold Rust-only Git consumer** |
-| One-pin upstream rehearsal and mechanical CXX/generated-bridge refresh | **WebRTC source-pin upgrade rehearsal** |
+| Complete bridge and extracted-artifact C++/Rust compile/link for all 18 identities | **Complete-matrix checks (manual)** build matrix plus `audit_release.py` |
+| Deterministic execution/network, signaling, data channel, injected video path, and ordered teardown for both desktop flavors | Eight **Runtime** matrix checks |
+| Observer, callback, partial-construction, close/drop, and provider lifetime under instrumentation | Two **ASan tests** jobs |
+| Fresh Git dependency, cold artifact and target caches, identity probe, host runtime smoke, and forbidden C/C++ compiler sentinels | **Released Linux consumer check** |
+| One-pin upstream rehearsal and mechanical CXX/generated-bridge refresh | **WebRTC upgrade check** |
 | Immutable URLs/checksums, complete external lock, licenses, notices, and attestations | The two documented release phases and **publish** gate |

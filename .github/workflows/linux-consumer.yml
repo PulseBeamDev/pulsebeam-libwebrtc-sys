@@ -1,4 +1,4 @@
-name: Linux released consumer proof
+name: Released Linux consumer check
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   released-consumer:
-    name: Released Rust consumer (${{ matrix.flavor }}, ${{ matrix.target }})
+    name: Released consumer (${{ matrix.flavor }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -47,18 +47,19 @@ jobs:
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
       - name: Build the local native Linux image
         run: just linux-image pulsebeam-linux-${{ inputs.revision }}
-      - name: Prove the released Rust-only consumer from a fresh cache
+      - name: Test released artifact from a fresh cache
         run: >-
           just linux-run pulsebeam-linux-${{ inputs.revision }} python3 -m tools.rust_only_consumer released
           --repository https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git
           --revision '${{ inputs.revision }}' --target '${{ matrix.target }}' --flavor '${{ matrix.flavor }}'
 
   linux-consumer:
+    name: Released consumer result
     needs: released-consumer
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every released consumer coordinate to succeed
+      - name: Require both consumers to pass
         shell: bash
         run: |
           results=(

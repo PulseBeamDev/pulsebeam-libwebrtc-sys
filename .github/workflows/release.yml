@@ -1,16 +1,10 @@
-name: PulseBeam WebRTC complete-matrix qualification
+name: Complete-matrix checks (manual)
 on:
   workflow_dispatch:
 permissions: {}
 jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    permissions: {contents: read}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
   linux-build:
-    needs: validate
+    name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -48,11 +42,12 @@ jobs:
         with:
           path: .work/checkout/src/third_party/llvm-build/Release+Asserts
           key: linux-arm64-llvm-v1-${{ hashFiles('Justfile', 'Containerfile') }}
-      - run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - name: Build and smoke-link artifact
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
   non-linux-build:
-    needs: validate
+    name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -93,10 +88,12 @@ jobs:
             ios-simulator-arm64) cargo_target=aarch64-apple-ios-sim ;;
           esac
           rustup target add "$cargo_target"
-      - run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - name: Build and smoke-link artifact
+        run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
   linux-desktop-runtime:
+    name: Runtime (${{ matrix.flavor }}, linux-x86_64)
     needs: linux-build
     strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
     runs-on: ubuntu-24.04
@@ -114,8 +111,10 @@ jobs:
       - run: just linux-image pulsebeam-linux-${{ github.sha }}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with: {name: '${{ matrix.flavor }}-linux-x86_64', path: dist}
-      - run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
+      - name: Run runtime tests
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
   non-linux-desktop-runtime:
+    name: Runtime (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: non-linux-build
     strategy:
       fail-fast: false
@@ -139,9 +138,10 @@ jobs:
         with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: dist}
       - name: Prime pinned Rust dependencies
         run: cargo fetch --locked
-      - run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
+      - name: Run runtime tests
+        run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
   lifetime-sanitizers:
-    needs: validate
+    name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
     strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
     runs-on: ubuntu-24.04
     permissions: {contents: read}
@@ -157,9 +157,12 @@ jobs:
           podman --version
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
       - run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
-      - run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
+      - name: Build ASan artifact
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
+      - name: Run ASan tests
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
   complete-audit:
+    name: Audit complete matrix
     needs: [linux-build, non-linux-build]
     if: always()
     runs-on: ubuntu-24.04
@@ -169,14 +172,17 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with: {path: release, merge-multiple: true}
-      - run: |
+      - name: Audit artifacts
+        run: |
           find release -maxdepth 1 -name 'webrtc-*.tar.gz' -printf '%f\n' | LC_ALL=C sort | xargs -r -I{} sha256sum "release/{}" > release/SHA256SUMS
           python3 -m tools.audit_release --scope complete --archives release --checksums release/SHA256SUMS --output release/RELEASE-MANIFEST.json
   complete-matrix-qualification:
-    needs: [validate, linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, complete-audit]
+    name: Complete-matrix qualification
+    needs: [linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, complete-audit]
     if: always()
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
-      - run: |
-          for result in '${{ needs.validate.result }}' '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.non-linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done
+      - name: Require all matrix checks to pass
+        run: |
+          for result in '${{ needs.linux-build.result }}' '${{ needs.non-linux-build.result }}' '${{ needs.linux-desktop-runtime.result }}' '${{ needs.non-linux-desktop-runtime.result }}' '${{ needs.lifetime-sanitizers.result }}' '${{ needs.complete-audit.result }}'; do test "$result" = success || exit 1; done

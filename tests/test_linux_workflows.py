@@ -210,6 +210,37 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
 
 
 class LinuxWorkflowMigrationTests(unittest.TestCase):
+    def test_workflow_names_describe_their_distinct_purposes(self):
+        names = (
+            (CHECK_WORKFLOW, "Fast checks"),
+            (WORKFLOW, "Linux qualification + manual release"),
+            (LEGACY_WORKFLOW, "Complete-matrix checks (manual)"),
+            (CONSUMER_WORKFLOW, "Released Linux consumer check"),
+            (UPGRADE_WORKFLOW, "WebRTC upgrade check"),
+        )
+        for path, name in names:
+            with self.subTest(path=path.name):
+                self.assertEqual(path.read_text(encoding="utf-8").splitlines()[0], f"name: {name}")
+
+    def test_complete_matrix_removes_only_the_checkout_only_gate(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("  validate:", contents)
+        self.assertNotIn("needs.validate.result", contents)
+        for job in ("linux-build", "non-linux-build", "lifetime-sanitizers"):
+            section = self._job(contents, job)
+            self.assertIn("actions/checkout@", section)
+            self.assertNotIn("needs: validate", section)
+        aggregate = self._job(contents, "complete-matrix-qualification")
+        self.assertIn("if: always()", aggregate)
+        required = (
+            "linux-build", "non-linux-build", "linux-desktop-runtime",
+            "non-linux-desktop-runtime", "lifetime-sanitizers", "complete-audit",
+        )
+        self.assertIn(f"needs: [{', '.join(required)}]", aggregate)
+        for job in required:
+            self.assertIn(f"needs.{job}.result", aggregate)
+        self.assertIn('test "$result" = success', aggregate)
+
     def test_legacy_workflow_is_manually_dispatchable(self):
         contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("on:\n  workflow_dispatch:\n", contents)
@@ -294,7 +325,7 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
     def test_linux_container_docs_and_check_wiring_cover_workflow_proofs(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
-        self.assertIn("Linux automatic qualification", readme)
+        self.assertIn("Linux qualification + manual release", readme)
         self.assertIn("linux-consumer.yml", readme)
         self.assertIn("exact 40-character revision", readme)
         self.assertIn('pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>" }', readme)

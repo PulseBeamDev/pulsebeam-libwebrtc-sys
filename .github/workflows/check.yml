@@ -25,7 +25,8 @@ jobs:
           command -v podman
           podman --version
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
-      - run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Build Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Prime pinned Rust dependencies
         run: just linux-run pulsebeam-linux-${{ github.sha }} env CARGO_HOME=/workspace/.work/cargo-home cargo fetch --locked
       - name: Run fast offline checks

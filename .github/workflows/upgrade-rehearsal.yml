@@ -1,4 +1,4 @@
-name: WebRTC source-pin upgrade rehearsal
+name: WebRTC upgrade check
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ permissions: {}
 
 jobs:
   source-pin-adapter-check:
+    name: Candidate adapter build
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -45,10 +46,10 @@ jobs:
         run: |
           just linux-run pulsebeam-linux-${{ github.sha }} just refresh-cxx
           just linux-run pulsebeam-linux-${{ github.sha }} git diff --exit-code -- vendor/cxx Cargo.toml Cargo.lock
-      - name: Regenerate the bridge and compile the complete adapter
+      - name: Build candidate adapter
         shell: bash
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build core linux-x86_64
-      - name: Preserve focused adapter/compiler failure log
+      - name: Save adapter failure log
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
