@@ -45,16 +45,38 @@ class LinuxWorkflowTests(unittest.TestCase):
                 self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", section)
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
 
+    def test_validation_checkouts_need_no_historical_commit(self):
+        self.assertNotIn("fetch-depth: 0", self._job("validate"))
+        self.assertNotIn("fetch-depth: 0", CHECK_WORKFLOW.read_text(encoding="utf-8"))
+        self.assertIn("fetch-depth: 0", self._job("linux-release-bundle"))
+
+    def test_validate_primes_the_mounted_cache_before_offline_checks(self):
+        validate = self._job("validate")
+        prime = "just linux-run pulsebeam-linux-${{ github.sha }} env CARGO_HOME=/workspace/.work/cargo-home cargo fetch --locked"
+        checks = "just linux-run pulsebeam-linux-${{ github.sha }} just check"
+        self.assertIn(prime, validate)
+        self.assertIn(checks, validate)
+        self.assertLess(validate.index(prime), validate.index(checks))
+
+    def test_builds_restore_only_the_primary_x86_64_compiler_cache(self):
+        build = self._job("linux-build")
+        self.assertEqual(build.count("actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"), 1)
+        self.assertIn("path: .work/sccache/${{ matrix.target }}", build)
+        self.assertIn("key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}", build)
+        self.assertIn("restore-keys: linux-sccache-v1-${{ matrix.target }}-", build)
+        self.assertNotIn("linux-arm64", build)
+        self.assertNotIn("ubuntu-24.04-arm", build)
+
     def test_native_architecture_matrices_and_all_required_proofs_exist(self):
         build = self._job("linux-build")
         runtime = self._job("linux-runtime")
         asan = self._job("lifetime-sanitizers")
-        self.assertEqual(build.count("target: linux-"), 4)
+        self.assertEqual(build.count("target: linux-"), 2)
         self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", build)
-        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", build)
-        self.assertEqual(runtime.count("target: linux-"), 4)
+        self.assertNotIn("linux-arm64", build)
+        self.assertEqual(runtime.count("target: linux-"), 2)
         self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", runtime)
-        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", runtime)
+        self.assertNotIn("linux-arm64", runtime)
         self.assertIn("flavor: [core, native]", asan)
         self.assertIn("PULSEBEAM_WEBRTC_SANITIZER: address", asan)
         self.assertIn("ASAN_OPTIONS: detect_leaks=1", asan)
@@ -91,11 +113,13 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn("tools.audit_release", audit)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", audit)
         self.assertIn("needs: [linux-build, linux-audit]", consumer)
-        self.assertEqual(consumer.count("target: linux-"), 4)
+        self.assertEqual(consumer.count("target: linux-"), 2)
         self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", consumer)
-        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", consumer)
+        self.assertNotIn("linux-arm64", consumer)
         self.assertIn("tools.rust_only_consumer candidate", consumer)
-        self.assertIn("SHA256SUMS", consumer)
+        self.assertIn('checksum_line="$(grep -F "  $(basename "$archive")" audit/SHA256SUMS)"', consumer)
+        self.assertIn('digest="${checksum_line%% *}"', consumer)
+        self.assertNotIn('"$2 == name { print $1 }"', consumer)
         self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", consumer)
         self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", consumer)
 
@@ -111,6 +135,11 @@ class LinuxWorkflowTests(unittest.TestCase):
         self.assertIn('test "$tagged" = "$WORKFLOW_COMMIT"', bundle)
         self.assertIn("needs: [linux-qualification, linux-release-bundle]", publish)
         self.assertIn("cancel-in-progress: false", self.contents)
+        self.assertIn("actions: read", bundle)
+        self.assertIn("tools.linux_release_publication qualify", bundle)
+        self.assertIn("--paginate --slurp", bundle)
+        self.assertIn("test \"$RELEASE_TAG\" != v0.5.0", bundle)
+        self.assertLess(bundle.index("Verify prior automatic qualification"), bundle.index("Construct one closed audited"))
         self.assertIn("contents: write", publish)
         self.assertIn("id-token: write", publish)
         self.assertIn("attestations: write", publish)
@@ -144,9 +173,9 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
         self.assertIn("^[0-9a-f]{40}$", self.contents)
 
         consumer = self._job("released-consumer")
-        self.assertEqual(consumer.count("target: linux-"), 4)
+        self.assertEqual(consumer.count("target: linux-"), 2)
         self.assertIn("target: linux-x86_64\n            runner: ubuntu-24.04", consumer)
-        self.assertIn("target: linux-arm64\n            runner: ubuntu-24.04-arm", consumer)
+        self.assertNotIn("linux-arm64", consumer)
         self.assertIn("ref: ${{ inputs.revision }}", consumer)
         self.assertIn("just-version: 1.43.1", consumer)
         self.assertIn("command -v podman", consumer)
@@ -181,6 +210,10 @@ class LinuxConsumerWorkflowTests(unittest.TestCase):
 
 
 class LinuxWorkflowMigrationTests(unittest.TestCase):
+    def test_legacy_workflow_is_manually_dispatchable(self):
+        contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("on:\n  workflow_dispatch:\n", contents)
+
     def test_legacy_non_linux_build_and_runtime_contracts_are_preserved(self):
         contents = LEGACY_WORKFLOW.read_text(encoding="utf-8")
         build = self._job(contents, "non-linux-build")
@@ -227,6 +260,9 @@ class LinuxWorkflowMigrationTests(unittest.TestCase):
                 self.assertIn("just linux-run pulsebeam-linux-${{ github.sha }}", section)
         build = self._job(contents, "linux-build")
         self.assertIn("target: linux-arm64, runner: ubuntu-24.04-arm", build)
+        self.assertIn("path: .work/sccache/${{ matrix.target }}", build)
+        self.assertIn("Prepare ARM64 checkout for toolchain restore", build)
+        self.assertIn("path: .work/checkout/src/third_party/llvm-build/Release+Asserts", build)
         self.assertNotIn("apt", contents.lower())
         self.assertNotIn("linux_release_publication", contents)
 

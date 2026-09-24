@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -32,6 +33,32 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         runtime_test = self._recipe("_runtime-test flavor target archive:", "")
         self.assertIn("rustflags+=(-C link-arg=-fsanitize=address)", rust_smoke)
         self.assertIn("rustflags=(-C link-arg=-fsanitize=address)", runtime_test)
+
+    def test_asan_rust_smoke_uses_pinned_cxx_driver_for_both_flavors(self):
+        for flavor in FLAVORS:
+            with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as temporary:
+                environment = self._run_rust_smoke(Path(temporary), flavor, sanitizer="address")
+                self.assertEqual(environment["linker"], environment["clang++"])
+                self.assertIn("-fsanitize=address", environment["rustflags"])
+
+    def test_ordinary_rust_smoke_retains_pinned_clang_driver(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = self._run_rust_smoke(Path(temporary), "core", sanitizer=None)
+        self.assertEqual(environment["linker"], environment["clang"])
+        self.assertNotIn("-fsanitize=address", environment["rustflags"])
+
+    def test_asan_runtime_uses_pinned_cxx_driver_for_both_flavors(self):
+        for flavor in FLAVORS:
+            with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as temporary:
+                environment = self._run_runtime_test(Path(temporary), flavor, sanitizer="address")
+                self.assertEqual(environment["linker"], environment["clang++"])
+                self.assertIn("-fsanitize=address", environment["rustflags"])
+
+    def test_ordinary_runtime_leaves_cargo_linker_unset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = self._run_runtime_test(Path(temporary), "core", sanitizer=None)
+        self.assertEqual(environment["linker"], "")
+        self.assertNotIn("-fsanitize=address", environment["rustflags"])
 
     def test_ordinary_manual_bridge_commands_do_not_gain_sanitizer_flags(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -125,6 +152,78 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return log.read_text(encoding="utf-8").splitlines()
+
+    def _run_rust_smoke(self, temporary: Path, flavor: str, sanitizer: str | None) -> dict[str, str]:
+        work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
+        kit = temporary / "kit"
+        kit.mkdir()
+        result = subprocess.run(
+            ["just", "--justfile", str(JUSTFILE), "_rust-smoke", flavor, "linux-x86_64", str(kit)],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return self._cargo_environment(log, work)
+
+    def _run_runtime_test(self, temporary: Path, flavor: str, sanitizer: str | None) -> dict[str, str]:
+        work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
+        source = temporary / "artifact-source"
+        source.mkdir()
+        (source / "placeholder").touch()
+        archive = temporary / "artifact.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(source, arcname="artifact")
+        result = subprocess.run(
+            ["just", "--justfile", str(JUSTFILE), "_runtime-test", flavor, "linux-x86_64", str(archive)],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return self._cargo_environment(log, work)
+
+    def _cargo_fixture(
+        self, temporary: Path, sanitizer: str | None
+    ) -> tuple[Path, Path, Path, dict[str, str]]:
+        work = temporary / "work"
+        tools = temporary / "tools"
+        log = temporary / "cargo-environment"
+        clang = work / "checkout/src/third_party/llvm-build/Release+Asserts/bin/clang"
+        clang.parent.mkdir(parents=True)
+        clang.touch()
+        clang_plus_plus = clang.with_name("clang++")
+        clang_plus_plus.touch()
+        tools.mkdir()
+        cargo = tools / "cargo"
+        cargo.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'linker=%s\\n' \"${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-}\" > \"$PULSEBEAM_TEST_CARGO_LOG\"\nprintf 'rustflags=%s\\n' \"${RUSTFLAGS:-}\" >> \"$PULSEBEAM_TEST_CARGO_LOG\"\n",
+            encoding="utf-8",
+        )
+        cargo.chmod(0o755)
+        runtime = temporary / "runtime"
+        runtime.mkdir()
+        environment = {
+            **os.environ,
+            "WEBRTC_WORK": str(work),
+            "PATH": f"{tools}:{os.environ['PATH']}",
+            "PULSEBEAM_TEST_CARGO_LOG": str(log),
+            "XDG_RUNTIME_DIR": str(runtime),
+        }
+        if sanitizer:
+            environment["PULSEBEAM_WEBRTC_SANITIZER"] = sanitizer
+        return work, tools, log, environment
+
+    def _cargo_environment(self, log: Path, work: Path) -> dict[str, str]:
+        environment = dict(line.split("=", 1) for line in log.read_text(encoding="utf-8").splitlines())
+        compiler = work / "checkout/src/third_party/llvm-build/Release+Asserts/bin"
+        environment["clang"] = str(compiler / "clang")
+        environment["clang++"] = str(compiler / "clang++")
+        return environment
 
 
 if __name__ == "__main__":

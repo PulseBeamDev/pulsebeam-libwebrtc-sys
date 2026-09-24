@@ -38,6 +38,7 @@ check:
     python3 -m unittest tests/test_ios_bridge_shell.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_runtime_host.py
+    python3 -m unittest tests/test_linux_toolchain_host.py
     python3 -m unittest tests/test_linux_container.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
@@ -102,16 +103,24 @@ build flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
     justfile="{{ root }}/Justfile"
+    case "{{ target }}" in
+      linux-*)
+        export SCCACHE_DIR="{{ work }}/sccache/{{ target }}" SCCACHE_CACHE_SIZE=2G
+        mkdir -p "$SCCACHE_DIR"
+        ;;
+    esac
     just --justfile "$justfile" _validate-flavor "{{ flavor }}"
     just --justfile "$justfile" _validate-target "{{ target }}"
     just --justfile "$justfile" _validate-host "{{ target }}"
     just --justfile "$justfile" _prerequisites "{{ target }}"
     just --justfile "$justfile" _sync "{{ flavor }}" "{{ target }}"
+    just --justfile "$justfile" _linux-toolchain "{{ target }}"
     just --justfile "$justfile" _target-dependencies "{{ target }}"
     just --justfile "$justfile" _configure "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _apple-host-protoc "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _compile "{{ flavor }}" "{{ target }}"
     just --justfile "$justfile" _export "{{ flavor }}" "{{ target }}"
+    if [[ "{{ target }}" = linux-* ]]; then sccache --show-stats; sccache --stop-server; fi
 
 _validate-flavor flavor:
     @case "{{ flavor }}" in core|native) ;; *) echo "unsupported flavor: {{ flavor }}" >&2; exit 1;; esac
@@ -122,10 +131,47 @@ _validate-target target:
 _validate-host target:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{ target }}:$(uname -s)" in
-      linux-*:Linux|windows-*:*MINGW*|windows-*:*MSYS*|windows-*:*CYGWIN*|macos-*:Darwin|ios-*:Darwin|android-*:Linux|android-*:Darwin) ;;
+    case "{{ target }}:$(uname -s):$(uname -m)" in
+      linux-x86_64:Linux:x86_64|linux-arm64:Linux:aarch64|windows-*:*MINGW*:*|windows-*:*MSYS*:*|windows-*:*CYGWIN*:*|macos-*:Darwin:*|ios-*:Darwin:*|android-*:Linux:*|android-*:Darwin:*) ;;
       *) echo "unsupported build host for {{ target }}" >&2; exit 1 ;;
     esac
+
+_linux-toolchain target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in
+      linux-x86_64) machine=x86-64 ;;
+      linux-arm64) machine='ARM aarch64' ;;
+      *) exit 0 ;;
+    esac
+    src="{{ work }}/checkout/src"
+    toolchain="$src/third_party/llvm-build/Release+Asserts"
+    tools=(clang clang++ ld.lld llvm-ar llvm-nm)
+    validate() {
+      local tool path details revision
+      for tool in "${tools[@]}"; do
+        path="$toolchain/bin/$tool"
+        test -x "$path" || return 1
+        details=$(file -L -b "$path") || return 1
+        [[ "$details" == ELF\ 64-bit\ LSB* && "$details" == *"$machine"* ]] || return 1
+        if test "$tool" = clang; then clang_details="$details"; fi
+      done
+      revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision) || return 1
+      test -n "$revision" && test -r "$toolchain/cr_build_revision" || return 1
+      test "$(cat "$toolchain/cr_build_revision")" = "$revision" || return 1
+      for tool in "${tools[@]}"; do "$toolchain/bin/$tool" --version >/dev/null || return 1; done
+    }
+    rebuilt=accepted
+    if ! validate; then
+      test "{{ target }}" = linux-arm64 || { echo "invalid pinned Chromium LLVM toolchain: $toolchain" >&2; exit 1; }
+      PATH="{{ work }}/depot_tools:$PATH" python3 "$src/tools/clang/scripts/build.py" --host-cc=/usr/bin/gcc --host-cxx=/usr/bin/g++ --no-tools --without-android --without-fuchsia --use-system-cmake --with-ml-inliner-model= --preserve-gcs-signature
+      rebuilt=rebuilt
+      validate || { echo "rebuilt pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
+      find "$toolchain" -mindepth 1 -maxdepth 1 ! -name bin ! -name lib ! -name cr_build_revision -exec rm -rf {} +
+      validate || { echo "pruned pinned Chromium LLVM toolchain failed validation: $toolchain" >&2; exit 1; }
+    fi
+    revision=$(python3 "$src/tools/clang/scripts/update.py" --print-revision)
+    printf 'linux toolchain host=%s revision=%s clang=%s executable=%s package=%s\n' "$(uname -m)" "$revision" "$toolchain/bin/clang" "$clang_details" "$rebuilt"
 
 _prerequisites target:
     #!/usr/bin/env bash
@@ -134,6 +180,9 @@ _prerequisites target:
       command -v "$tool" >/dev/null || { echo "missing prerequisite: $tool" >&2; exit 1; }
     done
     command -v cargo >/dev/null || { echo 'missing prerequisite: cargo' >&2; exit 1; }
+    case "{{ target }}" in
+      linux-*) command -v sccache >/dev/null || { echo 'Linux builds require sccache' >&2; exit 1; } ;;
+    esac
     case "{{ target }}" in
       windows-*)
         command -v cl.exe >/dev/null || { echo 'Windows builds require an MSVC developer shell' >&2; exit 1; }
@@ -212,14 +261,16 @@ _sync flavor target:
     fi
     mkdir -p "$checkout"
     if test -d "$src"; then just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"; fi
-    printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {}}]\n%s\n" "$target_os" > "$checkout/.gclient"
+    # PGO coverage assets are not build inputs. Their CIPD fetch has stalled indefinitely
+    # on hosted Linux runners, so explicitly exclude it while retaining the pinned source.
+    printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {'checkout_instrumented_libraries': False}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     if test "{{ target }}" = windows-x86_64; then
       vpython_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/vpython")
       retry_acquisition webrtc_sync "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
     else
       export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
       cd "$checkout"
-      retry_acquisition webrtc_sync "{{ webrtc_commit }}" gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" timeout --foreground 20m gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     fi
     actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf '%s' missing)
     test "$actual_webrtc" = "{{ webrtc_commit }}" || { echo "pinned input validation failed input=webrtc pin={{ webrtc_commit }} expected={{ webrtc_commit }} actual=$actual_webrtc failure=invalid-checkout" >&2; exit 1; }
@@ -253,9 +304,10 @@ _gn-args flavor target:
     common='is_debug=false is_component_build=false use_rtti=false rtc_include_tests=false rtc_build_examples=false rtc_build_tools=false rtc_use_h264=false rtc_include_opus=true rtc_build_opus=true rtc_build_libvpx=true rtc_libvpx_build_vp9=true rtc_include_builtin_audio_codecs=true rtc_include_dav1d_in_internal_decoder_factory=true rtc_enable_protobuf=false symbol_level=0 use_siso=false treat_warnings_as_errors=false'
     case "${PULSEBEAM_WEBRTC_SANITIZER:-}" in '') ;; address) common+=' is_asan=true dcheck_always_on=true';; *) echo 'PULSEBEAM_WEBRTC_SANITIZER must be empty or address' >&2; exit 1;; esac
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
+    case "{{ target }}" in linux-*) common+=' cc_wrapper="/usr/bin/sccache"';; esac
     case "{{ target }}" in
       linux-x86_64) platform='target_os="linux" target_cpu="x64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_amd64-sysroot" use_custom_libcxx=true' ;;
-      linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true' ;;
+      linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true clang_use_chrome_plugins=false' ;;
       windows-x86_64) platform='target_os="win" target_cpu="x64" is_clang=true use_lld=true' ;;
       macos-x86_64) platform='target_os="mac" target_cpu="x64" mac_deployment_target="12.0" use_lld=true use_custom_libcxx=false' ;;
       macos-arm64) platform='target_os="mac" target_cpu="arm64" mac_deployment_target="12.0" use_lld=true use_custom_libcxx=false' ;;
@@ -536,7 +588,10 @@ _rust-smoke flavor target kit:
       ios-arm64|ios-simulator-arm64) case "{{ target }}" in ios-arm64) cargo_target=aarch64-apple-ios; sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) cargo_target=aarch64-apple-ios-sim; sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=-arch -C link-arg=arm64 -C link-arg=-isysroot -C "link-arg=$(xcrun --sdk "$sdk" --show-sdk-path)" -C "link-arg=$minimum");;
       windows-x86_64) cargo_target=x86_64-pc-windows-msvc; cxx=''; rustflags=(-C target-feature=+crt-static);;
     esac
-    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags+=(-C link-arg=-fsanitize=address); fi
+    if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+      rustflags+=(-C link-arg=-fsanitize=address)
+      if test "{{ target }}" = linux-x86_64; then cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+    fi
     linker_env="CARGO_TARGET_$(printf '%s' "$cargo_target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$smoke_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$kit_native")
     test -z "$cxx" || command+=("$linker_env=$cxx")
@@ -556,9 +611,15 @@ _runtime-test flavor target archive:
     artifact=$(mktemp -d); trap 'rm -rf "$artifact"' EXIT
     tar -C "$artifact" -xzf "{{ archive }}"
     features=(); test "{{ flavor }}" = core || features=(--features native)
-    rustflags=(); if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then rustflags=(-C link-arg=-fsanitize=address); fi
+    src="{{ work }}/checkout/src"
+    rustflags=(); linker=''; if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+      rustflags=(-C link-arg=-fsanitize=address)
+      if test "{{ target }}" = linux-x86_64; then linker="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+    fi
     cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); runtime_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/runtime/{{ flavor }}/{{ target }}"); artifact_native=$(just --justfile "{{ root }}/Justfile" _native-path "$artifact")
-    RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native" cargo test --locked "${features[@]}" --tests -- --test-threads=1
+    command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native")
+    test -z "$linker" || command+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$linker")
+    "${command[@]}" cargo test --locked "${features[@]}" --tests -- --test-threads=1
 
 _gn:
     @case "$(uname -s)" in Linux) path='{{ work }}/checkout/src/buildtools/linux64/gn';; Darwin) path='{{ work }}/checkout/src/buildtools/mac/gn';; *) path='{{ work }}/checkout/src/buildtools/win/gn.exe';; esac; test -x "$path" || { echo 'pinned GN is missing' >&2; exit 1; }; just --justfile '{{ root }}/Justfile' _native-path "$path"

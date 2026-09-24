@@ -88,29 +88,29 @@ class ReleaseAuditTests(unittest.TestCase):
     def test_accepts_exact_linux_scope_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
             report = audit_release.audit(root, checksums, lock, "linux")
             self.assertEqual(report["scope"], "linux")
-            self.assertEqual(len(report["assets"]), 4)
+            self.assertEqual(len(report["assets"]), 2)
 
     def test_rejects_missing_extra_or_substituted_linux_assets(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
             (root / "webrtc-core-linux-x86_64.tar.gz").unlink()
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock, "linux")
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
             (root / "webrtc-core-windows-x86_64.tar.gz").write_bytes(b"not an archive")
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock, "linux")
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
             lines = checksums.read_text(encoding="utf-8").splitlines()
             lines[0] = lines[0].replace("webrtc-core-linux-x86_64.tar.gz", "webrtc-core-windows-x86_64.tar.gz")
             checksums.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -120,7 +120,7 @@ class ReleaseAuditTests(unittest.TestCase):
     def test_linux_assets_cannot_pass_complete_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock)
 

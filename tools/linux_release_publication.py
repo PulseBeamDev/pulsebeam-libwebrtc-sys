@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 import shutil
 import sys
@@ -16,8 +17,8 @@ from tools import audit_release, write_artifact_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHIVES = frozenset({
-    "webrtc-core-linux-x86_64.tar.gz", "webrtc-core-linux-arm64.tar.gz",
-    "webrtc-native-linux-x86_64.tar.gz", "webrtc-native-linux-arm64.tar.gz",
+    "webrtc-core-linux-x86_64.tar.gz",
+    "webrtc-native-linux-x86_64.tar.gz",
 })
 METADATA = frozenset({"SHA256SUMS", "LINUX-RELEASE-MANIFEST.json", "artifacts.lock.json", "PULSEBEAM-APACHE-2.0.txt"})
 EXPECTED_BUNDLE = ARCHIVES | METADATA
@@ -92,6 +93,58 @@ def plan(bundle: Path, release_state: str, observed: Path | None, remote_names: 
     }
 
 
+def prior_automatic_success(current: object, pages: object, repository: str, sha: str, run_id: int) -> str:
+    if repository != CANONICAL_REPOSITORY or not isinstance(run_id, int) or run_id <= 0:
+        raise PublicationError("invalid publication repository or run ID")
+    if not isinstance(current, dict):
+        raise PublicationError("invalid dispatch run")
+    def field(run: dict, key: str, expected: object) -> None:
+        if run.get(key) != expected:
+            raise PublicationError(f"run {key} does not match dispatch")
+    field(current, "id", run_id)
+    field(current, "head_sha", sha)
+    field(current, "event", "workflow_dispatch")
+    if not isinstance(current.get("repository"), dict):
+        raise PublicationError("missing run repository")
+    field(current["repository"], "full_name", repository)
+    workflow_id = current.get("workflow_id")
+    if not isinstance(workflow_id, int) or workflow_id <= 0 or current.get("path", "").split("@", 1)[0] != ".github/workflows/linux.yml":
+        raise PublicationError("dispatch is not the Linux workflow")
+    def timestamp(value: object) -> datetime:
+        if not isinstance(value, str):
+            raise PublicationError("missing run timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("timezone missing")
+            return parsed
+        except ValueError as error:
+            raise PublicationError("invalid run timestamp") from error
+    cutoff = timestamp(current.get("created_at"))
+    if not isinstance(pages, list) or not pages:
+        raise PublicationError("missing workflow run pages")
+    qualifying = []
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("workflow_runs"), list):
+            raise PublicationError("invalid workflow run page")
+        for run in page["workflow_runs"]:
+            if not isinstance(run, dict):
+                raise PublicationError("invalid workflow run")
+            if run.get("head_sha") != sha:
+                raise PublicationError("workflow run query returned a different SHA")
+            if run.get("workflow_id") != workflow_id or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != repository:
+                raise PublicationError("workflow run query returned a different workflow or repository")
+            updated = timestamp(run.get("updated_at"))
+            if run.get("id") != run_id and run.get("event") in {"push", "pull_request"} and run.get("status") == "completed" and run.get("conclusion") == "success" and updated < cutoff:
+                url = run.get("html_url")
+                if not isinstance(url, str) or not url.startswith(f"https://github.com/{repository}/actions/runs/"):
+                    raise PublicationError("invalid qualifying run URL")
+                qualifying.append(url)
+    if not qualifying:
+        raise PublicationError("no earlier completed automatic qualification for this SHA")
+    return qualifying[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -108,8 +161,17 @@ def main() -> int:
     plan_parser.add_argument("--remote-names", type=Path)
     plan_parser.add_argument("--repository", default=CANONICAL_REPOSITORY)
     plan_parser.add_argument("--output", type=Path, required=True)
+    qualify_parser = commands.add_parser("qualify")
+    qualify_parser.add_argument("--current", type=Path, required=True)
+    qualify_parser.add_argument("--runs", type=Path, required=True)
+    qualify_parser.add_argument("--repository", required=True)
+    qualify_parser.add_argument("--sha", required=True)
+    qualify_parser.add_argument("--run-id", type=int, required=True)
     args = parser.parse_args()
     try:
+        if args.command == "qualify":
+            print(prior_automatic_success(json.loads(args.current.read_text()), json.loads(args.runs.read_text()), args.repository, args.sha, args.run_id))
+            return 0
         remote_names = None if args.command == "prepare" or args.remote_names is None else json.loads(args.remote_names.read_text(encoding="utf-8"))
         result = prepare(args.archives, args.checksums, args.audit, args.tag, args.output) if args.command == "prepare" else plan(args.bundle, args.release_state, args.observed, remote_names, args.repository)
         if args.command == "plan":

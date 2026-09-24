@@ -86,7 +86,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     assets = []
     for index, entry in enumerate(lock["artifacts"]):
-        if entry["artifact_target"] not in {"linux-x86_64", "linux-arm64"}:
+        if entry["artifact_target"] != "linux-x86_64":
             continue
         assets.append({
             "name": entry["asset_name"],
@@ -108,7 +108,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "consumer-proof", report_path))
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     for entry in lock["artifacts"]:
-        if entry["artifact_target"] in {"linux-x86_64", "linux-arm64"}:
+        if entry["artifact_target"] == "linux-x86_64":
             entry["url"] = download_url.rsplit("/", 1)[0] + "/" + entry["asset_name"]
             entry["sha256"] = digest if entry["asset_name"] == selected_asset else "1" * 64
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
@@ -266,7 +266,8 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
 
             vendor = temporary_root / "registry"
             bootstrap_environment = os.environ.copy()
-            bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+            # The image's default Cargo home can be root-owned; proof cache must be writable and isolated.
+            bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
             cargo_config = run(
                 ["cargo", "vendor", "--locked", str(vendor)],
                 cwd=ROOT,
@@ -468,7 +469,7 @@ def prove_released(repository: str, revision: str, target: str, flavor: str) -> 
         temporary_root = Path(temporary)
         vendor = temporary_root / "registry"
         bootstrap_environment = os.environ.copy()
-        bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", str(temporary_root / "cargo-home"))
+        bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
         cargo_config = run(["cargo", "vendor", "--locked", str(vendor)], cwd=ROOT, env=bootstrap_environment, capture=True).stdout
         consumer = temporary_root / "consumer"
         write_consumer(consumer, repository, revision, target, flavor, cargo_config)

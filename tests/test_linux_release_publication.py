@@ -10,8 +10,33 @@ from tools import audit_release, linux_release_publication as publication
 
 
 class LinuxPublicationTests(unittest.TestCase):
+    def test_prior_automatic_success_requires_earlier_exact_revision(self):
+        repository = publication.CANONICAL_REPOSITORY
+        sha = "a" * 40
+        current = dict(id=42, repository={"full_name": repository}, workflow_id=7,
+                       path=".github/workflows/linux.yml@refs/heads/main", head_sha=sha,
+                       event="workflow_dispatch", created_at="2026-09-22T12:00:00Z")
+        prior = dict(id=41, repository={"full_name": repository}, workflow_id=7,
+                     head_sha=sha, event="push", status="completed", conclusion="success",
+                     updated_at="2026-09-22T11:59:59Z",
+                     html_url=f"https://github.com/{repository}/actions/runs/41")
+        def validate(run):
+            return publication.prior_automatic_success(current, [{"workflow_runs": [run]}], repository, sha, 42)
+        self.assertEqual(validate(prior), prior["html_url"])
+        for change in (
+            {"updated_at": current["created_at"]}, {"conclusion": "failure"},
+            {"event": "workflow_dispatch"}, {"head_sha": "b" * 40},
+            {"id": 42}, {"workflow_id": 8}, {"repository": {"full_name": "other/repo"}},
+        ):
+            with self.subTest(change=change), self.assertRaises(publication.PublicationError):
+                validate({**prior, **change})
+        with self.assertRaises(publication.PublicationError):
+            publication.prior_automatic_success(current, [], repository, sha, 42)
+        with self.assertRaises(publication.PublicationError):
+            publication.prior_automatic_success(current, [{"workflow_runs": [prior]}], "other/repo", sha, 42)
+
     def prepared_bundle(self, root: Path) -> Path:
-        checksums, _ = ReleaseAuditTests().build_release(root, {"linux-x86_64", "linux-arm64"})
+        checksums, _ = ReleaseAuditTests().build_release(root, {"linux-x86_64"})
         archives = root
         report = audit_release.audit(archives, checksums, Path("artifacts.lock.json"), "linux")
         audit = root / "LINUX-RELEASE-MANIFEST.json"
@@ -27,8 +52,8 @@ class LinuxPublicationTests(unittest.TestCase):
             self.assertEqual(set(inventory), publication.EXPECTED_BUNDLE)
             lock = json.loads((bundle / "artifacts.lock.json").read_text())
             self.assertEqual(lock["release_scope"], "linux")
-            self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 4)
-            self.assertEqual(sum(item["url"] is None for item in lock["artifacts"]), 14)
+            self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 2)
+            self.assertEqual(sum(item["url"] is None for item in lock["artifacts"]), 16)
             state = publication.plan(bundle, "absent", None)
             self.assertTrue(state["create_draft"])
             self.assertEqual(state["upload"], sorted(publication.EXPECTED_BUNDLE))

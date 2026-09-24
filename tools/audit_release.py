@@ -15,7 +15,7 @@ from tools.write_artifact_lock import read_checksums
 
 ROOT = Path(__file__).resolve().parents[1]
 SCOPES = {
-    "linux": frozenset({"linux-x86_64", "linux-arm64"}),
+    "linux": frozenset({"linux-x86_64"}),
     "complete": None,
 }
 CORE_IOS_PATCH_SHA256 = "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"

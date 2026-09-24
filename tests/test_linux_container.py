@@ -17,8 +17,8 @@ NATIVE_PACKAGES = (
     "libxrandr-dev", "libxrender-dev", "libxtst-dev",
 )
 BUILD_TOOLS = (
-    "build-essential", "ca-certificates", "curl", "file", "git", "lsb-release",
-    "perl", "pkg-config", "python3", "tar", "unzip", "xz-utils",
+    "build-essential", "ca-certificates", "curl", "file", "git", "lld", "lsb-release",
+    "cmake", "ninja-build", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
 )
 
 
@@ -30,6 +30,7 @@ class LinuxContainerTests(unittest.TestCase):
             contents,
         )
         self.assertIn("cargo install just --version 1.43.1 --locked", contents)
+        self.assertIn("rustup component add rustfmt", contents)
         for package in (*NATIVE_PACKAGES, *BUILD_TOOLS):
             with self.subTest(package=package):
                 self.assertIn(package, contents)
@@ -40,6 +41,13 @@ class LinuxContainerTests(unittest.TestCase):
         self.assertNotIn("EXPOSE", contents)
         self.assertEqual(CONTAINERIGNORE.read_text(encoding="utf-8"), "*\n!Containerfile\n")
         self.assertFalse((ROOT / ("." + "dock" + "erignore")).exists())
+
+    def test_linux_builds_use_a_bounded_workspace_sccache(self):
+        recipes = (ROOT / "Justfile").read_text(encoding="utf-8")
+        self.assertIn('SCCACHE_DIR="{{ work }}/sccache/{{ target }}"', recipes)
+        self.assertIn("SCCACHE_CACHE_SIZE=2G", recipes)
+        self.assertIn('cc_wrapper="/usr/bin/sccache"', recipes)
+        self.assertIn("sccache --show-stats", recipes)
 
     def test_public_recipes_are_direct_podman_interfaces(self):
         recipes = (ROOT / "Justfile").read_text(encoding="utf-8")
