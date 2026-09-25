@@ -23,10 +23,10 @@ against the locally installed `gh` (also run on the GitHub runner before the
 Linux image build). It needs neither network nor a GitHub token. Run it before
 starting a long local build; unlike `just check`, it requires `gh` on the host.
 
-All five workflows call repository-owned `just` commands for validation,
-artifact audit, result qualification, candidate-pin rehearsal, and release
-planning/publication. Their YAML retains job dependencies, runner selection,
-credential transport, caching, artifact transfer, and GitHub attestation.
+The single `release.yml` workflow calls repository-owned `just` commands for
+validation, artifact audit, result qualification, and release publication. Its
+YAML retains job dependencies, runner selection, credential transport, caching,
+artifact transfer, and GitHub attestation.
 Run the same operations locally with `just ci <task> ...` (see `just ci --help`),
 for example `just ci revision <40-character-revision>` or `just ci audit linux
 release-input release-input/SHA256SUMS release-input/LINUX-RELEASE-MANIFEST.json`.
@@ -34,8 +34,8 @@ release-input release-input/SHA256SUMS release-input/LINUX-RELEASE-MANIFEST.json
 an authenticated `gh` and contact GitHub; the local tests fake the CLI and
 never publish a release. Bundle preparation and audit run on the host without
 building a Podman image. Only the actual WebRTC builds need the Linux image.
-The released-consumer job retains two small host guards because it checks out
-an arbitrary historical revision whose Justfile might not yet provide `just ci`.
+The released-consumer job uses the published tag as a Cargo Git dependency and
+proves both Linux x86_64 flavors without a local artifact override.
 
 `just check` is the fast, offline source/control-plane gate once the pinned Rust
 dependencies are cached. It does not require or extract native bytes. Native
@@ -62,12 +62,11 @@ usable HEAD before retrying; a real upstream timeout can still fail the build.
 Every flavor/target artifact carries the same generated bridge and portable
 adapter sources, compiled with that job's target toolchain and ABI configuration.
 
-The release workflow separately runs the full Rust runtime suite for both
-flavors on Linux x86_64, Windows x86_64, macOS x86_64, and macOS arm64. Linux
-arm64 remains a cross-only cross build, and Android and iOS remain compile/link
-checks. Linux x86_64 AddressSanitizer jobs rebuild both flavors and exercise the
-lifetime-sensitive environment, provider, peer, channel, video, and teardown
-tests; only their failure logs are retained, never their instrumented archives.
+On a version-tag push, the release workflow runs the Rust runtime suite for
+both Linux x86_64 flavors. Linux x86_64 AddressSanitizer jobs rebuild both
+flavors and exercise the lifetime-sensitive environment, provider, peer,
+channel, video, and teardown tests; only their failure logs are retained, never
+their instrumented archives. Other platform builds are not part of this release.
 
 `just refresh-cxx` is the explicit networked maintenance operation for the
 Rust-only CXX runtime. It downloads the version recorded in
@@ -91,20 +90,22 @@ For development against a matching extracted artifact:
 PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR=.work/package/webrtc-core-linux-x86_64 cargo test
 ```
 
-This is the only local-artifact override. Without it, `build.rs` selects the
-exact `TARGET` plus the additive `native` feature in `artifacts.lock.json`,
-verifies a cached archive, or downloads its immutable URL and verifies its
-SHA-256 before safe extraction. The cache defaults to
-`$CARGO_HOME/pulsebeam-webrtc-sys/artifacts-v1`; set
-`PULSEBEAM_WEBRTC_SYS_CACHE_DIR` when a hermetic build needs an explicit cache
-location. `CARGO_NET_OFFLINE=true`, Cargo's `--offline`, or
-`PULSEBEAM_WEBRTC_SYS_OFFLINE=true` disables downloads and reports the exact
-missing asset and checksum.
+Without a local artifact, `build.rs` fetches `artifacts.lock.json` from the
+GitHub release named `v<crate version>`, checks its bridge identity, scope and
+exact tag-bound asset URLs, then verifies the selected archive's SHA-256 before
+safe extraction. The release lock is trusted from GitHub over HTTPS and cached
+by tag; unlike the archives, its digest is not pinned in the tagged source.
+A replaced release asset and lock could therefore change what a cold consumer
+receives. Do not move tags or replace release assets.
 
-The development lock includes all 18 target/flavor selections. Until the first
-full matching release, only the checked-in Linux x86_64 core proof artifact has
-release coordinates; unreleased selections require the explicit local override.
-Release-ready Git revisions contain URLs and checksums for all 18 entries.
+The cache defaults to `$CARGO_HOME/pulsebeam-webrtc-sys/artifacts-v1`; set
+`PULSEBEAM_WEBRTC_SYS_CACHE_DIR` for a hermetic cache. `CARGO_NET_OFFLINE=true`,
+Cargo's `--offline`, or `PULSEBEAM_WEBRTC_SYS_OFFLINE=true` disables downloads;
+for offline builds, first populate both the release lock and selected archive
+while online. The checked-in lock is a producer/candidate template with all 18
+selections; it is not used by normal Git consumers. Only Linux x86_64 core and
+native are currently released. Other targets require a matching extracted
+artifact through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`.
 
 ## Artifact flavors
 
@@ -244,49 +245,39 @@ just linux-run pulsebeam-linux just _runtime-test native linux-x86_64 dist/webrt
 
 For a manual upgrade rehearsal, run `python3 tools/select_upgrade_pin.py
 <40-character-commit>` in a disposable checkout before building the image.
-This changes the local Justfile pin, exactly as the hosted rehearsal does.
+This changes the local Justfile pin; the single hosted workflow has no separate upgrade-rehearsal mode.
 
-After publication, use the reviewed consumer revision in either canonical HTTPS
-Git dependency form (replace `<consumer-revision>` with that exact revision):
+After publication, use the same version tag that published the release
+(replace `<tag>` with that tag, for example `v0.5.6`):
 
 ```toml
-# Default core artifact.
-pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>" }
-
-# Native artifact feature.
-pulsebeam-libwebrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", rev = "<consumer-revision>", features = ["native"] }
+[dependencies]
+pulsebeam-webrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git", tag = "<tag>" }
+# For native capture/playback, add: features = ["native"]
 ```
 
-1. **Linux qualification + manual release** runs qualification on pull requests
-   and pushes to `main`. It qualifies the two primary x86_64 archives, runtime
-   tests, ASan, audit, and cold candidate consumers in native job-local images.
-   Linux arm64 is a secondary tier and does not gate this workflow. A manual
-   `linux.yml` dispatch with a nonempty `tag` reruns the same qualification;
-   publication depends on that dispatch's successful qualification, not a prior
-   automatic run. The tag must already exist and resolve to the dispatched
-   revision. Set `tag` to an existing release tag, then run `gh workflow run
-   linux.yml --ref "$tag" -f tag="$tag"` (selecting a ref alone does not
-   supply the tag input). The legacy complete-matrix workflow has no Linux release authority. The Linux
-   publication path depends only on that primary qualification. It produces two
-   archives, `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository
-   license, and a schema-2 `artifacts.lock.json` candidate containing two Linux
-   x86_64 URLs/digests and sixteen explicitly unavailable selections. Non-Linux
-   and secondary-tier jobs remain visible in complete-matrix qualification but
-   do not block this path.
+On Linux x86_64, a normal `cargo run` then downloads and verifies the selected
+artifact automatically. No separate setup is needed.
+
+1. **One CI workflow** runs fast checks on pull requests. Push a new `v*`
+   version tag to run the full Linux x86_64 core and native qualification, with
+   runtime tests, ASan, audit, and cold candidate consumers. Publication starts
+   automatically only if all qualification gates pass, the tag resolves to
+   the checked-out commit, and it equals `v<package.version>` in `Cargo.toml`.
+   Bump the crate version before creating a new tag. The resulting bundle contains two archives,
+   `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository license, and a
+   schema-2 `artifacts.lock.json` with two Linux x86_64 URLs/digests and sixteen
+   explicitly unavailable selections. Other targets are not released.
 2. The workflow first creates a draft if no release exists, downloads and hashes
    any existing assets, and uploads only missing byte-verified assets. It never
    deletes, replaces, or clobbers an asset; a conflicting or unexpected asset
    fails closed. It rechecks the complete inventory, attests the closed bundle,
    and only then advertises the release. An interrupted draft is recoverable by
    rerunning the exact same tag with identical bytes.
-3. After the real release exists, dispatch `linux-consumer.yml` with the exact
-   40-character revision (the exact 40-character revision is required) to run
-   the read-only primary x86_64 released-consumer proof. Then review a separate
-   consumer revision containing the generated Linux lock. That revision—not the
-   producer tag and not the checked-in development lock with
-   `release_scope: none`—is what fresh Git consumers use. Confirm its two
-   URLs/hashes and sixteen null selections, run `just check`, then commit only
-   that post-publication lock update.
+3. After publication, CI tests both flavors using the tag itself as the Cargo
+   Git dependency, with fresh checkouts and cold release-lock and archive caches.
+   It reports the usable tag in the workflow summary. The tag works only after
+   the matching release and its lock have been published.
 
 Never replace an asset on an existing release. If publication is incomplete or
 incorrect, use a new producer tag. Provenance, rather than byte-for-byte archive
@@ -336,13 +327,11 @@ Non-goals include:
 
 ## Upgrades
 
-For a routine WebRTC upgrade, first dispatch **WebRTC upgrade check** with
-the proposed 40-character commit. That job substitutes only `webrtc_commit`,
-checksum-refreshes the pinned CXX import and requires it to stay
-byte-identical, then regenerates the CXX bridge and compiles/links the full
-core Linux adapter. Upstream API drift therefore fails at a focused adapter or
-compiler step. Once reviewed, change only `webrtc_commit` near the top of the
-`Justfile`, run `just check`, and use the two-phase release procedure above.
+For a routine WebRTC upgrade, rehearse the proposed 40-character commit in a
+disposable checkout using `tools/select_upgrade_pin.py`, then refresh the CXX
+bridge and compile/link the core Linux adapter locally. Once reviewed, change
+only `webrtc_commit` near the top of the `Justfile`, run `just check`, and push
+a new version tag to run the qualified release workflow.
 Change `depot_tools_commit` only when WebRTC compatibility requires it. Change
 build arguments or target selection only to repair an observed required-matrix
 failure.
@@ -364,10 +353,10 @@ Upgrade CXX as one reviewable change:
 
 | Contract | Automated job or release check |
 |---|---|
-| Offline schemas, extraction, target/flavor substitution, link translation, source cleanliness, CXX inventory, and Rust-only dependency graph | **Fast checks / check** (`just check`) |
-| Complete bridge and extracted-artifact C++/Rust compile/link for all 18 identities | **Complete-matrix checks (manual)** build matrix plus `audit_release.py` |
-| Deterministic execution/network, signaling, data channel, injected video path, and ordered teardown for both desktop flavors | Eight **Runtime** matrix checks |
+| Offline schemas, extraction, target/flavor substitution, link translation, source cleanliness, CXX inventory, and Rust-only dependency graph | **CI and release / Source checks** (`just check`) |
+| Complete bridge and extracted-artifact C++/Rust compile/link for Linux x86_64 core and native | **CI and release / Build** plus `audit_release.py` |
+| Deterministic execution/network, signaling, data channel, injected video path, and ordered teardown for both Linux flavors | Two **Runtime** matrix checks |
 | Observer, callback, partial-construction, close/drop, and provider lifetime under instrumentation | Two **ASan tests** jobs |
-| Fresh Git dependency, cold artifact and target caches, identity probe, host runtime smoke, and forbidden C/C++ compiler sentinels | **Released Linux consumer check** |
-| One-pin upstream rehearsal and mechanical CXX/generated-bridge refresh | **WebRTC upgrade check** |
-| Immutable URLs/checksums, complete external lock, licenses, notices, and attestations | The two documented release phases and **publish** gate |
+| Fresh Git dependency, cold artifact and target caches, identity probe, host runtime smoke, and forbidden C/C++ compiler sentinels | **CI and release / Released consumer** |
+| Mechanical CXX/generated-bridge refresh and pin changes | `just refresh-cxx` and Linux release qualification |
+| Immutable URLs/checksums, complete external lock, licenses, notices, and attestations | Tag-triggered **publish** and **released-consumer** gates |

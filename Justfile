@@ -21,7 +21,8 @@ check:
     set -euo pipefail
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nci\nci-preflight\nci-release\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
-    grep -Fq '  source-pin-adapter-check:' .github/workflows/upgrade-rehearsal.yml
+    test "$(find .github/workflows -maxdepth 1 -name '*.yml' | wc -l)" -eq 1
+    grep -Fq '  released-consumer:' .github/workflows/release.yml
     test "$(find consumer -type f | wc -l)" -eq 3
     grep -Fq 'rtc_use_h264=false' Justfile
     grep -Fq 'rtc_build_libvpx=true' Justfile
@@ -104,7 +105,7 @@ verify-artifact archive='' sha256='':
     actual=$(sha256sum "$snapshot" | awk '{print $1}')
     test "$actual" = "{{ sha256 }}" || { echo "core linux-x86_64 checksum mismatch: expected={{ sha256 }} actual=$actual" >&2; exit 1; }
     just --justfile "{{ root }}/Justfile" _runtime-test core linux-x86_64 "$snapshot"
-    CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py --artifact "$snapshot" --sha256 "{{ sha256 }}"
+    CARGO_HOME="{{ work }}/cargo-home" python3 tools/rust_only_consumer.py candidate --artifact "$snapshot" --sha256 "{{ sha256 }}" --target linux-x86_64 --flavor core
 
 # Download, checksum, and mechanically refresh the pinned Rust-only CXX import.
 refresh-cxx:

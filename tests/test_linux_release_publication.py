@@ -90,7 +90,7 @@ class LinuxPublicationTests(unittest.TestCase):
                 publication.plan(bundle, "absent", None, repository="fork/pulsebeam-libwebrtc-sys")
 
     def test_workflow_finalizes_only_after_attestation_reverification(self):
-        workflow = Path(".github/workflows/linux.yml").read_text(encoding="utf-8")
+        workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
         publish = workflow[workflow.index("  publish-linux:"):]
         self.assertIn('RUNTIME_REPOSITORY: ${{ github.repository }}', publish)
         self.assertNotIn("${GITHUB_REPOSITORY}", publish)

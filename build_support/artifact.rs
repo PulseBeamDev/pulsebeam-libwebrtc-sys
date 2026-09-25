@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -23,6 +23,7 @@ const DOWNLOAD_ATTEMPTS: usize = 3;
 const RETRYABLE_HTTP_STATUSES: &[u16] = &[408, 429, 500, 502, 503, 504];
 const RELEASE_URL_PREFIX: &str =
     "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/";
+const MAX_RELEASE_LOCK_BYTES: u64 = 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -223,6 +224,23 @@ impl ArtifactLock {
         Ok(lock)
     }
 
+    fn validate_tag(&self, tag: &str) -> Result<(), String> {
+        if !self.canonical_urls || self.release_scope == ReleaseScope::None {
+            return Err("release lock must use schema 2 and provide released artifacts".into());
+        }
+        for entry in &self.artifacts {
+            if let Some(url) = &entry.url {
+                let expected = format!("{RELEASE_URL_PREFIX}{tag}/{}", entry.asset_name);
+                if url != &expected {
+                    return Err(format!(
+                        "release lock URL does not belong to tag {tag}: {url}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn select(&self, cargo_target: &str, flavor: &str) -> &LockedArtifact {
         self.artifacts
             .iter()
@@ -257,6 +275,119 @@ impl LockedArtifact {
                 )
             })
     }
+}
+
+pub(crate) fn resolve_tagged(
+    tag: &str,
+    expected_bridge: &str,
+    cargo_target: &str,
+    flavor: &str,
+) -> Result<PathBuf, String> {
+    // Local producer artifacts must work before a release exists, including offline.
+    if env::var_os(ARTIFACT_DIR_ENV).is_some() {
+        return resolve(&[], expected_bridge, cargo_target, flavor);
+    }
+    if artifact_target(cargo_target).is_none() {
+        return resolve(&[], expected_bridge, cargo_target, flavor);
+    }
+    let url = format!("{RELEASE_URL_PREFIX}{tag}/artifacts.lock.json");
+    let lock = load_release_lock(tag, &url, expected_bridge)?;
+    resolve(&lock, expected_bridge, cargo_target, flavor)
+}
+
+fn validate_release_tag(tag: &str) -> Result<(), String> {
+    if !tag.starts_with('v')
+        || tag.len() < 2
+        || !tag.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphanumeric() || (index > 0 && matches!(character, '.' | '_' | '-'))
+        })
+    {
+        return Err(format!("invalid release tag: {tag}"));
+    }
+    Ok(())
+}
+
+fn validate_release_lock(bytes: &[u8], tag: &str, expected_bridge: &str) -> Result<(), String> {
+    ArtifactLock::parse_and_validate(bytes, expected_bridge)?.validate_tag(tag)
+}
+
+fn load_release_lock(tag: &str, url: &str, expected_bridge: &str) -> Result<Vec<u8>, String> {
+    validate_release_tag(tag)?;
+    let directory = cache_directory()?.join("release-locks");
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!(
+            "failed to create release lock cache {}: {error}",
+            directory.display()
+        )
+    })?;
+    let cached = directory.join(format!("{tag}.json"));
+    if is_regular_file(&cached)
+        && fs::metadata(&cached).is_ok_and(|metadata| metadata.len() <= MAX_RELEASE_LOCK_BYTES)
+    {
+        let bytes = fs::read(&cached).map_err(|error| {
+            format!(
+                "failed to read cached release lock {}: {error}",
+                cached.display()
+            )
+        })?;
+        if validate_release_lock(&bytes, tag, expected_bridge).is_ok() {
+            return Ok(bytes);
+        }
+    }
+    if offline() {
+        return Err(format!(
+            "offline release lock cache miss or invalid lock for {tag}: {}; provide a matching extracted artifact with {ARTIFACT_DIR_ENV} or populate the cache while online",
+            cached.display()
+        ));
+    }
+    let agent = download_agent();
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        let response = match agent.get(url).call() {
+            Ok(response) => response,
+            Err(error) if retryable_download_error(&error) && attempt < DOWNLOAD_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+                continue;
+            }
+            Err(error) => return Err(format!("cannot retrieve release lock {url}: {error}")),
+        };
+        let mut bytes = Vec::new();
+        let result = response
+            .into_body()
+            .into_reader()
+            .take(MAX_RELEASE_LOCK_BYTES + 1)
+            .read_to_end(&mut bytes);
+        match result {
+            Err(error) if retryable_io_error(&error) && attempt < DOWNLOAD_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+                continue;
+            }
+            Err(error) => return Err(format!("cannot read release lock {url}: {error}")),
+            Ok(_) if bytes.len() as u64 > MAX_RELEASE_LOCK_BYTES => {
+                return Err(format!(
+                    "release lock exceeds {MAX_RELEASE_LOCK_BYTES} bytes: {url}"
+                ));
+            }
+            Ok(_) => {}
+        }
+        validate_release_lock(&bytes, tag, expected_bridge)?;
+        let temporary = temporary_path(&cached);
+        let result = (|| -> Result<(), String> {
+            let mut file = File::create(&temporary)
+                .map_err(|error| format!("failed to create {}: {error}", temporary.display()))?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+            fs::rename(&temporary, &cached).map_err(|error| {
+                format!("failed to cache release lock {}: {error}", cached.display())
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+        return Ok(bytes);
+    }
+    unreachable!("bounded release lock download loop unexpectedly ended")
 }
 
 pub(crate) fn resolve(
@@ -396,14 +527,9 @@ fn retryable_io_error(error: &io::Error) -> bool {
     )
 }
 
-fn download(
-    url: &str,
-    destination: &Path,
-    expected_sha256: &str,
-    cache_state: &str,
-) -> Result<(), String> {
+fn download_agent() -> ureq::Agent {
     let provider = Arc::new(oxitls_rustcrypto_provider::provider());
-    let agent = ureq::Agent::config_builder()
+    ureq::Agent::config_builder()
         .tls_config(
             ureq::tls::TlsConfig::builder()
                 .provider(ureq::tls::TlsProvider::Rustls)
@@ -411,7 +537,16 @@ fn download(
                 .build(),
         )
         .build()
-        .new_agent();
+        .new_agent()
+}
+
+fn download(
+    url: &str,
+    destination: &Path,
+    expected_sha256: &str,
+    cache_state: &str,
+) -> Result<(), String> {
+    let agent = download_agent();
     for attempt in 1..=DOWNLOAD_ATTEMPTS {
         let response = match agent.get(url).call() {
             Ok(response) => response,
@@ -709,13 +844,13 @@ mod tests {
                 assert_eq!(entry.artifact_target, artifact_target(target).unwrap());
             }
         }
-        assert_eq!(lock.release_scope, ReleaseScope::None);
+        assert_eq!(lock.release_scope, ReleaseScope::Linux);
     }
 
     #[test]
     fn release_scope_must_match_available_selections() {
         let lock = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
-            r#""release_scope": "none"#,
+            r#""release_scope": "linux"#,
             r#""release_scope": "complete"#,
             1,
         );
@@ -810,8 +945,8 @@ mod tests {
     #[test]
     fn rejects_hybrid_unknown_and_noncanonical_lock_metadata() {
         let hybrid = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
-            r#""release_scope": "none""#,
-            r#""release_scope": "none", "release_ready": false"#,
+            r#""release_scope": "linux""#,
+            r#""release_scope": "linux", "release_ready": false"#,
             1,
         );
         assert!(
@@ -1040,6 +1175,113 @@ mod tests {
                 env::remove_var(OFFLINE_ENV);
             }
         }
+    }
+
+    #[test]
+    fn release_lock_is_tag_bound_cached_and_reusable_offline() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = artifact_test_root("release-lock");
+        let cache = root.join("cache");
+        let lock = released_lock(
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            &"1".repeat(64),
+        );
+        configure_test_environment(&cache, false);
+        let url = server(vec![http("200 OK", &lock)]);
+        assert_eq!(
+            load_release_lock("v1", &url, "pulsebeam-webrtc-sys-bridge-v2").unwrap(),
+            lock
+        );
+        configure_test_environment(&cache, true);
+        assert_eq!(
+            load_release_lock(
+                "v1",
+                "http://127.0.0.1:1/missing",
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap(),
+            lock
+        );
+        assert!(
+            load_release_lock(
+                "v2",
+                "http://127.0.0.1:1/missing",
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap_err()
+            .contains("offline release lock cache miss")
+        );
+        fs::write(cache.join("release-locks/v1.json"), b"corrupt").unwrap();
+        assert!(
+            load_release_lock(
+                "v1",
+                "http://127.0.0.1:1/missing",
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap_err()
+            .contains("offline release lock cache miss")
+        );
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn release_lock_rejects_wrong_tag_identity_scope_and_path() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = artifact_test_root("release-lock-invalid");
+        configure_test_environment(&root.join("cache"), false);
+        let valid = released_lock(
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            &"1".repeat(64),
+        );
+        let mismatch = load_release_lock(
+            "v2",
+            &server(vec![http("200 OK", &valid)]),
+            "pulsebeam-webrtc-sys-bridge-v2",
+        )
+        .unwrap_err();
+        assert!(mismatch.contains("does not belong to tag v2"));
+        assert!(!root.join("cache/release-locks/v2.json").exists());
+        assert!(
+            load_release_lock("v1", &server(vec![http("200 OK", &valid)]), "wrong-bridge")
+                .unwrap_err()
+                .contains("wrong artifact lock bridge identity")
+        );
+        let invalid_scope = String::from_utf8(valid).unwrap().replacen(
+            "\"release_scope\":\"linux\"",
+            "\"release_scope\":\"none\"",
+            1,
+        );
+        assert!(
+            load_release_lock(
+                "v1",
+                &server(vec![http("200 OK", invalid_scope.as_bytes())]),
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap_err()
+            .contains("release scope")
+        );
+        assert!(
+            load_release_lock(
+                "v1/../v2",
+                "http://127.0.0.1:1/missing",
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap_err()
+            .contains("invalid release tag")
+        );
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

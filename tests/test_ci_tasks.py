@@ -24,11 +24,13 @@ class CiTasksTests(unittest.TestCase):
             marker = Path(temp) / "tag"
             with patch.object(ci_tasks.subprocess, "run", return_value=type("Result", (), {"stdout": "b" * 40})()):
                 with self.assertRaisesRegex(ci_tasks.TaskError, "does not resolve"):
-                    ci_tasks.release_tag("v-test", "a" * 40, marker)
+                    ci_tasks.release_tag("v0.5.6", "a" * 40, marker)
             self.assertFalse(marker.exists())
             with patch.object(ci_tasks.subprocess, "run", return_value=type("Result", (), {"stdout": "a" * 40})()):
-                ci_tasks.release_tag("v-test", "a" * 40, marker)
-            self.assertEqual(marker.read_text(), "v-test")
+                ci_tasks.release_tag("v0.5.6", "a" * 40, marker)
+            self.assertEqual(marker.read_text(), "v0.5.6")
+            with self.assertRaisesRegex(ci_tasks.TaskError, "must match Cargo package version"):
+                ci_tasks.release_tag("v0.5.7", "a" * 40, marker)
             with self.assertRaisesRegex(ci_tasks.TaskError, "prohibited"):
                 ci_tasks.release_tag("v0.5.0", "a" * 40, marker)
 

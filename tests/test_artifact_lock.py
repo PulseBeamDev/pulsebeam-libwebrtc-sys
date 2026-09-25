@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,26 @@ SPEC.loader.exec_module(write_artifact_lock)
 
 
 class ArtifactLockTests(unittest.TestCase):
+    def test_checked_in_lock_provides_both_primary_linux_flavors(self):
+        lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(lock["schema_version"], 2)
+        self.assertEqual(lock["release_scope"], "linux")
+        available = {entry["asset_name"]: entry for entry in lock["artifacts"] if entry["url"] is not None}
+        self.assertEqual(set(available), {
+            "webrtc-core-linux-x86_64.tar.gz",
+            "webrtc-native-linux-x86_64.tar.gz",
+        })
+        for name, entry in available.items():
+            self.assertTrue(entry["url"].startswith(
+                "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/"
+            ))
+            self.assertTrue(entry["url"].endswith("/" + name))
+            self.assertRegex(entry["sha256"], re.compile(r"^[0-9a-f]{64}$"))
+        self.assertTrue(all(
+            entry["url"] is None and entry["sha256"] is None
+            for entry in lock["artifacts"] if entry["asset_name"] not in available
+        ))
+
     def report(self, root: Path, scope: str) -> Path:
         checksums, lock = ReleaseAuditTests().build_release(root, {"linux-x86_64"} if scope == "linux" else None)
         report = audit_release.audit(root, checksums, lock, scope)

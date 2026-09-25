@@ -6,6 +6,7 @@ mod manifest;
 use std::{env, path::Path};
 
 const BRIDGE_IDENTITY: &str = "pulsebeam-webrtc-sys-bridge-v2";
+const CANDIDATE_LOCK_ENV: &str = "PULSEBEAM_WEBRTC_SYS_CANDIDATE_LOCK";
 const ARTIFACT_LOCK: &[u8] = include_bytes!("artifacts.lock.json");
 
 fn main() {
@@ -13,13 +14,14 @@ fn main() {
         artifact::ARTIFACT_DIR_ENV,
         artifact::CACHE_DIR_ENV,
         artifact::OFFLINE_ENV,
+        CANDIDATE_LOCK_ENV,
         "CARGO_NET_OFFLINE",
         "PULSEBEAM_WEBRTC_SYS_SKIP_LINK",
     ] {
         println!("cargo::rerun-if-env-changed={name}");
     }
-    println!("cargo::rerun-if-changed=artifacts.lock.json");
 
+    println!("cargo::rerun-if-changed=artifacts.lock.json");
     let target = env::var("TARGET").expect("Cargo did not provide TARGET");
     let artifact_target = manifest::artifact_target(&target).unwrap_or_else(|| {
         panic!(
@@ -37,8 +39,13 @@ fn main() {
         return;
     }
 
-    let artifact = artifact::resolve(ARTIFACT_LOCK, BRIDGE_IDENTITY, &target, flavor)
-        .unwrap_or_else(|error| panic!("failed to resolve native artifact: {error}"));
+    let artifact = if env::var_os(CANDIDATE_LOCK_ENV).is_some() {
+        artifact::resolve(ARTIFACT_LOCK, BRIDGE_IDENTITY, &target, flavor)
+    } else {
+        let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+        artifact::resolve_tagged(&tag, BRIDGE_IDENTITY, &target, flavor)
+    }
+    .unwrap_or_else(|error| panic!("failed to resolve native artifact: {error}"));
     let manifest =
         artifact::validate_extracted(&artifact, BRIDGE_IDENTITY, flavor, artifact_target, &target)
             .unwrap_or_else(|error| panic!("invalid native artifact: {error}"));

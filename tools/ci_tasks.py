@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from tools import audit_release, linux_release_publication, write_artifact_lock
@@ -36,6 +37,9 @@ def revision(value: str) -> None:
 def release_tag(tag: str, commit: str, marker: Path) -> None:
     if not write_artifact_lock.TAG.fullmatch(tag) or tag == "v0.5.0":
         raise TaskError("invalid or prohibited tag")
+    version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+    if tag != f"v{version}":
+        raise TaskError(f"release tag {tag} must match Cargo package version v{version}")
     revision(commit)
     result = subprocess.run(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], check=True, text=True, capture_output=True)
     if result.stdout.strip() != commit:

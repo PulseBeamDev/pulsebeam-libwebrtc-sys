@@ -1,179 +1,425 @@
-name: Complete-matrix checks (manual)
+name: CI and release
+
 on:
-  workflow_dispatch:
+  pull_request:
+  push:
+    tags: ['v*']
+
 permissions: {}
+
+concurrency:
+  group: linux-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    name: Source checks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Validate release CLI options before building the image
+        run: just ci-preflight
+      - name: Prove rootless Podman is available
+        run: just ci podman
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Prime pinned Rust dependencies
+        run: just linux-run pulsebeam-linux-${{ github.sha }} env CARGO_HOME=/workspace/.work/cargo-home cargo fetch --locked
+      - name: Run source and control-plane checks
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just check
+
   linux-build:
     name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
+    if: github.event_name == 'push'
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {flavor: core, target: linux-x86_64, runner: ubuntu-24.04}
-          - {flavor: core, target: linux-arm64, runner: ubuntu-24.04-arm}
-          - {flavor: native, target: linux-x86_64, runner: ubuntu-24.04}
-          - {flavor: native, target: linux-arm64, runner: ubuntu-24.04-arm}
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
-    permissions: {contents: read}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
+        with:
+          just-version: 1.43.1
       - name: Prove rootless Podman is available
         run: just ci podman
+      # A shared core/native key lets the faster native job win the save race,
+      # leaving core-only objects uncached on every subsequent run.
       - name: Restore compiler object cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .work/sccache/${{ matrix.target }}
-          key: linux-sccache-v1-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: linux-sccache-v1-${{ matrix.target }}-
-      - run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - name: Prepare ARM64 checkout for toolchain restore
-        if: matrix.target == 'linux-arm64'
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just _sync '${{ matrix.flavor }}' '${{ matrix.target }}'
-      - name: Restore pinned ARM64 Chromium LLVM toolchain
-        if: matrix.target == 'linux-arm64'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: .work/checkout/src/third_party/llvm-build/Release+Asserts
-          key: linux-arm64-llvm-v1-${{ hashFiles('Justfile', 'Containerfile') }}
+          key: linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            linux-sccache-v2-${{ matrix.flavor }}-${{ matrix.target }}-
+            linux-sccache-v1-${{ matrix.target }}-
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Build and smoke-link artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
-  non-linux-build:
-    name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {flavor: core, target: windows-x86_64, runner: windows-2025}
-          - {flavor: core, target: macos-x86_64, runner: macos-15-intel}
-          - {flavor: core, target: macos-arm64, runner: macos-15}
-          - {flavor: core, target: android-x86_64, runner: ubuntu-24.04}
-          - {flavor: core, target: android-arm64-v8a, runner: ubuntu-24.04}
-          - {flavor: core, target: ios-arm64, runner: macos-15}
-          - {flavor: core, target: ios-simulator-arm64, runner: macos-15}
-          - {flavor: native, target: windows-x86_64, runner: windows-2025}
-          - {flavor: native, target: macos-x86_64, runner: macos-15-intel}
-          - {flavor: native, target: macos-arm64, runner: macos-15}
-          - {flavor: native, target: android-x86_64, runner: ubuntu-24.04}
-          - {flavor: native, target: android-arm64-v8a, runner: ubuntu-24.04}
-          - {flavor: native, target: ios-arm64, runner: macos-15}
-          - {flavor: native, target: ios-simulator-arm64, runner: macos-15}
-    runs-on: ${{ matrix.runner }}
-    permissions: {contents: read}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
-      - if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
-      - name: Install Rust target for artifact link smoke
-        shell: bash
-        run: just ci rust-target '${{ matrix.target }}'
-      - name: Build and smoke-link artifact
-        run: just build '${{ matrix.flavor }}' '${{ matrix.target }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz', if-no-files-found: error, retention-days: 1, compression-level: 0}
-  linux-desktop-runtime:
-    name: Runtime (${{ matrix.flavor }}, linux-x86_64)
-    needs: linux-build
-    strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
-    runs-on: ubuntu-24.04
-    permissions: {contents: read}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
-      - name: Prove rootless Podman is available
-        run: just ci podman
-      - run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with: {name: '${{ matrix.flavor }}-linux-x86_64', path: dist}
-      - name: Run runtime tests
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
-  non-linux-desktop-runtime:
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  linux-runtime:
     name: Runtime (${{ matrix.flavor }}, ${{ matrix.target }})
-    needs: non-linux-build
+    needs: linux-build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {flavor: core, target: windows-x86_64, runner: windows-2025}
-          - {flavor: native, target: windows-x86_64, runner: windows-2025}
-          - {flavor: core, target: macos-x86_64, runner: macos-15-intel}
-          - {flavor: native, target: macos-x86_64, runner: macos-15-intel}
-          - {flavor: core, target: macos-arm64, runner: macos-15}
-          - {flavor: native, target: macos-arm64, runner: macos-15}
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
-    permissions: {contents: read}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: dist}
-      - name: Prime pinned Rust dependencies
-        run: cargo fetch --locked
-      - name: Run runtime tests
-        run: just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
-  lifetime-sanitizers:
-    name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
-    strategy: {fail-fast: false, matrix: {flavor: [core, native]}}
-    runs-on: ubuntu-24.04
-    permissions: {contents: read}
-    env: {PULSEBEAM_WEBRTC_SANITIZER: address, ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
+        with:
+          just-version: 1.43.1
       - name: Prove rootless Podman is available
         run: just ci podman
-      - run: just linux-image pulsebeam-linux-${{ github.sha }}
-      - name: Build ASan artifact
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' linux-x86_64
-      - name: Run ASan tests
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' linux-x86_64 'dist/webrtc-${{ matrix.flavor }}-linux-x86_64.tar.gz'
-  complete-audit:
-    name: Audit complete matrix
-    needs: [linux-build, non-linux-build]
-    if: always()
-    runs-on: ubuntu-24.04
-    permissions: {contents: read}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with: {persist-credentials: false}
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-        with: {just-version: 1.43.1}
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with: {path: release, merge-multiple: true}
-      - name: Audit artifacts
-        run: just ci audit complete release release/SHA256SUMS release/RELEASE-MANIFEST.json
-  complete-matrix-qualification:
-    name: Complete-matrix qualification
-    needs: [linux-build, non-linux-build, linux-desktop-runtime, non-linux-desktop-runtime, lifetime-sanitizers, complete-audit]
-    if: always()
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist
+      - name: Run runtime tests
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
+
+  lifetime-sanitizers:
+    name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
+    if: github.event_name == 'push'
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [core, native]
     runs-on: ubuntu-24.04
-    permissions: {contents: read}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      PULSEBEAM_WEBRTC_SANITIZER: address
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        run: just ci podman
+      - name: Restore ASan compiler object cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .work/sccache/linux-x86_64
+          key: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-${{ github.sha }}
+          restore-keys: linux-sccache-asan-v1-${{ matrix.flavor }}-linux-x86_64-
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Build and run ASan tests
+        run: just ci asan pulsebeam-linux-${{ github.sha }} '${{ matrix.flavor }}'
+
+  linux-qualification:
+    name: Linux qualification
+    needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: {persist-credentials: false}
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with: {just-version: 1.43.1}
-      - name: Require all matrix checks to pass
+      - name: Report Linux qualification evidence
+        shell: bash
         run: >-
           just ci require-success
+          'validate=${{ needs.validate.result }}'
           'linux-build=${{ needs.linux-build.result }}'
-          'non-linux-build=${{ needs.non-linux-build.result }}'
-          'linux-desktop-runtime=${{ needs.linux-desktop-runtime.result }}'
-          'non-linux-desktop-runtime=${{ needs.non-linux-desktop-runtime.result }}'
+          'linux-runtime=${{ needs.linux-runtime.result }}'
           'lifetime-sanitizers=${{ needs.lifetime-sanitizers.result }}'
-          'complete-audit=${{ needs.complete-audit.result }}'
+          'linux-audit=${{ needs.linux-audit.result }}'
+          'candidate-consumer=${{ needs.candidate-consumer.result }}'
+
+  linux-audit:
+    name: Audit Linux artifacts
+    needs: linux-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: '*-linux-*'
+          path: release-input
+          merge-multiple: true
+      - name: Audit exactly the two primary Linux x86_64 archives
+        run: >-
+          just ci audit linux release-input release-input/SHA256SUMS
+          release-input/LINUX-RELEASE-MANIFEST.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-audit
+          path: |
+            release-input/SHA256SUMS
+            release-input/LINUX-RELEASE-MANIFEST.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  candidate-consumer:
+    name: Candidate consumer (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: [linux-build, linux-audit]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        run: just ci podman
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-audit
+          path: audit
+      - name: Prove the cold Rust consumer against the audited candidate
+        run: >-
+          just linux-run pulsebeam-linux-${{ github.sha }} just ci candidate
+          '${{ matrix.flavor }}' '${{ matrix.target }}' audit/SHA256SUMS
+
+  linux-release-bundle:
+    name: Prepare Linux release
+    if: github.event_name == 'push'
+    needs: linux-qualification
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: '*-linux-*'
+          path: release-input
+          merge-multiple: true
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-audit
+          path: release-input
+      - name: Validate the requested immutable release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: just ci release-tag "$RELEASE_TAG" "$(git rev-parse HEAD)" release-input/.release-tag
+      - name: Construct one closed audited Linux publication bundle
+        run: >-
+          just ci release-prepare release-input release-input/SHA256SUMS
+          release-input/LINUX-RELEASE-MANIFEST.json release-input/.release-tag linux-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-bundle
+          path: linux-release
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-linux:
+    name: Publish Linux release
+    if: github.event_name == 'push'
+    needs: [linux-qualification, linux-release-bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: linux-release-bundle
+          path: release
+      - name: Classify the immutable release identity before mutation
+        id: publication-plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+          RUNTIME_REPOSITORY: ${{ github.repository }}
+        run: >-
+          just ci-release classify --tag "$RELEASE_TAG" --repository "$RUNTIME_REPOSITORY"
+          --bundle release --output publication-plan.json
+      - name: Create a non-advertised draft and add only verified missing assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: just ci-release upload --tag "$RELEASE_TAG" --bundle release --plan publication-plan.json
+      - name: Reverify the full draft inventory without replacement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: >-
+          just ci-release verify --tag "$RELEASE_TAG" --bundle release
+          --output final-publication-plan.json
+      - name: Attest final release assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: release/*
+      - name: Reverify the complete attested draft immediately before advertisement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: >-
+          just ci-release verify --tag "$RELEASE_TAG" --bundle release
+          --output attested-publication-plan.json
+      - name: Advertise only the verified complete Linux release
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+        run: just ci-release advertise --tag "$RELEASE_TAG" --plan attested-publication-plan.json
+
+  released-consumer:
+    name: Released consumer (${{ matrix.flavor }}, linux-x86_64)
+    needs: publish-linux
+    if: needs.publish-linux.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [core, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with:
+          just-version: 1.43.1
+      - name: Prove rootless Podman is available
+        run: just ci podman
+      - name: Build the local Linux image
+        run: just linux-image pulsebeam-linux-${{ github.sha }}
+      - name: Test published dependency without overrides
+        run: >-
+          just linux-run pulsebeam-linux-${{ github.sha }}
+          python3 -m tools.rust_only_consumer released
+          --repository https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git
+          --tag '${{ github.ref_name }}'
+          --target linux-x86_64 --flavor '${{ matrix.flavor }}'
+
+  release-result:
+    name: Release and consumer result
+    needs: [publish-linux, released-consumer]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Require both published consumer flavors to pass
+        run: >-
+          just ci require-success
+          'publish-linux=${{ needs.publish-linux.result }}'
+          'released-consumer=${{ needs.released-consumer.result }}'
+      - name: Report the ready Git dependency tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: echo "Use pulsebeam-webrtc-sys at Git tag $RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

@@ -55,40 +55,26 @@ class RustOnlyConsumerTests(unittest.TestCase):
                 )
                 self.assertIn(f'git = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git"', manifest)
                 self.assertIn(f'rev = "{"a" * 40}"', manifest)
+                tagged = rust_only_consumer.render_consumer_manifest(
+                    rust_only_consumer.PUBLIC_REPOSITORY, "v0.5.6", target, flavor, tag=True
+                )
+                self.assertIn('tag = "v0.5.6"', tagged)
+                self.assertNotIn('rev =', tagged)
                 self.assertEqual(rust_only_consumer.coordinate(target, flavor)[0], cargo_target)
                 self.assertEqual('features = ["native"]' in manifest, flavor == "native")
 
     def test_released_rejects_noncanonical_repository_before_public_availability(self):
         with self.assertRaisesRegex(rust_only_consumer.ProofError, "canonical"):
-            rust_only_consumer.validate_released("file:///fixture", "a" * 40, "linux-x86_64", "core")
+            rust_only_consumer.validate_released("file:///fixture", "v0.5.6", "linux-x86_64", "core")
 
-    def test_released_validates_selected_public_lock_coordinate(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
-            lock["release_scope"] = "linux"
-            for entry in lock["artifacts"]:
-                if entry["artifact_target"] == "linux-x86_64":
-                    entry["url"] = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/" + entry["asset_name"]
-                    entry["sha256"] = "b" * 64
-            path = Path(temporary) / "artifacts.lock.json"
-            path.write_text(json.dumps(lock), encoding="utf-8")
+    def test_released_requires_valid_tag(self):
+        rust_only_consumer.validate_released(
+            rust_only_consumer.PUBLIC_REPOSITORY, "v0.5.6", "linux-x86_64", "native"
+        )
+        with self.assertRaisesRegex(rust_only_consumer.ProofError, "invalid release tag"):
             rust_only_consumer.validate_released(
-                rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
+                rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native"
             )
-            self.assertEqual(sum(entry["url"] is not None for entry in lock["artifacts"]), 2)
-            lock["artifacts"][1]["url"] = "https://example.invalid/substitution"
-            path.write_text(json.dumps(lock), encoding="utf-8")
-            with self.assertRaisesRegex(rust_only_consumer.ProofError, "noncanonical"):
-                rust_only_consumer.validate_released(
-                    rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
-                )
-            lock["artifacts"][1]["url"] = None
-            lock["artifacts"][1]["sha256"] = None
-            path.write_text(json.dumps(lock), encoding="utf-8")
-            with self.assertRaisesRegex(rust_only_consumer.ProofError, "unavailable"):
-                rust_only_consumer.validate_released(
-                    rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "native", path
-                )
 
     def test_rejects_host_that_does_not_match_selection(self):
         with mock.patch.object(rust_only_consumer.platform, "system", return_value="Linux"), mock.patch.object(
@@ -117,7 +103,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
             run.side_effect = invoke
             with self.assertRaises(subprocess.CalledProcessError):
                 rust_only_consumer.prove_released(
-                    rust_only_consumer.PUBLIC_REPOSITORY, "a" * 40, "linux-x86_64", "core"
+                    rust_only_consumer.PUBLIC_REPOSITORY, "v0.5.6", "linux-x86_64", "core"
                 )
 
     def test_released_fixture_rejects_mismatched_archives(self):
@@ -182,7 +168,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
 
     def test_modes_do_not_accept_each_others_inputs(self):
         result = subprocess.run(
-            [sys.executable, str(ROOT / "tools/rust_only_consumer.py"), "released", "--repository", "x", "--revision", "a" * 40, "--target", "linux-x86_64", "--flavor", "core", "--artifact", "x"],
+            [sys.executable, str(ROOT / "tools/rust_only_consumer.py"), "released", "--repository", "x", "--tag", "v0.5.6", "--target", "linux-x86_64", "--flavor", "core", "--artifact", "x"],
             text=True,
             capture_output=True,
         )

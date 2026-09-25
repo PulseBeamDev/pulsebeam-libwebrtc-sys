@@ -10,24 +10,15 @@ class CiPreflightTests(unittest.TestCase):
     def test_release_flags_are_local_and_create_only_flag_never_used_on_edit(self):
         self.assertIn("--generate-notes", github_release.GH_OPTIONS["release create"])
         self.assertNotIn("--generate-notes", github_release.GH_OPTIONS["release edit"])
-        workflow = (ci_preflight.WORKFLOWS / "linux.yml").read_text()
+        workflow = (ci_preflight.WORKFLOWS / "release.yml").read_text()
         self.assertIn("just ci-release classify", workflow)
         self.assertIn("just ci-release advertise", workflow)
         self.assertNotIn("gh release ", workflow)
 
     def test_host_preflight_precedes_expensive_linux_images(self):
-        for workflow_name in ("check.yml", "linux.yml"):
-            workflow = (ci_preflight.WORKFLOWS / workflow_name).read_text()
-            if workflow_name == "linux.yml":
-                workflow = workflow.split("  validate:", 1)[1].split("  linux-build:", 1)[0]
-            self.assertLess(workflow.index("run: just ci-preflight"), workflow.index("just linux-image"))
-
-    def test_upgrade_selects_candidate_before_image_and_captures_failure(self):
-        workflow = (ci_preflight.WORKFLOWS / "upgrade-rehearsal.yml").read_text()
-        self.assertLess(workflow.index("just ci upgrade-pin"), workflow.index("just linux-image"))
-        self.assertIn("just ci upgrade-refresh", workflow)
-        self.assertIn("just ci upgrade-build", workflow)
-        self.assertIn("upgrade-rehearsal.log", workflow)
+        workflow = (ci_preflight.WORKFLOWS / "release.yml").read_text()
+        validate = workflow.split("  validate:", 1)[1].split("  linux-build:", 1)[0]
+        self.assertLess(validate.index("run: just ci-preflight"), validate.index("just linux-image"))
 
     def test_rejects_inline_release_scripts_and_unsupported_options(self):
         with tempfile.TemporaryDirectory() as temp:

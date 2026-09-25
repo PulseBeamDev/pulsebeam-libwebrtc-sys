@@ -57,7 +57,7 @@ class InputRetrievalBoundaryTests(unittest.TestCase):
         copy = proof.index('cp -- "{{ archive }}" "$snapshot"')
         digest = proof.index('actual=$(sha256sum "$snapshot"')
         runtime = proof.index(' _runtime-test core linux-x86_64 "$snapshot"')
-        consumer = proof.index('tools/rust_only_consumer.py --artifact "$snapshot"')
+        consumer = proof.index('tools/rust_only_consumer.py candidate --artifact "$snapshot"')
         self.assertLess(copy, digest)
         self.assertLess(digest, runtime)
         self.assertLess(digest, consumer)
