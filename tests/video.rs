@@ -12,14 +12,15 @@ use std::{
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    CodecError, CodecSupport, DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame,
-    Environment, ManualClock, Nv12Planes, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RtpTransceiver,
-    RtpTransceiverDirection, SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder,
-    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
-    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
-    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
-    VideoRateControl, VideoResolution, VideoRotation, VideoTrackState,
+    CodecError, CodecSupport, DecodedImageCallback, EncodedH264Input, EncodedImageCallback,
+    EncodedVideoFrame, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
+    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
+    RtpTransceiver, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
+    VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
+    VideoDecoderInfo, VideoDecoderSettings, VideoEncoder, VideoEncoderFactory,
+    VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame,
+    VideoFrameBuffer, VideoFrameType, VideoPlane, VideoRateControl, VideoResolution, VideoRotation,
+    VideoTrackState,
 };
 
 #[derive(Default)]
@@ -200,6 +201,7 @@ struct Pair {
     clock: ManualClock,
     network: SimulatedNetwork,
     alice_factory: PeerConnectionFactory,
+    bob_factory: PeerConnectionFactory,
     alice: PeerConnection,
     bob: PeerConnection,
     _alice_endpoint: pulsebeam_webrtc_sys::NetworkEndpoint,
@@ -208,6 +210,14 @@ struct Pair {
 
 impl Pair {
     fn new(counters: Arc<Counters>, fail_encoder: bool) -> Self {
+        Self::new_with_encoder(counters, fail_encoder, None)
+    }
+
+    fn new_with_encoder(
+        counters: Arc<Counters>,
+        fail_encoder: bool,
+        encoder: Option<VideoEncoderFactoryHandle>,
+    ) -> Self {
         let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
         let environment = Environment::builder().clock(&clock).build().unwrap();
         let network = SimulatedNetwork::new(&clock).unwrap();
@@ -222,8 +232,9 @@ impl Pair {
             &alice_endpoint,
             counters.clone(),
             fail_encoder,
+            encoder,
         );
-        let bob_factory = factory(environment, &bob_endpoint, counters, false);
+        let bob_factory = factory(environment, &bob_endpoint, counters, false, None);
         let alice = alice_factory
             .create_peer_connection(PeerConfiguration::default())
             .unwrap();
@@ -234,6 +245,7 @@ impl Pair {
             clock,
             network,
             alice_factory,
+            bob_factory,
             alice,
             bob,
             _alice_endpoint: alice_endpoint,
@@ -301,18 +313,19 @@ fn factory(
     endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint,
     counters: Arc<Counters>,
     fail_encoder: bool,
+    encoder: Option<VideoEncoderFactoryHandle>,
 ) -> PeerConnectionFactory {
     PeerConnectionFactory::builder()
         .environment(environment)
         .network_manager(endpoint.network_manager().unwrap())
         .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
-        .video_encoder_factory(
+        .video_encoder_factory(encoder.unwrap_or_else(|| {
             VideoEncoderFactoryHandle::new(EncoderFactory {
                 counters: counters.clone(),
                 fail: fail_encoder,
             })
-            .unwrap(),
-        )
+            .unwrap()
+        }))
         .video_decoder_factory(VideoDecoderFactoryHandle::new(DecoderFactory(counters)).unwrap())
         .build()
         .unwrap()
@@ -502,6 +515,107 @@ fn video_sink_bounds_retention_and_reports_loss() {
     assert_eq!(sink.try_next_frame(), None);
     sink.close().unwrap();
     assert_eq!(sink.dropped_frames(), 2);
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
+}
+
+#[test]
+fn direct_encoded_h264_input_reaches_remote_without_decode() {
+    let counters = Arc::new(Counters::default());
+    let input = EncodedH264Input::new().unwrap();
+    let mut pair = Pair::new_with_encoder(counters.clone(), false, Some(input.encoder_factory()));
+    assert_eq!(
+        input.create_source(&pair.bob_factory).err().unwrap().kind,
+        PeerErrorKind::InvalidParameter
+    );
+    let mut source = input.create_source(&pair.alice_factory).unwrap();
+    assert_eq!(
+        source
+            .create_track(&pair.bob_factory, "wrong")
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::InvalidParameter
+    );
+    let track = source
+        .create_track(&pair.alice_factory, "encoded-h264")
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
+    assert!(!codecs.is_empty());
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    let mut bob_events = pair.negotiate();
+    let remote = (0..2_000_000)
+        .find_map(|_| {
+            if let Some(remote) = take_remote_transceiver(&mut bob_events) {
+                return Some(remote);
+            }
+            bob_events.extend(pair.progress().1);
+            None
+        })
+        .expect("encoded-video remote transceiver did not arrive");
+    let receiver = remote.receiver();
+    let mut sink = receiver.attach_encoded_sink().unwrap();
+    for _ in 0..100_000 {
+        pair.progress();
+        if transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly) {
+            break;
+        }
+    }
+    // Access unit bytes, not a generated encoding of a placeholder raw frame.
+    const UNIT: &[u8] = &[
+        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
+        0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
+        0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
+    ];
+    let frame = H264AccessUnit {
+        data: UNIT.to_vec(),
+        width: 16,
+        height: 16,
+        timestamp_us: 2_000_000,
+        key_frame: true,
+        qp: Some(20),
+    };
+    source.push(frame.clone()).unwrap();
+    let received = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "direct encoded input missing: pending={}, dropped={}, direction={:?}",
+                source.pending_frames(),
+                source.dropped_frames(),
+                transceiver.current_direction()
+            )
+        });
+    assert_eq!(received.data, frame.data);
+    assert!(received.key_frame);
+    assert!(received.mime_type.eq_ignore_ascii_case("video/H264"));
+    assert_ne!(received.ssrc, 0);
+    assert_eq!(counters.encode.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.decode.load(Ordering::SeqCst), 0);
+    assert_eq!(source.dropped_frames(), 0);
+    assert_eq!(
+        source.push(H264AccessUnit {
+            key_frame: false,
+            ..frame.clone()
+        }),
+        Err(CodecError::InvalidFrame)
+    );
+    source.close().unwrap();
+    assert_eq!(source.push(frame), Err(CodecError::Released));
+    sink.close();
     pair.alice.close().unwrap();
     pair.bob.close().unwrap();
 }

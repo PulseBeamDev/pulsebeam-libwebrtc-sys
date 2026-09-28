@@ -2,6 +2,7 @@
 
 mod codec;
 mod data_channel;
+mod encoded_video;
 mod execution;
 mod network;
 mod peer;
@@ -29,6 +30,7 @@ pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
     DataChannelMessageKind, DataChannelPriority, DataChannelSendResult, DataChannelState,
 };
+pub use encoded_video::{EncodedH264Input, EncodedH264Source, H264AccessUnit};
 pub use execution::{
     BuildEnvironmentError, Environment, EnvironmentBuilder, ManualClock, NetworkThread,
     QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue,
@@ -227,6 +229,7 @@ mod ffi {
             encoder: &mut RustVideoEncoder,
             frame: UniquePtr<NativeVideoFrame>,
             frame_types: &[u8],
+            presentation_token: i64,
             callback: SharedPtr<NativeEncodedImageCallback>,
         ) -> i32;
         fn encoder_set_rates(encoder: &mut RustVideoEncoder, rates: FfiRateControl) -> i32;
@@ -581,6 +584,13 @@ mod ffi {
         ) -> UniquePtr<NativeVideoSource>;
         fn close_video_source(source: &NativeVideoSource) -> bool;
         fn video_source_state(source: &NativeVideoSource) -> u8;
+        fn video_source_push_encoded_trigger(
+            source: &NativeVideoSource,
+            width: u32,
+            height: u32,
+            timestamp_us: i64,
+            token: i64,
+        ) -> bool;
         fn video_source_push_frame(
             source: &NativeVideoSource,
             data: &[u8],

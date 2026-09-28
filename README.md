@@ -366,10 +366,28 @@ encoded video access units before decoding. Its bounded four-frame/4 MiB queue
 reports drops. Access units include optional RID, capture/receive timing, and
 negotiated dependency-descriptor frame/layer/decode-target metadata; absent
 metadata is not fabricated. For H.264, `data` is a depacketized Annex-B
-access unit with start-code-delimited NAL units, not RTP payload fragments. Closing the sink clears queued frames and resumes normal
-WebRTC decoding; this pinned upstream receiver cannot safely be attached a
-second time, even after close. This is a receive-only access-unit API, not a
-raw RTP payload or direct encoded sender input.
+access unit with start-code-delimited NAL units, not RTP payload fragments.
+Closing the sink clears queued frames and resumes normal WebRTC decoding; this
+pinned upstream receiver cannot safely be attached a second time, even after
+close. This is not a raw RTP payload API.
+
+For direct encoded H.264 sending, create `EncodedH264Input`, configure its
+`encoder_factory()` on the peer factory builder, then call `create_source()`
+and `create_track()` on the same peer factory. Feed `H264AccessUnit` values
+with strictly increasing nonnegative microsecond timestamps. Each value is
+one Annex-B access unit (three- or four-byte start codes), with explicit
+keyframe, dimensions and optional QP. Keyframes must contain SPS, PPS and IDR;
+delta frames contain non-IDR slices. The advertised format is constrained
+baseline, packetization mode 1, level 3.1; SPS must signal constrained
+baseline profile and at most level 3.1. The native sender constructs a private
+raw trigger solely to drive WebRTC's video stream scheduling. Caller-supplied
+access-unit bytes bypass encoding, and WebRTC derives the RTP timestamp from
+its capture clock. Each source has a stable `stream_id`; a bounded shared
+16-frame/8 MiB pending queue evicts oldest frames under pressure, with
+per-source `dropped_frames()` and `pending_frames()` observability. This adapter
+does not supply a decoder or support encoded simulcast/SVC or packetization
+mode 0. Do not claim keyframe/rate feedback or dependency metadata for this
+adapter; those controls still require work.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
 remote video receiver without guaranteeing that a remote sender honors it.

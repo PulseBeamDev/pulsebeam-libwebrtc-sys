@@ -549,6 +549,17 @@ impl PeerConnectionFactory {
         }
     }
 
+    pub(crate) fn owns_video_source(&self, source: &VideoSource) -> bool {
+        source.belongs_to(&self.0)
+    }
+
+    pub(crate) fn uses_video_encoder(&self, encoder: &VideoEncoderFactoryHandle) -> bool {
+        self.0
+            ._video_encoder
+            .as_ref()
+            .is_some_and(|selected| selected.same_provider(encoder))
+    }
+
     pub fn create_video_source(&self) -> Result<VideoSource, PeerError> {
         let native =
             ffi::create_video_source(self.0.native.as_ref().expect("validated peer factory"));

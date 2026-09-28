@@ -442,6 +442,24 @@ std::uint8_t video_source_state(const NativeVideoSource& source) noexcept {
              : static_cast<std::uint8_t>(webrtc::MediaSourceInterface::kLive);
 }
 
+bool video_source_push_encoded_trigger(
+    const NativeVideoSource& source, std::uint32_t width,
+    std::uint32_t height, std::int64_t timestamp_us,
+    std::int64_t token) noexcept {
+  if (source.state()->closed.load() || width == 0 || height == 0 ||
+      width > 4096 || height > 4096 || token <= 0 || timestamp_us < 0) return false;
+  auto buffer = webrtc::I420Buffer::Create(static_cast<int>(width),
+                                           static_cast<int>(height));
+  buffer->InitializeData();
+  source.state()->source->Push(
+      webrtc::VideoFrame::Builder()
+          .set_video_frame_buffer(std::move(buffer))
+          .set_timestamp_us(timestamp_us)
+          .set_presentation_timestamp(webrtc::Timestamp::Micros(token))
+          .build());
+  return true;
+}
+
 bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,

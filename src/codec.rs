@@ -369,6 +369,18 @@ pub trait VideoEncoder: Send + 'static {
         frame_types: &[VideoFrameType],
         callback: EncodedImageCallback,
     ) -> Result<(), CodecError>;
+    /// The presentation token is reserved for internal encoded-source
+    /// correlation. External encoders can use the default raw-frame path.
+    fn encode_with_presentation_token(
+        &mut self,
+        frame: VideoFrame,
+        frame_types: &[VideoFrameType],
+        presentation_token: Option<i64>,
+        callback: EncodedImageCallback,
+    ) -> Result<(), CodecError> {
+        let _ = presentation_token;
+        self.encode(frame, frame_types, callback)
+    }
     fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError>;
     fn release(&mut self) -> Result<(), CodecError>;
     fn info(&self) -> VideoEncoderInfo;
@@ -529,6 +541,9 @@ impl VideoEncoderFactoryHandle {
     }
     pub(crate) fn native(&self) -> &ffi::NativeVideoEncoderFactory {
         self.0.native.as_ref().expect("validated encoder factory")
+    }
+    pub(crate) fn same_provider(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -879,6 +894,7 @@ pub(crate) fn encoder_encode(
     encoder: &mut RustVideoEncoder,
     frame: cxx::UniquePtr<ffi::NativeVideoFrame>,
     frame_types: &[u8],
+    presentation_token: i64,
     callback: cxx::SharedPtr<ffi::NativeEncodedImageCallback>,
 ) -> i32 {
     let Some(native) = frame.as_ref() else {
@@ -905,7 +921,12 @@ pub(crate) fn encoder_encode(
         })
         .collect();
     with_encoder(encoder, |c| {
-        c.encode(frame, &types, EncodedImageCallback { native: callback })
+        c.encode_with_presentation_token(
+            frame,
+            &types,
+            (presentation_token != 0).then_some(presentation_token),
+            EncodedImageCallback { native: callback },
+        )
     })
 }
 pub(crate) fn encoder_set_rates(encoder: &mut RustVideoEncoder, r: ffi::FfiRateControl) -> i32 {

@@ -152,6 +152,10 @@ impl VideoSource {
             .ok_or(CodecError::Released)
     }
 
+    pub(crate) fn belongs_to(&self, factory: &Rc<FactoryInner>) -> bool {
+        Rc::ptr_eq(&self.inner._factory, factory)
+    }
+
     pub(crate) fn native(&self) -> &ffi::NativeVideoSource {
         self.inner.native.as_ref().expect("validated video source")
     }

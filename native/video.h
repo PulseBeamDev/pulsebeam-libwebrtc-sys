@@ -114,6 +114,10 @@ std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept;
 bool close_video_source(const NativeVideoSource& source) noexcept;
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept;
+bool video_source_push_encoded_trigger(
+    const NativeVideoSource& source, std::uint32_t width,
+    std::uint32_t height, std::int64_t timestamp_us,
+    std::int64_t token) noexcept;
 bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,

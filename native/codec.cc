@@ -186,9 +186,11 @@ public:
       for (auto type : *frame_types)
         types.push_back(static_cast<std::uint8_t>(type));
     }
+    const auto presentation = frame.presentation_timestamp();
     return encoder_encode(
         *encoder_, std::make_unique<NativeVideoFrame>(std::move(state)),
-        rust::Slice<const std::uint8_t>(types.data(), types.size()), callback_);
+        rust::Slice<const std::uint8_t>(types.data(), types.size()),
+        presentation ? presentation->us() : 0, callback_);
   }
 
   void SetRates(const RateControlParameters &parameters) override {
