@@ -131,6 +131,33 @@ fn gathered(peer: &PeerConnection, events: &mut Vec<PeerConnectionEvent>) -> Ses
 }
 
 #[test]
+fn bad_turn_credentials_fail_without_relay_candidates() {
+    let (_server, ip, port) = TurnServer::start();
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let mut peer = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec![format!("turn:{ip}:{port}?transport=udp")],
+                username: "alice".into(),
+                password: "invalid".into(),
+            }],
+            ice_transport_policy: IceTransportPolicy::RelayOnly,
+            ..PeerConfiguration::default()
+        })
+        .unwrap();
+    let mut events = Vec::new();
+    let offer = succeeded(&peer, peer.create_offer(), &mut events).unwrap();
+    succeeded(&peer, peer.set_local_description(offer), &mut events);
+    let description = gathered(&peer, &mut events);
+    assert!(!description.sdp.contains("typ relay"), "{description:?}");
+    assert!(
+        events.iter().any(|event| matches!(event, PeerConnectionEvent::IceCandidateError { url, .. } if url.contains("turn:"))),
+        "TURN authentication failure must surface as an ICE candidate error: {events:#?}"
+    );
+    peer.close().unwrap();
+}
+
+#[test]
 fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
     let (_server, ip, port) = TurnServer::start();
     let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
