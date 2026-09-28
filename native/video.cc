@@ -472,8 +472,8 @@ std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
 
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
     const NativePeerConnection& peer, const NativeVideoTrack& track,
-    std::uint8_t direction, std::uint8_t& error_type,
-    rust::String& error) noexcept {
+    std::uint8_t direction, rust::Slice<const rust::String> rids,
+    std::uint8_t& error_type, rust::String& error) noexcept {
   const auto parsed = Direction(direction);
   if (!parsed) {
     error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
@@ -482,6 +482,11 @@ std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
   }
   webrtc::RtpTransceiverInit init;
   init.direction = *parsed;
+  for (const auto& rid : rids) {
+    webrtc::RtpEncodingParameters encoding;
+    encoding.rid = std::string(rid);
+    init.send_encodings.push_back(std::move(encoding));
+  }
   auto result = peer.peer()->AddTransceiver(track.state()->track, init);
   if (!result.ok()) {
     SetError(result.error(), error_type, error);

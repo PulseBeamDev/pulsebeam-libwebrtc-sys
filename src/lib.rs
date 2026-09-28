@@ -595,6 +595,7 @@ mod ffi {
             peer: &NativePeerConnection,
             track: &NativeVideoTrack,
             direction: u8,
+            rids: &[String],
             error_type: &mut u8,
             error: &mut String,
         ) -> UniquePtr<NativeRtpTransceiver>;

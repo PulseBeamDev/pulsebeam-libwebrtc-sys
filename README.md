@@ -366,6 +366,13 @@ active sending video stream. An empty RID list targets all encodings; invalid
 RIDs fail. Success means that the request was accepted, not that a keyframe
 was emitted or that received video can be requested through this API.
 
+`PeerConnection::add_video_transceiver_with_rids` configures explicit,
+unique encoding RIDs before negotiation. Invalid RID identifiers and duplicate
+RIDs fail before modifying the peer; upstream validation may reject additional
+combinations. An empty list retains the default single encoding. Creation
+configures identity, not a guarantee that the selected codec can emit every
+encoding or that simulcast is negotiated with a remote peer.
+
 A video transceiver's `RtpSender::parameters()` returns an owned encoding
 snapshot. Edit `encodings` and pass the snapshot to `set_parameters()` on the
 same sender handle. Supported fields are active state, maximum bitrate and

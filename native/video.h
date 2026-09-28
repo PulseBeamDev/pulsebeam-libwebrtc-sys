@@ -132,8 +132,8 @@ std::unique_ptr<NativeRtpTransceiver> transceiver_list_at(
     const NativeTransceiverList& list, std::size_t index) noexcept;
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
     const NativePeerConnection& peer, const NativeVideoTrack& track,
-    std::uint8_t direction, std::uint8_t& error_type,
-    rust::String& error) noexcept;
+    std::uint8_t direction, rust::Slice<const rust::String> rids,
+    std::uint8_t& error_type, rust::String& error) noexcept;
 bool peer_remove_track(const NativePeerConnection& peer,
                        const NativeRtpSender& sender,
                        std::uint8_t& error_type, rust::String& error) noexcept;

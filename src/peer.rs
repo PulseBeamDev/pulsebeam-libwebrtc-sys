@@ -690,10 +690,37 @@ impl PeerConnection {
         track: &VideoTrack,
         direction: RtpTransceiverDirection,
     ) -> Result<RtpTransceiver, PeerError> {
+        self.add_video_transceiver_with_rids(track, direction, &[])
+    }
+
+    /// Configure outbound video encoding identities before negotiation. An
+    /// empty RID slice uses the upstream default single encoding. RIDs are
+    /// immutable after construction; update bitrate, enabled state, scaling,
+    /// and supported modes through the sender's parameter snapshot instead.
+    pub fn add_video_transceiver_with_rids(
+        &self,
+        track: &VideoTrack,
+        direction: RtpTransceiverDirection,
+        rids: &[String],
+    ) -> Result<RtpTransceiver, PeerError> {
         if !track.is_local_to(&self.inner._factory) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
                 message: "video track must belong to this peer factory".into(),
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        if rids.iter().any(|rid| {
+            rid.len() > 16
+                || rid.is_empty()
+                || !rid.bytes().all(|ch| ch.is_ascii_alphanumeric())
+                || !seen.insert(rid)
+        }) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message:
+                    "video RIDs must be unique ASCII alphanumeric identifiers of 1 to 16 bytes"
+                        .into(),
             });
         }
         let mut error_type = 0;
@@ -702,6 +729,7 @@ impl PeerConnection {
             self.inner.native(),
             track.native(),
             direction as u8,
+            rids,
             &mut error_type,
             &mut message,
         );

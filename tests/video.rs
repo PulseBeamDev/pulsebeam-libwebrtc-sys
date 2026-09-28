@@ -782,6 +782,50 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
 }
 
 #[test]
+fn video_rids_are_validated_and_fixed_before_negotiation() {
+    let pair = Pair::new(Arc::new(Counters::default()), false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("rid-track", &source)
+        .unwrap();
+    for rids in [
+        vec!["f".into(), "f".into()],
+        vec!["".into()],
+        vec!["rid-too-long-for-rtp".into()],
+        vec!["bad rid".into()],
+    ] {
+        assert_eq!(
+            pair.alice
+                .add_video_transceiver_with_rids(&track, RtpTransceiverDirection::SendOnly, &rids,)
+                .unwrap_err()
+                .kind,
+            PeerErrorKind::InvalidParameter,
+        );
+    }
+    assert!(pair.alice.video_transceivers().unwrap().is_empty());
+    let transceiver = pair
+        .alice
+        .add_video_transceiver_with_rids(
+            &track,
+            RtpTransceiverDirection::SendOnly,
+            &["f".into(), "h".into()],
+        )
+        .unwrap();
+    let snapshot = transceiver.sender().parameters().unwrap();
+    assert_eq!(
+        snapshot
+            .encodings
+            .iter()
+            .map(|entry| entry.rid.as_str())
+            .collect::<Vec<_>>(),
+        vec!["f", "h"]
+    );
+    assert!(snapshot.encodings.iter().all(|entry| entry.active));
+    assert_eq!(pair.alice.video_transceivers().unwrap().len(), 1);
+}
+
+#[test]
 fn sender_encoding_updates_preserve_transaction_and_validate_values() {
     let counters = Arc::new(Counters::default());
     let pair = Pair::new(counters, false);
