@@ -325,8 +325,9 @@ accepted per request. Take each snapshot event before requesting another.
 Upstream RTT and jitter values are seconds; available/target bitrates are
 bits per second. Metrics that WebRTC did not supply remain `None`.
 
-`PeerConnection::video_transceivers()` returns owned video-only handles from a
-snapshot of upstream transceivers. `mid()` is absent before negotiation and
+`PeerConnection::video_transceivers()`, `video_senders()`, and
+`video_receivers()` return owned video-only handles from snapshots of upstream
+transceivers. `mid()` is absent before negotiation and
 may become absent after rollback. `stop()` initiates standard stopping; a
 subsequent negotiation completes it, after which upstream removes the
 transceiver from enumeration. An existing handle remains readable.

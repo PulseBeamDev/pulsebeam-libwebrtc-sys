@@ -634,6 +634,24 @@ impl PeerConnection {
             .collect()
     }
 
+    /// Returns video sender handles for the current transceiver snapshot.
+    pub fn video_senders(&self) -> Result<Vec<RtpSender>, PeerError> {
+        Ok(self
+            .video_transceivers()?
+            .into_iter()
+            .map(|transceiver| transceiver.sender())
+            .collect())
+    }
+
+    /// Returns video receiver handles for the current transceiver snapshot.
+    pub fn video_receivers(&self) -> Result<Vec<RtpReceiver>, PeerError> {
+        Ok(self
+            .video_transceivers()?
+            .into_iter()
+            .map(|transceiver| transceiver.receiver())
+            .collect())
+    }
+
     pub fn add_video_transceiver(
         &self,
         track: &VideoTrack,

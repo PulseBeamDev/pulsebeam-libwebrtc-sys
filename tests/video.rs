@@ -558,6 +558,8 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
         .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap();
     assert_eq!(pair.alice.video_transceivers().unwrap().len(), 1);
+    assert_eq!(pair.alice.video_senders().unwrap().len(), 1);
+    assert_eq!(pair.alice.video_receivers().unwrap().len(), 1);
     assert_eq!(transceiver.mid(), None);
     pair.negotiate();
     let mid = transceiver.mid().expect("negotiated video MID");
@@ -565,9 +567,14 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
     assert_eq!(local.len(), 1);
     assert_eq!(local[0].mid().as_deref(), Some(mid.as_str()));
     assert_eq!(local[0].sender().track().unwrap().id(), "enumerated");
+    assert_eq!(
+        pair.alice.video_senders().unwrap()[0].id(),
+        transceiver.sender().id()
+    );
     let remote = pair.bob.video_transceivers().unwrap();
     assert_eq!(remote.len(), 1);
     assert_eq!(remote[0].mid().as_deref(), Some(mid.as_str()));
+    assert_eq!(pair.bob.video_receivers().unwrap().len(), 1);
     transceiver.stop().unwrap();
     // Stopping without an ICE restart reuses the completed gathering generation.
     // Exchange the resulting gathered SDP; no per-candidate forwarding occurs.
@@ -603,6 +610,8 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
     // Upstream removes a fully stopped transceiver from enumeration; an
     // existing owned handle remains readable for the final state.
     assert!(pair.alice.video_transceivers().unwrap().is_empty());
+    assert!(pair.alice.video_senders().unwrap().is_empty());
+    assert!(pair.alice.video_receivers().unwrap().is_empty());
     pair.alice.close().unwrap();
     assert!(pair.alice.video_transceivers().is_err());
     assert!(transceiver.stop().is_err());
