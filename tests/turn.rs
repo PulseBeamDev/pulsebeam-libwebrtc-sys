@@ -3,7 +3,7 @@
 
 use std::{
     fs,
-    net::{IpAddr, TcpListener, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv6Addr, TcpListener, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -34,6 +34,10 @@ impl TurnServer {
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
         socket.connect("192.0.2.1:9").unwrap();
         let ip = socket.local_addr().unwrap().ip();
+        Self::start_on(ip, cert_and_key)
+    }
+
+    fn start_on(ip: IpAddr, cert_and_key: Option<(&Path, &Path)>) -> (Self, IpAddr, u16) {
         let port = TcpListener::bind((ip, 0))
             .unwrap()
             .local_addr()
@@ -68,6 +72,11 @@ impl TurnServer {
             ]);
         } else {
             command.args(["--no-tls", "--no-dtls"]);
+        }
+        if ip.is_ipv6() {
+            // TURN defaults unqualified allocations to IPv4, even when the
+            // client and relay interface are IPv6. Match this fixture's relay.
+            command.arg("--allocation-default-address-family=ipv6");
         }
         let child = command
             .stdin(Stdio::null())
@@ -284,6 +293,79 @@ fn gathered(peer: &PeerConnection, events: &mut Vec<PeerConnectionEvent>) -> Ses
             None
         }
     })
+}
+
+// Run explicitly on a Linux host with a routable global IPv6 interface.
+// Unlike the STUN simulation, this exercises WebRTC's production interfaces.
+#[test]
+#[ignore = "requires a real globally addressed IPv6 interface; run with --ignored"]
+fn relay_only_ipv6_udp_with_gathered_sdp() {
+    let interfaces = fs::read_to_string("/proc/net/if_inet6").expect("Linux IPv6 interfaces");
+    let ip = interfaces
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .find(|hex| hex.starts_with('2') || hex.starts_with('3'))
+        .map(|hex| Ipv6Addr::from(u128::from_str_radix(hex, 16).unwrap()))
+        .expect("a global IPv6 interface is required for production IPv6 qualification");
+    let (_server, ip, port) = TurnServer::start_on(ip.into(), None);
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let config = PeerConfiguration {
+        ice_servers: vec![IceServer {
+            urls: vec![format!("turn:[{ip}]:{port}?transport=udp")],
+            username: "alice".into(),
+            password: "secret".into(),
+        }],
+        ice_transport_policy: IceTransportPolicy::RelayOnly,
+        ..PeerConfiguration::default()
+    };
+    let mut alice = factory.create_peer_connection(config.clone()).unwrap();
+    let mut bob = factory.create_peer_connection(config).unwrap();
+    let mut alice_events = Vec::new();
+    let mut bob_events = Vec::new();
+    let offer = succeeded(&alice, alice.create_offer(), &mut alice_events).unwrap();
+    succeeded(
+        &alice,
+        alice.set_local_description(offer),
+        &mut alice_events,
+    );
+    let gathered_offer = gathered(&alice, &mut alice_events);
+    assert!(
+        gathered_offer.sdp.contains("typ relay"),
+        "IPv6 relay gathering failed: {alice_events:#?}"
+    );
+    assert!(gathered_offer.sdp.contains(&ip.to_string()));
+    succeeded(
+        &bob,
+        bob.set_remote_description(gathered_offer),
+        &mut bob_events,
+    );
+    let answer = succeeded(&bob, bob.create_answer(), &mut bob_events).unwrap();
+    succeeded(&bob, bob.set_local_description(answer), &mut bob_events);
+    let gathered_answer = gathered(&bob, &mut bob_events);
+    assert!(
+        gathered_answer.sdp.contains("typ relay"),
+        "{}",
+        gathered_answer.sdp
+    );
+    succeeded(
+        &alice,
+        alice.set_remote_description(gathered_answer),
+        &mut alice_events,
+    );
+    wait_for(
+        &alice,
+        "IPv6 relay connection",
+        &mut alice_events,
+        |event| {
+            matches!(
+                event,
+                PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
+            )
+            .then_some(())
+        },
+    );
+    alice.close().unwrap();
+    bob.close().unwrap();
 }
 
 #[test]

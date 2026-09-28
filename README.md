@@ -331,7 +331,14 @@ simulated IPv4 and IPv6 STUN Binding responses represented as server-reflexive
 candidates in gathered SDP, authenticated TURN UDP/TCP relay through a local
 hostname-resolved coturn fixture, authenticated TURN/TLS relay using an
 additional fixture CA, rollback and pending/current SDP transitions, and
-Rust-only linking. They do **not** yet qualify production IPv6 routing.
+Rust-only linking. An explicitly invoked IPv6 coturn fixture also verifies
+relay-only UDP connection over the host's global IPv6 interface, using gathered
+SDP rather than individual candidate forwarding. This is host-dependent, so the
+IPv6 test is ignored by the default suite and fails explicitly without a global
+IPv6 interface. Run it inside the Linux runtime image with `cargo test --test turn
+relay_only_ipv6_udp_with_gathered_sdp -- --ignored`, setting the same artifact,
+Cargo home, and target-directory environment as `_runtime-test`. This establishes
+one real Linux IPv6 path, not qualification for all production networks.
 The UDP fixture checks that bad TURN credentials produce no relay candidate and
 report a candidate error. The TLS fixture rejects an untrusted CA and a
 hostname mismatch. Terminating the TCP relay after connection exposes
