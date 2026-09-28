@@ -47,9 +47,9 @@ pub use peer::{
     SignalingState, TransportStats,
 };
 pub use video::{
-    RtpReceiver, RtpSender, RtpSenderEncoding, RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, VideoCodecCapability, VideoSink, VideoSource, VideoSourceState,
-    VideoTrack, VideoTrackState,
+    EncodedReceivedVideoFrame, EncodedVideoSink, RtpReceiver, RtpSender, RtpSenderEncoding,
+    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability, VideoSink,
+    VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -258,6 +258,16 @@ mod ffi {
         fn decoder_get_info(decoder: &RustVideoDecoder) -> FfiDecoderInfo;
     }
 
+    struct FfiEncodedVideoFrame {
+        available: bool,
+        data: Vec<u8>,
+        mime_type: String,
+        rtp_timestamp: u32,
+        ssrc: u32,
+        payload_type: u8,
+        key_frame: bool,
+    }
+
     unsafe extern "C++" {
         include!("pulsebeam-webrtc-sys/native/probe.h");
         include!("pulsebeam-webrtc-sys/native/execution.h");
@@ -294,6 +304,7 @@ mod ffi {
         type NativeVideoSource;
         type NativeVideoTrack;
         type NativeVideoSink;
+        type NativeEncodedVideoSink;
         type NativeRtpSender;
         type NativeRtpReceiver;
         type NativeRtpTransceiver;
@@ -663,6 +674,13 @@ mod ffi {
         fn rtp_sender_clear_track(sender: &NativeRtpSender) -> bool;
         fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
         fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;
+        fn rtp_receiver_attach_encoded_video_sink(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+        ) -> UniquePtr<NativeEncodedVideoSink>;
+        fn encoded_video_sink_take_frame(sink: &NativeEncodedVideoSink) -> FfiEncodedVideoFrame;
+        fn encoded_video_sink_dropped_frames(sink: &NativeEncodedVideoSink) -> u64;
+        fn close_encoded_video_sink(sink: &NativeEncodedVideoSink) -> bool;
     }
 }
 

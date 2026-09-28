@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "api/scoped_refptr.h"
 #include "rust/cxx.h"
@@ -58,6 +59,8 @@ class NativePeerConnection final {
   const std::unique_ptr<State>& state() const noexcept;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer() const noexcept;
   webrtc::Thread* signaling_thread() const noexcept;
+  webrtc::Thread* worker_thread() const noexcept;
+  bool reserve_encoded_receiver(const std::string& id) const noexcept;
 
  private:
   std::unique_ptr<State> state_;

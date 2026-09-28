@@ -591,8 +591,74 @@ impl RtpReceiver {
         (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
     }
 
+    /// Consume depacketized encoded video before decoding. Only one sink can
+    /// ever be attached to each receiver during a peer's lifetime. Closing
+    /// the sink restores pass-through decoding; it cannot be reattached.
+    pub fn attach_encoded_sink(&self) -> Result<EncodedVideoSink, PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let native = ffi::rtp_receiver_attach_encoded_video_sink(self.peer.native(), self.native());
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "receiver is foreign or already has an encoded sink".into(),
+            });
+        }
+        Ok(EncodedVideoSink {
+            native,
+            _peer: self.peer.clone(),
+        })
+    }
+
     fn native(&self) -> &ffi::NativeRtpReceiver {
         self.native.as_ref().expect("validated RTP receiver")
+    }
+}
+
+/// An encoded access unit after RTP reassembly, before WebRTC decoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedReceivedVideoFrame {
+    pub data: Vec<u8>,
+    pub mime_type: String,
+    pub rtp_timestamp: u32,
+    pub ssrc: u32,
+    pub payload_type: u8,
+    pub key_frame: bool,
+}
+
+/// A bounded receive-only queue, exclusive to one receiver. A full queue
+/// discards the oldest frame. A frame too large for the 4 MiB cap is dropped.
+/// No transformed frame is forwarded to the built-in decoder while active.
+pub struct EncodedVideoSink {
+    native: cxx::UniquePtr<ffi::NativeEncodedVideoSink>,
+    _peer: Rc<PeerInner>,
+}
+
+impl EncodedVideoSink {
+    pub fn try_next_frame(&self) -> Option<EncodedReceivedVideoFrame> {
+        let frame =
+            ffi::encoded_video_sink_take_frame(self.native.as_ref().expect("validated sink"));
+        frame.available.then_some(EncodedReceivedVideoFrame {
+            data: frame.data,
+            mime_type: frame.mime_type,
+            rtp_timestamp: frame.rtp_timestamp,
+            ssrc: frame.ssrc,
+            payload_type: frame.payload_type,
+            key_frame: frame.key_frame,
+        })
+    }
+
+    /// Saturating count of dropped access units, including oversize frames.
+    pub fn dropped_frames(&self) -> u64 {
+        ffi::encoded_video_sink_dropped_frames(self.native.as_ref().expect("validated sink"))
+    }
+
+    pub fn close(&mut self) {
+        ffi::close_encoded_video_sink(self.native.as_ref().expect("validated sink"));
     }
 }
 

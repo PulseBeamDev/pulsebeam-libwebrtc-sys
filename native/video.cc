@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/frame_transformer_interface.h"
 #include "api/make_ref_counted.h"
 #include "api/media_stream_interface.h"
 #include "api/peer_connection_interface.h"
@@ -122,6 +123,107 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   bool active_ = true;
 };
 
+// Receive-side transformer consumes encoded frames before the decoder. When
+// deactivated, future frames pass through to the upstream decoder instead.
+// Keep one transformer per receiver lifetime: replacing upstream's delegate
+// does not reset the old callback registration in this pinned revision.
+class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
+ public:
+  void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
+    {
+      std::lock_guard lock(mutex_);
+      if (active_ && frame->GetDirection() ==
+                         webrtc::TransformableFrameInterface::Direction::kReceiver) {
+        auto* video = static_cast<webrtc::TransformableVideoFrameInterface*>(frame.get());
+        const auto data = frame->GetData();
+        if (data.size() > kMaxBytes) {
+          Lost();
+          return;
+        }
+        while (!frames_.empty() &&
+               (frames_.size() >= kMaxFrames || queued_bytes_ > kMaxBytes - data.size())) {
+          queued_bytes_ -= frames_.front().data.size();
+          frames_.pop_front();
+          Lost();
+        }
+        StoredFrame snapshot;
+        snapshot.data.assign(data.begin(), data.end());
+        snapshot.mime_type = frame->GetMimeType();
+        snapshot.rtp_timestamp = frame->GetTimestamp();
+        snapshot.ssrc = frame->GetSsrc();
+        snapshot.payload_type = frame->GetPayloadType();
+        snapshot.key_frame = video->IsKeyFrame();
+        queued_bytes_ += snapshot.data.size();
+        frames_.push_back(std::move(snapshot));
+        return;
+      }
+      const auto it = callbacks_.find(frame->GetSsrc());
+      if (it != callbacks_.end()) callback = it->second;
+    }
+    if (callback) callback->OnTransformedFrame(std::move(frame));
+  }
+
+  void RegisterTransformedFrameSinkCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
+      std::uint32_t ssrc) override {
+    std::lock_guard lock(mutex_);
+    callbacks_[ssrc] = std::move(callback);
+  }
+  void UnregisterTransformedFrameSinkCallback(std::uint32_t ssrc) override {
+    std::lock_guard lock(mutex_);
+    callbacks_.erase(ssrc);
+  }
+
+  FfiEncodedVideoFrame Take() {
+    std::lock_guard lock(mutex_);
+    FfiEncodedVideoFrame result{};
+    if (frames_.empty()) return result;
+    auto frame = std::move(frames_.front());
+    frames_.pop_front();
+    queued_bytes_ -= frame.data.size();
+    result.available = true;
+    for (auto byte : frame.data) result.data.push_back(byte);
+    result.mime_type = frame.mime_type;
+    result.rtp_timestamp = frame.rtp_timestamp;
+    result.ssrc = frame.ssrc;
+    result.payload_type = frame.payload_type;
+    result.key_frame = frame.key_frame;
+    return result;
+  }
+  std::uint64_t DroppedFrames() {
+    std::lock_guard lock(mutex_);
+    return dropped_frames_;
+  }
+  void Deactivate() {
+    std::lock_guard lock(mutex_);
+    active_ = false;
+    frames_.clear();
+    queued_bytes_ = 0;
+  }
+
+ private:
+  void Lost() {
+    if (dropped_frames_ != std::numeric_limits<std::uint64_t>::max()) ++dropped_frames_;
+  }
+  struct StoredFrame {
+    std::vector<std::uint8_t> data;
+    std::string mime_type;
+    std::uint32_t rtp_timestamp = 0;
+    std::uint32_t ssrc = 0;
+    std::uint8_t payload_type = 0;
+    bool key_frame = false;
+  };
+  static constexpr std::size_t kMaxFrames = 4;
+  static constexpr std::size_t kMaxBytes = 4 * 1024 * 1024;
+  std::mutex mutex_;
+  std::map<std::uint32_t, webrtc::scoped_refptr<webrtc::TransformedFrameCallback>> callbacks_;
+  std::deque<StoredFrame> frames_;
+  std::size_t queued_bytes_ = 0;
+  std::uint64_t dropped_frames_ = 0;
+  bool active_ = true;
+};
+
 std::optional<webrtc::RtpTransceiverDirection> Direction(std::uint8_t value) {
   if (value > static_cast<std::uint8_t>(
                   webrtc::RtpTransceiverDirection::kInactive)) {
@@ -180,6 +282,10 @@ struct NativeVideoTrack::State {
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
 };
 
+struct NativeEncodedVideoSink::State {
+  webrtc::scoped_refptr<EncodedFrameCollector> collector;
+};
+
 struct NativeVideoSink::State {
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
   std::unique_ptr<FrameSink> sink;
@@ -221,6 +327,16 @@ NativeVideoTrack::NativeVideoTrack(std::unique_ptr<State> state) noexcept
 NativeVideoTrack::~NativeVideoTrack() = default;
 const std::unique_ptr<NativeVideoTrack::State>&
 NativeVideoTrack::state() const noexcept {
+  return state_;
+}
+
+NativeEncodedVideoSink::NativeEncodedVideoSink(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeEncodedVideoSink::~NativeEncodedVideoSink() {
+  close_encoded_video_sink(*this);
+}
+const std::unique_ptr<NativeEncodedVideoSink::State>&
+NativeEncodedVideoSink::state() const noexcept {
   return state_;
 }
 
@@ -458,6 +574,35 @@ std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
   auto state = std::make_unique<NativeRtpTransceiver::State>();
   state->transceiver = std::move(transceiver);
   return std::make_unique<NativeRtpTransceiver>(std::move(state));
+}
+
+std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {
+  if (!peer.worker_thread()) return nullptr;
+  // Receiver handles may outlive their original peer or come from another peer.
+  const auto receivers = peer.peer()->GetReceivers();
+  if (std::find(receivers.begin(), receivers.end(), receiver.state()->receiver) ==
+      receivers.end()) return nullptr;
+  if (!peer.reserve_encoded_receiver(receiver.state()->receiver->id())) return nullptr;
+  auto state = std::make_unique<NativeEncodedVideoSink::State>();
+  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>();
+  peer.worker_thread()->BlockingCall([&] {
+    receiver.state()->receiver->SetFrameTransformer(state->collector);
+  });
+  return std::make_unique<NativeEncodedVideoSink>(std::move(state));
+}
+
+FfiEncodedVideoFrame encoded_video_sink_take_frame(
+    const NativeEncodedVideoSink& sink) noexcept {
+  return sink.state()->collector->Take();
+}
+std::uint64_t encoded_video_sink_dropped_frames(
+    const NativeEncodedVideoSink& sink) noexcept {
+  return sink.state()->collector->DroppedFrames();
+}
+bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept {
+  sink.state()->collector->Deactivate();
+  return true;
 }
 
 std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(

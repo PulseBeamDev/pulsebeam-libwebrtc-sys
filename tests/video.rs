@@ -627,6 +627,37 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert_eq!(counters.encode.load(Ordering::SeqCst), 1);
     assert_eq!(counters.encoder_rotation.load(Ordering::SeqCst), 90);
     assert_eq!(counters.decode.load(Ordering::SeqCst), 1);
+
+    let mut encoded_sink = receiver.attach_encoded_sink().unwrap();
+    assert!(receiver.attach_encoded_sink().is_err());
+    let second = VideoFrame::i420(16, 16, synthetic_i420(16, 16), 3_000_000, 180_000).unwrap();
+    source.push_frame(&second).unwrap();
+    let encoded = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            encoded_sink.try_next_frame()
+        })
+        .expect("encoded receive frame was not intercepted");
+    assert!(!encoded.data.is_empty());
+    assert!(encoded.mime_type.eq_ignore_ascii_case("video/H264"));
+    assert_ne!(encoded.ssrc, 0);
+    assert!(encoded.key_frame);
+    assert_eq!(counters.decode.load(Ordering::SeqCst), 1);
+    assert_eq!(encoded_sink.dropped_frames(), 0);
+    encoded_sink.close();
+    assert!(encoded_sink.try_next_frame().is_none());
+    assert!(receiver.attach_encoded_sink().is_err());
+    let third = VideoFrame::i420(16, 16, synthetic_i420(16, 16), 4_000_000, 270_000).unwrap();
+    source.push_frame(&third).unwrap();
+    let resumed = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .expect("decoded receive did not resume after closing encoded sink");
+    assert_eq!((resumed.width, resumed.height), (16, 16));
+    assert_eq!(counters.decode.load(Ordering::SeqCst), 2);
+    drop(encoded_sink);
     drop(sink);
     drop(remote_track);
     drop(receiver);

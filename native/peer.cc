@@ -615,6 +615,7 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
 struct NativePeerConnectionFactory::State {
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   webrtc::Thread* signaling_thread = nullptr;
+  webrtc::Thread* worker_thread = nullptr;
 };
 
 struct NativePeerConnection::State {
@@ -622,6 +623,8 @@ struct NativePeerConnection::State {
   std::shared_ptr<EventState> events;
   std::unique_ptr<PeerObserver> observer;
   webrtc::Thread* signaling_thread = nullptr;
+  webrtc::Thread* worker_thread = nullptr;
+  std::set<std::string> encoded_receiver_ids;
   bool closed = false;
 };
 
@@ -666,6 +669,13 @@ NativePeerConnection::peer() const noexcept {
 }
 webrtc::Thread* NativePeerConnection::signaling_thread() const noexcept {
   return state_->signaling_thread;
+}
+webrtc::Thread* NativePeerConnection::worker_thread() const noexcept {
+  return state_->worker_thread;
+}
+bool NativePeerConnection::reserve_encoded_receiver(
+    const std::string& id) const noexcept {
+  return !state_->closed && state_->encoded_receiver_ids.insert(id).second;
 }
 
 std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
@@ -737,6 +747,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   auto state = std::make_unique<NativePeerConnectionFactory::State>();
   state->factory = std::move(factory);
   state->signaling_thread = signaling_thread.thread();
+  state->worker_thread = worker_thread.thread();
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
 }
 
@@ -841,6 +852,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   state->events = std::move(events);
   state->observer = std::move(observer);
   state->signaling_thread = factory.state()->signaling_thread;
+  state->worker_thread = factory.state()->worker_thread;
   return std::make_unique<NativePeerConnection>(std::move(state));
 }
 

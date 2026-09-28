@@ -20,6 +20,7 @@ class NativeVideoFrame;
 struct FfiSenderParameters;
 struct FfiCodecFormat;
 struct FfiVideoCodecCapability;
+struct FfiEncodedVideoFrame;
 
 class NativeVideoSource final {
  public:
@@ -37,6 +38,17 @@ class NativeVideoTrack final {
   struct State;
   explicit NativeVideoTrack(std::unique_ptr<State> state) noexcept;
   ~NativeVideoTrack();
+  const std::unique_ptr<State>& state() const noexcept;
+
+ private:
+  std::unique_ptr<State> state_;
+};
+
+class NativeEncodedVideoSink final {
+ public:
+  struct State;
+  explicit NativeEncodedVideoSink(std::unique_ptr<State> state) noexcept;
+  ~NativeEncodedVideoSink();
   const std::unique_ptr<State>& state() const noexcept;
 
  private:
@@ -143,6 +155,14 @@ std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
     const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept;
 std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) noexcept;
+std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
+FfiEncodedVideoFrame encoded_video_sink_take_frame(
+    const NativeEncodedVideoSink& sink) noexcept;
+std::uint64_t encoded_video_sink_dropped_frames(
+    const NativeEncodedVideoSink& sink) noexcept;
+bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept;
+
 std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
     webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) noexcept;
 std::unique_ptr<NativeRtpSender> rtp_transceiver_sender(

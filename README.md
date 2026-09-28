@@ -361,6 +361,13 @@ preferences restore upstream defaults; unknown or repeated profiles fail.
 Discovery includes resiliency codecs such as RTX, and does not install missing
 H.264 encoder or decoder implementations.
 
+`RtpReceiver::attach_encoded_sink()` exclusively intercepts depacketized
+encoded video access units before decoding. Its bounded four-frame/4 MiB queue
+reports drops. Closing the sink clears queued frames and resumes normal
+WebRTC decoding; this pinned upstream receiver cannot safely be attached a
+second time, even after close. This is a receive-only access-unit API, not a
+raw RTP payload or direct encoded sender input.
+
 `RtpSender::request_keyframe(&rids)` submits a keyframe request for an
 active sending video stream. An empty RID list targets all encodings; invalid
 RIDs fail. Success means that the request was accepted, not that a keyframe
