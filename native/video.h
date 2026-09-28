@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -73,6 +74,17 @@ class NativeRtpReceiver final {
   std::unique_ptr<State> state_;
 };
 
+class NativeTransceiverList final {
+ public:
+  struct State;
+  explicit NativeTransceiverList(std::unique_ptr<State> state) noexcept;
+  ~NativeTransceiverList();
+  const std::unique_ptr<State>& state() const noexcept;
+
+ private:
+  std::unique_ptr<State> state_;
+};
+
 class NativeRtpTransceiver final {
  public:
   struct State;
@@ -108,6 +120,11 @@ std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
 std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept;
 bool close_video_sink(const NativeVideoSink& sink) noexcept;
 
+std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
+    const NativePeerConnection& peer) noexcept;
+std::size_t transceiver_list_len(const NativeTransceiverList& list) noexcept;
+std::unique_ptr<NativeRtpTransceiver> transceiver_list_at(
+    const NativeTransceiverList& list, std::size_t index) noexcept;
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
     const NativePeerConnection& peer, const NativeVideoTrack& track,
     std::uint8_t direction, std::uint8_t& error_type,
@@ -133,6 +150,11 @@ std::int8_t rtp_transceiver_current_direction(
     const NativeRtpTransceiver& transceiver) noexcept;
 bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept;
+bool rtp_transceiver_mid(const NativeRtpTransceiver& transceiver,
+                         rust::String& mid) noexcept;
+bool rtp_transceiver_stop(const NativeRtpTransceiver& transceiver,
+                          std::uint8_t& error_type,
+                          rust::String& error) noexcept;
 bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t direction,
                                    std::uint8_t& error_type,

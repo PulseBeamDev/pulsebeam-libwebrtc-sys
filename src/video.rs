@@ -500,6 +500,30 @@ impl RtpTransceiver {
         ffi::rtp_transceiver_stopped(self.native())
     }
 
+    /// The negotiated media ID, absent before negotiation or after rollback.
+    pub fn mid(&self) -> Option<String> {
+        let mut mid = String::new();
+        ffi::rtp_transceiver_mid(self.native(), &mut mid).then_some(mid)
+    }
+
+    /// Start standard transceiver stopping; negotiate again to complete it.
+    pub fn stop(&self) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::rtp_transceiver_stop(self.native(), &mut error_type, &mut message)
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: error_kind(error_type),
+                message,
+            })
+    }
+
     pub fn set_direction(&self, direction: RtpTransceiverDirection) -> Result<(), PeerError> {
         let mut error_type = 0;
         let mut message = String::new();

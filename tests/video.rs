@@ -478,6 +478,70 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
 }
 
 #[test]
+fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
+    let counters = Arc::new(Counters::default());
+    let mut pair = Pair::new(counters, false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("enumerated", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    assert_eq!(pair.alice.video_transceivers().unwrap().len(), 1);
+    assert_eq!(transceiver.mid(), None);
+    pair.negotiate();
+    let mid = transceiver.mid().expect("negotiated video MID");
+    let local = pair.alice.video_transceivers().unwrap();
+    assert_eq!(local.len(), 1);
+    assert_eq!(local[0].mid().as_deref(), Some(mid.as_str()));
+    assert_eq!(local[0].sender().track().unwrap().id(), "enumerated");
+    let remote = pair.bob.video_transceivers().unwrap();
+    assert_eq!(remote.len(), 1);
+    assert_eq!(remote[0].mid().as_deref(), Some(mid.as_str()));
+    transceiver.stop().unwrap();
+    // Stopping without an ICE restart reuses the completed gathering generation.
+    // Exchange the resulting gathered SDP; no per-candidate forwarding occurs.
+    let mut alice_events = Vec::new();
+    let mut bob_events = Vec::new();
+    let offer = completion_description(&pair.alice, pair.alice.create_offer(), &mut alice_events);
+    completion(
+        &pair.alice,
+        pair.alice.set_local_description(offer),
+        &mut alice_events,
+    );
+    let gathered = pair.alice.descriptions().unwrap().pending_local.unwrap();
+    assert!(gathered.sdp.contains("a=candidate:"));
+    completion(
+        &pair.bob,
+        pair.bob.set_remote_description(gathered),
+        &mut bob_events,
+    );
+    let answer = completion_description(&pair.bob, pair.bob.create_answer(), &mut bob_events);
+    completion(
+        &pair.bob,
+        pair.bob.set_local_description(answer),
+        &mut bob_events,
+    );
+    let gathered = pair.bob.descriptions().unwrap().current_local.unwrap();
+    assert!(gathered.sdp.contains("a=candidate:"));
+    completion(
+        &pair.alice,
+        pair.alice.set_remote_description(gathered),
+        &mut alice_events,
+    );
+    assert!(transceiver.stopped());
+    // Upstream removes a fully stopped transceiver from enumeration; an
+    // existing owned handle remains readable for the final state.
+    assert!(pair.alice.video_transceivers().unwrap().is_empty());
+    pair.alice.close().unwrap();
+    assert!(pair.alice.video_transceivers().is_err());
+    assert!(transceiver.stop().is_err());
+}
+
+#[test]
 fn sender_encoding_updates_preserve_transaction_and_validate_values() {
     let counters = Arc::new(Counters::default());
     let pair = Pair::new(counters, false);

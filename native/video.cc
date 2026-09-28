@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "api/make_ref_counted.h"
 #include "api/media_stream_interface.h"
@@ -170,6 +171,10 @@ struct NativeRtpReceiver::State {
 
 struct NativeRtpTransceiver::State {
   webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver;
+};
+
+struct NativeTransceiverList::State {
+  std::vector<webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> transceivers;
 };
 
 NativeVideoSource::NativeVideoSource(std::unique_ptr<State> state) noexcept
@@ -353,6 +358,38 @@ bool close_video_sink(const NativeVideoSink& sink) noexcept {
   return true;
 }
 
+NativeTransceiverList::NativeTransceiverList(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeTransceiverList::~NativeTransceiverList() = default;
+const std::unique_ptr<NativeTransceiverList::State>&
+NativeTransceiverList::state() const noexcept { return state_; }
+
+std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
+    const NativePeerConnection& peer) noexcept {
+  if (!peer.peer()) {
+    return nullptr;
+  }
+  auto state = std::make_unique<NativeTransceiverList::State>();
+  for (auto& transceiver : peer.peer()->GetTransceivers()) {
+    if (transceiver && transceiver->media_type() == webrtc::MediaType::VIDEO) {
+      state->transceivers.push_back(std::move(transceiver));
+    }
+  }
+  return std::make_unique<NativeTransceiverList>(std::move(state));
+}
+
+std::size_t transceiver_list_len(const NativeTransceiverList& list) noexcept {
+  return list.state()->transceivers.size();
+}
+
+std::unique_ptr<NativeRtpTransceiver> transceiver_list_at(
+    const NativeTransceiverList& list, std::size_t index) noexcept {
+  if (index >= list.state()->transceivers.size()) {
+    return nullptr;
+  }
+  return wrap_rtp_transceiver(list.state()->transceivers[index]);
+}
+
 std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) noexcept {
   if (!transceiver) {
@@ -431,6 +468,27 @@ std::int8_t rtp_transceiver_current_direction(
 bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept {
   return transceiver.state()->transceiver->stopped();
+}
+
+bool rtp_transceiver_mid(const NativeRtpTransceiver& transceiver,
+                         rust::String& mid) noexcept {
+  const auto value = transceiver.state()->transceiver->mid();
+  if (!value) {
+    return false;
+  }
+  mid = *value;
+  return true;
+}
+
+bool rtp_transceiver_stop(const NativeRtpTransceiver& transceiver,
+                          std::uint8_t& error_type,
+                          rust::String& error) noexcept {
+  auto result = transceiver.state()->transceiver->StopStandard();
+  if (!result.ok()) {
+    SetError(result, error_type, error);
+    return false;
+  }
+  return true;
 }
 
 bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,

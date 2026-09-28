@@ -535,6 +535,7 @@ impl PeerConnectionFactory {
                 inner: Rc::new(PeerInner {
                     native,
                     _factory: self.0.clone(),
+                    closed: Cell::new(false),
                 }),
                 next_operation_id: Cell::new(1),
             })
@@ -594,9 +595,38 @@ pub struct PeerConnection {
 pub(crate) struct PeerInner {
     native: cxx::UniquePtr<ffi::NativePeerConnection>,
     _factory: Rc<FactoryInner>,
+    pub(crate) closed: Cell<bool>,
 }
 
 impl PeerConnection {
+    /// Returns a stable snapshot of this peer's video transceivers.
+    pub fn video_transceivers(&self) -> Result<Vec<RtpTransceiver>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let list = ffi::peer_video_transceivers(self.native());
+        let list = list.as_ref().ok_or_else(|| PeerError {
+            kind: PeerErrorKind::InvalidState,
+            message: "video transceivers are unavailable".into(),
+        })?;
+        (0..ffi::transceiver_list_len(list))
+            .map(|index| {
+                let native = ffi::transceiver_list_at(list, index);
+                if native.is_null() {
+                    Err(PeerError {
+                        kind: PeerErrorKind::Internal,
+                        message: "invalid video transceiver snapshot".into(),
+                    })
+                } else {
+                    Ok(RtpTransceiver::from_native(native, self.inner.clone()))
+                }
+            })
+            .collect()
+    }
+
     pub fn add_video_transceiver(
         &self,
         track: &VideoTrack,
@@ -744,12 +774,15 @@ impl PeerConnection {
     }
 
     pub fn close(&mut self) -> Result<(), PeerError> {
-        ffi::close_peer_connection(self.native())
-            .then_some(())
-            .ok_or_else(|| PeerError {
+        if ffi::close_peer_connection(self.native()) {
+            self.inner.closed.set(true);
+            Ok(())
+        } else {
+            Err(PeerError {
                 kind: PeerErrorKind::Internal,
                 message: "failed to close peer connection".into(),
             })
+        }
     }
 
     fn next_operation(&self) -> OperationId {

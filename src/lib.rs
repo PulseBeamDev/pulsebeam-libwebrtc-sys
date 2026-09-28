@@ -288,6 +288,7 @@ mod ffi {
         type NativeRtpSender;
         type NativeRtpReceiver;
         type NativeRtpTransceiver;
+        type NativeTransceiverList;
 
         fn bridge_identity() -> &'static str;
 
@@ -567,6 +568,13 @@ mod ffi {
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
         fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;
         fn close_video_sink(sink: &NativeVideoSink) -> bool;
+        fn peer_video_transceivers(peer: &NativePeerConnection)
+        -> UniquePtr<NativeTransceiverList>;
+        fn transceiver_list_len(list: &NativeTransceiverList) -> usize;
+        fn transceiver_list_at(
+            list: &NativeTransceiverList,
+            index: usize,
+        ) -> UniquePtr<NativeRtpTransceiver>;
         fn peer_add_video_transceiver(
             peer: &NativePeerConnection,
             track: &NativeVideoTrack,
@@ -596,6 +604,12 @@ mod ffi {
         fn rtp_transceiver_direction(transceiver: &NativeRtpTransceiver) -> u8;
         fn rtp_transceiver_current_direction(transceiver: &NativeRtpTransceiver) -> i8;
         fn rtp_transceiver_stopped(transceiver: &NativeRtpTransceiver) -> bool;
+        fn rtp_transceiver_mid(transceiver: &NativeRtpTransceiver, mid: &mut String) -> bool;
+        fn rtp_transceiver_stop(
+            transceiver: &NativeRtpTransceiver,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn rtp_transceiver_set_direction(
             transceiver: &NativeRtpTransceiver,
             direction: u8,
