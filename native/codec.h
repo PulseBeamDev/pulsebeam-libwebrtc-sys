@@ -142,6 +142,7 @@ std::int64_t
 native_video_frame_timestamp_us(const NativeVideoFrame &frame) noexcept;
 std::uint32_t
 native_video_frame_rtp_timestamp(const NativeVideoFrame &frame) noexcept;
+std::uint16_t native_video_frame_rotation(const NativeVideoFrame &frame) noexcept;
 rust::Vec<std::uint8_t>
 native_video_frame_i420(const NativeVideoFrame &frame) noexcept;
 std::uint32_t
@@ -165,7 +166,8 @@ bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,
                            std::int64_t timestamp_us,
-                           std::uint32_t rtp_timestamp) noexcept;
+                           std::uint32_t rtp_timestamp,
+                           std::uint16_t rotation) noexcept;
 
 FfiCodecTestResult
 test_codec_roundtrip(const NativeVideoEncoderFactory &encoder,

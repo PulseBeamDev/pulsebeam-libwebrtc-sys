@@ -19,7 +19,7 @@ use pulsebeam_webrtc_sys::{
     VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
-    VideoRateControl, VideoResolution, VideoTrackState,
+    VideoRateControl, VideoResolution, VideoRotation, VideoTrackState,
 };
 
 #[derive(Default)]
@@ -28,6 +28,7 @@ struct Counters {
     encoder_create: AtomicUsize,
     encode: AtomicUsize,
     encoder_release: AtomicUsize,
+    encoder_rotation: AtomicU32,
     decoder_factory: AtomicUsize,
     decoder_create: AtomicUsize,
     decode: AtomicUsize,
@@ -89,6 +90,9 @@ impl VideoEncoder for TestEncoder {
         callback: EncodedImageCallback,
     ) -> Result<(), CodecError> {
         self.0.encode.fetch_add(1, Ordering::SeqCst);
+        self.0
+            .encoder_rotation
+            .store(frame.rotation as u32, Ordering::SeqCst);
         callback.emit(&EncodedVideoFrame {
             // A minimal Annex-B SPS/PPS/IDR sample. The injected decoder owns
             // interpretation; the native H.264 RTP path needs valid framing.
@@ -575,7 +579,9 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
         }
     }
     let packed = VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap();
-    let frame = VideoFrame::nv12(16, 16, packed.to_nv12().unwrap(), 2_000_000, 90_000).unwrap();
+    let frame = VideoFrame::nv12(16, 16, packed.to_nv12().unwrap(), 2_000_000, 90_000)
+        .unwrap()
+        .with_rotation(VideoRotation::Clockwise90);
     source.push_frame(&frame).unwrap();
     assert_eq!(
         local_sink
@@ -619,6 +625,7 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert_eq!(counters.encoder_create.load(Ordering::SeqCst), 1);
     assert_eq!(counters.decoder_create.load(Ordering::SeqCst), 1);
     assert_eq!(counters.encode.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.encoder_rotation.load(Ordering::SeqCst), 90);
     assert_eq!(counters.decode.load(Ordering::SeqCst), 1);
     drop(sink);
     drop(remote_track);

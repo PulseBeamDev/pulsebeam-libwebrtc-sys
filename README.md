@@ -151,7 +151,10 @@ deferred.
 strides and converts to packed I420 before source submission; odd dimensions
 round chroma sizes up. A decoded `VideoFrame` can be converted back into owned,
 packed NV12 planes with `to_nv12()`. Conversions only rearrange bytes, without
-scaling or color-space conversion. Each strided plane must contain exactly
+scaling or color-space conversion. `VideoFrame::with_rotation` attaches
+clockwise 0/90/180/270-degree metadata without rotating pixels; native source
+submission, local sinks, and encoder/decoder callbacks preserve that metadata.
+Each strided plane must contain exactly
 `stride × rows` bytes, including padding after the final row; zero dimensions,
 short/extra buffers, narrow strides, and overflow are rejected.
 

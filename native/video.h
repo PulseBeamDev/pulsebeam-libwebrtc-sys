@@ -106,7 +106,8 @@ bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,
                              std::int64_t timestamp_us,
-                             std::uint32_t rtp_timestamp) noexcept;
+                             std::uint32_t rtp_timestamp,
+                             std::uint16_t rotation) noexcept;
 std::unique_ptr<NativeVideoTrack> create_video_track(
     const NativePeerConnectionFactory& factory,
     const NativeVideoSource& source, rust::Str id) noexcept;

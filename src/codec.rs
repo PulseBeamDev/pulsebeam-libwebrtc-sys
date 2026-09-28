@@ -178,12 +178,35 @@ impl VideoFrameBuffer {
     }
 }
 
+/// Clockwise rotation carried as video frame metadata; pixels are not rotated.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u16)]
+pub enum VideoRotation {
+    #[default]
+    None = 0,
+    Clockwise90 = 90,
+    Clockwise180 = 180,
+    Clockwise270 = 270,
+}
+
+impl VideoRotation {
+    pub(crate) fn from_degrees(degrees: u16) -> Self {
+        match degrees {
+            90 => Self::Clockwise90,
+            180 => Self::Clockwise180,
+            270 => Self::Clockwise270,
+            _ => Self::None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
     pub timestamp_us: i64,
     pub rtp_timestamp: u32,
+    pub rotation: VideoRotation,
     pub buffer: VideoFrameBuffer,
 }
 
@@ -200,6 +223,7 @@ impl VideoFrame {
             height,
             timestamp_us,
             rtp_timestamp,
+            rotation: VideoRotation::None,
             buffer: VideoFrameBuffer::i420(width, height, data)?,
         })
     }
@@ -218,12 +242,18 @@ impl VideoFrame {
             height,
             timestamp_us,
             rtp_timestamp,
+            rotation: VideoRotation::None,
             buffer: VideoFrameBuffer::nv12_strided(width, height, planes.y, planes.uv)?,
         })
     }
 
     pub fn to_nv12(&self) -> Result<Nv12Planes, CodecError> {
         self.buffer.to_nv12(self.width, self.height)
+    }
+
+    pub fn with_rotation(mut self, rotation: VideoRotation) -> Self {
+        self.rotation = rotation;
+        self
     }
 }
 
@@ -411,6 +441,7 @@ impl DecodedImageCallback {
             frame.height,
             frame.timestamp_us,
             frame.rtp_timestamp,
+            frame.rotation as u16,
         )
         .then_some(())
         .ok_or(CodecError::Released)
@@ -860,7 +891,9 @@ pub(crate) fn encoder_encode(
         ffi::native_video_frame_timestamp_us(native),
         ffi::native_video_frame_rtp_timestamp(native),
     ) {
-        Ok(frame) => frame,
+        Ok(frame) => frame.with_rotation(VideoRotation::from_degrees(
+            ffi::native_video_frame_rotation(native),
+        )),
         Err(error) => return status(Err(error)),
     };
     let types: Vec<_> = frame_types

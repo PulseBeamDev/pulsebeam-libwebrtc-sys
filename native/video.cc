@@ -295,10 +295,12 @@ bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,
                              std::int64_t timestamp_us,
-                             std::uint32_t rtp_timestamp) noexcept {
+                             std::uint32_t rtp_timestamp,
+                             std::uint16_t rotation) noexcept {
   if (source.state()->closed.load() || width == 0 || height == 0 ||
       width > static_cast<std::uint32_t>(INT32_MAX) ||
-      height > static_cast<std::uint32_t>(INT32_MAX)) {
+      height > static_cast<std::uint32_t>(INT32_MAX) ||
+      (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) {
     return false;
   }
   const std::size_t chroma_width = (static_cast<std::size_t>(width) + 1) / 2;
@@ -319,6 +321,7 @@ bool video_source_push_frame(const NativeVideoSource& source,
           .set_video_frame_buffer(std::move(buffer))
           .set_timestamp_us(timestamp_us)
           .set_rtp_timestamp(rtp_timestamp)
+          .set_rotation(static_cast<webrtc::VideoRotation>(rotation))
           .build());
   return true;
 }

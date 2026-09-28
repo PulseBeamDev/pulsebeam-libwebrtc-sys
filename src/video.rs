@@ -140,6 +140,7 @@ impl VideoSource {
             frame.height,
             frame.timestamp_us,
             frame.rtp_timestamp,
+            frame.rotation as u16,
         )
         .then_some(())
         .ok_or(CodecError::Released)
@@ -289,7 +290,10 @@ impl VideoSink {
                 ffi::native_video_frame_timestamp_us(native),
                 ffi::native_video_frame_rtp_timestamp(native),
             )
-            .expect("native adapter returned an invalid I420 frame"),
+            .expect("native adapter returned an invalid I420 frame")
+            .with_rotation(crate::VideoRotation::from_degrees(
+                ffi::native_video_frame_rotation(native),
+            )),
         )
     }
 

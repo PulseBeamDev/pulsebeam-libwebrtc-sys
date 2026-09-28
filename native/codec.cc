@@ -34,6 +34,7 @@ namespace pulsebeam::webrtc_sys {
 struct NativeVideoFrame::State {
   std::uint32_t width = 0, height = 0, rtp_timestamp = 0;
   std::int64_t timestamp_us = 0;
+  std::uint16_t rotation = 0;
   std::vector<std::uint8_t> i420;
 };
 struct NativeEncodedVideoFrame::State {
@@ -178,6 +179,7 @@ public:
     state->height = static_cast<std::uint32_t>(frame.height());
     state->timestamp_us = frame.timestamp_us();
     state->rtp_timestamp = frame.rtp_timestamp();
+    state->rotation = static_cast<std::uint16_t>(frame.rotation());
     state->i420 = CopyI420(frame);
     std::vector<std::uint8_t> types;
     if (frame_types != nullptr) {
@@ -377,6 +379,7 @@ wrap_video_frame(const webrtc::VideoFrame &frame) noexcept {
   state->height = static_cast<std::uint32_t>(frame.height());
   state->timestamp_us = frame.timestamp_us();
   state->rtp_timestamp = frame.rtp_timestamp();
+  state->rotation = static_cast<std::uint16_t>(frame.rotation());
   state->i420 = CopyI420(frame);
   return std::make_unique<NativeVideoFrame>(std::move(state));
 }
@@ -573,6 +576,9 @@ std::uint32_t
 native_video_frame_rtp_timestamp(const NativeVideoFrame &frame) noexcept {
   return frame.state().rtp_timestamp;
 }
+std::uint16_t native_video_frame_rotation(const NativeVideoFrame &frame) noexcept {
+  return frame.state().rotation;
+}
 rust::Vec<std::uint8_t>
 native_video_frame_i420(const NativeVideoFrame &frame) noexcept {
   return ToRust(frame.state().i420);
@@ -637,11 +643,13 @@ bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,
                            std::int64_t timestamp_us,
-                           std::uint32_t rtp_timestamp) noexcept {
+                           std::uint32_t rtp_timestamp,
+                           std::uint16_t rotation) noexcept {
   const std::size_t y = static_cast<std::size_t>(width) * height;
   const std::uint32_t cw = (width + 1) / 2, ch = (height + 1) / 2;
   const std::size_t c = static_cast<std::size_t>(cw) * ch;
-  if (width == 0 || height == 0 || data.size() != y + 2 * c)
+  if (width == 0 || height == 0 || data.size() != y + 2 * c ||
+      (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270))
     return false;
   auto state = callback.state();
   std::lock_guard lock(state->mutex);
@@ -654,6 +662,7 @@ bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                    .set_video_frame_buffer(buffer)
                    .set_timestamp_us(timestamp_us)
                    .set_rtp_timestamp(rtp_timestamp)
+                   .set_rotation(static_cast<webrtc::VideoRotation>(rotation))
                    .build();
   return state->callback->Decoded(frame) == 0;
 }

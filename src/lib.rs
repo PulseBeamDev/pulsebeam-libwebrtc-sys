@@ -23,7 +23,7 @@ pub use codec::{
     VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo,
     VideoDecoderSettings, VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle,
     VideoEncoderInfo, VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType,
-    VideoPlane, VideoRateControl, VideoResolution,
+    VideoPlane, VideoRateControl, VideoResolution, VideoRotation,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
@@ -436,6 +436,7 @@ mod ffi {
         fn native_video_frame_height(frame: &NativeVideoFrame) -> u32;
         fn native_video_frame_timestamp_us(frame: &NativeVideoFrame) -> i64;
         fn native_video_frame_rtp_timestamp(frame: &NativeVideoFrame) -> u32;
+        fn native_video_frame_rotation(frame: &NativeVideoFrame) -> u16;
         fn native_video_frame_i420(frame: &NativeVideoFrame) -> Vec<u8>;
         fn native_encoded_frame_width(frame: &NativeEncodedVideoFrame) -> u32;
         fn native_encoded_frame_height(frame: &NativeEncodedVideoFrame) -> u32;
@@ -459,6 +460,7 @@ mod ffi {
             height: u32,
             timestamp_us: i64,
             rtp_timestamp: u32,
+            rotation: u16,
         ) -> bool;
         #[allow(dead_code)]
         fn test_codec_roundtrip(
@@ -563,6 +565,7 @@ mod ffi {
             height: u32,
             timestamp_us: i64,
             rtp_timestamp: u32,
+            rotation: u16,
         ) -> bool;
         fn create_video_track(
             factory: &NativePeerConnectionFactory,
