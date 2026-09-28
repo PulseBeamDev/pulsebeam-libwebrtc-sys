@@ -14,8 +14,8 @@ mod non_trickle;
 use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame,
     Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, RtpTransceiver, RtpTransceiverDirection, SessionDescription,
-    SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
+    PeerConnectionFactory, PeerErrorKind, RtpTransceiver, RtpTransceiverDirection,
+    SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
     VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
     VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
     VideoFrame, VideoFrameType, VideoRateControl, VideoResolution, VideoTrackState,
@@ -489,6 +489,15 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
         received.rtp_timestamp
     );
     assert_eq!(received.buffer.as_bytes(), synthetic_i420(16, 16));
+    let sender = transceiver.sender();
+    assert_eq!(
+        sender
+            .request_keyframe(&["unknown-rid".to_string()])
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::InvalidParameter,
+    );
+    sender.request_keyframe(&[]).unwrap();
     assert!(counters.encoder_factory.load(Ordering::SeqCst) > 0);
     assert!(counters.decoder_factory.load(Ordering::SeqCst) > 0);
     assert_eq!(counters.encoder_create.load(Ordering::SeqCst), 1);
@@ -500,6 +509,7 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     drop(receiver);
     drop(remote);
     drop(local_sink);
+    drop(sender);
     drop(transceiver);
     drop(track);
     drop(source);

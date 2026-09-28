@@ -637,6 +637,13 @@ mod ffi {
             error: &mut String,
         ) -> bool;
         fn rtp_sender_id(sender: &NativeRtpSender) -> String;
+        fn rtp_sender_request_keyframe(
+            sender: &NativeRtpSender,
+            peer: &NativePeerConnection,
+            rids: &[String],
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn rtp_sender_get_parameters(
             sender: &NativeRtpSender,
             parameters: &mut FfiSenderParameters,

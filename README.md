@@ -346,6 +346,11 @@ preferences restore upstream defaults; unknown or repeated profiles fail.
 Discovery includes resiliency codecs such as RTX, and does not install missing
 H.264 encoder or decoder implementations.
 
+`RtpSender::request_keyframe(&rids)` submits a keyframe request for an
+active sending video stream. An empty RID list targets all encodings; invalid
+RIDs fail. Success means that the request was accepted, not that a keyframe
+was emitted or that received video can be requested through this API.
+
 A video transceiver's `RtpSender::parameters()` returns an owned encoding
 snapshot. Edit `encodings` and pass the snapshot to `set_parameters()` on the
 same sender handle. Supported fields are active state, maximum bitrate and

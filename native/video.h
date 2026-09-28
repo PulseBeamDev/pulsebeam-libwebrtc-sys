@@ -168,6 +168,11 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t& error_type,
                                    rust::String& error) noexcept;
 rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept;
+bool rtp_sender_request_keyframe(const NativeRtpSender& sender,
+                                 const NativePeerConnection& peer,
+                                 rust::Slice<const rust::String> rids,
+                                 std::uint8_t& error_type,
+                                 rust::String& error) noexcept;
 bool rtp_sender_get_parameters(const NativeRtpSender& sender,
                                FfiSenderParameters& parameters) noexcept;
 bool rtp_sender_set_parameters(const NativeRtpSender& sender,

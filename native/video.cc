@@ -614,6 +614,31 @@ rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept {
   return sender.state()->sender->id();
 }
 
+bool rtp_sender_request_keyframe(const NativeRtpSender& sender,
+                                 const NativePeerConnection& peer,
+                                 rust::Slice<const rust::String> rids,
+                                 std::uint8_t& error_type,
+                                 rust::String& error) noexcept {
+  if (!peer.peer() || !peer.signaling_thread()) {
+    error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_STATE);
+    error = "peer is unavailable";
+    return false;
+  }
+  std::vector<std::string> names;
+  names.reserve(rids.size());
+  for (const auto& rid : rids) {
+    names.emplace_back(std::string(rid));
+  }
+  const auto result = peer.signaling_thread()->BlockingCall([&] {
+    return sender.state()->sender->GenerateKeyFrame(names);
+  });
+  if (!result.ok()) {
+    SetError(result, error_type, error);
+    return false;
+  }
+  return true;
+}
+
 bool rtp_sender_get_parameters(const NativeRtpSender& sender,
                                FfiSenderParameters& output) noexcept {
   auto& state = *sender.state();

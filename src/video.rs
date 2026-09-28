@@ -394,6 +394,39 @@ impl RtpSender {
         Ok(())
     }
 
+    /// Ask the active video sender to produce a keyframe for the listed RIDs.
+    /// An empty slice targets all configured encodings. Successful submission
+    /// is not proof that a frame was produced: the sender must have a live
+    /// sending media channel and an encoder that honors keyframe requests.
+    pub fn request_keyframe(&self, rids: &[String]) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if self.track().is_none() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "video sender has no track".into(),
+            });
+        }
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::rtp_sender_request_keyframe(
+            self.native(),
+            self.peer.native(),
+            rids,
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
+    }
+
     pub fn parameters(&self) -> Result<RtpSenderParameters, PeerError> {
         let mut snapshot = ffi::FfiSenderParameters {
             transaction_id: String::new(),
