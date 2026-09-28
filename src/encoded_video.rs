@@ -201,7 +201,9 @@ impl EncodedH264Source {
                 message: "encoded source is closed or belongs to another factory".into(),
             });
         }
-        factory.create_video_track(id, &self.source)
+        let track = factory.create_video_track(id, &self.source)?;
+        track.mark_encoded_h264();
+        Ok(track)
     }
 
     pub fn push(&self, frame: H264AccessUnit) -> Result<(), CodecError> {

@@ -390,7 +390,9 @@ mode 0. `take_keyframe_request()` reports and clears sender feedback after
 WebRTC asks the adapter to encode a frame; a delta frame submitted during a
 keyframe request is rejected. `latest_rate_control()` exposes the last
 per-stream rate update observed during encoding. The adapter does not expose
-simulcast layer/dependency metadata or packetization mode 0.
+simulcast layer/dependency metadata or packetization mode 0. Multiple RIDs,
+SVC modes and resolution scaling on an encoded source are rejected explicitly
+before changing a sender.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
 remote video receiver without guaranteeing that a remote sender honors it.

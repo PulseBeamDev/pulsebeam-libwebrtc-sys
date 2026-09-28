@@ -540,10 +540,32 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
     let track = source
         .create_track(&pair.alice_factory, "encoded-h264")
         .unwrap();
+    assert_eq!(
+        pair.alice
+            .add_video_transceiver_with_rids(
+                &track,
+                RtpTransceiverDirection::SendOnly,
+                &["low".into(), "high".into()]
+            )
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::UnsupportedParameter
+    );
     let transceiver = pair
         .alice
         .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap();
+    let mut unsupported = transceiver.sender().parameters().unwrap();
+    unsupported.encodings[0].scale_resolution_down_by = Some(2.0);
+    assert_eq!(
+        transceiver
+            .sender()
+            .set_parameters(unsupported)
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::UnsupportedParameter
+    );
     let codecs: Vec<_> = pair
         .alice
         .video_sender_capabilities()

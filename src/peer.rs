@@ -720,6 +720,12 @@ impl PeerConnection {
                 message: "video track must belong to this peer factory".into(),
             });
         }
+        if track.is_encoded_h264() && rids.len() > 1 {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedParameter,
+                message: "encoded H264 input cannot use multiple RIDs".into(),
+            });
+        }
         let mut seen = std::collections::HashSet::new();
         if rids.iter().any(|rid| {
             rid.len() > 16

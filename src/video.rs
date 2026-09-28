@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{
     CodecError, CodecParameter, VideoCodecFormat, VideoFrame, VideoResolution, ffi,
@@ -182,6 +182,7 @@ struct TrackInner {
     _factory: Option<Rc<FactoryInner>>,
     _peer: Option<Rc<PeerInner>>,
     _source: Option<Rc<SourceInner>>,
+    encoded_h264: Cell<bool>,
 }
 
 impl VideoTrack {
@@ -196,6 +197,7 @@ impl VideoTrack {
                 _factory: Some(factory),
                 _peer: None,
                 _source: Some(source.inner.clone()),
+                encoded_h264: Cell::new(false),
             }),
         }
     }
@@ -207,6 +209,7 @@ impl VideoTrack {
                 _factory: None,
                 _peer: Some(peer),
                 _source: None,
+                encoded_h264: Cell::new(false),
             }),
         }
     }
@@ -241,6 +244,14 @@ impl VideoTrack {
                 _track: self.inner.clone(),
             })
         }
+    }
+
+    pub(crate) fn mark_encoded_h264(&self) {
+        self.inner.encoded_h264.set(true);
+    }
+
+    pub(crate) fn is_encoded_h264(&self) -> bool {
+        self.inner.encoded_h264.get()
     }
 
     pub(crate) fn is_local_to(&self, factory: &Rc<FactoryInner>) -> bool {
@@ -372,6 +383,12 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
+            if track.is_encoded_h264() && self.parameters()?.encodings.len() > 1 {
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedParameter,
+                    message: "encoded H264 input cannot replace a simulcast sender".into(),
+                });
+            }
             if !track.is_local_to(&self.peer._factory) || track.state() != VideoTrackState::Live {
                 return Err(PeerError {
                     kind: PeerErrorKind::InvalidParameter,
@@ -476,6 +493,21 @@ impl RtpSender {
     /// Updates supported fields using the latest parameters snapshot. Unexposed
     /// fields are preserved, and native validation rejects unsupported modes.
     pub fn set_parameters(&self, parameters: RtpSenderParameters) -> Result<(), PeerError> {
+        if self.track().is_some_and(|track| track.is_encoded_h264())
+            && (parameters.encodings.len() > 1
+                || parameters.encodings.iter().any(|encoding| {
+                    encoding.scalability_mode.is_some()
+                        || encoding.scale_resolution_down_to.is_some()
+                        || encoding
+                            .scale_resolution_down_by
+                            .is_some_and(|scale| scale != 1.0)
+                }))
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedParameter,
+                message: "encoded H264 input does not support scaling, simulcast, or SVC".into(),
+            });
+        }
         let invalid = |message: &str| PeerError {
             kind: PeerErrorKind::InvalidParameter,
             message: message.into(),
