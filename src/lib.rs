@@ -39,10 +39,12 @@ pub use network::{
     PacketSocketFactoryProvider, ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
-    ConnectionState, IceCandidate, IceGatheringState, OperationCompletion, OperationId,
-    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
-    PeerConnectionFactoryBuilder, PeerError, PeerErrorKind, SessionDescription,
-    SessionDescriptionType, SignalingState,
+    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceGatheringState,
+    IceServer, IceTransportPolicy, InboundRtpStats, OperationCompletion, OperationId,
+    OutboundRtpStats, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions, PeerError,
+    PeerErrorKind, PeerStatsRecord, PeerStatsSnapshot, SessionDescription, SessionDescriptionType,
+    SignalingState, TransportStats,
 };
 pub use video::{
     RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoSink, VideoSource,
@@ -100,7 +102,38 @@ mod ffi {
         hardware_accelerated: bool,
     }
 
+    struct FfiIceServer {
+        url: String,
+        username: String,
+        password: String,
+    }
+
+    struct FfiDescriptionSnapshot {
+        slot: u8,
+        kind: u8,
+        sdp: String,
+    }
+
+    struct FfiStatsField {
+        name: String,
+        kind: u8,
+        text: String,
+        unsigned_value: u64,
+        signed_value: i64,
+        decimal: f64,
+        flag: bool,
+    }
+
+    struct FfiStatsRecord {
+        id: String,
+        kind: u8,
+        timestamp_us: i64,
+        fields: Vec<FfiStatsField>,
+    }
+
     struct FfiPeerEvent {
+        stats_timestamp_us: i64,
+        stats_records: Vec<FfiStatsRecord>,
         kind: u8,
         operation_id: u64,
         has_description: bool,
@@ -422,10 +455,17 @@ mod ffi {
             factory: &NativePeerConnectionFactory,
             ice_candidate_pool_size: u16,
             always_negotiate_data_channels: bool,
+            ice_servers: &[FfiIceServer],
+            relay_only: bool,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnection>;
-        fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64);
+        fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64, ice_restart: bool);
         fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64);
+        fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> bool;
+        fn peer_descriptions(
+            peer: &NativePeerConnection,
+            descriptions: &mut Vec<FfiDescriptionSnapshot>,
+        ) -> u8;
         fn peer_set_local_description(
             peer: &NativePeerConnection,
             operation_id: u64,
@@ -503,6 +543,7 @@ mod ffi {
         fn video_track_state(track: &NativeVideoTrack) -> u8;
         fn video_track_attach_sink(track: &NativeVideoTrack) -> UniquePtr<NativeVideoSink>;
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
+        fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;
         fn close_video_sink(sink: &NativeVideoSink) -> bool;
         fn peer_add_video_transceiver(
             peer: &NativePeerConnection,

@@ -8,11 +8,14 @@ use std::{
     time::Duration,
 };
 
+#[path = "support/non_trickle.rs"]
+mod non_trickle;
+
 use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame,
-    Environment, IceCandidate, ManualClock, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, RtpTransceiver, RtpTransceiverDirection,
-    SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
+    Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, RtpTransceiver, RtpTransceiverDirection, SessionDescription,
+    SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
     VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
     VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
     VideoFrame, VideoFrameType, VideoRateControl, VideoResolution,
@@ -234,14 +237,8 @@ impl Pair {
     }
 
     fn progress(&self) -> (Vec<PeerConnectionEvent>, Vec<PeerConnectionEvent>) {
-        let mut alice_events = drain(&self.alice);
-        let mut bob_events = drain(&self.bob);
-        for candidate in take_candidates(&mut alice_events) {
-            self.bob.add_ice_candidate(candidate);
-        }
-        for candidate in take_candidates(&mut bob_events) {
-            self.alice.add_ice_candidate(candidate);
-        }
+        let alice_events = drain(&self.alice);
+        let bob_events = drain(&self.bob);
         while let Some(packet) = self.network.next_packet() {
             self.network.deliver(packet.id).unwrap();
         }
@@ -260,9 +257,16 @@ impl Pair {
             self.alice.set_local_description(offer.clone()),
             &mut alice_events,
         );
+        let gathered = non_trickle::gathered_local_description(
+            &self.alice,
+            &self.clock,
+            &self.network,
+            &mut alice_events,
+        );
+        assert_eq!(gathered.kind, offer.kind);
         completion(
             &self.bob,
-            self.bob.set_remote_description(offer),
+            self.bob.set_remote_description(gathered),
             &mut bob_events,
         );
         let answer = completion_description(&self.bob, self.bob.create_answer(), &mut bob_events);
@@ -271,17 +275,18 @@ impl Pair {
             self.bob.set_local_description(answer.clone()),
             &mut bob_events,
         );
+        let gathered = non_trickle::gathered_local_description(
+            &self.bob,
+            &self.clock,
+            &self.network,
+            &mut bob_events,
+        );
+        assert_eq!(gathered.kind, answer.kind);
         completion(
             &self.alice,
-            self.alice.set_remote_description(answer),
+            self.alice.set_remote_description(gathered),
             &mut alice_events,
         );
-        for candidate in take_candidates(&mut alice_events) {
-            self.bob.add_ice_candidate(candidate);
-        }
-        for candidate in take_candidates(&mut bob_events) {
-            self.alice.add_ice_candidate(candidate);
-        }
         bob_events
     }
 }
@@ -315,24 +320,6 @@ fn synthetic_i420(width: u32, height: u32) -> Vec<u8> {
 
 fn drain(peer: &PeerConnection) -> Vec<PeerConnectionEvent> {
     std::iter::from_fn(|| peer.try_next_event()).collect()
-}
-
-fn take_candidates(events: &mut Vec<PeerConnectionEvent>) -> Vec<IceCandidate> {
-    let mut candidates = Vec::new();
-    events.retain_mut(|event| {
-        if let PeerConnectionEvent::IceCandidate(_) = event {
-            let PeerConnectionEvent::IceCandidate(candidate) =
-                std::mem::replace(event, PeerConnectionEvent::Closed)
-            else {
-                unreachable!()
-            };
-            candidates.push(candidate);
-            false
-        } else {
-            true
-        }
-    });
-    candidates
 }
 
 fn completion(
@@ -370,6 +357,35 @@ fn take_remote_transceiver(events: &mut Vec<PeerConnectionEvent>) -> Option<RtpT
             PeerConnectionEvent::Track(transceiver) => transceiver,
             _ => unreachable!(),
         })
+}
+
+#[test]
+fn video_sink_bounds_retention_and_reports_loss() {
+    let counters = Arc::new(Counters::default());
+    let mut pair = Pair::new(counters, false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("bounded", &source)
+        .unwrap();
+    let mut sink = track.attach_sink().unwrap();
+    for index in 0..6 {
+        source
+            .push_frame(&VideoFrame::i420(2, 2, vec![index as u8; 6], index, index as u32).unwrap())
+            .unwrap();
+    }
+    assert_eq!(sink.dropped_frames(), 2);
+    for index in 2..6 {
+        assert_eq!(
+            sink.try_next_frame(),
+            Some(VideoFrame::i420(2, 2, vec![index as u8; 6], index, index as u32).unwrap())
+        );
+    }
+    assert_eq!(sink.try_next_frame(), None);
+    sink.close().unwrap();
+    assert_eq!(sink.dropped_frames(), 2);
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
 }
 
 #[test]

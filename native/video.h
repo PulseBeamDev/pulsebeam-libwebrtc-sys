@@ -104,6 +104,7 @@ std::unique_ptr<NativeVideoSink> video_track_attach_sink(
     const NativeVideoTrack& track) noexcept;
 std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
     const NativeVideoSink& sink) noexcept;
+std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept;
 bool close_video_sink(const NativeVideoSink& sink) noexcept;
 
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(

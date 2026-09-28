@@ -143,6 +143,15 @@ ABIs and Apple device/simulator builds are not combined. Linux musl, 32-bit
 Android, Windows arm64, x86_64 iOS Simulator, WebAssembly, and other targets are
 deferred.
 
+## Decoded video sink retention
+
+Each attached `VideoSink` holds at most four decoded I420 frames and 16 MiB
+of frame data. On overflow it drops oldest frames; frames exceeding the byte
+budget are discarded. `VideoSink::dropped_frames()` reports cumulative loss,
+including after explicit close. Polling `try_next_frame()` does not guarantee
+receipt of every decoded frame. The cap applies per sink; applications should
+close unused sinks to release retained frames.
+
 ## Injection and determinism boundary
 
 The exported API retains the upstream extension points required by PulseBeam:
@@ -287,6 +296,39 @@ The automated host suite validates the portable API and exported static link
 closure. It does not claim physical camera, microphone, speaker, GPU, platform
 UI, or hardware-codec qualification; physical-device qualification remains a
 downstream application responsibility.
+
+## Peer transport and stats (Linux core and native)
+
+`PeerConfiguration` accepts STUN/TURN URLs with credentials and an explicit
+`IceTransportPolicy::{All, RelayOnly}`. `turn:` URLs support UDP or TCP via
+`?transport=udp` or `?transport=tcp`; `turns:` uses TLS with certificate
+verification enabled. `PeerConnection::create_ice_restart_offer()` returns an
+operation ID whose SDP arrives in `OperationComplete`. For non-trickle signaling,
+set each local description, wait for `IceGatheringState::Complete`, then copy
+its gathered SDP with `PeerConnection::descriptions()` and send that description
+to the other peer. Applications own signaling; forwarding per-candidate events
+is not required. `PeerConnection::descriptions()` copies current and pending
+local/remote SDP in one signaling-thread snapshot; an empty-SDP `Rollback`
+description restores
+stable negotiation state, while a nonempty rollback SDP is rejected.
+
+`PeerConnection::request_stats()` returns an operation ID, then a typed
+`PeerConnectionEvent::Stats` snapshot or a terminal operation error. The
+snapshot contains candidate-pair, transport, inbound/outbound RTP and data
+channel records with object IDs and optional metrics; up to 256 records are
+accepted per request. Take each snapshot event before requesting another.
+Upstream RTT and jitter values are seconds; available/target bitrates are
+bits per second. Metrics that WebRTC did not supply remain `None`.
+
+The Linux artifact tests validate configuration, two-peer ICE restart through
+renewed credentials and packet delivery, connected-peer stat relationships,
+simulated IPv4 and IPv6 STUN Binding responses represented as server-reflexive
+candidates in gathered SDP, rollback and pending/current
+SDP transitions, and Rust-only linking. They do **not** yet qualify production
+IPv6 routing, hostname resolution, authenticated TURN UDP/TCP/TLS relay, failed
+credentials or interrupted transport; those fixture-backed gates remain
+outstanding. Trickle ICE and remote end-of-candidates are outside this
+non-trickle signaling contract; no upstream patch is required.
 
 ## Downstream rendering contract
 

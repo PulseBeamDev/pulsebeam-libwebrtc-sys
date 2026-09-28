@@ -179,6 +179,10 @@ impl VideoTrack {
 
 /// A sequence-bound caller-polled video sink.
 ///
+/// At most four frames and 16 MiB of I420 data are retained. When full, the
+/// oldest frames are discarded; frames larger than the budget are discarded.
+/// Observe cumulative intentional loss with [`Self::dropped_frames`].
+///
 /// ```compile_fail
 /// fn assert_send<T: Send>() {}
 /// assert_send::<pulsebeam_webrtc_sys::VideoSink>();
@@ -194,6 +198,12 @@ pub struct VideoSink {
 }
 
 impl VideoSink {
+    /// Number of frames discarded by this sink's retention policy, saturating
+    /// at `u64::MAX`. Closed sinks retain the last count.
+    pub fn dropped_frames(&self) -> u64 {
+        ffi::video_sink_dropped_frames(self.native.as_ref().expect("validated video sink"))
+    }
+
     pub fn try_next_frame(&self) -> Option<VideoFrame> {
         let native =
             ffi::video_sink_take_frame(self.native.as_ref().expect("validated video sink"));

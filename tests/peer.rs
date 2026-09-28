@@ -1,9 +1,15 @@
-use std::{net::Ipv4Addr, thread};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    thread,
+};
+
+#[path = "support/non_trickle.rs"]
+mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    ConnectionState, Environment, IceCandidate, ManualClock, OperationCompletion, OperationId,
-    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
-    SessionDescription, SimulatedNetwork,
+    ConnectionState, Environment, IceGatheringState, IceServer, IceTransportPolicy, ManualClock,
+    OperationCompletion, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, PeerErrorKind, PeerStatsRecord, SessionDescription, SimulatedNetwork,
 };
 
 fn factory(
@@ -47,17 +53,15 @@ fn require_success(
         .unwrap()
 }
 
-fn collect_candidate(event: PeerConnectionEvent, candidates: &mut Vec<IceCandidate>) -> bool {
-    match event {
-        PeerConnectionEvent::IceCandidate(candidate) => candidates.push(candidate),
-        PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected) => return true,
-        _ => {}
-    }
-    false
+fn connected(event: PeerConnectionEvent) -> bool {
+    matches!(
+        event,
+        PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
+    )
 }
 
 #[test]
-fn two_peers_negotiate_owned_sdp_and_ice_without_sleeps() {
+fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
     let clock = ManualClock::new(std::time::Duration::from_secs(1)).unwrap();
     let environment = Environment::builder().clock(&clock).build().unwrap();
     let network = SimulatedNetwork::new(&clock).unwrap();
@@ -83,46 +87,45 @@ fn two_peers_negotiate_owned_sdp_and_ice_without_sleeps() {
     let offer_id = alice.create_offer();
     let offer = require_success(&alice, offer_id, &mut alice_events).unwrap();
     assert!(offer.sdp.contains("m=application"));
-    let set_local_offer = alice.set_local_description(offer.clone());
-    let set_remote_offer = bob.set_remote_description(offer);
+    let set_local_offer = alice.set_local_description(offer);
     require_success(&alice, set_local_offer, &mut alice_events);
+    let gathered_offer =
+        non_trickle::gathered_local_description(&alice, &clock, &network, &mut alice_events);
+    assert!(alice.descriptions().unwrap().current_local.is_none());
+    let set_remote_offer = bob.set_remote_description(gathered_offer);
     require_success(&bob, set_remote_offer, &mut bob_events);
+    assert!(bob.descriptions().unwrap().pending_remote.is_some());
+    assert!(bob.descriptions().unwrap().current_remote.is_none());
 
     let answer_id = bob.create_answer();
     let answer = require_success(&bob, answer_id, &mut bob_events).unwrap();
-    let set_local_answer = bob.set_local_description(answer.clone());
-    let set_remote_answer = alice.set_remote_description(answer);
+    let set_local_answer = bob.set_local_description(answer);
     require_success(&bob, set_local_answer, &mut bob_events);
+    let gathered_answer =
+        non_trickle::gathered_local_description(&bob, &clock, &network, &mut bob_events);
+    let set_remote_answer = alice.set_remote_description(gathered_answer);
     require_success(&alice, set_remote_answer, &mut alice_events);
+    for peer in [&alice, &bob] {
+        let descriptions = peer.descriptions().unwrap();
+        assert!(descriptions.current_local.is_some());
+        assert!(descriptions.current_remote.is_some());
+        assert!(descriptions.pending_local.is_none());
+        assert!(descriptions.pending_remote.is_none());
+    }
 
-    let mut alice_candidates = Vec::new();
-    let mut bob_candidates = Vec::new();
-    let mut alice_connected = false;
-    let mut bob_connected = false;
+    let mut alice_connected = alice_events.drain(..).any(connected);
+    let mut bob_connected = bob_events.drain(..).any(connected);
     let mut alice_observed = Vec::new();
     let mut bob_observed = Vec::new();
     let mut delivered_packets = 0;
-    for event in alice_events.drain(..) {
-        alice_connected |= collect_candidate(event, &mut alice_candidates);
-    }
-    for event in bob_events.drain(..) {
-        bob_connected |= collect_candidate(event, &mut bob_candidates);
-    }
-
     for _ in 0..2_000_000 {
         while let Some(event) = alice.try_next_event() {
             alice_observed.push(format!("{event:?}"));
-            alice_connected |= collect_candidate(event, &mut alice_candidates);
+            alice_connected |= connected(event);
         }
         while let Some(event) = bob.try_next_event() {
             bob_observed.push(format!("{event:?}"));
-            bob_connected |= collect_candidate(event, &mut bob_candidates);
-        }
-        for candidate in alice_candidates.drain(..) {
-            bob.add_ice_candidate(candidate);
-        }
-        for candidate in bob_candidates.drain(..) {
-            alice.add_ice_candidate(candidate);
+            bob_connected |= connected(event);
         }
         while let Some(packet) = network.next_packet() {
             network.deliver(packet.id).unwrap();
@@ -139,9 +142,257 @@ fn two_peers_negotiate_owned_sdp_and_ice_without_sleeps() {
         "delivered {delivered_packets} packets\nalice events: {alice_observed:#?}\nbob events: {bob_observed:#?}"
     );
 
+    let stats_id = alice.request_stats().unwrap();
+    assert_eq!(
+        alice.request_stats().unwrap_err().kind,
+        PeerErrorKind::InvalidState
+    );
+    let mut snapshot = None;
+    for _ in 0..1_000_000 {
+        if let Some(event) = alice.try_next_event() {
+            match event {
+                PeerConnectionEvent::Stats(stats) if stats.operation_id == stats_id => {
+                    snapshot = Some(stats);
+                    break;
+                }
+                PeerConnectionEvent::OperationComplete(completion)
+                    if completion.operation_id == stats_id =>
+                {
+                    panic!("stats failed: {:?}", completion.result);
+                }
+                _ => {}
+            }
+        }
+        thread::yield_now();
+    }
+    let snapshot = snapshot.expect("stats snapshot did not arrive");
+    assert!(snapshot.records.len() <= 256);
+    let pairs: Vec<_> = snapshot
+        .records
+        .iter()
+        .filter_map(|record| {
+            if let PeerStatsRecord::CandidatePair(pair) = record {
+                Some(pair.id.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(snapshot.records.iter().any(|record| {
+        matches!(record, PeerStatsRecord::Transport(transport)
+            if transport.selected_candidate_pair_id.as_ref().is_some_and(|id| pairs.contains(&id.as_str())))
+    }));
+    assert!(
+        alice.request_stats().is_ok(),
+        "snapshot consumption frees the capacity"
+    );
+
+    let previous_ufrag = alice
+        .descriptions()
+        .unwrap()
+        .current_local
+        .unwrap()
+        .sdp
+        .lines()
+        .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
+        .unwrap()
+        .to_owned();
+    let restart = alice.create_ice_restart_offer();
+    let offer = require_success(&alice, restart, &mut alice_events).unwrap();
+    let new_ufrag = offer
+        .sdp
+        .lines()
+        .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
+        .unwrap();
+    assert_ne!(new_ufrag, previous_ufrag);
+    let set_local = alice.set_local_description(offer);
+    require_success(&alice, set_local, &mut alice_events);
+    let gathered_offer =
+        non_trickle::gathered_local_description(&alice, &clock, &network, &mut alice_events);
+    let set_remote = bob.set_remote_description(gathered_offer);
+    require_success(&bob, set_remote, &mut bob_events);
+    let answer = require_success(&bob, bob.create_answer(), &mut bob_events).unwrap();
+    let set_local = bob.set_local_description(answer);
+    require_success(&bob, set_local, &mut bob_events);
+    let gathered_answer =
+        non_trickle::gathered_local_description(&bob, &clock, &network, &mut bob_events);
+    let set_remote = alice.set_remote_description(gathered_answer);
+    require_success(&alice, set_remote, &mut alice_events);
+    let mut alice_reconnected = false;
+    let mut bob_reconnected = false;
+    let mut restart_packets = 0;
+    for _ in 0..2_000_000 {
+        for event in alice_events
+            .drain(..)
+            .chain(std::iter::from_fn(|| alice.try_next_event()))
+        {
+            alice_reconnected |= connected(event);
+        }
+        for event in bob_events
+            .drain(..)
+            .chain(std::iter::from_fn(|| bob.try_next_event()))
+        {
+            bob_reconnected |= connected(event);
+        }
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+            restart_packets += 1;
+        }
+        if alice_reconnected && bob_reconnected {
+            break;
+        }
+        clock.advance(std::time::Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert!(
+        alice_reconnected && bob_reconnected && restart_packets > 0,
+        "ICE restart did not reconnect: packets={restart_packets}, alice={alice_reconnected}, bob={bob_reconnected}"
+    );
+
     alice.close().unwrap();
     bob.close().unwrap();
     alice.close().unwrap();
+}
+
+#[test]
+fn rollback_restores_stable_descriptions_and_rejects_nonempty_sdp() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let mut peer = factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    let mut events = Vec::new();
+    assert_eq!(peer.descriptions().unwrap(), Default::default());
+    let offer_id = peer.create_offer();
+    let offer = require_success(&peer, offer_id, &mut events).unwrap();
+    let local_id = peer.set_local_description(offer);
+    require_success(&peer, local_id, &mut events);
+    assert!(peer.descriptions().unwrap().pending_local.is_some());
+    let rollback = peer.set_local_description(SessionDescription {
+        kind: pulsebeam_webrtc_sys::SessionDescriptionType::Rollback,
+        sdp: String::new(),
+    });
+    require_success(&peer, rollback, &mut events);
+    assert_eq!(peer.descriptions().unwrap(), Default::default());
+    let invalid = peer.set_local_description(SessionDescription {
+        kind: pulsebeam_webrtc_sys::SessionDescriptionType::Rollback,
+        sdp: "unexpected SDP".into(),
+    });
+    let error = drain_until_completion(&peer, invalid, &mut events)
+        .result
+        .unwrap_err();
+    assert_eq!(error.kind, PeerErrorKind::Syntax);
+    peer.close().unwrap();
+    assert_eq!(peer.descriptions().unwrap_err().kind, PeerErrorKind::Closed);
+}
+
+fn gather_from_simulated_stun(client_ip: IpAddr, server_ip: IpAddr, mapped_ip: IpAddr) {
+    let clock = ManualClock::new(std::time::Duration::from_secs(1)).unwrap();
+    let environment = Environment::builder().clock(&clock).build().unwrap();
+    let network = SimulatedNetwork::new(&clock).unwrap();
+    let endpoint = network.register_endpoint(client_ip).unwrap();
+    let server = network.register_endpoint(server_ip).unwrap();
+    let server_socket = server.bind_udp(3478).unwrap();
+    let factory = factory(environment, &endpoint);
+    let url = match server_ip {
+        IpAddr::V4(_) => format!("stun:{server_ip}:3478"),
+        IpAddr::V6(_) => format!("stun:[{server_ip}]:3478"),
+    };
+    let mut peer = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec![url],
+                username: String::new(),
+                password: String::new(),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    let mut events = Vec::new();
+    let offer_id = peer.create_offer();
+    let offer = require_success(&peer, offer_id, &mut events).unwrap();
+    let local_id = peer.set_local_description(offer);
+    require_success(&peer, local_id, &mut events);
+
+    let mut responded = false;
+    let mut gathered = false;
+    for _ in 0..10_000 {
+        for event in events
+            .drain(..)
+            .chain(std::iter::from_fn(|| peer.try_next_event()))
+        {
+            gathered |= matches!(
+                event,
+                PeerConnectionEvent::IceGatheringStateChanged(IceGatheringState::Complete)
+            );
+        }
+        while let Some(packet) = network.next_packet() {
+            if packet.destination == server_socket.local_address() {
+                network.deliver(packet.id).unwrap();
+                while let Some(request) = server_socket.try_receive() {
+                    let body = &request.payload;
+                    assert!(body.len() >= 20 && body[0..2] == [0, 1]);
+                    assert_eq!(&body[4..8], &[0x21, 0x12, 0xa4, 0x42]);
+                    // RFC 5389 Binding Success with XOR-MAPPED-ADDRESS, using a
+                    // different public mapping to distinguish srflx from host.
+                    let (family, ip_octets): (u8, Vec<u8>) = match mapped_ip {
+                        IpAddr::V4(ip) => (1, ip.octets().to_vec()),
+                        IpAddr::V6(ip) => (2, ip.octets().to_vec()),
+                    };
+                    let attribute_size = ip_octets.len() + 4;
+                    let mut response = vec![0x01, 0x01, 0, (attribute_size + 4) as u8];
+                    response.extend_from_slice(&body[4..20]);
+                    response.extend_from_slice(&[0, 0x20, 0, attribute_size as u8, 0, family]);
+                    response.extend_from_slice(&(45678_u16 ^ 0x2112).to_be_bytes());
+                    let key = &body[4..20];
+                    response.extend(ip_octets.iter().zip(key).map(|(ip, mask)| ip ^ mask));
+                    server_socket.send_to(request.source, response).unwrap();
+                    responded = true;
+                }
+            } else {
+                network.deliver(packet.id).unwrap();
+            }
+        }
+        if responded && gathered {
+            break;
+        }
+        clock.advance(std::time::Duration::from_millis(1)).unwrap();
+        // ICE allocator phases use RTC worker-thread timers outside the
+        // simulated packet clock.
+        thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(responded, "no STUN Binding Request reached the fixture");
+    assert!(
+        gathered,
+        "ICE gathering did not complete after the Binding Success"
+    );
+    assert!(
+        peer.descriptions()
+            .unwrap()
+            .pending_local
+            .unwrap()
+            .sdp
+            .contains(" typ srflx "),
+        "non-trickle SDP did not include the server-reflexive candidate"
+    );
+    peer.close().unwrap();
+}
+
+#[test]
+fn simulated_stun_ipv4_gathers_server_reflexive_candidate() {
+    gather_from_simulated_stun(
+        Ipv4Addr::new(10, 20, 0, 1).into(),
+        Ipv4Addr::new(10, 20, 0, 3).into(),
+        Ipv4Addr::new(198, 51, 100, 40).into(),
+    );
+}
+
+#[test]
+fn simulated_stun_ipv6_gathers_server_reflexive_candidate() {
+    gather_from_simulated_stun(
+        "2001:db8::1".parse::<Ipv6Addr>().unwrap().into(),
+        "2001:db8::3".parse::<Ipv6Addr>().unwrap().into(),
+        "2001:db8:1::40".parse::<Ipv6Addr>().unwrap().into(),
+    );
 }
 
 #[test]
@@ -169,16 +420,6 @@ fn invalid_inputs_closed_operations_and_construction_failures_are_explicit() {
         .unwrap_err();
     assert_eq!(error.kind, PeerErrorKind::Syntax);
 
-    let invalid_candidate = peer.add_ice_candidate(IceCandidate {
-        sdp_mid: "0".into(),
-        sdp_mline_index: 0,
-        candidate: "not a candidate".into(),
-    });
-    let error = drain_until_completion(&peer, invalid_candidate, &mut events)
-        .result
-        .unwrap_err();
-    assert_eq!(error.kind, PeerErrorKind::Syntax);
-
     peer.close().unwrap();
     peer.close().unwrap();
     let after_close = peer.create_offer();
@@ -192,6 +433,69 @@ fn invalid_inputs_closed_operations_and_construction_failures_are_explicit() {
         thread::yield_now();
     }
     assert!(peer.try_next_event().is_none());
+}
+
+#[test]
+fn ice_server_policy_and_restart_offer_are_explicit() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    for urls in [
+        vec![],
+        vec!["http://invalid.example".into()],
+        vec!["turn:".into()],
+    ] {
+        let error = factory
+            .create_peer_connection(PeerConfiguration {
+                ice_servers: vec![IceServer {
+                    urls,
+                    username: "user".into(),
+                    password: "secret".into(),
+                }],
+                ..Default::default()
+            })
+            .err()
+            .expect("invalid URL should fail");
+        assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+    }
+    let error = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec!["turn:relay.example.test:3478?transport=udp".into()],
+                username: String::new(),
+                password: String::new(),
+            }],
+            ..Default::default()
+        })
+        .err()
+        .expect("TURN requires credentials");
+    assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+
+    let config = PeerConfiguration {
+        ice_servers: vec![
+            IceServer {
+                urls: vec!["stun:stun.example.test:3478".into()],
+                username: String::new(),
+                password: String::new(),
+            },
+            IceServer {
+                urls: vec![
+                    "turn:relay.example.test:3478?transport=udp".into(),
+                    "turn:relay.example.test:3478?transport=tcp".into(),
+                    "turns:relay.example.test:5349?transport=tcp".into(),
+                ],
+                username: "user".into(),
+                password: "secret".into(),
+            },
+        ],
+        ice_transport_policy: IceTransportPolicy::RelayOnly,
+        ..Default::default()
+    };
+    assert!(!format!("{config:?}").contains("secret"));
+    let peer = factory.create_peer_connection(config).unwrap();
+    let mut events = Vec::new();
+    let first = require_success(&peer, peer.create_offer(), &mut events).unwrap();
+    require_success(&peer, peer.set_local_description(first), &mut events);
+    let restart = require_success(&peer, peer.create_ice_restart_offer(), &mut events).unwrap();
+    assert!(restart.sdp.contains("a=ice-ufrag:"));
 }
 
 #[test]

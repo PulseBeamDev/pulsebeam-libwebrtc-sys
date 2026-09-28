@@ -5,6 +5,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -18,6 +19,9 @@
 #include "api/peer_connection_interface.h"
 #include "api/rtc_error.h"
 #include "api/scoped_refptr.h"
+#include "api/stats/rtc_stats_collector_callback.h"
+#include "api/stats/rtc_stats_report.h"
+#include "api/stats/rtcstats_objects.h"
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
@@ -45,6 +49,7 @@ enum EventKind : std::uint8_t {
   kDataChannel = 9,
   kTrack = 10,
   kTrackRemoved = 11,
+  kStatsReport = 12,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -85,6 +90,16 @@ struct EventState {
     return pending.insert(operation_id).second;
   }
 
+  bool BeginStats(std::uint64_t operation_id) {
+    std::lock_guard lock(mutex);
+    if (closed || stats_operation_id != 0) {
+      return false;
+    }
+    stats_operation_id = operation_id;
+    pending.insert(operation_id);
+    return true;
+  }
+
   void Complete(FfiPeerEvent event) {
     std::lock_guard lock(mutex);
     if (pending.erase(event.operation_id) != 0) {
@@ -106,6 +121,9 @@ struct EventState {
     }
     FfiPeerEvent event = std::move(events.front());
     events.pop_front();
+    if (event.operation_id != 0 && event.operation_id == stats_operation_id) {
+      stats_operation_id = 0;
+    }
     return event;
   }
 
@@ -220,6 +238,7 @@ struct EventState {
   std::mutex mutex;
   std::deque<FfiPeerEvent> events;
   std::set<std::uint64_t> pending;
+  std::uint64_t stats_operation_id = 0;
   std::unordered_map<std::uint64_t,
                      webrtc::scoped_refptr<webrtc::DataChannelInterface>>
       data_channels;
@@ -393,6 +412,120 @@ class SetRemoteObserver
   std::uint64_t operation_id_;
 };
 
+template <typename T>
+void AddStatsField(rust::Vec<FfiStatsField>& fields, const char* name,
+                   const std::optional<T>& value) {
+  if (!value) {
+    return;
+  }
+  FfiStatsField field;
+  field.name = name;
+  if constexpr (std::is_same_v<T, std::string>) {
+    field.kind = 1;
+    field.text = *value;
+  } else if constexpr (std::is_floating_point_v<T>) {
+    field.kind = 4;
+    field.decimal = *value;
+  } else if constexpr (std::is_same_v<T, bool>) {
+    field.kind = 5;
+    field.flag = *value;
+  } else if constexpr (std::is_signed_v<T>) {
+    field.kind = 3;
+    field.signed_value = *value;
+  } else {
+    field.kind = 2;
+    field.unsigned_value = *value;
+  }
+  fields.push_back(std::move(field));
+}
+
+FfiStatsRecord NewStatsRecord(const webrtc::RTCStats& stats,
+                              std::uint8_t kind) {
+  FfiStatsRecord record;
+  record.id = std::string(stats.id());
+  record.kind = kind;
+  record.timestamp_us = stats.timestamp().us();
+  return record;
+}
+
+class StatsObserver : public webrtc::RTCStatsCollectorCallback {
+ public:
+  StatsObserver(std::shared_ptr<EventState> state,
+                std::uint64_t operation_id)
+      : state_(std::move(state)), operation_id_(operation_id) {}
+
+  void OnStatsDelivered(
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report)
+      override {
+    FfiPeerEvent event;
+    event.kind = kStatsReport;
+    event.operation_id = operation_id_;
+    event.stats_timestamp_us = report->timestamp().us_or(-1);
+    // Never retain an unbounded upstream report in the Rust event queue.
+    bool overflow = false;
+    auto add = [&](FfiStatsRecord record) {
+      if (event.stats_records.size() == 256) {
+        overflow = true;
+      } else {
+        event.stats_records.push_back(std::move(record));
+      }
+    };
+#define COPY(member) AddStatsField(record.fields, #member, stat->member)
+    for (const auto* stat :
+         report->GetStatsOfType<webrtc::RTCIceCandidatePairStats>()) {
+      auto record = NewStatsRecord(*stat, 1);
+      COPY(transport_id); COPY(local_candidate_id); COPY(remote_candidate_id);
+      COPY(state); COPY(nominated); COPY(packets_sent); COPY(packets_received);
+      COPY(bytes_sent); COPY(bytes_received); COPY(current_round_trip_time);
+      COPY(available_outgoing_bitrate); COPY(available_incoming_bitrate);
+      add(std::move(record));
+    }
+    for (const auto* stat : report->GetStatsOfType<webrtc::RTCTransportStats>()) {
+      auto record = NewStatsRecord(*stat, 2);
+      COPY(selected_candidate_pair_id); COPY(ice_state); COPY(dtls_state);
+      COPY(packets_sent); COPY(packets_received); COPY(bytes_sent);
+      COPY(bytes_received);
+      add(std::move(record));
+    }
+    for (const auto* stat :
+         report->GetStatsOfType<webrtc::RTCInboundRtpStreamStats>()) {
+      auto record = NewStatsRecord(*stat, 3);
+      COPY(kind); COPY(ssrc); COPY(transport_id); COPY(mid);
+      COPY(packets_received); COPY(packets_lost); COPY(bytes_received);
+      COPY(jitter); COPY(frames_received); COPY(frames_decoded);
+      add(std::move(record));
+    }
+    for (const auto* stat :
+         report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>()) {
+      auto record = NewStatsRecord(*stat, 4);
+      COPY(kind); COPY(ssrc); COPY(transport_id); COPY(mid); COPY(rid);
+      COPY(packets_sent); COPY(bytes_sent); COPY(target_bitrate);
+      COPY(frames_encoded); COPY(frames_sent);
+      add(std::move(record));
+    }
+    for (const auto* stat :
+         report->GetStatsOfType<webrtc::RTCDataChannelStats>()) {
+      auto record = NewStatsRecord(*stat, 5);
+      COPY(label); COPY(protocol); COPY(state); COPY(data_channel_identifier);
+      COPY(messages_sent); COPY(messages_received); COPY(bytes_sent);
+      COPY(bytes_received);
+      add(std::move(record));
+    }
+#undef COPY
+    if (overflow) {
+      state_->Complete(ErrorEvent(
+          operation_id_, webrtc::RTCErrorType::RESOURCE_EXHAUSTED,
+          "stats report exceeds the 256-record limit"));
+    } else {
+      state_->Complete(std::move(event));
+    }
+  }
+
+ private:
+  std::shared_ptr<EventState> state_;
+  std::uint64_t operation_id_;
+};
+
 class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
  public:
   explicit BorrowedVideoEncoderFactory(
@@ -459,6 +592,10 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
   const auto parsed_type = SdpType(type);
   if (!parsed_type) {
     error.description = "invalid session description type";
+    return nullptr;
+  }
+  if (*parsed_type == webrtc::SdpType::kRollback && !sdp.empty()) {
+    error.description = "rollback must not contain SDP";
     return nullptr;
   }
   return webrtc::CreateSessionDescription(
@@ -599,6 +736,8 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
     std::uint16_t ice_candidate_pool_size,
     bool always_negotiate_data_channels,
+    rust::Slice<const FfiIceServer> ice_servers,
+    bool relay_only,
     rust::String& error) noexcept {
   auto events = std::make_shared<EventState>();
   auto observer = std::make_unique<PeerObserver>(events);
@@ -607,6 +746,16 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   configuration.ice_candidate_pool_size = ice_candidate_pool_size;
   configuration.always_negotiate_data_channels =
       always_negotiate_data_channels;
+  configuration.type = relay_only
+                           ? webrtc::PeerConnectionInterface::kRelay
+                           : webrtc::PeerConnectionInterface::kAll;
+  for (const auto& entry : ice_servers) {
+    webrtc::PeerConnectionInterface::IceServer server;
+    server.urls.push_back(std::string(entry.url));
+    server.username = std::string(entry.username);
+    server.password = std::string(entry.password);
+    configuration.servers.push_back(std::move(server));
+  }
   auto result = factory.state()->factory->CreatePeerConnectionOrError(
       configuration, std::move(dependencies));
   if (!result.ok()) {
@@ -622,7 +771,8 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
 }
 
 void peer_create_offer(const NativePeerConnection& peer,
-                       std::uint64_t operation_id) noexcept {
+                       std::uint64_t operation_id,
+                       bool ice_restart) noexcept {
   const auto& state = peer.state();
   if (!state->events->Begin(operation_id)) {
     return;
@@ -630,7 +780,57 @@ void peer_create_offer(const NativePeerConnection& peer,
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(state->events,
                                                           operation_id);
-  state->peer->CreateOffer(observer.get(), {});
+  webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
+  options.ice_restart = ice_restart;
+  state->peer->CreateOffer(observer.get(), options);
+}
+
+bool peer_request_stats(const NativePeerConnection& peer,
+                        std::uint64_t operation_id) noexcept {
+  const auto& state = peer.state();
+  if (!state->events->BeginStats(operation_id)) {
+    return false;
+  }
+  state->peer->GetStats(
+      webrtc::make_ref_counted<StatsObserver>(state->events, operation_id).get());
+  return true;
+}
+
+std::uint8_t peer_descriptions(
+    const NativePeerConnection& peer,
+    rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept {
+  const auto& state = peer.state();
+  std::uint8_t status = 0;
+  state->signaling_thread->BlockingCall([&] {
+    if (state->closed) {
+      status = 1;
+      return;
+    }
+    auto copy = [&](std::uint8_t slot,
+                    const webrtc::SessionDescriptionInterface* description) {
+      if (!description) {
+        return true;
+      }
+      std::string sdp;
+      if (!description->ToString(&sdp)) {
+        return false;
+      }
+      FfiDescriptionSnapshot snapshot;
+      snapshot.slot = slot;
+      snapshot.kind = static_cast<std::uint8_t>(description->GetType());
+      snapshot.sdp = sdp;
+      descriptions.push_back(std::move(snapshot));
+      return true;
+    };
+    if (!copy(0, state->peer->current_local_description()) ||
+        !copy(1, state->peer->current_remote_description()) ||
+        !copy(2, state->peer->pending_local_description()) ||
+        !copy(3, state->peer->pending_remote_description())) {
+      descriptions.clear();
+      status = 2;
+    }
+  });
+  return status;
 }
 
 void peer_create_answer(const NativePeerConnection& peer,

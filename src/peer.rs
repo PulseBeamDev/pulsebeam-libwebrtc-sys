@@ -35,6 +35,16 @@ pub struct SessionDescription {
     pub sdp: String,
 }
 
+/// An atomic snapshot of negotiated and in-progress local/remote SDP.
+/// Descriptions are copied on the signaling thread and owned by the caller.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PeerDescriptions {
+    pub current_local: Option<SessionDescription>,
+    pub current_remote: Option<SessionDescription>,
+    pub pending_local: Option<SessionDescription>,
+    pub pending_remote: Option<SessionDescription>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IceCandidate {
     pub sdp_mid: String,
@@ -106,8 +116,104 @@ pub struct OperationCompletion {
     pub result: Result<Option<SessionDescription>, PeerError>,
 }
 
+/// A bounded snapshot of upstream stats. Timestamps are microseconds since
+/// the Unix epoch; a missing metric is `None`, never an implicit zero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PeerStatsSnapshot {
+    pub operation_id: OperationId,
+    pub timestamp_us: i64,
+    pub records: Vec<PeerStatsRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PeerStatsRecord {
+    CandidatePair(CandidatePairStats),
+    Transport(TransportStats),
+    InboundRtp(InboundRtpStats),
+    OutboundRtp(OutboundRtpStats),
+    DataChannel(DataChannelStats),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidatePairStats {
+    pub id: String,
+    pub timestamp_us: i64,
+    pub transport_id: Option<String>,
+    pub local_candidate_id: Option<String>,
+    pub remote_candidate_id: Option<String>,
+    pub state: Option<String>,
+    pub nominated: Option<bool>,
+    pub packets_sent: Option<u64>,
+    pub packets_received: Option<u64>,
+    pub bytes_sent: Option<u64>,
+    pub bytes_received: Option<u64>,
+    pub current_round_trip_time: Option<f64>,
+    pub available_outgoing_bitrate: Option<f64>,
+    pub available_incoming_bitrate: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransportStats {
+    pub id: String,
+    pub timestamp_us: i64,
+    pub selected_candidate_pair_id: Option<String>,
+    pub ice_state: Option<String>,
+    pub dtls_state: Option<String>,
+    pub packets_sent: Option<u64>,
+    pub packets_received: Option<u64>,
+    pub bytes_sent: Option<u64>,
+    pub bytes_received: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InboundRtpStats {
+    pub id: String,
+    pub timestamp_us: i64,
+    pub kind: Option<String>,
+    pub ssrc: Option<u64>,
+    pub transport_id: Option<String>,
+    pub mid: Option<String>,
+    pub packets_received: Option<u64>,
+    pub packets_lost: Option<i64>,
+    pub bytes_received: Option<u64>,
+    pub jitter: Option<f64>,
+    pub frames_received: Option<u64>,
+    pub frames_decoded: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundRtpStats {
+    pub id: String,
+    pub timestamp_us: i64,
+    pub kind: Option<String>,
+    pub ssrc: Option<u64>,
+    pub transport_id: Option<String>,
+    pub mid: Option<String>,
+    pub rid: Option<String>,
+    pub packets_sent: Option<u64>,
+    pub bytes_sent: Option<u64>,
+    pub target_bitrate: Option<f64>,
+    pub frames_encoded: Option<u64>,
+    pub frames_sent: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataChannelStats {
+    pub id: String,
+    pub timestamp_us: i64,
+    pub label: Option<String>,
+    pub protocol: Option<String>,
+    pub state: Option<String>,
+    pub data_channel_identifier: Option<i64>,
+    pub messages_sent: Option<u64>,
+    pub messages_received: Option<u64>,
+    pub bytes_sent: Option<u64>,
+    pub bytes_received: Option<u64>,
+}
+
 #[derive(Debug)]
 pub enum PeerConnectionEvent {
+    Stats(PeerStatsSnapshot),
     OperationComplete(OperationCompletion),
     IceCandidate(IceCandidate),
     ConnectionStateChanged(ConnectionState),
@@ -129,10 +235,40 @@ pub enum PeerConnectionEvent {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// ICE server URLs use `stun:`, `stuns:`, `turn:` or `turns:` URI schemes.
+/// TURN UDP/TCP/TLS transport is selected by the URL (`?transport=udp` or
+/// `?transport=tcp`); `turns:` requires a valid server TLS certificate.
+#[derive(Clone, Eq, PartialEq)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub password: String,
+}
+
+impl fmt::Debug for IceServer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IceServer")
+            .field("urls", &self.urls)
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IceTransportPolicy {
+    #[default]
+    All,
+    RelayOnly,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerConfiguration {
     pub ice_candidate_pool_size: u16,
     pub always_negotiate_data_channels: bool,
+    pub ice_servers: Vec<IceServer>,
+    pub ice_transport_policy: IceTransportPolicy,
 }
 
 impl Default for PeerConfiguration {
@@ -140,6 +276,8 @@ impl Default for PeerConfiguration {
         Self {
             ice_candidate_pool_size: 0,
             always_negotiate_data_channels: true,
+            ice_servers: Vec::new(),
+            ice_transport_policy: IceTransportPolicy::All,
         }
     }
 }
@@ -328,11 +466,47 @@ impl PeerConnectionFactory {
                 message: "ICE candidate pool size must be at most 255".into(),
             });
         }
+        let mut ice_servers = Vec::new();
+        for server in &configuration.ice_servers {
+            if server.urls.is_empty() {
+                return Err(invalid_ice_server("ICE server requires at least one URL"));
+            }
+            for url in &server.urls {
+                let turn = url.starts_with("turn:") || url.starts_with("turns:");
+                let scheme = if turn {
+                    if url.starts_with("turns:") {
+                        "turns:"
+                    } else {
+                        "turn:"
+                    }
+                } else if url.starts_with("stuns:") {
+                    "stuns:"
+                } else {
+                    "stun:"
+                };
+                if !url.starts_with(scheme)
+                    || url[scheme.len()..].is_empty()
+                    || url.chars().any(char::is_whitespace)
+                {
+                    return Err(invalid_ice_server("invalid STUN/TURN server URL"));
+                }
+                if turn && (server.username.is_empty() || server.password.is_empty()) {
+                    return Err(invalid_ice_server("TURN requires username and password"));
+                }
+                ice_servers.push(ffi::FfiIceServer {
+                    url: url.clone(),
+                    username: server.username.clone(),
+                    password: server.password.clone(),
+                });
+            }
+        }
         let mut message = String::new();
         let native = ffi::create_peer_connection(
             self.0.native.as_ref().expect("validated peer factory"),
             configuration.ice_candidate_pool_size,
             configuration.always_negotiate_data_channels,
+            &ice_servers,
+            configuration.ice_transport_policy == IceTransportPolicy::RelayOnly,
             &mut message,
         );
         if native.is_null() {
@@ -448,8 +622,18 @@ impl PeerConnection {
     }
 
     pub fn create_offer(&self) -> OperationId {
+        self.create_offer_with_ice_restart(false)
+    }
+
+    /// Request new ICE credentials and candidate gathering in the next offer.
+    /// The operation completes through `OperationComplete` like a normal offer.
+    pub fn create_ice_restart_offer(&self) -> OperationId {
+        self.create_offer_with_ice_restart(true)
+    }
+
+    fn create_offer_with_ice_restart(&self, ice_restart: bool) -> OperationId {
         let id = self.next_operation();
-        ffi::peer_create_offer(self.native(), id.0);
+        ffi::peer_create_offer(self.native(), id.0, ice_restart);
         id
     }
 
@@ -457,6 +641,37 @@ impl PeerConnection {
         let id = self.next_operation();
         ffi::peer_create_answer(self.native(), id.0);
         id
+    }
+
+    pub fn descriptions(&self) -> Result<PeerDescriptions, PeerError> {
+        let mut native = Vec::new();
+        match ffi::peer_descriptions(self.native(), &mut native) {
+            0 => {
+                let mut result = PeerDescriptions::default();
+                for entry in native {
+                    let description = Some(SessionDescription {
+                        kind: sdp_type(entry.kind),
+                        sdp: entry.sdp,
+                    });
+                    match entry.slot {
+                        0 => result.current_local = description,
+                        1 => result.current_remote = description,
+                        2 => result.pending_local = description,
+                        3 => result.pending_remote = description,
+                        _ => unreachable!("native adapter returned an invalid SDP slot"),
+                    }
+                }
+                Ok(result)
+            }
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }),
+            _ => Err(PeerError {
+                kind: PeerErrorKind::Internal,
+                message: "failed to serialize peer descriptions".into(),
+            }),
+        }
     }
 
     pub fn set_local_description(&self, description: SessionDescription) -> OperationId {
@@ -493,6 +708,21 @@ impl PeerConnection {
         id
     }
 
+    /// Request one typed stats snapshot. Only one request may be outstanding
+    /// until its event is taken, keeping queued snapshots bounded. A request
+    /// rejected here has no asynchronous completion.
+    pub fn request_stats(&self) -> Result<OperationId, PeerError> {
+        let id = self.next_operation();
+        if ffi::peer_request_stats(self.native(), id.0) {
+            Ok(id)
+        } else {
+            Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "peer closed or previous stats result not yet consumed".into(),
+            })
+        }
+    }
+
     pub fn try_next_event(&self) -> Option<PeerConnectionEvent> {
         event_from_ffi(ffi::peer_take_event(self.native()), &self.inner)
     }
@@ -524,6 +754,13 @@ impl PeerInner {
     }
 }
 
+fn invalid_ice_server(message: &str) -> PeerError {
+    PeerError {
+        kind: PeerErrorKind::InvalidParameter,
+        message: message.into(),
+    }
+}
+
 fn native_build_error(error: impl fmt::Display) -> PeerError {
     PeerError {
         kind: PeerErrorKind::NativeConstruction,
@@ -535,9 +772,124 @@ fn optional_ptr<T>(value: Option<&T>) -> *const T {
     value.map_or(std::ptr::null(), |value| value as *const T)
 }
 
+struct StatFields<'a>(&'a [ffi::FfiStatsField]);
+
+impl StatFields<'_> {
+    fn field(&self, name: &str, kind: u8) -> Option<&ffi::FfiStatsField> {
+        self.0
+            .iter()
+            .find(|field| field.name == name && field.kind == kind)
+    }
+
+    fn text(&self, name: &str) -> Option<String> {
+        self.field(name, 1).map(|field| field.text.clone())
+    }
+
+    fn unsigned(&self, name: &str) -> Option<u64> {
+        self.field(name, 2).map(|field| field.unsigned_value)
+    }
+
+    fn signed(&self, name: &str) -> Option<i64> {
+        self.field(name, 3).map(|field| field.signed_value)
+    }
+
+    fn decimal(&self, name: &str) -> Option<f64> {
+        self.field(name, 4).map(|field| field.decimal)
+    }
+
+    fn flag(&self, name: &str) -> Option<bool> {
+        self.field(name, 5).map(|field| field.flag)
+    }
+}
+
+fn stats_record_from_ffi(record: ffi::FfiStatsRecord) -> PeerStatsRecord {
+    let fields = StatFields(&record.fields);
+    let id = record.id;
+    let timestamp_us = record.timestamp_us;
+    match record.kind {
+        1 => PeerStatsRecord::CandidatePair(CandidatePairStats {
+            id,
+            timestamp_us,
+            transport_id: fields.text("transport_id"),
+            local_candidate_id: fields.text("local_candidate_id"),
+            remote_candidate_id: fields.text("remote_candidate_id"),
+            state: fields.text("state"),
+            nominated: fields.flag("nominated"),
+            packets_sent: fields.unsigned("packets_sent"),
+            packets_received: fields.unsigned("packets_received"),
+            bytes_sent: fields.unsigned("bytes_sent"),
+            bytes_received: fields.unsigned("bytes_received"),
+            current_round_trip_time: fields.decimal("current_round_trip_time"),
+            available_outgoing_bitrate: fields.decimal("available_outgoing_bitrate"),
+            available_incoming_bitrate: fields.decimal("available_incoming_bitrate"),
+        }),
+        2 => PeerStatsRecord::Transport(TransportStats {
+            id,
+            timestamp_us,
+            selected_candidate_pair_id: fields.text("selected_candidate_pair_id"),
+            ice_state: fields.text("ice_state"),
+            dtls_state: fields.text("dtls_state"),
+            packets_sent: fields.unsigned("packets_sent"),
+            packets_received: fields.unsigned("packets_received"),
+            bytes_sent: fields.unsigned("bytes_sent"),
+            bytes_received: fields.unsigned("bytes_received"),
+        }),
+        3 => PeerStatsRecord::InboundRtp(InboundRtpStats {
+            id,
+            timestamp_us,
+            kind: fields.text("kind"),
+            ssrc: fields.unsigned("ssrc"),
+            transport_id: fields.text("transport_id"),
+            mid: fields.text("mid"),
+            packets_received: fields.unsigned("packets_received"),
+            packets_lost: fields.signed("packets_lost"),
+            bytes_received: fields.unsigned("bytes_received"),
+            jitter: fields.decimal("jitter"),
+            frames_received: fields.unsigned("frames_received"),
+            frames_decoded: fields.unsigned("frames_decoded"),
+        }),
+        4 => PeerStatsRecord::OutboundRtp(OutboundRtpStats {
+            id,
+            timestamp_us,
+            kind: fields.text("kind"),
+            ssrc: fields.unsigned("ssrc"),
+            transport_id: fields.text("transport_id"),
+            mid: fields.text("mid"),
+            rid: fields.text("rid"),
+            packets_sent: fields.unsigned("packets_sent"),
+            bytes_sent: fields.unsigned("bytes_sent"),
+            target_bitrate: fields.decimal("target_bitrate"),
+            frames_encoded: fields.unsigned("frames_encoded"),
+            frames_sent: fields.unsigned("frames_sent"),
+        }),
+        5 => PeerStatsRecord::DataChannel(DataChannelStats {
+            id,
+            timestamp_us,
+            label: fields.text("label"),
+            protocol: fields.text("protocol"),
+            state: fields.text("state"),
+            data_channel_identifier: fields.signed("data_channel_identifier"),
+            messages_sent: fields.unsigned("messages_sent"),
+            messages_received: fields.unsigned("messages_received"),
+            bytes_sent: fields.unsigned("bytes_sent"),
+            bytes_received: fields.unsigned("bytes_received"),
+        }),
+        _ => unreachable!("native stats record kind"),
+    }
+}
+
 fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<PeerConnectionEvent> {
     match event.kind {
         0 => None,
+        12 => Some(PeerConnectionEvent::Stats(PeerStatsSnapshot {
+            operation_id: OperationId(event.operation_id),
+            timestamp_us: event.stats_timestamp_us,
+            records: event
+                .stats_records
+                .into_iter()
+                .map(stats_record_from_ffi)
+                .collect(),
+        })),
         1 => Some(PeerConnectionEvent::OperationComplete(
             OperationCompletion {
                 operation_id: OperationId(event.operation_id),

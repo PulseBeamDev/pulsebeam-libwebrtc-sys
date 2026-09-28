@@ -1,10 +1,13 @@
 use std::{net::Ipv4Addr, thread, time::Duration};
 
+#[path = "support/non_trickle.rs"]
+mod non_trickle;
+
 use pulsebeam_webrtc_sys::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
-    DataChannelMessageKind, DataChannelSendResult, DataChannelState, Environment, IceCandidate,
-    ManualClock, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, RandomnessLease, SessionDescription, SimulatedNetwork,
+    DataChannelMessageKind, DataChannelSendResult, DataChannelState, Environment, ManualClock,
+    OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    RandomnessLease, SessionDescription, SimulatedNetwork,
 };
 
 struct Pair {
@@ -60,9 +63,16 @@ impl Pair {
             self.alice.set_local_description(offer.clone()),
             &mut alice_events,
         );
+        let gathered = non_trickle::gathered_local_description(
+            &self.alice,
+            &self.clock,
+            &self.network,
+            &mut alice_events,
+        );
+        assert_eq!(gathered.kind, offer.kind);
         completion(
             &self.bob,
-            self.bob.set_remote_description(offer),
+            self.bob.set_remote_description(gathered),
             &mut bob_events,
         );
         let answer = completion_description(&self.bob, self.bob.create_answer(), &mut bob_events);
@@ -71,25 +81,24 @@ impl Pair {
             self.bob.set_local_description(answer.clone()),
             &mut bob_events,
         );
+        let gathered = non_trickle::gathered_local_description(
+            &self.bob,
+            &self.clock,
+            &self.network,
+            &mut bob_events,
+        );
+        assert_eq!(gathered.kind, answer.kind);
         completion(
             &self.alice,
-            self.alice.set_remote_description(answer),
+            self.alice.set_remote_description(gathered),
             &mut alice_events,
         );
         (alice_events, bob_events)
     }
 
     fn progress(&self) -> (Vec<PeerConnectionEvent>, Vec<PeerConnectionEvent>) {
-        let mut alice_events = drain_peer(&self.alice);
-        let mut bob_events = drain_peer(&self.bob);
-        let alice_candidates = take_candidates(&mut alice_events);
-        let bob_candidates = take_candidates(&mut bob_events);
-        for candidate in alice_candidates {
-            self.bob.add_ice_candidate(candidate);
-        }
-        for candidate in bob_candidates {
-            self.alice.add_ice_candidate(candidate);
-        }
+        let alice_events = drain_peer(&self.alice);
+        let bob_events = drain_peer(&self.bob);
         while let Some(packet) = self.network.next_packet() {
             self.network.deliver(packet.id).unwrap();
         }
@@ -113,24 +122,6 @@ fn factory(
 
 fn drain_peer(peer: &PeerConnection) -> Vec<PeerConnectionEvent> {
     std::iter::from_fn(|| peer.try_next_event()).collect()
-}
-
-fn take_candidates(events: &mut Vec<PeerConnectionEvent>) -> Vec<IceCandidate> {
-    let mut candidates = Vec::new();
-    events.retain_mut(|event| {
-        if let PeerConnectionEvent::IceCandidate(_) = event {
-            let PeerConnectionEvent::IceCandidate(candidate) =
-                std::mem::replace(event, PeerConnectionEvent::Closed)
-            else {
-                unreachable!()
-            };
-            candidates.push(candidate);
-            false
-        } else {
-            true
-        }
-    });
-    candidates
 }
 
 fn completion(
@@ -203,19 +194,6 @@ fn wait_for_remote_channel(
     panic!("remote data channel did not arrive");
 }
 
-fn route_initial_candidates(
-    pair: &Pair,
-    alice_events: &mut Vec<PeerConnectionEvent>,
-    bob_events: &mut Vec<PeerConnectionEvent>,
-) {
-    for candidate in take_candidates(alice_events) {
-        pair.bob.add_ice_candidate(candidate);
-    }
-    for candidate in take_candidates(bob_events) {
-        pair.alice.add_ice_candidate(candidate);
-    }
-}
-
 fn exchange_messages(pair: &Pair, alice: &DataChannel, bob: &DataChannel) {
     let alice_text = DataChannelMessage::text("alice text");
     let alice_binary = DataChannelMessage::binary([0, 1, 2, 255]);
@@ -265,8 +243,7 @@ fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
             alice.send(DataChannelMessage::text("too early")),
             DataChannelSendResult::NotOpen
         );
-        let (mut alice_events, mut bob_events) = pair.negotiate();
-        route_initial_candidates(&pair, &mut alice_events, &mut bob_events);
+        let (_alice_events, bob_events) = pair.negotiate();
         let mut bob = wait_for_remote_channel(&pair, bob_events);
         assert_eq!(bob.label(), "announced");
         let remote_configuration = bob.configuration();
@@ -293,8 +270,7 @@ fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
         .bob
         .create_data_channel("negotiated", configuration.clone())
         .unwrap();
-    let (mut alice_events, mut bob_events) = pair.negotiate();
-    route_initial_candidates(&pair, &mut alice_events, &mut bob_events);
+    let (_alice_events, _bob_events) = pair.negotiate();
     wait_for_open(&pair, &alice, &bob);
     assert_eq!(alice.configuration().id, configuration.id);
     assert_eq!(bob.configuration().id, configuration.id);
@@ -308,8 +284,7 @@ fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
         .alice
         .create_data_channel("teardown", DataChannelConfiguration::default())
         .unwrap();
-    let (mut alice_events, mut bob_events) = pair.negotiate();
-    route_initial_candidates(&pair, &mut alice_events, &mut bob_events);
+    let (_alice_events, bob_events) = pair.negotiate();
     let bob = wait_for_remote_channel(&pair, bob_events);
     wait_for_open(&pair, &alice, &bob);
 

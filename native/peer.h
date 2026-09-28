@@ -14,6 +14,8 @@ class Thread;
 
 namespace pulsebeam::webrtc_sys {
 
+struct FfiIceServer;
+struct FfiDescriptionSnapshot;
 struct FfiPeerEvent;
 class NativeAudioDecoderFactory;
 class NativeAudioEncoderFactory;
@@ -78,12 +80,20 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
     std::uint16_t ice_candidate_pool_size,
     bool always_negotiate_data_channels,
+    rust::Slice<const FfiIceServer> ice_servers,
+    bool relay_only,
     rust::String& error) noexcept;
 
 void peer_create_offer(const NativePeerConnection& peer,
-                       std::uint64_t operation_id) noexcept;
+                       std::uint64_t operation_id,
+                       bool ice_restart) noexcept;
 void peer_create_answer(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
+bool peer_request_stats(const NativePeerConnection& peer,
+                        std::uint64_t operation_id) noexcept;
+std::uint8_t peer_descriptions(
+    const NativePeerConnection& peer,
+    rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept;
 void peer_set_local_description(const NativePeerConnection& peer,
                                 std::uint64_t operation_id,
                                 std::uint8_t sdp_type,
