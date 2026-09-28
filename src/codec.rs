@@ -61,6 +61,21 @@ pub enum VideoFrameType {
     Delta,
 }
 
+/// An owned plane whose buffer includes row padding, including the final row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoPlane {
+    pub stride: usize,
+    pub data: Vec<u8>,
+}
+
+/// Owned NV12 planes. The UV plane stores interleaved U,V bytes at half
+/// resolution, rounding odd dimensions up.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Nv12Planes {
+    pub y: VideoPlane,
+    pub uv: VideoPlane,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoFrameBuffer {
     data: Vec<u8>,
@@ -72,6 +87,87 @@ impl VideoFrameBuffer {
             return Err(CodecError::InvalidFrame);
         }
         Ok(Self { data })
+    }
+
+    /// Convert strided I420 planes to tightly packed I420. Strides must be at
+    /// least the visible row width and each plane must have exactly
+    /// `stride * rows` bytes, including final-row padding.
+    pub fn i420_strided(
+        width: u32,
+        height: u32,
+        y: VideoPlane,
+        u: VideoPlane,
+        v: VideoPlane,
+    ) -> Result<Self, CodecError> {
+        let (w, h) = dimensions(width, height)?;
+        let cw = w.div_ceil(2);
+        let ch = h.div_ceil(2);
+        let mut data = Vec::new();
+        data.try_reserve_exact(i420_len(width, height)?)
+            .map_err(|_| CodecError::InvalidFrame)?;
+        append_plane(&mut data, &y, w, h)?;
+        append_plane(&mut data, &u, cw, ch)?;
+        append_plane(&mut data, &v, cw, ch)?;
+        Ok(Self { data })
+    }
+
+    /// Convert owned, strided NV12 planes into tightly packed I420 for the
+    /// native WebRTC encoder. U and V samples are deinterleaved without
+    /// scaling or color conversion.
+    pub fn nv12_strided(
+        width: u32,
+        height: u32,
+        y: VideoPlane,
+        uv: VideoPlane,
+    ) -> Result<Self, CodecError> {
+        let (w, h) = dimensions(width, height)?;
+        let cw = w.div_ceil(2);
+        let ch = h.div_ceil(2);
+        check_plane(&y, w, h)?;
+        check_plane(&uv, cw.checked_mul(2).ok_or(CodecError::InvalidFrame)?, ch)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(i420_len(width, height)?)
+            .map_err(|_| CodecError::InvalidFrame)?;
+        append_plane(&mut data, &y, w, h)?;
+        for channel in 0..2 {
+            for row in uv.data.chunks_exact(uv.stride) {
+                for col in 0..cw {
+                    data.push(row[2 * col + channel]);
+                }
+            }
+        }
+        Ok(Self { data })
+    }
+
+    /// Convert the packed I420 buffer to packed NV12 planes. The returned
+    /// buffers own their data and may be retained independently of the frame.
+    pub fn to_nv12(&self, width: u32, height: u32) -> Result<Nv12Planes, CodecError> {
+        let (w, h) = dimensions(width, height)?;
+        if self.data.len() != i420_len(width, height)? {
+            return Err(CodecError::InvalidFrame);
+        }
+        let y_len = w.checked_mul(h).ok_or(CodecError::InvalidFrame)?;
+        let chroma_len = w
+            .div_ceil(2)
+            .checked_mul(h.div_ceil(2))
+            .ok_or(CodecError::InvalidFrame)?;
+        let mut uv = Vec::new();
+        uv.try_reserve_exact(chroma_len.checked_mul(2).ok_or(CodecError::InvalidFrame)?)
+            .map_err(|_| CodecError::InvalidFrame)?;
+        for col in 0..chroma_len {
+            uv.push(self.data[y_len + col]);
+            uv.push(self.data[y_len + chroma_len + col]);
+        }
+        Ok(Nv12Planes {
+            y: VideoPlane {
+                stride: w,
+                data: self.data[..y_len].to_vec(),
+            },
+            uv: VideoPlane {
+                stride: w.div_ceil(2) * 2,
+                data: uv,
+            },
+        })
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -106,6 +202,28 @@ impl VideoFrame {
             rtp_timestamp,
             buffer: VideoFrameBuffer::i420(width, height, data)?,
         })
+    }
+
+    /// Construct an owned NV12 frame, converting to the packed I420 format
+    /// used by the injected-video source and decoder callback.
+    pub fn nv12(
+        width: u32,
+        height: u32,
+        planes: Nv12Planes,
+        timestamp_us: i64,
+        rtp_timestamp: u32,
+    ) -> Result<Self, CodecError> {
+        Ok(Self {
+            width,
+            height,
+            timestamp_us,
+            rtp_timestamp,
+            buffer: VideoFrameBuffer::nv12_strided(width, height, planes.y, planes.uv)?,
+        })
+    }
+
+    pub fn to_nv12(&self) -> Result<Nv12Planes, CodecError> {
+        self.buffer.to_nv12(self.width, self.height)
     }
 }
 
@@ -512,6 +630,36 @@ impl VideoEncoderFactoryHandle {
     fn test_cross_thread_lifecycle(&self) -> bool {
         ffi::test_encoder_factory_cross_thread(self.native())
     }
+}
+
+fn dimensions(width: u32, height: u32) -> Result<(usize, usize), CodecError> {
+    if width == 0 || height == 0 {
+        return Err(CodecError::InvalidFrame);
+    }
+    Ok((
+        usize::try_from(width).map_err(|_| CodecError::InvalidFrame)?,
+        usize::try_from(height).map_err(|_| CodecError::InvalidFrame)?,
+    ))
+}
+
+fn check_plane(plane: &VideoPlane, row_bytes: usize, rows: usize) -> Result<(), CodecError> {
+    if plane.stride < row_bytes || plane.stride.checked_mul(rows) != Some(plane.data.len()) {
+        return Err(CodecError::InvalidFrame);
+    }
+    Ok(())
+}
+
+fn append_plane(
+    result: &mut Vec<u8>,
+    plane: &VideoPlane,
+    row_bytes: usize,
+    rows: usize,
+) -> Result<(), CodecError> {
+    check_plane(plane, row_bytes, rows)?;
+    for row in plane.data.chunks_exact(plane.stride) {
+        result.extend_from_slice(&row[..row_bytes]);
+    }
+    Ok(())
 }
 
 fn i420_len(width: u32, height: u32) -> Result<usize, CodecError> {

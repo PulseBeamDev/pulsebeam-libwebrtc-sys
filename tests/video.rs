@@ -13,12 +13,13 @@ mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame,
-    Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerErrorKind, RtpTransceiver, RtpTransceiverDirection,
-    SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
-    VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
-    VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
-    VideoFrame, VideoFrameType, VideoRateControl, VideoResolution, VideoTrackState,
+    Environment, ManualClock, Nv12Planes, OperationId, PeerConfiguration, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RtpTransceiver,
+    RtpTransceiverDirection, SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder,
+    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
+    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
+    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
+    VideoRateControl, VideoResolution, VideoTrackState,
 };
 
 #[derive(Default)]
@@ -318,6 +319,119 @@ fn synthetic_i420(width: u32, height: u32) -> Vec<u8> {
     (0..len).map(|index| index as u8).collect()
 }
 
+#[test]
+fn strided_nv12_converts_odd_dimensions_and_rejects_bad_planes() {
+    let y = VideoPlane {
+        stride: 5,
+        data: vec![1, 2, 3, 99, 99, 4, 5, 6, 99, 99, 7, 8, 9, 99, 99],
+    };
+    let uv = VideoPlane {
+        stride: 6,
+        data: vec![10, 20, 30, 40, 99, 99, 50, 60, 70, 80, 99, 99],
+    };
+    let frame = VideoFrame::nv12(
+        3,
+        3,
+        Nv12Planes {
+            y: y.clone(),
+            uv: uv.clone(),
+        },
+        123,
+        456,
+    )
+    .unwrap();
+    assert_eq!(
+        frame.buffer.as_bytes(),
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 30, 50, 70, 20, 40, 60, 80]
+    );
+    assert_eq!(
+        VideoFrameBuffer::i420_strided(
+            3,
+            3,
+            y.clone(),
+            VideoPlane {
+                stride: 3,
+                data: vec![10, 30, 99, 50, 70, 99]
+            },
+            VideoPlane {
+                stride: 3,
+                data: vec![20, 40, 99, 60, 80, 99]
+            },
+        )
+        .unwrap(),
+        frame.buffer,
+    );
+    let packed = frame.to_nv12().unwrap();
+    assert_eq!(packed.y.stride, 3);
+    assert_eq!(packed.uv.stride, 4);
+    assert_eq!(packed.uv.data, vec![10, 20, 30, 40, 50, 60, 70, 80]);
+    assert_eq!(VideoFrame::nv12(3, 3, packed, 123, 456).unwrap(), frame);
+    assert_eq!(
+        VideoFrame::nv12(
+            3,
+            3,
+            Nv12Planes {
+                y: y.clone(),
+                uv: VideoPlane {
+                    stride: 3,
+                    data: uv.data.clone()
+                }
+            },
+            0,
+            0
+        ),
+        Err(CodecError::InvalidFrame),
+    );
+    assert_eq!(
+        VideoFrame::nv12(
+            3,
+            3,
+            Nv12Planes {
+                y: VideoPlane {
+                    stride: 5,
+                    data: y.data[..14].to_vec()
+                },
+                uv
+            },
+            0,
+            0
+        ),
+        Err(CodecError::InvalidFrame),
+    );
+    assert_eq!(
+        VideoFrame::nv12(
+            0,
+            3,
+            Nv12Planes {
+                y: y.clone(),
+                uv: VideoPlane {
+                    stride: 4,
+                    data: vec![0; 8]
+                }
+            },
+            0,
+            0
+        ),
+        Err(CodecError::InvalidFrame),
+    );
+    assert_eq!(
+        VideoFrame::nv12(
+            u32::MAX,
+            u32::MAX,
+            Nv12Planes {
+                y,
+                uv: VideoPlane {
+                    stride: 4,
+                    data: vec![0; 8]
+                }
+            },
+            0,
+            0
+        ),
+        Err(CodecError::InvalidFrame),
+    );
+}
+
 fn drain(peer: &PeerConnection) -> Vec<PeerConnectionEvent> {
     std::iter::from_fn(|| peer.try_next_event()).collect()
 }
@@ -460,7 +574,8 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
             break;
         }
     }
-    let frame = VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap();
+    let packed = VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap();
+    let frame = VideoFrame::nv12(16, 16, packed.to_nv12().unwrap(), 2_000_000, 90_000).unwrap();
     source.push_frame(&frame).unwrap();
     assert_eq!(
         local_sink
@@ -489,6 +604,7 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
         received.rtp_timestamp
     );
     assert_eq!(received.buffer.as_bytes(), synthetic_i420(16, 16));
+    assert_eq!(received.to_nv12().unwrap(), frame.to_nv12().unwrap());
     let sender = transceiver.sender();
     assert_eq!(
         sender

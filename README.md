@@ -143,6 +143,18 @@ ABIs and Apple device/simulator builds are not combined. Linux musl, 32-bit
 Android, Windows arm64, x86_64 iOS Simulator, WebAssembly, and other targets are
 deferred.
 
+## CPU video frame layout
+
+`VideoFrame::i420` owns tightly packed planar I420 bytes. For padded planes,
+`VideoFrameBuffer::i420_strided` copies the visible rows into packed I420.
+`VideoFrame::nv12` accepts owned Y and interleaved UV planes with explicit
+strides and converts to packed I420 before source submission; odd dimensions
+round chroma sizes up. A decoded `VideoFrame` can be converted back into owned,
+packed NV12 planes with `to_nv12()`. Conversions only rearrange bytes, without
+scaling or color-space conversion. Each strided plane must contain exactly
+`stride × rows` bytes, including padding after the final row; zero dimensions,
+short/extra buffers, narrow strides, and overflow are rejected.
+
 ## Decoded video sink retention
 
 Each attached `VideoSink` holds at most four decoded I420 frames and 16 MiB

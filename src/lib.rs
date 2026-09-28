@@ -19,11 +19,11 @@ pub(crate) use execution::{RustTask, run_task};
 
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
-    DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, VideoCodecFormat, VideoDecoder,
-    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
-    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
-    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoRateControl,
-    VideoResolution,
+    DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, Nv12Planes, VideoCodecFormat,
+    VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo,
+    VideoDecoderSettings, VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle,
+    VideoEncoderInfo, VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType,
+    VideoPlane, VideoRateControl, VideoResolution,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
