@@ -368,6 +368,8 @@ WebRTC decoding; this pinned upstream receiver cannot safely be attached a
 second time, even after close. This is a receive-only access-unit API, not a
 raw RTP payload or direct encoded sender input.
 
+`RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
+remote video receiver without guaranteeing that a remote sender honors it.
 `RtpSender::request_keyframe(&rids)` submits a keyframe request for an
 active sending video stream. An empty RID list targets all encodings; invalid
 RIDs fail. Success means that the request was accepted, not that a keyframe

@@ -155,6 +155,8 @@ std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
     const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept;
 std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) noexcept;
+bool rtp_receiver_request_keyframe(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
 std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
 FfiEncodedVideoFrame encoded_video_sink_take_frame(

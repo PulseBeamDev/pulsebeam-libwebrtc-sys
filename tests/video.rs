@@ -569,6 +569,7 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
         Some(RtpTransceiverDirection::ReceiveOnly)
     );
     let receiver = remote.receiver();
+    receiver.request_keyframe().unwrap();
     let remote_track = receiver.track().unwrap();
     let sink = remote_track.attach_sink().unwrap();
 

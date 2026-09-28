@@ -674,6 +674,10 @@ mod ffi {
         fn rtp_sender_clear_track(sender: &NativeRtpSender) -> bool;
         fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
         fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;
+        fn rtp_receiver_request_keyframe(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+        ) -> bool;
         fn rtp_receiver_attach_encoded_video_sink(
             peer: &NativePeerConnection,
             receiver: &NativeRtpReceiver,

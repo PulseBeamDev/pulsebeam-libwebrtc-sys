@@ -576,6 +576,19 @@ std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
   return std::make_unique<NativeRtpTransceiver>(std::move(state));
 }
 
+bool rtp_receiver_request_keyframe(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {
+  if (!peer.worker_thread()) return false;
+  const auto receivers = peer.peer()->GetReceivers();
+  if (std::find(receivers.begin(), receivers.end(), receiver.state()->receiver) ==
+      receivers.end()) return false;
+  auto track = VideoTrack(receiver.state()->receiver->track());
+  if (!track || track->state() != webrtc::MediaStreamTrackInterface::kLive ||
+      !track->GetSource() || !track->GetSource()->remote()) return false;
+  peer.worker_thread()->BlockingCall([&] { track->GetSource()->GenerateKeyFrame(); });
+  return true;
+}
+
 std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {
   if (!peer.worker_thread()) return nullptr;

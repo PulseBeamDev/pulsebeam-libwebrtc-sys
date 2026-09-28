@@ -591,6 +591,24 @@ impl RtpReceiver {
         (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
     }
 
+    /// Request a fresh remote video keyframe through the negotiated receiver.
+    /// Success means the request was submitted, not that the sender delivered
+    /// a frame. A foreign, ended or non-video receiver is rejected.
+    pub fn request_keyframe(&self) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        ffi::rtp_receiver_request_keyframe(self.peer.native(), self.native())
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "receiver is foreign, ended or not a remote video receiver".into(),
+            })
+    }
+
     /// Consume depacketized encoded video before decoding. Only one sink can
     /// ever be attached to each receiver during a peer's lifetime. Closing
     /// the sink restores pass-through decoding; it cannot be reattached.
