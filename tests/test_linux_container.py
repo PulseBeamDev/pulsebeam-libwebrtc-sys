@@ -46,7 +46,8 @@ class LinuxContainerTests(unittest.TestCase):
         recipes = (ROOT / "Justfile").read_text(encoding="utf-8")
         self.assertIn('SCCACHE_DIR="{{ work }}/sccache/{{ target }}"', recipes)
         self.assertIn("SCCACHE_CACHE_SIZE=2G", recipes)
-        self.assertIn('cc_wrapper="/usr/bin/sccache"', recipes)
+        self.assertIn('wrapper=$(command -v sccache)', recipes)
+        self.assertIn('cc_wrapper=\\"$wrapper\\"', recipes)
         self.assertIn("sccache --show-stats", recipes)
 
     def test_public_recipes_are_direct_podman_interfaces(self):
