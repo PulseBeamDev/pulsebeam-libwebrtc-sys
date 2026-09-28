@@ -405,6 +405,37 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert_eq!(transceiver.direction(), RtpTransceiverDirection::SendOnly);
     assert_eq!(transceiver.sender().track().unwrap().id(), "synthetic");
 
+    let sender_codecs = pair.alice.video_sender_capabilities().unwrap();
+    let receiver_codecs = pair.bob.video_receiver_capabilities().unwrap();
+    let h264_codecs: Vec<_> = sender_codecs
+        .into_iter()
+        .filter(|codec| {
+            codec.format().name == "H264"
+                && codec
+                    .format()
+                    .parameters
+                    .iter()
+                    .any(|param| param.key == "packetization-mode" && param.value == "1")
+        })
+        .collect();
+    assert!(
+        !h264_codecs.is_empty(),
+        "actual H264 sender capability missing"
+    );
+    assert!(
+        receiver_codecs
+            .iter()
+            .any(|codec| codec.format().name == "H264")
+    );
+    assert_eq!(h264_codecs[0].clock_rate(), Some(90_000));
+    assert!(
+        transceiver
+            .set_codec_preferences(&[h264_codecs[0].clone(), h264_codecs[0].clone(),])
+            .is_err(),
+        "duplicate capability must be rejected"
+    );
+    transceiver.set_codec_preferences(&h264_codecs).unwrap();
+
     let mut bob_events = pair.negotiate();
     let remote = (0..2_000_000)
         .find_map(|_| {

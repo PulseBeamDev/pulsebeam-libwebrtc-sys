@@ -1,7 +1,7 @@
 use std::{fmt, rc::Rc};
 
 use crate::{
-    CodecError, VideoFrame, VideoResolution, ffi,
+    CodecError, CodecParameter, VideoCodecFormat, VideoFrame, VideoResolution, ffi,
     peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner, error_kind},
 };
 
@@ -12,6 +12,71 @@ pub enum RtpTransceiverDirection {
     SendOnly = 1,
     ReceiveOnly = 2,
     Inactive = 3,
+}
+
+/// An actual video RTP capability reported by the pinned peer engine.
+/// Resiliency codecs (such as RTX) may also appear in the list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoCodecCapability {
+    format: VideoCodecFormat,
+    clock_rate: Option<u32>,
+    preferred_payload_type: Option<u8>,
+    rtcp_feedback: Vec<String>,
+    scalability_modes: Vec<String>,
+}
+
+impl VideoCodecCapability {
+    pub fn format(&self) -> &VideoCodecFormat {
+        &self.format
+    }
+    pub fn clock_rate(&self) -> Option<u32> {
+        self.clock_rate
+    }
+    pub fn preferred_payload_type(&self) -> Option<u8> {
+        self.preferred_payload_type
+    }
+    pub fn rtcp_feedback(&self) -> &[String] {
+        &self.rtcp_feedback
+    }
+    pub fn scalability_modes(&self) -> &[String] {
+        &self.scalability_modes
+    }
+
+    pub(crate) fn from_ffi(value: ffi::FfiVideoCodecCapability) -> Self {
+        Self {
+            format: VideoCodecFormat {
+                name: value.format.name,
+                parameters: value
+                    .format
+                    .parameters
+                    .into_iter()
+                    .map(|item| CodecParameter {
+                        key: item.key,
+                        value: item.value,
+                    })
+                    .collect(),
+            },
+            clock_rate: u32::try_from(value.clock_rate).ok(),
+            preferred_payload_type: u8::try_from(value.preferred_payload_type).ok(),
+            rtcp_feedback: value.rtcp_feedback,
+            scalability_modes: value.scalability_modes,
+        }
+    }
+
+    fn ffi_format(&self) -> ffi::FfiCodecFormat {
+        ffi::FfiCodecFormat {
+            name: self.format.name.clone(),
+            parameters: self
+                .format
+                .parameters
+                .iter()
+                .map(|item| ffi::FfiCodecParameter {
+                    key: item.key.clone(),
+                    value: item.value.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -561,6 +626,36 @@ impl RtpTransceiver {
     pub fn mid(&self) -> Option<String> {
         let mut mid = String::new();
         ffi::rtp_transceiver_mid(self.native(), &mut mid).then_some(mid)
+    }
+
+    /// Order supported video codecs for this transceiver's next negotiation.
+    /// An empty list restores upstream defaults. Pass capabilities returned by
+    /// the peer, rather than inventing payload profiles or fmtp parameters.
+    pub fn set_codec_preferences(&self, codecs: &[VideoCodecCapability]) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let formats: Vec<_> = codecs
+            .iter()
+            .map(VideoCodecCapability::ffi_format)
+            .collect();
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::rtp_transceiver_set_video_codec_preferences(
+            self.native(),
+            self.peer.factory_native(),
+            &formats,
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
     }
 
     /// Start standard transceiver stopping; negotiate again to complete it.

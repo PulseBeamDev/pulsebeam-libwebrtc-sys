@@ -12,7 +12,8 @@ use crate::{
     data_channel::DataChannel,
     ffi,
     video::{
-        RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoSource, VideoTrack,
+        RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability,
+        VideoSource, VideoTrack,
     },
 };
 
@@ -606,6 +607,38 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    /// Video RTP codecs available for sending on this peer (including RTX/RED when supported).
+    pub fn video_sender_capabilities(&self) -> Result<Vec<VideoCodecCapability>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        Ok(
+            ffi::peer_video_codec_capabilities(self.inner.factory_native(), true)
+                .into_iter()
+                .map(VideoCodecCapability::from_ffi)
+                .collect(),
+        )
+    }
+
+    /// Video RTP codecs available for receiving on this peer.
+    pub fn video_receiver_capabilities(&self) -> Result<Vec<VideoCodecCapability>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        Ok(
+            ffi::peer_video_codec_capabilities(self.inner.factory_native(), false)
+                .into_iter()
+                .map(VideoCodecCapability::from_ffi)
+                .collect(),
+        )
+    }
+
     /// Returns a stable snapshot of this peer's video transceivers.
     pub fn video_transceivers(&self) -> Result<Vec<RtpTransceiver>, PeerError> {
         if self.inner.closed.get() {
@@ -844,6 +877,13 @@ impl PeerConnection {
 }
 
 impl PeerInner {
+    pub(crate) fn factory_native(&self) -> &ffi::NativePeerConnectionFactory {
+        self._factory
+            .native
+            .as_ref()
+            .expect("validated peer factory")
+    }
+
     pub(crate) fn native(&self) -> &ffi::NativePeerConnection {
         self.native.as_ref().expect("validated peer connection")
     }

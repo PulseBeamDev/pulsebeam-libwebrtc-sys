@@ -1,9 +1,11 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -19,6 +21,7 @@
 #include "api/rtp_transceiver_interface.h"
 #include "api/scoped_refptr.h"
 #include "api/video/i420_buffer.h"
+#include "api/video_codecs/scalability_mode.h"
 #include "api/video/video_frame.h"
 #include "api/video/video_sink_interface.h"
 #include "media/base/video_broadcaster.h"
@@ -131,6 +134,29 @@ void SetError(const webrtc::RTCError& rtc_error, std::uint8_t& error_type,
               rust::String& error) {
   error_type = static_cast<std::uint8_t>(rtc_error.type());
   error = rtc_error.message();
+}
+
+rust::String FeedbackName(const webrtc::RtcpFeedback& feedback) {
+  std::string name;
+  switch (feedback.type) {
+    case webrtc::RtcpFeedbackType::NONE: name = "none"; break;
+    case webrtc::RtcpFeedbackType::CCM: name = "ccm"; break;
+    case webrtc::RtcpFeedbackType::LNTF: name = "goog-lntf"; break;
+    case webrtc::RtcpFeedbackType::NACK: name = "nack"; break;
+    case webrtc::RtcpFeedbackType::REMB: name = "goog-remb"; break;
+    case webrtc::RtcpFeedbackType::TRANSPORT_CC: name = "transport-cc"; break;
+    case webrtc::RtcpFeedbackType::CCFB: name = "ccfb"; break;
+    default: name = "unknown:" + std::to_string(static_cast<int>(feedback.type)); break;
+  }
+  if (feedback.message_type) {
+    switch (*feedback.message_type) {
+      case webrtc::RtcpFeedbackMessageType::GENERIC_NACK: name += "/generic"; break;
+      case webrtc::RtcpFeedbackMessageType::PLI: name += "/pli"; break;
+      case webrtc::RtcpFeedbackMessageType::FIR: name += "/fir"; break;
+      default: name += "/unknown:" + std::to_string(static_cast<int>(*feedback.message_type)); break;
+    }
+  }
+  return name;
 }
 
 webrtc::scoped_refptr<webrtc::VideoTrackInterface> VideoTrack(
@@ -378,6 +404,37 @@ std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
   return std::make_unique<NativeTransceiverList>(std::move(state));
 }
 
+rust::Vec<FfiVideoCodecCapability> peer_video_codec_capabilities(
+    const NativePeerConnectionFactory& factory, bool sender) noexcept {
+  rust::Vec<FfiVideoCodecCapability> result;
+  if (!factory.factory() || !factory.signaling_thread()) {
+    return result;
+  }
+  const auto capabilities = factory.signaling_thread()->BlockingCall([&] {
+    return sender
+        ? factory.factory()->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO)
+        : factory.factory()->GetRtpReceiverCapabilities(webrtc::MediaType::VIDEO);
+  });
+  for (const auto& codec : capabilities.codecs) {
+    FfiVideoCodecCapability item;
+    item.format.name = codec.name;
+    for (const auto& [key, value] : codec.parameters) {
+      item.format.parameters.push_back({key, value});
+    }
+    item.clock_rate = codec.clock_rate.value_or(-1);
+    item.preferred_payload_type = codec.preferred_payload_type.value_or(-1);
+    for (const auto& feedback : codec.rtcp_feedback) {
+      item.rtcp_feedback.push_back(FeedbackName(feedback));
+    }
+    for (const auto mode : codec.scalability_modes) {
+      item.scalability_modes.push_back(
+          std::string(webrtc::ScalabilityModeToString(mode)));
+    }
+    result.push_back(std::move(item));
+  }
+  return result;
+}
+
 std::size_t transceiver_list_len(const NativeTransceiverList& list) noexcept {
   return list.state()->transceivers.size();
 }
@@ -477,6 +534,50 @@ bool rtp_transceiver_mid(const NativeRtpTransceiver& transceiver,
     return false;
   }
   mid = *value;
+  return true;
+}
+
+bool rtp_transceiver_set_video_codec_preferences(
+    const NativeRtpTransceiver& transceiver, const NativePeerConnectionFactory& factory,
+    rust::Slice<const FfiCodecFormat> formats, std::uint8_t& error_type,
+    rust::String& error) noexcept {
+  if (!factory.factory() || !factory.signaling_thread()) {
+    error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_STATE);
+    error = "peer is unavailable";
+    return false;
+  }
+  const auto capabilities = factory.signaling_thread()->BlockingCall([&] {
+    return factory.factory()->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO);
+  });
+  std::vector<webrtc::RtpCodecCapability> selected;
+  for (const auto& format : formats) {
+    std::map<std::string, std::string> parameters;
+    for (const auto& item : format.parameters) {
+      if (!parameters.emplace(std::string(item.key), std::string(item.value)).second) {
+        error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
+        error = "duplicate codec parameter";
+        return false;
+      }
+    }
+    const auto it = std::find_if(capabilities.codecs.begin(), capabilities.codecs.end(),
+        [&](const auto& codec) {
+          return codec.name == std::string(format.name) && codec.parameters == parameters;
+        });
+    if (it == capabilities.codecs.end() ||
+        std::find(selected.begin(), selected.end(), *it) != selected.end()) {
+      error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
+      error = "unknown or repeated video codec capability";
+      return false;
+    }
+    selected.push_back(*it);
+  }
+  auto result = factory.signaling_thread()->BlockingCall([&] {
+    return transceiver.state()->transceiver->SetCodecPreferences(selected);
+  });
+  if (!result.ok()) {
+    SetError(result, error_type, error);
+    return false;
+  }
   return true;
 }
 

@@ -48,7 +48,8 @@ pub use peer::{
 };
 pub use video::{
     RtpReceiver, RtpSender, RtpSenderEncoding, RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, VideoSink, VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
+    RtpTransceiverDirection, VideoCodecCapability, VideoSink, VideoSource, VideoSourceState,
+    VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -61,6 +62,14 @@ mod ffi {
     struct FfiCodecFormat {
         name: String,
         parameters: Vec<FfiCodecParameter>,
+    }
+
+    struct FfiVideoCodecCapability {
+        format: FfiCodecFormat,
+        clock_rate: i32,
+        preferred_payload_type: i32,
+        rtcp_feedback: Vec<String>,
+        scalability_modes: Vec<String>,
     }
 
     struct FfiCodecSupport {
@@ -570,6 +579,10 @@ mod ffi {
         fn close_video_sink(sink: &NativeVideoSink) -> bool;
         fn peer_video_transceivers(peer: &NativePeerConnection)
         -> UniquePtr<NativeTransceiverList>;
+        fn peer_video_codec_capabilities(
+            factory: &NativePeerConnectionFactory,
+            sender: bool,
+        ) -> Vec<FfiVideoCodecCapability>;
         fn transceiver_list_len(list: &NativeTransceiverList) -> usize;
         fn transceiver_list_at(
             list: &NativeTransceiverList,
@@ -605,6 +618,13 @@ mod ffi {
         fn rtp_transceiver_current_direction(transceiver: &NativeRtpTransceiver) -> i8;
         fn rtp_transceiver_stopped(transceiver: &NativeRtpTransceiver) -> bool;
         fn rtp_transceiver_mid(transceiver: &NativeRtpTransceiver, mid: &mut String) -> bool;
+        fn rtp_transceiver_set_video_codec_preferences(
+            transceiver: &NativeRtpTransceiver,
+            factory: &NativePeerConnectionFactory,
+            formats: &[FfiCodecFormat],
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn rtp_transceiver_stop(
             transceiver: &NativeRtpTransceiver,
             error_type: &mut u8,

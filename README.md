@@ -338,6 +338,14 @@ close, or drop, even if caller-owned track and source handles are dropped.
 Renegotiate if the remote track identity must change. A sender's `track()`
 returns the retained local track when present.
 
+`video_sender_capabilities()` and `video_receiver_capabilities()` expose
+actual video RTP codec profiles, FMTP parameters, RTCP feedback and scalability
+modes for each peer's factory. Select and order discovered sender capabilities
+with `RtpTransceiver::set_codec_preferences()` before negotiating. Empty
+preferences restore upstream defaults; unknown or repeated profiles fail.
+Discovery includes resiliency codecs such as RTX, and does not install missing
+H.264 encoder or decoder implementations.
+
 A video transceiver's `RtpSender::parameters()` returns an owned encoding
 snapshot. Edit `encodings` and pass the snapshot to `set_parameters()` on the
 same sender handle. Supported fields are active state, maximum bitrate and

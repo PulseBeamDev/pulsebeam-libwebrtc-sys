@@ -18,6 +18,8 @@ class NativePeerConnectionFactory;
 class NativePeerConnection;
 class NativeVideoFrame;
 struct FfiSenderParameters;
+struct FfiCodecFormat;
+struct FfiVideoCodecCapability;
 
 class NativeVideoSource final {
  public:
@@ -122,6 +124,8 @@ bool close_video_sink(const NativeVideoSink& sink) noexcept;
 
 std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
     const NativePeerConnection& peer) noexcept;
+rust::Vec<FfiVideoCodecCapability> peer_video_codec_capabilities(
+    const NativePeerConnectionFactory& factory, bool sender) noexcept;
 std::size_t transceiver_list_len(const NativeTransceiverList& list) noexcept;
 std::unique_ptr<NativeRtpTransceiver> transceiver_list_at(
     const NativeTransceiverList& list, std::size_t index) noexcept;
@@ -152,6 +156,10 @@ bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept;
 bool rtp_transceiver_mid(const NativeRtpTransceiver& transceiver,
                          rust::String& mid) noexcept;
+bool rtp_transceiver_set_video_codec_preferences(
+    const NativeRtpTransceiver& transceiver, const NativePeerConnectionFactory& factory,
+    rust::Slice<const FfiCodecFormat> formats, std::uint8_t& error_type,
+    rust::String& error) noexcept;
 bool rtp_transceiver_stop(const NativeRtpTransceiver& transceiver,
                           std::uint8_t& error_type,
                           rust::String& error) noexcept;
