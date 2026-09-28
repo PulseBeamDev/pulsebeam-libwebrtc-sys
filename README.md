@@ -365,7 +365,8 @@ H.264 encoder or decoder implementations.
 encoded video access units before decoding. Its bounded four-frame/4 MiB queue
 reports drops. Access units include optional RID, capture/receive timing, and
 negotiated dependency-descriptor frame/layer/decode-target metadata; absent
-metadata is not fabricated. Closing the sink clears queued frames and resumes normal
+metadata is not fabricated. For H.264, `data` is a depacketized Annex-B
+access unit with start-code-delimited NAL units, not RTP payload fragments. Closing the sink clears queued frames and resumes normal
 WebRTC decoding; this pinned upstream receiver cannot safely be attached a
 second time, even after close. This is a receive-only access-unit API, not a
 raw RTP payload or direct encoded sender input.

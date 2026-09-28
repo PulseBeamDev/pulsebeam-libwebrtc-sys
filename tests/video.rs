@@ -639,7 +639,7 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
             encoded_sink.try_next_frame()
         })
         .expect("encoded receive frame was not intercepted");
-    assert!(!encoded.data.is_empty());
+    assert!(encoded.data.starts_with(&[0, 0, 0, 1, 0x67]));
     assert!(encoded.mime_type.eq_ignore_ascii_case("video/H264"));
     assert_ne!(encoded.ssrc, 0);
     assert!(encoded.key_frame);
