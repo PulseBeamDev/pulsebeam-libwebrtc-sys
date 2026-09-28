@@ -302,7 +302,12 @@ downstream application responsibility.
 `PeerConfiguration` accepts STUN/TURN URLs with credentials and an explicit
 `IceTransportPolicy::{All, RelayOnly}`. `turn:` URLs support UDP or TCP via
 `?transport=udp` or `?transport=tcp`; `turns:` uses TLS with certificate
-verification enabled. `PeerConnection::create_ice_restart_offer()` returns an
+and hostname verification. By default, the pinned WebRTC roots are trusted.
+`PeerConfiguration::turn_tls_ca_pem` can add a PEM-encoded CA for that peer's
+TURN/TLS connections without disabling WebRTC's existing roots or hostname
+checks. This option widens trust for all TLS servers configured on that peer;
+it is not a per-server CA restriction. An invalid CA fails peer construction.
+`PeerConnection::create_ice_restart_offer()` returns an
 operation ID whose SDP arrives in `OperationComplete`. For non-trickle signaling,
 set each local description, wait for `IceGatheringState::Complete`, then copy
 its gathered SDP with `PeerConnection::descriptions()` and send that description
@@ -324,13 +329,14 @@ The Linux artifact tests validate configuration, two-peer ICE restart through
 renewed credentials and packet delivery, connected-peer stat relationships,
 simulated IPv4 and IPv6 STUN Binding responses represented as server-reflexive
 candidates in gathered SDP, authenticated TURN UDP/TCP relay through a local
-hostname-resolved coturn fixture, rollback and pending/current SDP transitions,
-and Rust-only linking. They do **not** yet qualify production IPv6 routing,
-authenticated TURN TLS relay; that fixture-backed gate remains outstanding.
+hostname-resolved coturn fixture, authenticated TURN/TLS relay using an
+additional fixture CA, rollback and pending/current SDP transitions, and
+Rust-only linking. They do **not** yet qualify production IPv6 routing.
 The UDP fixture checks that bad TURN credentials produce no relay candidate and
-report a candidate error. Terminating the TCP relay after connection exposes
-transport loss to the peer. Trickle ICE and remote end-of-candidates are outside this
-non-trickle signaling contract; no upstream patch is required.
+report a candidate error. The TLS fixture rejects an untrusted CA and a
+hostname mismatch. Terminating the TCP relay after connection exposes
+transport loss to the peer. Trickle ICE and remote end-of-candidates are outside
+this non-trickle signaling contract; no upstream patch is required.
 
 ## Downstream rendering contract
 

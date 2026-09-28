@@ -82,6 +82,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     bool always_negotiate_data_channels,
     rust::Slice<const FfiIceServer> ice_servers,
     bool relay_only,
+    rust::Str turn_tls_ca_pem,
     rust::String& error) noexcept;
 
 void peer_create_offer(const NativePeerConnection& peer,

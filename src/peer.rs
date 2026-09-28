@@ -269,6 +269,10 @@ pub struct PeerConfiguration {
     pub always_negotiate_data_channels: bool,
     pub ice_servers: Vec<IceServer>,
     pub ice_transport_policy: IceTransportPolicy,
+    /// Additional PEM-encoded CA trusted for TURN/TLS on this peer. The pinned
+    /// WebRTC roots remain trusted, and the server hostname is still checked.
+    /// `None` uses only upstream trust anchors.
+    pub turn_tls_ca_pem: Option<String>,
 }
 
 impl Default for PeerConfiguration {
@@ -278,6 +282,7 @@ impl Default for PeerConfiguration {
             always_negotiate_data_channels: true,
             ice_servers: Vec::new(),
             ice_transport_policy: IceTransportPolicy::All,
+            turn_tls_ca_pem: None,
         }
     }
 }
@@ -466,6 +471,12 @@ impl PeerConnectionFactory {
                 message: "ICE candidate pool size must be at most 255".into(),
             });
         }
+        if configuration.turn_tls_ca_pem.as_deref() == Some("") {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "TURN TLS CA certificate cannot be empty".into(),
+            });
+        }
         let mut ice_servers = Vec::new();
         for server in &configuration.ice_servers {
             if server.urls.is_empty() {
@@ -507,11 +518,16 @@ impl PeerConnectionFactory {
             configuration.always_negotiate_data_channels,
             &ice_servers,
             configuration.ice_transport_policy == IceTransportPolicy::RelayOnly,
+            configuration.turn_tls_ca_pem.as_deref().unwrap_or(""),
             &mut message,
         );
         if native.is_null() {
             Err(PeerError {
-                kind: PeerErrorKind::NativeConstruction,
+                kind: if message == "invalid TURN TLS CA certificate" {
+                    PeerErrorKind::InvalidParameter
+                } else {
+                    PeerErrorKind::NativeConstruction
+                },
                 message,
             })
         } else {

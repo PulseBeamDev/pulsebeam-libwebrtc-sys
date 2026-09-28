@@ -2,7 +2,9 @@
 //! Signaling transfers complete gathered SDP, never individual candidates.
 
 use std::{
+    fs,
     net::{IpAddr, TcpListener, ToSocketAddrs, UdpSocket},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -23,6 +25,10 @@ impl TurnServer {
     }
 
     fn start() -> (Self, IpAddr, u16) {
+        Self::start_with_tls(None)
+    }
+
+    fn start_with_tls(cert_and_key: Option<(&Path, &Path)>) -> (Self, IpAddr, u16) {
         // Use a routable interface, not loopback: the default WebRTC network
         // manager does not offer loopback ICE interfaces in production mode.
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -33,23 +39,37 @@ impl TurnServer {
             .local_addr()
             .unwrap()
             .port();
-        let child = Command::new("turnserver")
-            .args([
-                "-n",
-                "--no-cli",
-                "--no-tls",
-                "--no-dtls",
-                "--no-multicast-peers",
-                "--lt-cred-mech",
-                "--realm=fixture.invalid",
-                "--user=alice:secret",
-                "--listening-ip",
-                &ip.to_string(),
-                "--relay-ip",
-                &ip.to_string(),
-                "--listening-port",
+        let mut command = Command::new("turnserver");
+        command.args([
+            "-n",
+            "--no-cli",
+            "--no-dtls",
+            "--no-multicast-peers",
+            "--lt-cred-mech",
+            "--realm=fixture.invalid",
+            "--user=alice:secret",
+            "--listening-ip",
+            &ip.to_string(),
+            "--relay-ip",
+            &ip.to_string(),
+            "--listening-port",
+            &port.to_string(),
+        ]);
+        if let Some((cert, key)) = cert_and_key {
+            command.args([
+                "--no-tcp",
+                "--no-udp",
+                "--tls-listening-port",
                 &port.to_string(),
-            ])
+                "--cert",
+                cert.to_str().unwrap(),
+                "--pkey",
+                key.to_str().unwrap(),
+            ]);
+        } else {
+            command.args(["--no-tls", "--no-dtls"]);
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -78,6 +98,127 @@ impl Drop for TurnServer {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+struct FixtureCertificate {
+    directory: PathBuf,
+    ca_pem: String,
+    cert: PathBuf,
+    key: PathBuf,
+}
+
+impl FixtureCertificate {
+    fn new(hostname: &str) -> Self {
+        let directory = std::env::temp_dir().join(format!(
+            "pulsebeam-turn-cert-{}-{}",
+            std::process::id(),
+            TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let ca = directory.join("ca.pem");
+        let ca_key = directory.join("ca.key");
+        let cert = directory.join("server.pem");
+        let key = directory.join("server.key");
+        let request = directory.join("server.csr");
+        let extensions = directory.join("server.ext");
+        fs::write(
+            &extensions,
+            format!("subjectAltName=DNS:{hostname}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n"),
+        )
+        .unwrap();
+        run_openssl(&[
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-sha256",
+            "-days",
+            "1",
+            "-keyout",
+            ca_key.to_str().unwrap(),
+            "-out",
+            ca.to_str().unwrap(),
+            "-subj",
+            "/CN=Fixture TURN CA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+        ]);
+        run_openssl(&[
+            "req",
+            "-new",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key.to_str().unwrap(),
+            "-out",
+            request.to_str().unwrap(),
+            "-subj",
+            &format!("/CN={hostname}"),
+        ]);
+        run_openssl(&[
+            "x509",
+            "-req",
+            "-in",
+            request.to_str().unwrap(),
+            "-CA",
+            ca.to_str().unwrap(),
+            "-CAkey",
+            ca_key.to_str().unwrap(),
+            "-CAcreateserial",
+            "-out",
+            cert.to_str().unwrap(),
+            "-days",
+            "1",
+            "-sha256",
+            "-extfile",
+            extensions.to_str().unwrap(),
+        ]);
+        let ca_pem = fs::read_to_string(ca).unwrap();
+        Self {
+            directory,
+            ca_pem,
+            cert,
+            key,
+        }
+    }
+}
+
+impl Drop for FixtureCertificate {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+fn run_openssl(args: &[&str]) {
+    let output = Command::new("openssl").args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "openssl: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn fixture_hostname(ip: IpAddr, port: u16) -> String {
+    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert!(
+        (hostname.as_str(), port)
+            .to_socket_addrs()
+            .unwrap()
+            .any(|address| address.ip() == ip),
+        "fixture hostname must resolve to the listening interface"
+    );
+    hostname
 }
 
 fn wait_for<T>(
@@ -173,19 +314,112 @@ fn bad_turn_credentials_fail_without_relay_candidates() {
 }
 
 #[test]
-fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
-    let (mut server, ip, port) = TurnServer::start();
+fn turn_tls_requires_trusted_ca_and_matching_hostname() {
     let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
         .unwrap()
         .trim()
         .to_owned();
-    assert!(
-        (hostname.as_str(), port)
-            .to_socket_addrs()
-            .unwrap()
-            .any(|address| address.ip() == ip),
-        "fixture hostname must resolve to the listening interface"
+    let fixture = FixtureCertificate::new(&hostname);
+    let (_server, ip, port) = TurnServer::start_with_tls(Some((&fixture.cert, &fixture.key)));
+    assert_eq!(fixture_hostname(ip, port), hostname);
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let ice_server = IceServer {
+        urls: vec![format!("turns:{hostname}:{port}?transport=tcp")],
+        username: "alice".into(),
+        password: "secret".into(),
+    };
+    let config = PeerConfiguration {
+        ice_servers: vec![ice_server.clone()],
+        ice_transport_policy: IceTransportPolicy::RelayOnly,
+        turn_tls_ca_pem: Some(fixture.ca_pem.clone()),
+        ..PeerConfiguration::default()
+    };
+    let mut alice = factory.create_peer_connection(config.clone()).unwrap();
+    let mut bob = factory.create_peer_connection(config).unwrap();
+    let mut alice_events = Vec::new();
+    let mut bob_events = Vec::new();
+    let offer = succeeded(&alice, alice.create_offer(), &mut alice_events).unwrap();
+    succeeded(
+        &alice,
+        alice.set_local_description(offer),
+        &mut alice_events,
     );
+    let gathered_offer = gathered(&alice, &mut alice_events);
+    assert!(
+        gathered_offer.sdp.contains("typ relay"),
+        "{}",
+        gathered_offer.sdp
+    );
+    succeeded(
+        &bob,
+        bob.set_remote_description(gathered_offer),
+        &mut bob_events,
+    );
+    let answer = succeeded(&bob, bob.create_answer(), &mut bob_events).unwrap();
+    succeeded(&bob, bob.set_local_description(answer), &mut bob_events);
+    let gathered_answer = gathered(&bob, &mut bob_events);
+    assert!(
+        gathered_answer.sdp.contains("typ relay"),
+        "{}",
+        gathered_answer.sdp
+    );
+    succeeded(
+        &alice,
+        alice.set_remote_description(gathered_answer),
+        &mut alice_events,
+    );
+    wait_for(
+        &alice,
+        "TURN/TLS relay connection",
+        &mut alice_events,
+        |event| {
+            matches!(
+                event,
+                PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
+            )
+            .then_some(())
+        },
+    );
+    alice.close().unwrap();
+    bob.close().unwrap();
+
+    for (url, ca) in [
+        (format!("turns:{hostname}:{port}?transport=tcp"), None),
+        (
+            format!("turns:{ip}:{port}?transport=tcp"),
+            Some(fixture.ca_pem.clone()),
+        ),
+    ] {
+        let mut peer = factory
+            .create_peer_connection(PeerConfiguration {
+                ice_servers: vec![IceServer {
+                    urls: vec![url],
+                    ..ice_server.clone()
+                }],
+                ice_transport_policy: IceTransportPolicy::RelayOnly,
+                turn_tls_ca_pem: ca,
+                ..PeerConfiguration::default()
+            })
+            .unwrap();
+        let mut events = Vec::new();
+        let offer = succeeded(&peer, peer.create_offer(), &mut events).unwrap();
+        succeeded(&peer, peer.set_local_description(offer), &mut events);
+        let description = gathered(&peer, &mut events);
+        assert!(!description.sdp.contains("typ relay"), "{description:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, PeerConnectionEvent::IceCandidateError { .. })),
+            "TLS failure must surface: {events:#?}"
+        );
+        peer.close().unwrap();
+    }
+}
+
+#[test]
+fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
+    let (mut server, ip, port) = TurnServer::start();
+    let hostname = fixture_hostname(ip, port);
     for transport in ["udp", "tcp"] {
         let factory = PeerConnectionFactory::builder().build().unwrap();
         let ice_server = IceServer {

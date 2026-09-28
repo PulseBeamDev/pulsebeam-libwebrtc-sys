@@ -9,9 +9,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "0bf3bb4f7c9d2554f6e1b13b2f3ef469cc51955b6cf68d2d78a378ebf0db4093",
+      "bridge_source_sha256": "95983f561aae89b5ebfbb27926290d964f34fd9012b102ab291bdd14d176cf78",
       "generated_header_sha256": "8609d1f03cceb09911c315813b1a6a1183ad63c5425a9291a34a82b288897847",
-      "generated_source_sha256": "a76a099b78aa12180c7e5b0824f1ec8471ad713f4465d12aff6121c3e452eff4"
+      "generated_source_sha256": "7d534a816951926287a7f62dfd69af40060eda30b826cc70ea552f5a18798b4b"
     }
   },
   "sources": {

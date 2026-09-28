@@ -468,6 +468,16 @@ fn ice_server_policy_and_restart_offer_are_explicit() {
         .err()
         .expect("TURN requires credentials");
     assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+    for invalid_ca in ["", "not a PEM certificate"] {
+        let error = factory
+            .create_peer_connection(PeerConfiguration {
+                turn_tls_ca_pem: Some(invalid_ca.into()),
+                ..Default::default()
+            })
+            .err()
+            .expect("invalid TURN CA should fail");
+        assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+    }
 
     let config = PeerConfiguration {
         ice_servers: vec![

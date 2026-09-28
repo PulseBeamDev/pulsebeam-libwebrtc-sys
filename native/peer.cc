@@ -1,5 +1,6 @@
 #include "pulsebeam-webrtc-sys/native/peer.h"
 
+#include <climits>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -9,6 +10,11 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/x509v3.h>
 
 #include "api/create_modular_peer_connection_factory.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
@@ -31,6 +37,8 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "modules/audio_device/include/audio_device_default.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
+#include "rtc_base/buffer.h"
+#include "rtc_base/ssl_certificate.h"
 #include "rtc_base/thread.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -732,16 +740,82 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
 }
 
+// A peer-scoped additional trust anchor for TURN/TLS. The upstream adapter
+// still enforces hostname matching after chain verification. Default WebRTC
+// roots remain trusted, so this widens trust only when explicitly configured.
+class TurnCaVerifier final : public webrtc::SSLCertificateVerifier {
+ public:
+  explicit TurnCaVerifier(X509* ca) : ca_(ca, X509_free) {}
+
+  bool VerifyChain(const webrtc::SSLCertChain& chain) override {
+    if (chain.GetSize() == 0) {
+      return false;
+    }
+    std::unique_ptr<X509_STORE, decltype(&X509_STORE_free)> store(
+        X509_STORE_new(), X509_STORE_free);
+    std::unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)> context(
+        X509_STORE_CTX_new(), X509_STORE_CTX_free);
+    std::unique_ptr<STACK_OF(X509), void (*)(STACK_OF(X509)*)> intermediates(
+        sk_X509_new_null(), [](STACK_OF(X509)* stack) { sk_X509_free(stack); });
+    if (!store || !context || !intermediates ||
+        X509_STORE_add_cert(store.get(), ca_.get()) != 1) {
+      return false;
+    }
+    std::vector<std::unique_ptr<X509, decltype(&X509_free)>> certificates;
+    for (std::size_t i = 0; i < chain.GetSize(); ++i) {
+      webrtc::Buffer der;
+      chain.Get(i).ToDER(&der);
+      const unsigned char* data = der.data();
+      certificates.emplace_back(d2i_X509(nullptr, &data, der.size()), X509_free);
+      if (!certificates.back()) {
+        return false;
+      }
+      if (i > 0 && sk_X509_push(intermediates.get(), certificates.back().get()) == 0) {
+        return false;
+      }
+    }
+    const bool verified =
+        X509_STORE_CTX_init(context.get(), store.get(), certificates.front().get(),
+                            intermediates.get()) == 1 &&
+        X509_STORE_CTX_set_purpose(context.get(), X509_PURPOSE_SSL_SERVER) == 1 &&
+        X509_verify_cert(context.get()) == 1;
+    context.reset();  // Release references before the certificate chain.
+    return verified;
+  }
+
+ private:
+  std::unique_ptr<X509, decltype(&X509_free)> ca_;
+};
+
 std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
     std::uint16_t ice_candidate_pool_size,
     bool always_negotiate_data_channels,
     rust::Slice<const FfiIceServer> ice_servers,
     bool relay_only,
+    rust::Str turn_tls_ca_pem,
     rust::String& error) noexcept {
   auto events = std::make_shared<EventState>();
   auto observer = std::make_unique<PeerObserver>(events);
   webrtc::PeerConnectionDependencies dependencies(observer.get());
+  if (!turn_tls_ca_pem.empty()) {
+    if (turn_tls_ca_pem.size() > INT_MAX) {
+      error = "invalid TURN TLS CA certificate";
+      return nullptr;
+    }
+    const std::string pem(turn_tls_ca_pem);
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
+    std::unique_ptr<X509, decltype(&X509_free)> ca(
+        bio ? PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr) : nullptr,
+        X509_free);
+    if (!ca || X509_check_ca(ca.get()) <= 0) {
+      error = "invalid TURN TLS CA certificate";
+      return nullptr;
+    }
+    dependencies.tls_cert_verifier =
+        std::make_unique<TurnCaVerifier>(ca.release());
+  }
   webrtc::PeerConnectionInterface::RTCConfiguration configuration;
   configuration.ice_candidate_pool_size = ice_candidate_pool_size;
   configuration.always_negotiate_data_channels =

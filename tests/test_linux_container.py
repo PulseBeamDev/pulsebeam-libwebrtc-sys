@@ -18,7 +18,7 @@ NATIVE_PACKAGES = (
 )
 BUILD_TOOLS = (
     "build-essential", "ca-certificates", "coturn", "curl", "file", "git", "lld", "lsb-release",
-    "cmake", "ninja-build", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
+    "cmake", "ninja-build", "openssl", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
 )
 
 

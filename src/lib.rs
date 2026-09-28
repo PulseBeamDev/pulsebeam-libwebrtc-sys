@@ -457,6 +457,7 @@ mod ffi {
             always_negotiate_data_channels: bool,
             ice_servers: &[FfiIceServer],
             relay_only: bool,
+            turn_tls_ca_pem: &str,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnection>;
         fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64, ice_restart: bool);

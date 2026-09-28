@@ -23,6 +23,7 @@ RUN apt-get update \
         lld \
         lsb-release \
         ninja-build \
+        openssl \
         perl \
         pkg-config \
         python3 \
