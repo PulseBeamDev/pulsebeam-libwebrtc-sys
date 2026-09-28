@@ -17,6 +17,11 @@ use pulsebeam_webrtc_sys::{
 struct TurnServer(Child);
 
 impl TurnServer {
+    fn stop(&mut self) {
+        self.0.kill().unwrap();
+        self.0.wait().unwrap();
+    }
+
     fn start() -> (Self, IpAddr, u16) {
         // Use a routable interface, not loopback: the default WebRTC network
         // manager does not offer loopback ICE interfaces in production mode.
@@ -79,9 +84,19 @@ fn wait_for<T>(
     peer: &PeerConnection,
     label: &str,
     events: &mut Vec<PeerConnectionEvent>,
+    check: impl FnMut(&PeerConnectionEvent) -> Option<T>,
+) -> T {
+    wait_for_timeout(peer, label, events, Duration::from_secs(15), check)
+}
+
+fn wait_for_timeout<T>(
+    peer: &PeerConnection,
+    label: &str,
+    events: &mut Vec<PeerConnectionEvent>,
+    timeout: Duration,
     mut check: impl FnMut(&PeerConnectionEvent) -> Option<T>,
 ) -> T {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + timeout;
     if let Some(found) = events.iter().find_map(&mut check) {
         return found;
     }
@@ -159,7 +174,7 @@ fn bad_turn_credentials_fail_without_relay_candidates() {
 
 #[test]
 fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
-    let (_server, ip, port) = TurnServer::start();
+    let (mut server, ip, port) = TurnServer::start();
     let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
         .unwrap()
         .trim()
@@ -173,13 +188,13 @@ fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
     );
     for transport in ["udp", "tcp"] {
         let factory = PeerConnectionFactory::builder().build().unwrap();
-        let server = IceServer {
+        let ice_server = IceServer {
             urls: vec![format!("turn:{hostname}:{port}?transport={transport}")],
             username: "alice".into(),
             password: "secret".into(),
         };
         let config = PeerConfiguration {
-            ice_servers: vec![server],
+            ice_servers: vec![ice_server],
             ice_transport_policy: IceTransportPolicy::RelayOnly,
             ..PeerConfiguration::default()
         };
@@ -225,6 +240,29 @@ fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
             )
             .then_some(())
         });
+        if transport == "tcp" {
+            // The only candidate pair uses this relay. Once it disappears,
+            // the native peer must expose the broken connection to Rust.
+            while let Some(event) = alice.try_next_event() {
+                alice_events.push(event);
+            }
+            server.stop();
+            wait_for_timeout(
+                &alice,
+                "connection loss after TURN shutdown",
+                &mut Vec::new(),
+                Duration::from_secs(45),
+                |event| {
+                    matches!(
+                        event,
+                        PeerConnectionEvent::ConnectionStateChanged(
+                            ConnectionState::Disconnected | ConnectionState::Failed
+                        )
+                    )
+                    .then_some(())
+                },
+            );
+        }
         alice.close().unwrap();
         bob.close().unwrap();
     }
