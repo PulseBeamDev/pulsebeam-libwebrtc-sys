@@ -325,6 +325,17 @@ accepted per request. Take each snapshot event before requesting another.
 Upstream RTT and jitter values are seconds; available/target bitrates are
 bits per second. Metrics that WebRTC did not supply remain `None`.
 
+A video transceiver's `RtpSender::parameters()` returns an owned encoding
+snapshot. Edit `encodings` and pass the snapshot to `set_parameters()` on the
+same sender handle. Supported fields are active state, maximum bitrate and
+framerate, relative and absolute resolution scale, and scalability mode; RID
+is inspectable but cannot change without renegotiation. Unsupported or invalid
+values fail explicitly. A successful update consumes the snapshot transaction,
+so obtain fresh parameters before another update. Absolute resolution scale
+supersedes relative scale when both are set. Encoding order and count are
+negotiated, not mutable here. This does not establish simulcast negotiation or
+SVC interoperability.
+
 The Linux artifact tests validate configuration, two-peer ICE restart through
 renewed credentials and packet delivery, connected-peer stat relationships,
 simulated IPv4 and IPv6 STUN Binding responses represented as server-reflexive

@@ -47,8 +47,8 @@ pub use peer::{
     SignalingState, TransportStats,
 };
 pub use video::{
-    RtpReceiver, RtpSender, RtpTransceiver, RtpTransceiverDirection, VideoSink, VideoSource,
-    VideoSourceState, VideoTrack, VideoTrackState,
+    RtpReceiver, RtpSender, RtpSenderEncoding, RtpSenderParameters, RtpTransceiver,
+    RtpTransceiverDirection, VideoSink, VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -100,6 +100,27 @@ mod ffi {
     struct FfiDecoderInfo {
         implementation_name: String,
         hardware_accelerated: bool,
+    }
+
+    struct FfiSenderEncoding {
+        rid: String,
+        active: bool,
+        has_max_bitrate: bool,
+        max_bitrate_bps: i32,
+        has_max_framerate: bool,
+        max_framerate: f64,
+        has_scale_by: bool,
+        scale_by: f64,
+        has_scale_to: bool,
+        scale_to_width: i32,
+        scale_to_height: i32,
+        has_scalability_mode: bool,
+        scalability_mode: String,
+    }
+
+    struct FfiSenderParameters {
+        transaction_id: String,
+        encodings: Vec<FfiSenderEncoding>,
     }
 
     struct FfiIceServer {
@@ -582,6 +603,16 @@ mod ffi {
             error: &mut String,
         ) -> bool;
         fn rtp_sender_id(sender: &NativeRtpSender) -> String;
+        fn rtp_sender_get_parameters(
+            sender: &NativeRtpSender,
+            parameters: &mut FfiSenderParameters,
+        ) -> bool;
+        fn rtp_sender_set_parameters(
+            sender: &NativeRtpSender,
+            parameters: &FfiSenderParameters,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn rtp_sender_track(sender: &NativeRtpSender) -> UniquePtr<NativeVideoTrack>;
         fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
         fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;

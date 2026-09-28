@@ -478,6 +478,68 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
 }
 
 #[test]
+fn sender_encoding_updates_preserve_transaction_and_validate_values() {
+    let counters = Arc::new(Counters::default());
+    let pair = Pair::new(counters, false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("params", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    pair.negotiate();
+    let sender = transceiver.sender();
+    let mut snapshot = sender.parameters().unwrap();
+    assert_eq!(snapshot.encodings.len(), 1);
+    let stale = snapshot.clone();
+    snapshot.encodings[0].max_bitrate_bps = Some(150_000);
+    snapshot.encodings[0].scale_resolution_down_by = Some(2.0);
+    snapshot.encodings[0].scale_resolution_down_to = Some(VideoResolution {
+        width: 8,
+        height: 8,
+    });
+    snapshot.encodings[0].max_framerate = Some(24.0);
+    snapshot.encodings[0].active = false;
+    sender.set_parameters(snapshot).unwrap();
+    let current = sender.parameters().unwrap();
+    assert_eq!(current.encodings[0].max_bitrate_bps, Some(150_000));
+    assert_eq!(current.encodings[0].scale_resolution_down_by, Some(2.0));
+    assert_eq!(
+        current.encodings[0].scale_resolution_down_to,
+        Some(VideoResolution {
+            width: 8,
+            height: 8
+        })
+    );
+    assert_eq!(current.encodings[0].max_framerate, Some(24.0));
+    assert!(!current.encodings[0].active);
+    assert!(sender.set_parameters(stale).is_err());
+
+    let mut invalid = sender.parameters().unwrap();
+    invalid.encodings[0].scale_resolution_down_by = Some(f64::NAN);
+    assert!(sender.set_parameters(invalid).is_err());
+    let mut invalid = sender.parameters().unwrap();
+    invalid.encodings[0].scale_resolution_down_to = Some(VideoResolution {
+        width: 0,
+        height: 8,
+    });
+    assert!(sender.set_parameters(invalid).is_err());
+    let mut invalid = sender.parameters().unwrap();
+    invalid.encodings[0].rid = "changed".into();
+    assert!(sender.set_parameters(invalid).is_err());
+    let mut current = sender.parameters().unwrap();
+    current.encodings[0].active = true;
+    current.encodings[0].scale_resolution_down_by = None;
+    current.encodings[0].scale_resolution_down_to = None;
+    current.encodings[0].max_framerate = None;
+    sender.set_parameters(current).unwrap();
+    assert!(sender.parameters().unwrap().encodings[0].active);
+}
+
+#[test]
 fn media_removal_failure_and_repeated_teardown_are_safe() {
     for fail_encoder in [false, true] {
         let counters = Arc::new(Counters::default());

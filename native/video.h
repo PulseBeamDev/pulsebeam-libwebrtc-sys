@@ -16,6 +16,7 @@ namespace pulsebeam::webrtc_sys {
 class NativePeerConnectionFactory;
 class NativePeerConnection;
 class NativeVideoFrame;
+struct FfiSenderParameters;
 
 class NativeVideoSource final {
  public:
@@ -137,6 +138,12 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t& error_type,
                                    rust::String& error) noexcept;
 rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept;
+bool rtp_sender_get_parameters(const NativeRtpSender& sender,
+                               FfiSenderParameters& parameters) noexcept;
+bool rtp_sender_set_parameters(const NativeRtpSender& sender,
+                               const FfiSenderParameters& parameters,
+                               std::uint8_t& error_type,
+                               rust::String& error) noexcept;
 std::unique_ptr<NativeVideoTrack> rtp_sender_track(
     const NativeRtpSender& sender) noexcept;
 rust::String rtp_receiver_id(const NativeRtpReceiver& receiver) noexcept;

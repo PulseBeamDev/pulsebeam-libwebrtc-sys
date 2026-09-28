@@ -13,6 +13,7 @@
 #include "api/media_stream_interface.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtp_receiver_interface.h"
+#include "api/rtp_parameters.h"
 #include "api/rtp_sender_interface.h"
 #include "api/rtp_transceiver_interface.h"
 #include "api/scoped_refptr.h"
@@ -23,6 +24,7 @@
 #include "pc/video_track_source.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/thread.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -159,6 +161,7 @@ struct NativeVideoSink::State {
 
 struct NativeRtpSender::State {
   webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender;
+  std::optional<webrtc::RtpParameters> parameters;
 };
 
 struct NativeRtpReceiver::State {
@@ -450,6 +453,85 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
 
 rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept {
   return sender.state()->sender->id();
+}
+
+bool rtp_sender_get_parameters(const NativeRtpSender& sender,
+                               FfiSenderParameters& output) noexcept {
+  auto& state = *sender.state();
+  if (!state.sender) {
+    return false;
+  }
+  state.parameters = state.sender->GetParameters();
+  output.transaction_id = state.parameters->transaction_id;
+  output.encodings.clear();
+  for (const auto& encoding : state.parameters->encodings) {
+    FfiSenderEncoding copied;
+    copied.rid = encoding.rid;
+    copied.active = encoding.active;
+    copied.has_max_bitrate = encoding.max_bitrate_bps.has_value();
+    copied.max_bitrate_bps = encoding.max_bitrate_bps.value_or(0);
+    copied.has_max_framerate = encoding.max_framerate.has_value();
+    copied.max_framerate = encoding.max_framerate.value_or(0);
+    copied.has_scale_by = encoding.scale_resolution_down_by.has_value();
+    copied.scale_by = encoding.scale_resolution_down_by.value_or(0);
+    copied.has_scale_to = encoding.scale_resolution_down_to.has_value();
+    copied.scale_to_width = encoding.scale_resolution_down_to
+                                ? encoding.scale_resolution_down_to->width : 0;
+    copied.scale_to_height = encoding.scale_resolution_down_to
+                                 ? encoding.scale_resolution_down_to->height : 0;
+    copied.has_scalability_mode = encoding.scalability_mode.has_value();
+    copied.scalability_mode = encoding.scalability_mode.value_or("");
+    output.encodings.push_back(std::move(copied));
+  }
+  return true;
+}
+
+bool rtp_sender_set_parameters(const NativeRtpSender& sender,
+                               const FfiSenderParameters& input,
+                               std::uint8_t& error_type,
+                               rust::String& error) noexcept {
+  auto& state = *sender.state();
+  if (!state.sender || !state.parameters ||
+      input.transaction_id != state.parameters->transaction_id) {
+    error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_STATE);
+    error = "get current sender parameters before updating";
+    return false;
+  }
+  if (input.encodings.size() != state.parameters->encodings.size()) {
+    error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_MODIFICATION);
+    error = "encoding count cannot change without renegotiation";
+    return false;
+  }
+  auto updated = *state.parameters;
+  for (std::size_t i = 0; i < input.encodings.size(); ++i) {
+    const auto& source = input.encodings[i];
+    auto& target = updated.encodings[i];
+    if (std::string(source.rid) != target.rid) {
+      error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_MODIFICATION);
+      error = "encoding RID cannot change without renegotiation";
+      return false;
+    }
+    target.active = source.active;
+    target.max_bitrate_bps = source.has_max_bitrate
+                                 ? std::optional<int>(source.max_bitrate_bps) : std::nullopt;
+    target.max_framerate = source.has_max_framerate
+                               ? std::optional<double>(source.max_framerate) : std::nullopt;
+    target.scale_resolution_down_by = source.has_scale_by
+                                           ? std::optional<double>(source.scale_by) : std::nullopt;
+    target.scale_resolution_down_to = source.has_scale_to
+        ? std::optional<webrtc::Resolution>(webrtc::Resolution{
+              source.scale_to_width, source.scale_to_height}) : std::nullopt;
+    target.scalability_mode = source.has_scalability_mode
+                                  ? std::optional<std::string>(std::string(source.scalability_mode))
+                                  : std::nullopt;
+  }
+  auto result = state.sender->SetParameters(updated);
+  if (!result.ok()) {
+    SetError(result, error_type, error);
+    return false;
+  }
+  state.parameters.reset();  // A successful update consumes the transaction.
+  return true;
 }
 std::unique_ptr<NativeVideoTrack> rtp_sender_track(
     const NativeRtpSender& sender) noexcept {

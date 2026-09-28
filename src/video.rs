@@ -1,8 +1,8 @@
 use std::{fmt, rc::Rc};
 
 use crate::{
-    CodecError, VideoFrame, ffi,
-    peer::{FactoryInner, PeerError, PeerInner, error_kind},
+    CodecError, VideoFrame, VideoResolution, ffi,
+    peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner, error_kind},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,6 +243,25 @@ pub struct RtpSender {
     peer: Rc<PeerInner>,
 }
 
+/// A mutable subset of an RTP sender encoding. RID is fixed by negotiation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RtpSenderEncoding {
+    pub rid: String,
+    pub active: bool,
+    pub max_bitrate_bps: Option<u32>,
+    pub max_framerate: Option<f64>,
+    pub scale_resolution_down_by: Option<f64>,
+    pub scale_resolution_down_to: Option<VideoResolution>,
+    pub scalability_mode: Option<String>,
+}
+
+/// An owned snapshot. Pass it back to the same sender; stale transactions fail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RtpSenderParameters {
+    transaction_id: String,
+    pub encodings: Vec<RtpSenderEncoding>,
+}
+
 impl RtpSender {
     pub fn id(&self) -> String {
         ffi::rtp_sender_id(self.native())
@@ -251,6 +270,119 @@ impl RtpSender {
     pub fn track(&self) -> Option<VideoTrack> {
         let native = ffi::rtp_sender_track(self.native());
         (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
+    }
+
+    pub fn parameters(&self) -> Result<RtpSenderParameters, PeerError> {
+        let mut snapshot = ffi::FfiSenderParameters {
+            transaction_id: String::new(),
+            encodings: Vec::new(),
+        };
+        if !ffi::rtp_sender_get_parameters(self.native(), &mut snapshot) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "RTP sender parameters are unavailable".into(),
+            });
+        }
+        Ok(RtpSenderParameters {
+            transaction_id: snapshot.transaction_id,
+            encodings: snapshot
+                .encodings
+                .into_iter()
+                .map(|encoding| RtpSenderEncoding {
+                    rid: encoding.rid,
+                    active: encoding.active,
+                    max_bitrate_bps: encoding
+                        .max_bitrate_bps
+                        .try_into()
+                        .ok()
+                        .filter(|_| encoding.has_max_bitrate),
+                    max_framerate: encoding.has_max_framerate.then_some(encoding.max_framerate),
+                    scale_resolution_down_by: encoding.has_scale_by.then_some(encoding.scale_by),
+                    scale_resolution_down_to: encoding.has_scale_to.then_some(VideoResolution {
+                        width: encoding.scale_to_width as u32,
+                        height: encoding.scale_to_height as u32,
+                    }),
+                    scalability_mode: encoding
+                        .has_scalability_mode
+                        .then_some(encoding.scalability_mode),
+                })
+                .collect(),
+        })
+    }
+
+    /// Updates supported fields using the latest parameters snapshot. Unexposed
+    /// fields are preserved, and native validation rejects unsupported modes.
+    pub fn set_parameters(&self, parameters: RtpSenderParameters) -> Result<(), PeerError> {
+        let invalid = |message: &str| PeerError {
+            kind: PeerErrorKind::InvalidParameter,
+            message: message.into(),
+        };
+        let mut encodings = Vec::with_capacity(parameters.encodings.len());
+        for encoding in parameters.encodings {
+            let max_bitrate = encoding
+                .max_bitrate_bps
+                .map(i32::try_from)
+                .transpose()
+                .map_err(|_| invalid("maximum bitrate exceeds i32 range"))?;
+            if max_bitrate == Some(0) {
+                return Err(invalid("maximum bitrate must be positive"));
+            }
+            if encoding
+                .max_framerate
+                .is_some_and(|v| !v.is_finite() || v < 0.0)
+            {
+                return Err(invalid("maximum framerate must be finite and nonnegative"));
+            }
+            if encoding
+                .scale_resolution_down_by
+                .is_some_and(|v| !v.is_finite() || v < 1.0)
+            {
+                return Err(invalid("resolution scale must be finite and at least one"));
+            }
+            if encoding.scale_resolution_down_to.is_some_and(|r| {
+                r.width == 0
+                    || r.height == 0
+                    || r.width > i32::MAX as u32
+                    || r.height > i32::MAX as u32
+            }) {
+                return Err(invalid("target resolution is outside the supported range"));
+            }
+            if encoding.scalability_mode.as_deref() == Some("") {
+                return Err(invalid("scalability mode must not be empty"));
+            }
+            let target = encoding.scale_resolution_down_to;
+            encodings.push(ffi::FfiSenderEncoding {
+                rid: encoding.rid,
+                active: encoding.active,
+                has_max_bitrate: max_bitrate.is_some(),
+                max_bitrate_bps: max_bitrate.unwrap_or_default(),
+                has_max_framerate: encoding.max_framerate.is_some(),
+                max_framerate: encoding.max_framerate.unwrap_or_default(),
+                has_scale_by: encoding.scale_resolution_down_by.is_some(),
+                scale_by: encoding.scale_resolution_down_by.unwrap_or_default(),
+                has_scale_to: target.is_some(),
+                scale_to_width: target.map(|r| r.width as i32).unwrap_or_default(),
+                scale_to_height: target.map(|r| r.height as i32).unwrap_or_default(),
+                has_scalability_mode: encoding.scalability_mode.is_some(),
+                scalability_mode: encoding.scalability_mode.unwrap_or_default(),
+            });
+        }
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::rtp_sender_set_parameters(
+            self.native(),
+            &ffi::FfiSenderParameters {
+                transaction_id: parameters.transaction_id,
+                encodings,
+            },
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
     }
 
     pub(crate) fn native(&self) -> &ffi::NativeRtpSender {
