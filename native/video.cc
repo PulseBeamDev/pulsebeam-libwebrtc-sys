@@ -154,6 +154,20 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
         snapshot.ssrc = frame->GetSsrc();
         snapshot.payload_type = frame->GetPayloadType();
         snapshot.key_frame = video->IsKeyFrame();
+        snapshot.rid = video->Rid();
+        if (auto time = video->CaptureTime()) snapshot.capture_time_us = time->us();
+        if (auto time = video->ReceiveTime()) snapshot.receive_time_us = time->us();
+        const auto metadata = video->Metadata();
+        snapshot.frame_id = metadata.GetFrameId();
+        if (snapshot.frame_id) {
+          snapshot.spatial_index = metadata.GetSpatialIndex();
+          snapshot.temporal_index = metadata.GetTemporalIndex();
+          if (auto dependencies = metadata.GetDependencies()) {
+            snapshot.dependencies.assign(dependencies->begin(), dependencies->end());
+          }
+          for (auto indication : metadata.GetDecodeTargetIndications())
+            snapshot.decode_target_indications.push_back(static_cast<std::uint8_t>(indication));
+        }
         queued_bytes_ += snapshot.data.size();
         frames_.push_back(std::move(snapshot));
         return;
@@ -189,6 +203,19 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
     result.ssrc = frame.ssrc;
     result.payload_type = frame.payload_type;
     result.key_frame = frame.key_frame;
+    result.has_rid = frame.rid.has_value();
+    result.rid = frame.rid.value_or("");
+    result.has_capture_time = frame.capture_time_us.has_value();
+    result.capture_time_us = frame.capture_time_us.value_or(0);
+    result.has_receive_time = frame.receive_time_us.has_value();
+    result.receive_time_us = frame.receive_time_us.value_or(0);
+    result.has_frame_id = frame.frame_id.has_value();
+    result.frame_id = frame.frame_id.value_or(0);
+    result.spatial_index = frame.spatial_index;
+    result.temporal_index = frame.temporal_index;
+    for (auto dependency : frame.dependencies) result.dependencies.push_back(dependency);
+    for (auto indication : frame.decode_target_indications)
+      result.decode_target_indications.push_back(indication);
     return result;
   }
   std::uint64_t DroppedFrames() {
@@ -213,6 +240,14 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
     std::uint32_t ssrc = 0;
     std::uint8_t payload_type = 0;
     bool key_frame = false;
+    std::optional<std::string> rid;
+    std::optional<std::int64_t> capture_time_us;
+    std::optional<std::int64_t> receive_time_us;
+    std::optional<std::int64_t> frame_id;
+    std::int32_t spatial_index = 0;
+    std::int32_t temporal_index = 0;
+    std::vector<std::int64_t> dependencies;
+    std::vector<std::uint8_t> decode_target_indications;
   };
   static constexpr std::size_t kMaxFrames = 4;
   static constexpr std::size_t kMaxBytes = 4 * 1024 * 1024;

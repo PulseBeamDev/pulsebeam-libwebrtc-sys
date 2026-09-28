@@ -643,6 +643,8 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert!(encoded.mime_type.eq_ignore_ascii_case("video/H264"));
     assert_ne!(encoded.ssrc, 0);
     assert!(encoded.key_frame);
+    assert_eq!(encoded.spatial_index.is_some(), encoded.frame_id.is_some());
+    assert_eq!(encoded.temporal_index.is_some(), encoded.frame_id.is_some());
     assert_eq!(counters.decode.load(Ordering::SeqCst), 1);
     assert_eq!(encoded_sink.dropped_frames(), 0);
     encoded_sink.close();

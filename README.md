@@ -363,7 +363,9 @@ H.264 encoder or decoder implementations.
 
 `RtpReceiver::attach_encoded_sink()` exclusively intercepts depacketized
 encoded video access units before decoding. Its bounded four-frame/4 MiB queue
-reports drops. Closing the sink clears queued frames and resumes normal
+reports drops. Access units include optional RID, capture/receive timing, and
+negotiated dependency-descriptor frame/layer/decode-target metadata; absent
+metadata is not fabricated. Closing the sink clears queued frames and resumes normal
 WebRTC decoding; this pinned upstream receiver cannot safely be attached a
 second time, even after close. This is a receive-only access-unit API, not a
 raw RTP payload or direct encoded sender input.

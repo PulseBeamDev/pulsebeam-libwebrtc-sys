@@ -47,9 +47,9 @@ pub use peer::{
     SignalingState, TransportStats,
 };
 pub use video::{
-    EncodedReceivedVideoFrame, EncodedVideoSink, RtpReceiver, RtpSender, RtpSenderEncoding,
-    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability, VideoSink,
-    VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
+    DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, RtpReceiver, RtpSender,
+    RtpSenderEncoding, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
+    VideoCodecCapability, VideoSink, VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -266,6 +266,18 @@ mod ffi {
         ssrc: u32,
         payload_type: u8,
         key_frame: bool,
+        rid: String,
+        has_rid: bool,
+        has_capture_time: bool,
+        capture_time_us: i64,
+        has_receive_time: bool,
+        receive_time_us: i64,
+        has_frame_id: bool,
+        frame_id: i64,
+        spatial_index: i32,
+        temporal_index: i32,
+        dependencies: Vec<i64>,
+        decode_target_indications: Vec<u8>,
     }
 
     unsafe extern "C++" {

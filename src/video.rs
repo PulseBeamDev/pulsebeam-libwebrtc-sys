@@ -646,6 +646,27 @@ pub struct EncodedReceivedVideoFrame {
     pub ssrc: u32,
     pub payload_type: u8,
     pub key_frame: bool,
+    pub rid: Option<String>,
+    /// Remote capture clock microseconds, when the absolute capture-time
+    /// header extension provides it. Not a local wall-clock timestamp.
+    pub capture_time_us: Option<i64>,
+    /// Local receive clock microseconds when supplied by upstream.
+    pub receive_time_us: Option<i64>,
+    /// Dependency descriptor frame id, if present for this access unit.
+    pub frame_id: Option<i64>,
+    pub spatial_index: Option<i32>,
+    pub temporal_index: Option<i32>,
+    pub dependencies: Vec<i64>,
+    pub decode_target_indications: Vec<DecodeTargetIndication>,
+}
+
+/// Decode target indication from the negotiated dependency descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodeTargetIndication {
+    NotPresent,
+    Discardable,
+    Switch,
+    Required,
 }
 
 /// A bounded receive-only queue, exclusive to one receiver. A full queue
@@ -667,6 +688,24 @@ impl EncodedVideoSink {
             ssrc: frame.ssrc,
             payload_type: frame.payload_type,
             key_frame: frame.key_frame,
+            rid: frame.has_rid.then_some(frame.rid),
+            capture_time_us: frame.has_capture_time.then_some(frame.capture_time_us),
+            receive_time_us: frame.has_receive_time.then_some(frame.receive_time_us),
+            frame_id: frame.has_frame_id.then_some(frame.frame_id),
+            spatial_index: frame.has_frame_id.then_some(frame.spatial_index),
+            temporal_index: frame.has_frame_id.then_some(frame.temporal_index),
+            dependencies: frame.dependencies,
+            decode_target_indications: frame
+                .decode_target_indications
+                .into_iter()
+                .map(|value| match value {
+                    0 => DecodeTargetIndication::NotPresent,
+                    1 => DecodeTargetIndication::Discardable,
+                    2 => DecodeTargetIndication::Switch,
+                    3 => DecodeTargetIndication::Required,
+                    _ => unreachable!("upstream emitted invalid decode target indication"),
+                })
+                .collect(),
         })
     }
 
