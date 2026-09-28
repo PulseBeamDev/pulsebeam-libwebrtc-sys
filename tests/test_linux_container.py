@@ -17,7 +17,7 @@ NATIVE_PACKAGES = (
     "libxrandr-dev", "libxrender-dev", "libxtst-dev",
 )
 BUILD_TOOLS = (
-    "build-essential", "ca-certificates", "curl", "file", "git", "lld", "lsb-release",
+    "build-essential", "ca-certificates", "coturn", "curl", "file", "git", "lld", "lsb-release",
     "cmake", "ninja-build", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
 )
 

@@ -5,6 +5,7 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         cmake \
+        coturn \
         curl \
         file \
         git \

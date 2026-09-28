@@ -323,11 +323,11 @@ bits per second. Metrics that WebRTC did not supply remain `None`.
 The Linux artifact tests validate configuration, two-peer ICE restart through
 renewed credentials and packet delivery, connected-peer stat relationships,
 simulated IPv4 and IPv6 STUN Binding responses represented as server-reflexive
-candidates in gathered SDP, rollback and pending/current
-SDP transitions, and Rust-only linking. They do **not** yet qualify production
-IPv6 routing, hostname resolution, authenticated TURN UDP/TCP/TLS relay, failed
-credentials or interrupted transport; those fixture-backed gates remain
-outstanding. Trickle ICE and remote end-of-candidates are outside this
+candidates in gathered SDP, authenticated TURN UDP/TCP relay through a local
+hostname-resolved coturn fixture, rollback and pending/current SDP transitions,
+and Rust-only linking. They do **not** yet qualify production IPv6 routing,
+authenticated TURN TLS relay, failed credentials or interrupted transport; those
+fixture-backed gates remain outstanding. Trickle ICE and remote end-of-candidates are outside this
 non-trickle signaling contract; no upstream patch is required.
 
 ## Downstream rendering contract
