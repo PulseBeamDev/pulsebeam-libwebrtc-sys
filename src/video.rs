@@ -102,6 +102,7 @@ impl VideoSource {
 /// fn assert_sync<T: Sync>() {}
 /// assert_sync::<pulsebeam_webrtc_sys::VideoTrack>();
 /// ```
+#[derive(Clone)]
 pub struct VideoTrack {
     inner: Rc<TrackInner>,
 }
@@ -172,6 +173,13 @@ impl VideoTrack {
         }
     }
 
+    pub(crate) fn is_local_to(&self, factory: &Rc<FactoryInner>) -> bool {
+        self.inner
+            ._factory
+            .as_ref()
+            .is_some_and(|owner| Rc::ptr_eq(owner, factory))
+    }
+
     pub(crate) fn native(&self) -> &ffi::NativeVideoTrack {
         self.inner.native.as_ref().expect("validated video track")
     }
@@ -240,7 +248,7 @@ impl VideoSink {
 /// ```
 pub struct RtpSender {
     native: cxx::UniquePtr<ffi::NativeRtpSender>,
-    peer: Rc<PeerInner>,
+    pub(crate) peer: Rc<PeerInner>,
 }
 
 /// A mutable subset of an RTP sender encoding. RID is fixed by negotiation.
@@ -269,7 +277,56 @@ impl RtpSender {
 
     pub fn track(&self) -> Option<VideoTrack> {
         let native = ffi::rtp_sender_track(self.native());
-        (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
+        if native.is_null() {
+            return None;
+        }
+        self.peer
+            .sender_tracks
+            .borrow()
+            .get(&self.id())
+            .cloned()
+            .or_else(|| Some(VideoTrack::remote(native, self.peer.clone())))
+    }
+
+    /// Replace or detach this sender's local video track without replacing the
+    /// sender or its negotiated transceiver. Only tracks from the same factory
+    /// are accepted. Renegotiate if the remote track identity must change.
+    pub fn set_track(&self, track: Option<&VideoTrack>) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if let Some(track) = track {
+            if !track.is_local_to(&self.peer._factory) || track.state() != VideoTrackState::Live {
+                return Err(PeerError {
+                    kind: PeerErrorKind::InvalidParameter,
+                    message: "sender replacement requires a live track from the same factory"
+                        .into(),
+                });
+            }
+        }
+        let accepted = match track {
+            Some(track) => ffi::rtp_sender_set_video_track(self.native(), track.native()),
+            None => ffi::rtp_sender_clear_track(self.native()),
+        };
+        if !accepted {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "sender rejected the video track change".into(),
+            });
+        }
+        let mut retained = self.peer.sender_tracks.borrow_mut();
+        match track {
+            Some(track) => {
+                retained.insert(self.id(), track.clone());
+            }
+            None => {
+                retained.remove(&self.id());
+            }
+        }
+        Ok(())
     }
 
     pub fn parameters(&self) -> Result<RtpSenderParameters, PeerError> {

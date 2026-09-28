@@ -601,6 +601,15 @@ std::unique_ptr<NativeVideoTrack> rtp_sender_track(
   state->track = std::move(track);
   return std::make_unique<NativeVideoTrack>(std::move(state));
 }
+
+bool rtp_sender_set_video_track(const NativeRtpSender& sender,
+                                const NativeVideoTrack& track) noexcept {
+  return sender.state()->sender->SetTrack(track.state()->track.get());
+}
+
+bool rtp_sender_clear_track(const NativeRtpSender& sender) noexcept {
+  return sender.state()->sender->SetTrack(nullptr);
+}
 rust::String rtp_receiver_id(const NativeRtpReceiver& receiver) noexcept {
   return receiver.state()->receiver->id();
 }

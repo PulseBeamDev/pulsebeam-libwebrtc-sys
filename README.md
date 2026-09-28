@@ -325,6 +325,18 @@ accepted per request. Take each snapshot event before requesting another.
 Upstream RTT and jitter values are seconds; available/target bitrates are
 bits per second. Metrics that WebRTC did not supply remain `None`.
 
+`PeerConnection::video_transceivers()` returns owned video-only handles from a
+snapshot of upstream transceivers. `mid()` is absent before negotiation and
+may become absent after rollback. `stop()` initiates standard stopping; a
+subsequent negotiation completes it, after which upstream removes the
+transceiver from enumeration. An existing handle remains readable.
+`RtpSender::set_track(Some(&track))` replaces a live local video track from
+the same peer factory without replacing the sender; `set_track(None)` detaches
+it. The peer retains local tracks and their sources until replacement, removal,
+close, or drop, even if caller-owned track and source handles are dropped.
+Renegotiate if the remote track identity must change. A sender's `track()`
+returns the retained local track when present.
+
 A video transceiver's `RtpSender::parameters()` returns an owned encoding
 snapshot. Edit `encodings` and pass the snapshot to `set_parameters()` on the
 same sender handle. Supported fields are active state, maximum bitrate and

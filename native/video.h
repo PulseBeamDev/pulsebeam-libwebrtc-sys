@@ -168,6 +168,9 @@ bool rtp_sender_set_parameters(const NativeRtpSender& sender,
                                rust::String& error) noexcept;
 std::unique_ptr<NativeVideoTrack> rtp_sender_track(
     const NativeRtpSender& sender) noexcept;
+bool rtp_sender_set_video_track(const NativeRtpSender& sender,
+                                const NativeVideoTrack& track) noexcept;
+bool rtp_sender_clear_track(const NativeRtpSender& sender) noexcept;
 rust::String rtp_receiver_id(const NativeRtpReceiver& receiver) noexcept;
 std::unique_ptr<NativeVideoTrack> rtp_receiver_track(
     const NativeRtpReceiver& receiver) noexcept;

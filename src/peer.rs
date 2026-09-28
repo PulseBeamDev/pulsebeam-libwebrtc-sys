@@ -1,4 +1,9 @@
-use std::{cell::Cell, fmt, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    fmt,
+    rc::Rc,
+};
 
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, Environment, NetworkManagerProvider, NetworkThread,
@@ -536,6 +541,7 @@ impl PeerConnectionFactory {
                     native,
                     _factory: self.0.clone(),
                     closed: Cell::new(false),
+                    sender_tracks: RefCell::new(HashMap::new()),
                 }),
                 next_operation_id: Cell::new(1),
             })
@@ -594,8 +600,9 @@ pub struct PeerConnection {
 
 pub(crate) struct PeerInner {
     native: cxx::UniquePtr<ffi::NativePeerConnection>,
-    _factory: Rc<FactoryInner>,
+    pub(crate) _factory: Rc<FactoryInner>,
     pub(crate) closed: Cell<bool>,
+    pub(crate) sender_tracks: RefCell<HashMap<String, VideoTrack>>,
 }
 
 impl PeerConnection {
@@ -632,6 +639,12 @@ impl PeerConnection {
         track: &VideoTrack,
         direction: RtpTransceiverDirection,
     ) -> Result<RtpTransceiver, PeerError> {
+        if !track.is_local_to(&self.inner._factory) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "video track must belong to this peer factory".into(),
+            });
+        }
         let mut error_type = 0;
         let mut message = String::new();
         let native = ffi::peer_add_video_transceiver(
@@ -647,24 +660,38 @@ impl PeerConnection {
                 message,
             })
         } else {
-            Ok(RtpTransceiver::from_native(native, self.inner.clone()))
+            let transceiver = RtpTransceiver::from_native(native, self.inner.clone());
+            self.inner
+                .sender_tracks
+                .borrow_mut()
+                .insert(transceiver.sender().id(), track.clone());
+            Ok(transceiver)
         }
     }
 
     pub fn remove_track(&self, sender: &RtpSender) -> Result<(), PeerError> {
+        if !Rc::ptr_eq(&self.inner, &sender.peer) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "RTP sender belongs to another peer".into(),
+            });
+        }
         let mut error_type = 0;
         let mut message = String::new();
-        ffi::peer_remove_track(
+        if ffi::peer_remove_track(
             self.inner.native(),
             sender.native(),
             &mut error_type,
             &mut message,
-        )
-        .then_some(())
-        .ok_or_else(|| PeerError {
-            kind: error_kind(error_type),
-            message,
-        })
+        ) {
+            self.inner.sender_tracks.borrow_mut().remove(&sender.id());
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: error_kind(error_type),
+                message,
+            })
+        }
     }
 
     pub fn create_offer(&self) -> OperationId {
@@ -776,6 +803,7 @@ impl PeerConnection {
     pub fn close(&mut self) -> Result<(), PeerError> {
         if ffi::close_peer_connection(self.native()) {
             self.inner.closed.set(true);
+            self.inner.sender_tracks.borrow_mut().clear();
             Ok(())
         } else {
             Err(PeerError {

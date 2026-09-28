@@ -18,7 +18,7 @@ use pulsebeam_webrtc_sys::{
     SimulatedNetwork, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
     VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
     VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
-    VideoFrame, VideoFrameType, VideoRateControl, VideoResolution,
+    VideoFrame, VideoFrameType, VideoRateControl, VideoResolution, VideoTrackState,
 };
 
 #[derive(Default)]
@@ -475,6 +475,73 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     drop(pair);
     assert_eq!(counters.encoder_release.load(Ordering::SeqCst), 1);
     assert_eq!(counters.decoder_release.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn sender_replaces_and_detaches_track_without_replacing_transceiver() {
+    let counters = Arc::new(Counters::default());
+    let pair = Pair::new(counters.clone(), false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("first", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let sender = transceiver.sender();
+    let id = sender.id();
+    drop(track);
+    drop(source);
+    assert_eq!(sender.track().unwrap().id(), "first");
+    assert_eq!(sender.track().unwrap().state(), VideoTrackState::Live);
+    let mut bob_events = pair.negotiate();
+    let remote = (0..2_000_000)
+        .find_map(|_| {
+            if let Some(remote) = take_remote_transceiver(&mut bob_events) {
+                return Some(remote);
+            }
+            bob_events.extend(pair.progress().1);
+            None
+        })
+        .expect("remote video transceiver did not arrive");
+    let remote_track = remote.receiver().track().unwrap();
+    let sink = remote_track.attach_sink().unwrap();
+    assert!(sender.set_track(Some(&remote_track)).is_err());
+    assert_eq!(sender.track().unwrap().id(), "first");
+
+    let replacement_source = pair.alice_factory.create_video_source().unwrap();
+    let replacement = pair
+        .alice_factory
+        .create_video_track("replacement", &replacement_source)
+        .unwrap();
+    sender.set_track(Some(&replacement)).unwrap();
+    drop(replacement);
+    assert_eq!(sender.id(), id);
+    assert_eq!(sender.track().unwrap().id(), "replacement");
+    let frame = VideoFrame::i420(32, 16, synthetic_i420(32, 16), 2_000_000, 90_000).unwrap();
+    for _ in 0..100_000 {
+        pair.progress();
+        if transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly) {
+            break;
+        }
+    }
+    replacement_source.push_frame(&frame).unwrap();
+    let received = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .expect("replacement source frame did not arrive");
+    // The fixture's fixed H.264 SPS advertises 16x16 even for a 32x16 input;
+    // the original source has never pushed a frame, so this arrived after swap.
+    assert_eq!((received.width, received.height), (16, 16));
+    assert!(counters.encode.load(Ordering::SeqCst) > 0);
+    sender.set_track(None).unwrap();
+    assert!(sender.track().is_none());
+    assert_eq!(sender.id(), id);
+    assert_eq!(pair.alice.video_transceivers().unwrap().len(), 1);
 }
 
 #[test]

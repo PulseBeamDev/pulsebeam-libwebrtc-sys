@@ -628,6 +628,8 @@ mod ffi {
             error: &mut String,
         ) -> bool;
         fn rtp_sender_track(sender: &NativeRtpSender) -> UniquePtr<NativeVideoTrack>;
+        fn rtp_sender_set_video_track(sender: &NativeRtpSender, track: &NativeVideoTrack) -> bool;
+        fn rtp_sender_clear_track(sender: &NativeRtpSender) -> bool;
         fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
         fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;
     }
