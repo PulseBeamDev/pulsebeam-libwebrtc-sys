@@ -606,6 +606,40 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
     assert_eq!(counters.encode.load(Ordering::SeqCst), 0);
     assert_eq!(counters.decode.load(Ordering::SeqCst), 0);
     assert_eq!(source.dropped_frames(), 0);
+    assert!(source.latest_rate_control().is_some());
+    transceiver.sender().request_keyframe(&[]).unwrap();
+    for _ in 0..1000 {
+        pair.progress();
+    }
+    source
+        .push(H264AccessUnit {
+            data: vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1],
+            key_frame: false,
+            timestamp_us: 3_000_000,
+            ..frame.clone()
+        })
+        .unwrap();
+    let requested = (0..100_000).any(|_| {
+        pair.progress();
+        source.take_keyframe_request()
+    });
+    assert!(
+        requested,
+        "sender keyframe feedback did not reach encoded source"
+    );
+    source
+        .push(H264AccessUnit {
+            timestamp_us: 4_000_000,
+            ..frame.clone()
+        })
+        .unwrap();
+    let next = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .expect("keyframe did not resume encoded delivery");
+    assert_eq!(next.data, frame.data);
     assert_eq!(
         source.push(H264AccessUnit {
             key_frame: false,

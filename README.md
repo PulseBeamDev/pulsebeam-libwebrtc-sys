@@ -386,8 +386,11 @@ its capture clock. Each source has a stable `stream_id`; a bounded shared
 16-frame/8 MiB pending queue evicts oldest frames under pressure, with
 per-source `dropped_frames()` and `pending_frames()` observability. This adapter
 does not supply a decoder or support encoded simulcast/SVC or packetization
-mode 0. Do not claim keyframe/rate feedback or dependency metadata for this
-adapter; those controls still require work.
+mode 0. `take_keyframe_request()` reports and clears sender feedback after
+WebRTC asks the adapter to encode a frame; a delta frame submitted during a
+keyframe request is rejected. `latest_rate_control()` exposes the last
+per-stream rate update observed during encoding. The adapter does not expose
+simulcast layer/dependency metadata or packetization mode 0.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
 remote video receiver without guaranteeing that a remote sender honors it.

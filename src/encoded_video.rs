@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -34,9 +34,16 @@ pub struct H264AccessUnit {
     pub qp: Option<u8>,
 }
 
+#[derive(Default)]
+struct SourceFeedback {
+    keyframe_requested: AtomicBool,
+    rates: Mutex<Option<VideoRateControl>>,
+}
+
 struct Pending {
     source_id: u64,
     dropped: Arc<AtomicU64>,
+    feedback: Arc<SourceFeedback>,
     frame: H264AccessUnit,
 }
 
@@ -54,6 +61,7 @@ impl Broker {
         &mut self,
         source_id: u64,
         dropped: Arc<AtomicU64>,
+        feedback: Arc<SourceFeedback>,
         frame: H264AccessUnit,
     ) -> Result<i64, CodecError> {
         let size = frame.data.len();
@@ -78,18 +86,19 @@ impl Broker {
             Pending {
                 source_id,
                 dropped,
+                feedback,
                 frame,
             },
         );
         Ok(token)
     }
 
-    fn take(&mut self, token: i64) -> Option<H264AccessUnit> {
+    fn take(&mut self, token: i64) -> Option<Pending> {
         let pending = self.pending.remove(&token)?;
         self.bytes -= pending.frame.data.len();
         // Older tokens lost upstream are pruned by insert's bounded FIFO.
         self.order.retain(|queued| *queued != token);
-        Some(pending.frame)
+        Some(pending)
     }
 
     fn remove_source(&mut self, id: u64) {
@@ -157,6 +166,7 @@ impl EncodedH264Input {
             last_timestamp_us: Cell::new(None),
             seen_keyframe: Cell::new(false),
             dropped: Arc::new(AtomicU64::new(0)),
+            feedback: Arc::new(SourceFeedback::default()),
         })
     }
 }
@@ -172,6 +182,7 @@ pub struct EncodedH264Source {
     last_timestamp_us: Cell<Option<i64>>,
     seen_keyframe: Cell<bool>,
     dropped: Arc<AtomicU64>,
+    feedback: Arc<SourceFeedback>,
 }
 
 impl EncodedH264Source {
@@ -220,7 +231,7 @@ impl EncodedH264Source {
             .broker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(self.id, self.dropped.clone(), frame)?;
+            .insert(self.id, self.dropped.clone(), self.feedback.clone(), frame)?;
         if !ffi::video_source_push_encoded_trigger(self.source.native(), width, height, time, token)
         {
             let _ = self
@@ -235,6 +246,24 @@ impl EncodedH264Source {
             self.seen_keyframe.set(true);
         }
         Ok(())
+    }
+
+    /// Returns and clears keyframe feedback signaled by the sending encoder.
+    /// Feedback becomes visible when WebRTC tries to encode the next frame;
+    /// an already-submitted delta frame can therefore be rejected.
+    pub fn take_keyframe_request(&self) -> bool {
+        self.feedback
+            .keyframe_requested
+            .swap(false, Ordering::AcqRel)
+    }
+
+    /// Most recent rate control observed while processing this stream, if any.
+    pub fn latest_rate_control(&self) -> Option<VideoRateControl> {
+        *self
+            .feedback
+            .rates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn pending_frames(&self) -> usize {
@@ -348,6 +377,7 @@ impl VideoEncoderFactory for InputFactory {
         Ok(Box::new(InputEncoder {
             broker: self.broker.clone(),
             released: false,
+            rates: None,
         }))
     }
 }
@@ -355,6 +385,7 @@ impl VideoEncoderFactory for InputFactory {
 struct InputEncoder {
     broker: Arc<Mutex<Broker>>,
     released: bool,
+    rates: Option<VideoRateControl>,
 }
 impl VideoEncoder for InputEncoder {
     fn initialize(&mut self, _: VideoEncoderSettings) -> Result<(), CodecError> {
@@ -371,7 +402,7 @@ impl VideoEncoder for InputEncoder {
     fn encode_with_presentation_token(
         &mut self,
         frame: VideoFrame,
-        _: &[VideoFrameType],
+        frame_types: &[VideoFrameType],
         token: Option<i64>,
         callback: EncodedImageCallback,
     ) -> Result<(), CodecError> {
@@ -379,12 +410,27 @@ impl VideoEncoder for InputEncoder {
             return Err(CodecError::Released);
         }
         let token = token.ok_or(CodecError::InvalidFrame)?;
-        let unit = self
+        let pending = self
             .broker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take(token)
             .ok_or(CodecError::InvalidFrame)?;
+        if let Some(rates) = self.rates {
+            *pending
+                .feedback
+                .rates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
+        }
+        let unit = pending.frame;
+        if frame_types.contains(&VideoFrameType::Key) && !unit.key_frame {
+            pending
+                .feedback
+                .keyframe_requested
+                .store(true, Ordering::Release);
+            return Err(CodecError::InvalidFrame);
+        }
         if (unit.width, unit.height) != (frame.width, frame.height) {
             return Err(CodecError::InvalidFrame);
         }
@@ -401,7 +447,8 @@ impl VideoEncoder for InputEncoder {
             qp: unit.qp,
         })
     }
-    fn set_rates(&mut self, _: VideoRateControl) -> Result<(), CodecError> {
+    fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
+        self.rates = Some(rates);
         Ok(())
     }
     fn release(&mut self) -> Result<(), CodecError> {
