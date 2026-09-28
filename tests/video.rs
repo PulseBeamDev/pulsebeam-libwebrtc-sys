@@ -677,6 +677,133 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
 }
 
 #[test]
+fn direct_encoded_sources_keep_stream_identity_and_isolate_teardown() {
+    let input = EncodedH264Input::new().unwrap();
+    let counters = Arc::new(Counters::default());
+    let mut pair = Pair::new_with_encoder(counters.clone(), false, Some(input.encoder_factory()));
+    let mut first = input.create_source(&pair.alice_factory).unwrap();
+    let mut second = input.create_source(&pair.alice_factory).unwrap();
+    assert_ne!(first.stream_id(), second.stream_id());
+    let first_track = first
+        .create_track(&pair.alice_factory, "first-encoded")
+        .unwrap();
+    let second_track = second
+        .create_track(&pair.alice_factory, "second-encoded")
+        .unwrap();
+    let first_transceiver = pair
+        .alice
+        .add_video_transceiver(&first_track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let second_transceiver = pair
+        .alice
+        .add_video_transceiver(&second_track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
+    first_transceiver.set_codec_preferences(&codecs).unwrap();
+    second_transceiver.set_codec_preferences(&codecs).unwrap();
+    let mut events = pair.negotiate();
+    let mut remote = Vec::new();
+    for _ in 0..2_000_000 {
+        while let Some(transceiver) = take_remote_transceiver(&mut events) {
+            remote.push((
+                transceiver.mid().unwrap(),
+                transceiver.receiver().attach_encoded_sink().unwrap(),
+            ));
+        }
+        if remote.len() == 2 {
+            break;
+        }
+        events.extend(pair.progress().1);
+    }
+    assert_eq!(remote.len(), 2);
+    let first_mid = first_transceiver.mid().unwrap();
+    let second_mid = second_transceiver.mid().unwrap();
+    let first_index = remote
+        .iter()
+        .position(|(mid, _)| *mid == first_mid)
+        .unwrap();
+    let second_index = remote
+        .iter()
+        .position(|(mid, _)| *mid == second_mid)
+        .unwrap();
+    assert_ne!(first_index, second_index);
+    for _ in 0..100_000 {
+        pair.progress();
+        if first_transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly)
+            && second_transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly)
+        {
+            break;
+        }
+    }
+    let first_data = vec![
+        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
+        0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
+        0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
+    ];
+    let mut second_data = first_data.clone();
+    *second_data.last_mut().unwrap() = 2;
+    let frame = |data: Vec<u8>, timestamp_us| H264AccessUnit {
+        data,
+        width: 16,
+        height: 16,
+        timestamp_us,
+        key_frame: true,
+        qp: None,
+    };
+    first.push(frame(first_data.clone(), 2_000_000)).unwrap();
+    second.push(frame(second_data.clone(), 2_000_000)).unwrap();
+    let mut received = [None, None];
+    for _ in 0..2_000_000 {
+        pair.progress();
+        for (index, (_, sink)) in remote.iter_mut().enumerate() {
+            if received[index].is_none() {
+                received[index] = sink.try_next_frame();
+            }
+        }
+        if received.iter().all(Option::is_some) {
+            break;
+        }
+    }
+    assert_eq!(
+        received[first_index]
+            .as_ref()
+            .expect("first stream missing")
+            .data,
+        first_data
+    );
+    assert_eq!(
+        received[second_index]
+            .as_ref()
+            .expect("second stream missing")
+            .data,
+        second_data
+    );
+    first.close().unwrap();
+    second.push(frame(second_data.clone(), 3_000_000)).unwrap();
+    let still_live = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            remote[second_index].1.try_next_frame()
+        })
+        .expect("closing first source interrupted second");
+    assert_eq!(still_live.data, second_data);
+    assert_eq!(counters.encode.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.decode.load(Ordering::SeqCst), 0);
+    for (_, sink) in &mut remote {
+        sink.close();
+    }
+    second.close().unwrap();
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
+}
+
+#[test]
 fn injected_h264_provider_carries_a_frame_between_peers() {
     let counters = Arc::new(Counters::default());
     let pair = Pair::new(counters.clone(), false);
