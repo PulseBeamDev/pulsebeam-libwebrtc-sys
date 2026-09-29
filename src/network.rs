@@ -182,6 +182,19 @@ impl ControlledSimulatedNetwork {
         }
     }
 
+    /// Add a DNS answer visible to all controlled socket factories on this
+    /// network. Answers are delivered on the driver sequence when pumped.
+    /// Unknown names and unsupported address families resolve to an error.
+    pub fn add_dns_record(&self, hostname: &str, ip: IpAddr) -> Result<(), NetworkError> {
+        validate_ip(ip)?;
+        if hostname.is_empty() || hostname.contains(char::is_whitespace) {
+            return Err(NetworkError::InvalidAddress);
+        }
+        ffi::add_simulated_dns_record(self.native(), hostname, &ip_bytes(ip))
+            .then_some(())
+            .ok_or(NetworkError::InvalidAddress)
+    }
+
     pub fn next_packet(&self) -> Option<OutboundPacket> {
         take_packet(self.native())
     }
@@ -383,7 +396,9 @@ impl PacketSocketFactoryProvider {
     }
 
     pub fn require_dns(&self) -> Result<(), NetworkError> {
-        Err(NetworkError::UnsupportedDns)
+        self.supports_dns()
+            .then_some(())
+            .ok_or(NetworkError::UnsupportedDns)
     }
 
     pub(crate) fn native(&self) -> &ffi::NativePacketSocketFactoryProvider {

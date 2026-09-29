@@ -233,8 +233,10 @@ task queues, and `ControlledSimulatedNetwork` to pump multiple peers with
 `run_ready` and `next_deadline`. Only one driver may own the process-global
 WebRTC clock at a time; drop all controlled peers, endpoints, and networks to
 release it. Native audio, independently threaded peer roles, and ICE server
-configurations are rejected. This controlled network supports externally
-scheduled UDP delivery but not DNS or TCP outcomes. See
+configurations are rejected. The controlled network supports externally
+scheduled UDP delivery and caller-provided DNS answers for UDP STUN/TURN
+servers. Unknown names fail deterministically. TCP and TLS server URLs remain
+unsupported. See
 [`tests/controlled_driver.rs`](tests/controlled_driver.rs) for gathered-SDP
 connectivity under virtual time and [`docs/capability-matrix.md`](docs/capability-matrix.md)
 for remaining evidence gaps.

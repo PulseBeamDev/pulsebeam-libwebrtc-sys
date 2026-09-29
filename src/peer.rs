@@ -594,10 +594,20 @@ impl PeerConnectionFactory {
         &self,
         configuration: PeerConfiguration,
     ) -> Result<PeerConnection, PeerError> {
-        if self.0._controlled_driver.is_some() && !configuration.ice_servers.is_empty() {
+        if self.0._controlled_driver.is_some()
+            && configuration
+                .ice_servers
+                .iter()
+                .flat_map(|server| &server.urls)
+                .any(|url| {
+                    let url = url.to_ascii_lowercase();
+                    !(url.starts_with("stun:")
+                        || (url.starts_with("turn:") && !url.contains("transport=tcp")))
+                })
+        {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
-                message: "controlled peers do not model STUN/TURN server DNS or TCP outcomes"
+                message: "controlled peers support only UDP STUN/TURN servers; TCP and TLS are not modeled"
                     .into(),
             });
         }

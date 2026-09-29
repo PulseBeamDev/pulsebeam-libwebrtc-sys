@@ -446,6 +446,11 @@ mod ffi {
             clock: &NativeManualClock,
             driver: &NativeDriverThread,
         ) -> UniquePtr<NativeSimulatedNetwork>;
+        fn add_simulated_dns_record(
+            network: &NativeSimulatedNetwork,
+            hostname: &str,
+            ip: &[u8],
+        ) -> bool;
         fn register_network_endpoint(
             network: &NativeSimulatedNetwork,
             ip: &[u8],

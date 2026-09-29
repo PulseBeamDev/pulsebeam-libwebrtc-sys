@@ -66,6 +66,14 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     let remote = network
         .register_endpoint(Ipv4Addr::new(10, 30, 0, 2).into())
         .unwrap();
+    let remote_ip = Ipv4Addr::new(10, 30, 0, 2).into();
+    assert!(network.add_dns_record("", remote_ip).is_err());
+    network.add_dns_record("relay.test", remote_ip).unwrap();
+    endpoint
+        .packet_socket_factory()
+        .unwrap()
+        .require_dns()
+        .unwrap();
     let mut sender = endpoint.bind_udp(4100).unwrap();
     let mut receiver = remote.bind_udp(4200).unwrap();
     sender
@@ -94,7 +102,6 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     receiver.close();
     drop(sender);
     drop(receiver);
-    drop(remote);
     assert!(
         PeerConnectionFactory::builder()
             .environment(environment.clone())
@@ -119,7 +126,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         "constructing a controlled peer started an OS thread"
     );
     let operation = peer.create_offer();
-    let mut completed = false;
+    let mut offer_completed = false;
     for _ in 0..200 {
         driver.run_ready();
         queues.run_ready();
@@ -128,10 +135,10 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
                 && result.operation_id == operation
             {
                 assert!(result.result.is_ok(), "offer failed: {result:?}");
-                completed = true;
+                offer_completed = true;
             }
         }
-        if completed {
+        if offer_completed {
             break;
         }
         if let Some(deadline) = [driver.next_deadline(), queues.next_deadline()]
@@ -143,9 +150,58 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
             clock.advance(deadline - clock.now()).unwrap();
         }
     }
-    assert!(completed, "the controlled peer did not produce an offer");
+    assert!(
+        offer_completed,
+        "the controlled peer did not produce an offer"
+    );
     peer.close().unwrap();
     drop(peer);
+
+    let mut dns_peer = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec!["stun:relay.test:3478".into()],
+                username: String::new(),
+                password: String::new(),
+            }],
+            ..PeerConfiguration::default()
+        })
+        .unwrap();
+    let mut events = Vec::new();
+    let offer = completed(
+        &dns_peer,
+        dns_peer.create_offer(),
+        &mut events,
+        &driver,
+        &queues,
+        &clock,
+        &network,
+    )
+    .unwrap();
+    let _operation = dns_peer.set_local_description(offer);
+    let mut resolved_stun = false;
+    for _ in 0..10_000 {
+        driver.run_ready();
+        queues.run_ready();
+        while let Some(packet) = network.next_packet() {
+            if packet.destination.ip() == remote_ip && packet.destination.port() == 3478 {
+                resolved_stun = true;
+            }
+            network.drop_packet(packet.id).unwrap();
+        }
+        if resolved_stun {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+    }
+    assert!(
+        resolved_stun,
+        "DNS answer did not reach the UDP STUN socket"
+    );
+    dns_peer.close().unwrap();
+    drop(dns_peer);
+    drop(remote);
+
     let mut pending = factory
         .create_peer_connection(PeerConfiguration::default())
         .unwrap();
@@ -298,7 +354,7 @@ fn connect_with_seed() -> (Vec<String>, Vec<String>) {
         factory_a
             .create_peer_connection(PeerConfiguration {
                 ice_servers: vec![IceServer {
-                    urls: vec!["stun:127.0.0.1:3478".into()],
+                    urls: vec!["turns:127.0.0.1:5349".into()],
                     username: String::new(),
                     password: String::new()
                 }],

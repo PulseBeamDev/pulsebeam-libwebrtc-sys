@@ -115,6 +115,9 @@ std::unique_ptr<NativeSimulatedNetwork> new_simulated_network(
 std::unique_ptr<NativeSimulatedNetwork> new_controlled_simulated_network(
     const NativeManualClock& clock,
     const NativeDriverThread& driver) noexcept;
+bool add_simulated_dns_record(const NativeSimulatedNetwork& network,
+                              rust::Str hostname,
+                              rust::Slice<const std::uint8_t> ip) noexcept;
 std::unique_ptr<NativeNetworkEndpoint> register_network_endpoint(
     const NativeSimulatedNetwork& network,
     rust::Slice<const std::uint8_t> ip,

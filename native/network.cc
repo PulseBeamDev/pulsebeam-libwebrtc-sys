@@ -127,6 +127,7 @@ struct NativeSimulatedNetwork::State {
   std::map<webrtc::IPAddress, std::weak_ptr<NativeNetworkEndpoint::State>>
       endpoints;
   std::map<webrtc::SocketAddress, std::weak_ptr<SocketRegistration>> sockets;
+  std::map<std::string, std::vector<webrtc::IPAddress>> dns_records;
   std::map<std::uint64_t, PacketData> pending;
   std::deque<std::uint64_t> outbound;
   std::uint64_t next_packet_id = 1;
@@ -338,6 +339,86 @@ std::unique_ptr<webrtc::AsyncPacketSocket> BindSocket(
   return nullptr;
 }
 
+class SimulatedDnsResolver final : public webrtc::AsyncDnsResolverInterface {
+ public:
+  explicit SimulatedDnsResolver(
+      std::shared_ptr<NativeSimulatedNetwork::State> network)
+      : state_(std::make_shared<State>(std::move(network))) {}
+
+  void Start(const webrtc::SocketAddress& address,
+             absl::AnyInvocable<void()> callback) override {
+    Start(address, AF_UNSPEC, std::move(callback));
+  }
+
+  void Start(const webrtc::SocketAddress& address,
+             int family,
+             absl::AnyInvocable<void()> callback) override {
+    const auto state = state_;
+    state->callback = std::move(callback);
+    const auto generation = ++state->generation;
+    auto* thread = webrtc::Thread::Current();
+    if (!thread) return;
+    thread->PostTask([weak = std::weak_ptr<State>(state), address, family,
+                      generation] {
+      const auto state = weak.lock();
+      if (!state || state->generation != generation) return;
+      state->result.address = address;
+      state->result.resolved.clear();
+      if (!address.ipaddr().IsNil()) {
+        state->result.resolved.push_back(address.ipaddr());
+      } else {
+        std::lock_guard lock(state->network->mutex);
+        const auto found = state->network->dns_records.find(address.hostname());
+        if (found != state->network->dns_records.end()) {
+          state->result.resolved = found->second;
+        }
+      }
+      if (family != AF_UNSPEC) {
+        std::erase_if(state->result.resolved,
+                      [family](const webrtc::IPAddress& ip) {
+                        return ip.family() != family;
+                      });
+      }
+      state->result.error = state->result.resolved.empty() ? ENOENT : 0;
+      auto completed = std::move(state->callback);
+      if (completed) completed();
+    });
+  }
+
+  const webrtc::AsyncDnsResolverResult& result() const override {
+    return state_->result;
+  }
+
+ private:
+  struct Result final : webrtc::AsyncDnsResolverResult {
+    bool GetResolvedAddress(int family,
+                            webrtc::SocketAddress* address_out) const override {
+      if (error != 0 || !address_out) return false;
+      for (const auto& ip : resolved) {
+        if (family == AF_UNSPEC || ip.family() == family) {
+          *address_out = address;
+          address_out->SetResolvedIP(ip);
+          return true;
+        }
+      }
+      return false;
+    }
+    int GetError() const override { return error; }
+    webrtc::SocketAddress address;
+    std::vector<webrtc::IPAddress> resolved;
+    int error = ENOENT;
+  };
+  struct State {
+    explicit State(std::shared_ptr<NativeSimulatedNetwork::State> value)
+        : network(std::move(value)) {}
+    std::shared_ptr<NativeSimulatedNetwork::State> network;
+    Result result;
+    absl::AnyInvocable<void()> callback;
+    std::uint64_t generation = 0;
+  };
+  std::shared_ptr<State> state_;
+};
+
 class SimulatedPacketSocketFactory final
     : public webrtc::PacketSocketFactory {
  public:
@@ -369,7 +450,8 @@ class SimulatedPacketSocketFactory final
   }
   std::unique_ptr<webrtc::AsyncDnsResolverInterface> CreateAsyncDnsResolver()
       override {
-    return nullptr;
+    if (endpoint_->network->owned_thread) return nullptr;
+    return std::make_unique<SimulatedDnsResolver>(endpoint_->network);
   }
   std::unique_ptr<webrtc::AsyncPacketSocket> CreateClientUdpSocket(
       const webrtc::Environment&,
@@ -585,6 +667,21 @@ std::unique_ptr<NativeSimulatedNetwork> new_controlled_simulated_network(
       std::make_shared<NativeSimulatedNetwork::State>(&clock, driver.thread()));
 }
 
+bool add_simulated_dns_record(const NativeSimulatedNetwork& network,
+                              rust::Str hostname,
+                              rust::Slice<const std::uint8_t> ip_bytes) noexcept {
+  const auto ip = ToIp(ip_bytes);
+  if (!ip || ip->IsNil() || hostname.empty()) return false;
+  const auto& state = network.state();
+  if (state->owned_thread || !state->thread->IsCurrent()) return false;
+  std::lock_guard lock(state->mutex);
+  auto& records = state->dns_records[std::string(hostname)];
+  if (std::find(records.begin(), records.end(), *ip) == records.end()) {
+    records.push_back(*ip);
+  }
+  return true;
+}
+
 std::unique_ptr<NativeNetworkEndpoint> register_network_endpoint(
     const NativeSimulatedNetwork& network,
     rust::Slice<const std::uint8_t> ip_bytes,
@@ -654,8 +751,9 @@ bool packet_socket_factory_supports_tcp(
   return false;
 }
 bool packet_socket_factory_supports_dns(
-    const NativePacketSocketFactoryProvider&) noexcept {
-  return false;
+    const NativePacketSocketFactoryProvider& provider) noexcept {
+  const auto& endpoint = provider.endpoint();
+  return !EndpointClosed(endpoint) && !endpoint->network->owned_thread;
 }
 
 std::unique_ptr<NativeSimulatedUdpSocket> create_simulated_udp_socket(
