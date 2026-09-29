@@ -13,7 +13,8 @@ static DRIVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 use pulsebeam_webrtc_sys::{
     ConnectionState, ControlledPeerDriver, ControlledSimulatedNetwork, Environment,
     IceGatheringState, IceServer, ManualClock, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, SessionDescription, TaskQueueFactory,
+    PeerConnectionEvent, PeerConnectionFactory, RandomnessLease, SessionDescription,
+    TaskQueueFactory,
 };
 
 #[test]
@@ -242,15 +243,28 @@ fn gathered(
     panic!("ICE gathering did not complete on the driver");
 }
 
+fn connection_trace(event: &PeerConnectionEvent) -> Option<String> {
+    match event {
+        PeerConnectionEvent::ConnectionStateChanged(state) => Some(format!("{state:?}")),
+        _ => None,
+    }
+}
+
 #[test]
 fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
     let _serial = DRIVER_TEST_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner());
+    assert_eq!(connect_with_seed(), connect_with_seed());
+}
+
+fn connect_with_seed() -> (Vec<String>, Vec<String>) {
     let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
     let queues = TaskQueueFactory::cooperative(&clock).unwrap();
+    let randomness = RandomnessLease::acquire(0x53eed).unwrap();
     let environment = Environment::builder()
         .task_queue_factory(&queues)
+        .randomness(&randomness)
         .build()
         .unwrap();
     let driver = ControlledPeerDriver::new(&clock).unwrap();
@@ -359,30 +373,22 @@ fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
         &clock,
         &network,
     );
-    let mut alice_connected = alice_events.iter().any(|event| {
-        matches!(
-            event,
-            PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
-        )
-    });
-    let mut bob_connected = bob_events.iter().any(|event| {
-        matches!(
-            event,
-            PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
-        )
-    });
+    let mut alice_trace: Vec<_> = alice_events.iter().filter_map(connection_trace).collect();
+    let mut bob_trace: Vec<_> = bob_events.iter().filter_map(connection_trace).collect();
+    let mut alice_connected = alice_trace.iter().any(|state| state == "Connected");
+    let mut bob_connected = bob_trace.iter().any(|state| state == "Connected");
     for _ in 0..10_000 {
         while let Some(event) = alice.try_next_event() {
-            alice_connected |= matches!(
-                event,
-                PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
-            );
+            if let Some(state) = connection_trace(&event) {
+                alice_connected |= state == "Connected";
+                alice_trace.push(state);
+            }
         }
         while let Some(event) = bob.try_next_event() {
-            bob_connected |= matches!(
-                event,
-                PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected)
-            );
+            if let Some(state) = connection_trace(&event) {
+                bob_connected |= state == "Connected";
+                bob_trace.push(state);
+            }
         }
         if alice_connected && bob_connected {
             break;
@@ -397,4 +403,5 @@ fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
     assert!(native_thread_ids().is_subset(&threads_before));
     alice.close().unwrap();
     bob.close().unwrap();
+    (alice_trace, bob_trace)
 }
