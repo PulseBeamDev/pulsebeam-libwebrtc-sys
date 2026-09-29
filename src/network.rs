@@ -72,7 +72,8 @@ struct NetworkInner {
 /// A packet network on the caller-pumped peer thread. Unlike
 /// `SimulatedNetwork`, it never starts an OS thread and is sequence-bound.
 /// UDP delivery, client-side TCP connections and DNS answers are driven by
-/// caller decisions. TLS over simulated TCP and TCP listeners are unsupported.
+/// caller decisions. TURN/TLS uses the same simulated TCP byte stream;
+/// TCP listeners are unsupported.
 ///
 /// ```compile_fail
 /// fn assert_send<T: Send>() {}

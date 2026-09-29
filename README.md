@@ -238,10 +238,12 @@ TCP connect/data decisions, and caller-provided DNS answers for STUN/TURN
 servers. Unknown names fail deterministically. A delivered TCP connect succeeds;
 dropping it fails the socket, while dropping TCP data discards those bytes. The
 external driver must implement any server response and inject received bytes.
-Simulated TLS and TCP listeners remain unsupported. See
+TURN/TLS runs over the same caller-delivered TCP bytes with certificate
+validation; TCP listeners remain unsupported. See
 [`tests/controlled_driver.rs`](tests/controlled_driver.rs) for gathered-SDP
-connectivity under virtual time and [`docs/capability-matrix.md`](docs/capability-matrix.md)
-for remaining evidence gaps.
+connectivity under virtual time, [`tests/controlled_turn_tls.rs`](tests/controlled_turn_tls.rs)
+for TLS and authenticated TURN relay candidate gathering, and
+[`docs/capability-matrix.md`](docs/capability-matrix.md) for remaining evidence gaps.
 
 ## H.264 boundary
 
