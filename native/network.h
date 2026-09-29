@@ -158,6 +158,7 @@ void close_simulated_udp_socket(NativeSimulatedUdpSocket& socket) noexcept;
 std::unique_ptr<NativeOutboundPacket> take_outbound_packet(
     const NativeSimulatedNetwork& network) noexcept;
 std::uint64_t outbound_packet_id(const NativeOutboundPacket& packet) noexcept;
+std::uint8_t outbound_packet_kind(const NativeOutboundPacket& packet) noexcept;
 rust::Vec<std::uint8_t> outbound_packet_source_ip(
     const NativeOutboundPacket& packet) noexcept;
 std::uint16_t outbound_packet_source_port(
@@ -177,6 +178,13 @@ bool deliver_outbound_packet(const NativeSimulatedNetwork& network,
 bool drop_outbound_packet(const NativeSimulatedNetwork& network,
                           std::uint64_t packet_id,
                           std::uint8_t& error) noexcept;
+bool inject_simulated_tcp_data(const NativeSimulatedNetwork& network,
+                               rust::Slice<const std::uint8_t> source_ip,
+                               std::uint16_t source_port,
+                               rust::Slice<const std::uint8_t> destination_ip,
+                               std::uint16_t destination_port,
+                               rust::Slice<const std::uint8_t> data,
+                               std::uint8_t& error) noexcept;
 
 rust::Vec<std::uint8_t> received_packet_source_ip(
     const NativeReceivedPacket& packet) noexcept;

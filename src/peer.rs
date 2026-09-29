@@ -601,13 +601,12 @@ impl PeerConnectionFactory {
                 .flat_map(|server| &server.urls)
                 .any(|url| {
                     let url = url.to_ascii_lowercase();
-                    !(url.starts_with("stun:")
-                        || (url.starts_with("turn:") && !url.contains("transport=tcp")))
+                    !(url.starts_with("stun:") || url.starts_with("turn:"))
                 })
         {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
-                message: "controlled peers support only UDP STUN/TURN servers; TCP and TLS are not modeled"
+                message: "controlled peers support STUN and TURN without TLS; TLS is not modeled"
                     .into(),
             });
         }

@@ -232,11 +232,13 @@ signaling roles. Pair it with a matching manual-clock environment, cooperative
 task queues, and `ControlledSimulatedNetwork` to pump multiple peers with
 `run_ready` and `next_deadline`. Only one driver may own the process-global
 WebRTC clock at a time; drop all controlled peers, endpoints, and networks to
-release it. Native audio, independently threaded peer roles, and ICE server
-configurations are rejected. The controlled network supports externally
-scheduled UDP delivery and caller-provided DNS answers for UDP STUN/TURN
-servers. Unknown names fail deterministically. TCP and TLS server URLs remain
-unsupported. See
+release it. Native audio and independently threaded peer roles are rejected.
+The controlled network supports externally scheduled UDP delivery, client-side
+TCP connect/data decisions, and caller-provided DNS answers for STUN/TURN
+servers. Unknown names fail deterministically. A delivered TCP connect succeeds;
+dropping it fails the socket, while dropping TCP data discards those bytes. The
+external driver must implement any server response and inject received bytes.
+Simulated TLS and TCP listeners remain unsupported. See
 [`tests/controlled_driver.rs`](tests/controlled_driver.rs) for gathered-SDP
 connectivity under virtual time and [`docs/capability-matrix.md`](docs/capability-matrix.md)
 for remaining evidence gaps.

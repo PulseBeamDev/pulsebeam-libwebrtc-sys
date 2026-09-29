@@ -34,10 +34,19 @@ impl NetworkAddress {
     }
 }
 
-/// A packet waiting for the caller's explicit delivery or drop decision.
+/// What an outbound network decision controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboundKind {
+    Udp,
+    TcpConnect,
+    TcpData,
+}
+
+/// A packet or connection attempt waiting for an explicit caller decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutboundPacket {
     pub id: u64,
+    pub kind: OutboundKind,
     pub source: NetworkAddress,
     pub destination: NetworkAddress,
     pub payload: Vec<u8>,
@@ -62,8 +71,8 @@ struct NetworkInner {
 
 /// A packet network on the caller-pumped peer thread. Unlike
 /// `SimulatedNetwork`, it never starts an OS thread and is sequence-bound.
-/// The adapter currently supports UDP only: TCP sockets, DNS results, and
-/// STUN/TURN servers are not available in controlled mode.
+/// UDP delivery, client-side TCP connections and DNS answers are driven by
+/// caller decisions. TLS over simulated TCP and TCP listeners are unsupported.
 ///
 /// ```compile_fail
 /// fn assert_send<T: Send>() {}
@@ -214,6 +223,28 @@ impl ControlledSimulatedNetwork {
             .ok_or_else(|| native_error(error))
     }
 
+    /// Inject bytes from an external TCP peer into a connected client socket.
+    /// The addresses must exactly match that client's remote and local pair.
+    pub fn inject_tcp_data(
+        &self,
+        source: NetworkAddress,
+        destination: NetworkAddress,
+        data: &[u8],
+    ) -> Result<(), NetworkError> {
+        let mut error = 0;
+        ffi::inject_simulated_tcp_data(
+            self.native(),
+            &ip_bytes(source.ip),
+            source.port,
+            &ip_bytes(destination.ip),
+            destination.port,
+            data,
+            &mut error,
+        )
+        .then_some(())
+        .ok_or_else(|| native_error(error))
+    }
+
     fn native(&self) -> &ffi::NativeSimulatedNetwork {
         self.0
             .native
@@ -227,6 +258,12 @@ fn take_packet(network: &ffi::NativeSimulatedNetwork) -> Option<OutboundPacket> 
     let packet = packet.as_ref()?;
     Some(OutboundPacket {
         id: ffi::outbound_packet_id(packet),
+        kind: match ffi::outbound_packet_kind(packet) {
+            0 => OutboundKind::Udp,
+            1 => OutboundKind::TcpConnect,
+            2 => OutboundKind::TcpData,
+            _ => unreachable!("native adapter returned an invalid packet kind"),
+        },
         source: address_from_native(
             ffi::outbound_packet_source_ip(packet),
             ffi::outbound_packet_source_port(packet),
@@ -369,6 +406,8 @@ impl PacketSocketFactoryProvider {
         ffi::packet_socket_factory_supports_udp(self.native())
     }
 
+    /// Whether client-side TCP connection attempts can be externally driven.
+    /// TCP listening and TLS are not implied.
     pub fn supports_tcp(&self) -> bool {
         ffi::packet_socket_factory_supports_tcp(self.native())
     }
@@ -391,8 +430,11 @@ impl PacketSocketFactoryProvider {
         }
     }
 
+    /// Require client-side TCP; this does not assert TLS or listener support.
     pub fn require_tcp(&self) -> Result<(), NetworkError> {
-        Err(NetworkError::UnsupportedTransport)
+        self.supports_tcp()
+            .then_some(())
+            .ok_or(NetworkError::UnsupportedTransport)
     }
 
     pub fn require_dns(&self) -> Result<(), NetworkError> {

@@ -12,9 +12,9 @@ static DRIVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use pulsebeam_webrtc_sys::{
     ConnectionState, ControlledPeerDriver, ControlledSimulatedNetwork, Environment,
-    IceGatheringState, IceServer, ManualClock, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, RandomnessLease, SessionDescription,
-    TaskQueueFactory,
+    IceGatheringState, IceServer, ManualClock, OperationId, OutboundKind, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, RandomnessLease,
+    SessionDescription, TaskQueueFactory,
 };
 
 #[test]
@@ -200,6 +200,66 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     );
     dns_peer.close().unwrap();
     drop(dns_peer);
+
+    let mut tcp_peer = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec!["turn:relay.test:3478?transport=tcp".into()],
+                username: "client".into(),
+                password: "secret".into(),
+            }],
+            ..PeerConfiguration::default()
+        })
+        .unwrap();
+    let offer = completed(
+        &tcp_peer,
+        tcp_peer.create_offer(),
+        &mut events,
+        &driver,
+        &queues,
+        &clock,
+        &network,
+    )
+    .unwrap();
+    let _operation = tcp_peer.set_local_description(offer);
+    let mut connected = None;
+    let mut sent_tcp_data = false;
+    for _ in 0..10_000 {
+        driver.run_ready();
+        queues.run_ready();
+        while let Some(packet) = network.next_packet() {
+            match packet.kind {
+                OutboundKind::TcpConnect => {
+                    assert_eq!(packet.destination.ip(), remote_ip);
+                    assert_eq!(packet.destination.port(), 3478);
+                    connected = Some((packet.destination, packet.source));
+                    network.deliver(packet.id).unwrap();
+                }
+                OutboundKind::TcpData => {
+                    assert!(connected.is_some());
+                    assert!(!packet.payload.is_empty());
+                    sent_tcp_data = true;
+                    network.drop_packet(packet.id).unwrap();
+                }
+                OutboundKind::Udp => network.drop_packet(packet.id).unwrap(),
+            }
+        }
+        if sent_tcp_data {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+    }
+    let (source, destination) = connected.expect("TURN TCP never attempted to connect");
+    assert!(sent_tcp_data, "TURN TCP sent no bytes after connect");
+    // The driver controls the inbound byte stream independently of the
+    // outbound TURN request. Malformed server bytes must not crash the peer.
+    network
+        .inject_tcp_data(source, destination, &[0, 0, 0, 0])
+        .unwrap();
+    driver.run_ready();
+    tcp_peer.close().unwrap();
+    drop(tcp_peer);
+    assert!(network.inject_tcp_data(source, destination, &[]).is_err());
     drop(remote);
 
     let mut pending = factory

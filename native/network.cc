@@ -43,6 +43,13 @@ enum Error : std::uint8_t {
 };
 
 class SimulatedAsyncPacketSocket;
+class SimulatedAsyncTcpSocket;
+
+struct TcpRegistration {
+  std::mutex mutex;
+  webrtc::Thread* thread = nullptr;
+  SimulatedAsyncTcpSocket* socket = nullptr;
+};
 
 struct SocketRegistration {
   std::mutex mutex;
@@ -51,6 +58,8 @@ struct SocketRegistration {
 };
 
 struct PacketData {
+  enum class Kind { kUdp, kTcpConnect, kTcpData } kind = Kind::kUdp;
+  std::weak_ptr<TcpRegistration> tcp_source;
   std::uint64_t id;
   webrtc::SocketAddress source;
   webrtc::SocketAddress destination;
@@ -127,6 +136,7 @@ struct NativeSimulatedNetwork::State {
   std::map<webrtc::IPAddress, std::weak_ptr<NativeNetworkEndpoint::State>>
       endpoints;
   std::map<webrtc::SocketAddress, std::weak_ptr<SocketRegistration>> sockets;
+  std::map<webrtc::SocketAddress, std::weak_ptr<TcpRegistration>> tcp_sockets;
   std::map<std::string, std::vector<webrtc::IPAddress>> dns_records;
   std::map<std::uint64_t, PacketData> pending;
   std::deque<std::uint64_t> outbound;
@@ -143,6 +153,7 @@ struct NativeNetworkEndpoint::State {
   std::mutex mutex;
   bool closed = false;
   std::vector<std::weak_ptr<SocketRegistration>> sockets;
+  std::vector<std::weak_ptr<TcpRegistration>> tcp_sockets;
 };
 
 namespace {
@@ -339,6 +350,162 @@ std::unique_ptr<webrtc::AsyncPacketSocket> BindSocket(
   return nullptr;
 }
 
+class SimulatedAsyncTcpSocket final : public webrtc::AsyncPacketSocket {
+ public:
+  SimulatedAsyncTcpSocket(
+      std::shared_ptr<NativeNetworkEndpoint::State> endpoint,
+      webrtc::SocketAddress local,
+      webrtc::SocketAddress remote,
+      std::shared_ptr<TcpRegistration> registration)
+      : endpoint_(std::move(endpoint)), local_(std::move(local)),
+        remote_(std::move(remote)), registration_(std::move(registration)) {}
+
+  ~SimulatedAsyncTcpSocket() override {
+    Close();
+    std::lock_guard lock(registration_->mutex);
+    registration_->socket = nullptr;
+    registration_->thread = nullptr;
+  }
+
+  webrtc::SocketAddress GetLocalAddress() const override { return local_; }
+  webrtc::SocketAddress GetRemoteAddress() const override { return remote_; }
+  State GetState() const override { return state_; }
+  int GetError() const override { return error_; }
+  void SetError(int error) override { error_ = error; }
+  int GetOption(webrtc::Socket::Option option, int* value) override {
+    const auto found = options_.find(option);
+    if (found == options_.end() || !value) { error_ = EINVAL; return -1; }
+    *value = found->second;
+    return 0;
+  }
+  int SetOption(webrtc::Socket::Option option, int value) override {
+    options_[option] = value;
+    return 0;
+  }
+
+  void QueueConnect() {
+    PacketData request;
+    request.kind = PacketData::Kind::kTcpConnect;
+    Queue(std::move(request));
+  }
+  int Send(const void* data, std::size_t size,
+           const webrtc::AsyncSocketPacketOptions& options) override {
+    if (state_ != STATE_CONNECTED || EndpointClosed(endpoint_)) {
+      error_ = ENOTCONN;
+      return -1;
+    }
+    PacketData packet;
+    packet.kind = PacketData::Kind::kTcpData;
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    packet.payload.assign(bytes, bytes + size);
+    const auto timestamp = Queue(std::move(packet));
+    NotifySentPacket(this, webrtc::SentPacketInfo(options.packet_id,
+                                                   timestamp / 1000));
+    return static_cast<int>(size);
+  }
+  int SendTo(const void* data, std::size_t size,
+             const webrtc::SocketAddress& remote,
+             const webrtc::AsyncSocketPacketOptions& options) override {
+    if (remote != remote_) { error_ = EINVAL; return -1; }
+    return Send(data, size, options);
+  }
+  int Close() override {
+    if (state_ == STATE_CLOSED) return 0;
+    state_ = STATE_CLOSED;
+    const auto network = endpoint_->network;
+    {
+      std::lock_guard lock(network->mutex);
+      const auto found = network->tcp_sockets.find(local_);
+      if (found != network->tcp_sockets.end() &&
+          found->second.lock() == registration_) {
+        network->tcp_sockets.erase(found);
+      }
+    }
+    NotifyClosed(error_);
+    return 0;
+  }
+  void CompleteConnect(bool accepted) {
+    if (state_ != STATE_CONNECTING || EndpointClosed(endpoint_)) return;
+    if (accepted) {
+      state_ = STATE_CONNECTED;
+      NotifyConnect(this);
+      NotifyReadyToSend(this);
+    } else {
+      error_ = ECONNREFUSED;
+      Close();
+    }
+  }
+  bool Receive(const PacketData& packet) {
+    if (state_ != STATE_CONNECTED || EndpointClosed(endpoint_) ||
+        packet.source != remote_) return false;
+    webrtc::ReceivedIpPacket received(
+        std::span<const std::uint8_t>(packet.payload), remote_,
+        webrtc::Timestamp::Micros(manual_clock_time_us(*endpoint_->network->clock)));
+    NotifyPacketReceived(received);
+    return true;
+  }
+
+ private:
+  std::int64_t Queue(PacketData packet) {
+    auto network = endpoint_->network;
+    std::lock_guard lock(network->mutex);
+    packet.id = network->next_packet_id++;
+    packet.source = local_;
+    packet.destination = remote_;
+    packet.tcp_source = registration_;
+    packet.deadline_us = manual_clock_time_us(*network->clock);
+    const auto timestamp = packet.deadline_us;
+    network->pending.emplace(packet.id, std::move(packet));
+    network->outbound.push_back(network->next_packet_id - 1);
+    return timestamp;
+  }
+  std::shared_ptr<NativeNetworkEndpoint::State> endpoint_;
+  webrtc::SocketAddress local_;
+  webrtc::SocketAddress remote_;
+  std::shared_ptr<TcpRegistration> registration_;
+  std::map<webrtc::Socket::Option, int> options_;
+  State state_ = STATE_CONNECTING;
+  int error_ = 0;
+};
+
+std::unique_ptr<webrtc::AsyncPacketSocket> ConnectTcpSocket(
+    const std::shared_ptr<NativeNetworkEndpoint::State>& endpoint,
+    const webrtc::SocketAddress& requested,
+    const webrtc::SocketAddress& remote) {
+  auto* current_thread = webrtc::Thread::Current();
+  if (!current_thread || !remote.IsComplete()) return nullptr;
+  std::lock_guard endpoint_lock(endpoint->mutex);
+  if (endpoint->closed) return nullptr;
+  webrtc::IPAddress ip = requested.ipaddr();
+  if (ip.IsNil()) ip = endpoint->ip;
+  if (ip != endpoint->ip) return nullptr;
+  auto network = endpoint->network;
+  std::lock_guard lock(network->mutex);
+  const auto first = requested.port() == 0 ? 49152 : requested.port();
+  const auto last = requested.port() == 0 ? 65535 : requested.port();
+  for (std::uint32_t port = first; port <= last; ++port) {
+    const webrtc::SocketAddress local(ip, static_cast<int>(port));
+    const auto found = network->tcp_sockets.find(local);
+    if (found != network->tcp_sockets.end() && !found->second.expired())
+      continue;
+    auto registration = std::make_shared<TcpRegistration>();
+    auto socket = std::make_unique<SimulatedAsyncTcpSocket>(
+        endpoint, local, remote, registration);
+    registration->thread = current_thread;
+    registration->socket = socket.get();
+    network->tcp_sockets[local] = registration;
+    endpoint->tcp_sockets.push_back(registration);
+    // QueueConnect locks the network. Finish binding before queueing.
+    network->thread->PostTask([weak = std::weak_ptr<TcpRegistration>(registration)] {
+      if (auto live = weak.lock()) {
+        if (live->socket) live->socket->QueueConnect();
+      }
+    });
+    return socket;
+  }
+  return nullptr;
+}
+
 class SimulatedDnsResolver final : public webrtc::AsyncDnsResolverInterface {
  public:
   explicit SimulatedDnsResolver(
@@ -443,10 +610,12 @@ class SimulatedPacketSocketFactory final
   }
   std::unique_ptr<webrtc::AsyncPacketSocket> CreateClientTcpSocket(
       const webrtc::Environment&,
-      const webrtc::SocketAddress&,
-      const webrtc::SocketAddress&,
-      const webrtc::PacketSocketTcpOptions&) override {
-    return nullptr;
+      const webrtc::SocketAddress& local,
+      const webrtc::SocketAddress& remote,
+      const webrtc::PacketSocketTcpOptions& options) override {
+    if (endpoint_->network->owned_thread ||
+        options.opts & (OPT_TLS | OPT_TLS_FAKE)) return nullptr;
+    return ConnectTcpSocket(endpoint_, local, remote);
   }
   std::unique_ptr<webrtc::AsyncDnsResolverInterface> CreateAsyncDnsResolver()
       override {
@@ -528,6 +697,19 @@ void CloseEndpoint(
   for (const auto& socket : sockets) {
     CloseRegistration(socket);
   }
+  for (const auto& weak : endpoint->tcp_sockets) {
+    if (auto registration = weak.lock()) {
+      webrtc::Thread* thread;
+      {
+        std::lock_guard lock(registration->mutex);
+        thread = registration->thread;
+      }
+      if (thread) thread->BlockingCall([registration] {
+        if (registration->socket) registration->socket->Close();
+      });
+    }
+  }
+  endpoint->tcp_sockets.clear();
   auto network = endpoint->network;
   std::lock_guard lock(network->mutex);
   network->endpoints.erase(endpoint->ip);
@@ -747,8 +929,9 @@ bool packet_socket_factory_supports_udp(
   return !EndpointClosed(provider.endpoint());
 }
 bool packet_socket_factory_supports_tcp(
-    const NativePacketSocketFactoryProvider&) noexcept {
-  return false;
+    const NativePacketSocketFactoryProvider& provider) noexcept {
+  const auto& endpoint = provider.endpoint();
+  return !EndpointClosed(endpoint) && !endpoint->network->owned_thread;
 }
 bool packet_socket_factory_supports_dns(
     const NativePacketSocketFactoryProvider& provider) noexcept {
@@ -875,6 +1058,9 @@ std::unique_ptr<NativeOutboundPacket> take_outbound_packet(
 std::uint64_t outbound_packet_id(const NativeOutboundPacket& packet) noexcept {
   return packet.state()->packet.id;
 }
+std::uint8_t outbound_packet_kind(const NativeOutboundPacket& packet) noexcept {
+  return static_cast<std::uint8_t>(packet.state()->packet.kind);
+}
 rust::Vec<std::uint8_t> outbound_packet_source_ip(
     const NativeOutboundPacket& packet) noexcept {
   return FromIp(packet.state()->packet.source.ipaddr());
@@ -923,6 +1109,25 @@ bool deliver_outbound_packet(const NativeSimulatedNetwork& network,
       registration = destination->second.lock();
     }
   }
+  if (packet.kind != PacketData::Kind::kUdp) {
+    if (keep_pending && packet.kind == PacketData::Kind::kTcpConnect) {
+      error = kUnsupportedTransport;
+      return false;
+    }
+    auto source = packet.tcp_source.lock();
+    if (!source) { error = kSocketClosed; return false; }
+    bool delivered = false;
+    source->thread->BlockingCall([&] {
+      if (source->socket && source->socket->GetState() !=
+                                webrtc::AsyncPacketSocket::STATE_CLOSED) {
+        if (packet.kind == PacketData::Kind::kTcpConnect)
+          source->socket->CompleteConnect(true);
+        delivered = true;
+      }
+    });
+    error = delivered ? kOk : kSocketClosed;
+    return delivered;
+  }
   if (!registration) {
     error = kDestinationUnavailable;
     return false;
@@ -951,13 +1156,65 @@ bool drop_outbound_packet(const NativeSimulatedNetwork& network,
                           std::uint64_t packet_id,
                           std::uint8_t& error) noexcept {
   const auto& state = network.state();
-  std::lock_guard lock(state->mutex);
-  if (state->pending.erase(packet_id) == 0) {
-    error = kPacketNotFound;
-    return false;
+  std::shared_ptr<TcpRegistration> tcp;
+  {
+    std::lock_guard lock(state->mutex);
+    const auto found = state->pending.find(packet_id);
+    if (found == state->pending.end()) {
+      error = kPacketNotFound;
+      return false;
+    }
+    if (found->second.kind == PacketData::Kind::kTcpConnect)
+      tcp = found->second.tcp_source.lock();
+    state->pending.erase(found);
+  }
+  if (tcp && tcp->thread) {
+    tcp->thread->BlockingCall([&] {
+      if (tcp->socket) tcp->socket->CompleteConnect(false);
+    });
   }
   error = kOk;
   return true;
+}
+
+bool inject_simulated_tcp_data(const NativeSimulatedNetwork& network,
+                               rust::Slice<const std::uint8_t> source_ip,
+                               std::uint16_t source_port,
+                               rust::Slice<const std::uint8_t> destination_ip,
+                               std::uint16_t destination_port,
+                               rust::Slice<const std::uint8_t> data,
+                               std::uint8_t& error) noexcept {
+  const auto source = ToIp(source_ip);
+  const auto destination = ToIp(destination_ip);
+  if (!source || !destination || source->IsNil() || destination->IsNil()) {
+    error = kInvalidAddress;
+    return false;
+  }
+  if (!source_port || !destination_port) {
+    error = kInvalidPort;
+    return false;
+  }
+  PacketData packet;
+  packet.source = webrtc::SocketAddress(*source, source_port);
+  packet.destination = webrtc::SocketAddress(*destination, destination_port);
+  packet.payload.assign(data.begin(), data.end());
+  std::shared_ptr<TcpRegistration> registration;
+  {
+    std::lock_guard lock(network.state()->mutex);
+    const auto found = network.state()->tcp_sockets.find(packet.destination);
+    if (found != network.state()->tcp_sockets.end())
+      registration = found->second.lock();
+  }
+  if (!registration || !registration->thread) {
+    error = kDestinationUnavailable;
+    return false;
+  }
+  bool received = false;
+  registration->thread->BlockingCall([&] {
+    if (registration->socket) received = registration->socket->Receive(packet);
+  });
+  error = received ? kOk : kDestinationUnavailable;
+  return received;
 }
 
 rust::Vec<std::uint8_t> received_packet_source_ip(

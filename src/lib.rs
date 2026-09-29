@@ -45,8 +45,8 @@ pub use execution::{
 };
 pub use network::{
     ControlledSimulatedNetwork, NetworkAddress, NetworkEndpoint, NetworkError,
-    NetworkManagerProvider, OutboundPacket, PacketSocketFactoryProvider, ReceivedPacket,
-    SimulatedNetwork, SimulatedUdpSocket,
+    NetworkManagerProvider, OutboundKind, OutboundPacket, PacketSocketFactoryProvider,
+    ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
     CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceGatheringState,
@@ -492,6 +492,7 @@ mod ffi {
             network: &NativeSimulatedNetwork,
         ) -> UniquePtr<NativeOutboundPacket>;
         fn outbound_packet_id(packet: &NativeOutboundPacket) -> u64;
+        fn outbound_packet_kind(packet: &NativeOutboundPacket) -> u8;
         fn outbound_packet_source_ip(packet: &NativeOutboundPacket) -> Vec<u8>;
         fn outbound_packet_source_port(packet: &NativeOutboundPacket) -> u16;
         fn outbound_packet_destination_ip(packet: &NativeOutboundPacket) -> Vec<u8>;
@@ -507,6 +508,15 @@ mod ffi {
         fn drop_outbound_packet(
             network: &NativeSimulatedNetwork,
             packet_id: u64,
+            error: &mut u8,
+        ) -> bool;
+        fn inject_simulated_tcp_data(
+            network: &NativeSimulatedNetwork,
+            source_ip: &[u8],
+            source_port: u16,
+            destination_ip: &[u8],
+            destination_port: u16,
+            data: &[u8],
             error: &mut u8,
         ) -> bool;
         fn received_packet_source_ip(packet: &NativeReceivedPacket) -> Vec<u8>;
