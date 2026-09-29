@@ -645,6 +645,31 @@ impl RtpReceiver {
         Ok(crate::AudioSink::from_native(native, self.peer.clone()))
     }
 
+    /// Receive encoded Opus without decoding. Select this instead of a decoded
+    /// audio sink before media arrives. A receiver permits only one encoded
+    /// sink during its lifetime, including after that sink closes.
+    pub fn attach_encoded_audio_sink(&self) -> Result<crate::EncodedAudioSink, PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let native = ffi::rtp_receiver_attach_encoded_audio_sink(self.peer.native(), self.native());
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message:
+                    "receiver is foreign, not negotiated for Opus, or already has an encoded sink"
+                        .into(),
+            });
+        }
+        Ok(crate::EncodedAudioSink::from_native(
+            native,
+            self.peer.clone(),
+        ))
+    }
+
     /// Request a fresh remote video keyframe through the negotiated receiver.
     /// Success means the request was submitted, not that the sender delivered
     /// a frame. A foreign, ended or non-video receiver is rejected.

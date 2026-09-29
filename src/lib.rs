@@ -21,7 +21,7 @@ pub(crate) use execution::{RustTask, run_task};
 
 pub use audio::{
     AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource, AudioTrack,
-    DecodedAudioFrame,
+    DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
@@ -298,6 +298,19 @@ mod ffi {
         samples: Vec<i16>,
     }
 
+    struct FfiEncodedAudioFrame {
+        available: bool,
+        data: Vec<u8>,
+        rtp_timestamp: u32,
+        ssrc: u32,
+        payload_type: u8,
+        samples_per_channel: u32,
+        has_capture_time: bool,
+        capture_time_us: i64,
+        has_receive_time: bool,
+        receive_time_us: i64,
+    }
+
     unsafe extern "C++" {
         include!("pulsebeam-webrtc-sys/native/probe.h");
         include!("pulsebeam-webrtc-sys/native/execution.h");
@@ -337,6 +350,7 @@ mod ffi {
         type NativeAudioSource;
         type NativeAudioTrack;
         type NativeAudioSink;
+        type NativeEncodedAudioSink;
         type NativeVideoSink;
         type NativeEncodedVideoSink;
         type NativeRtpSender;
@@ -631,6 +645,13 @@ mod ffi {
         fn audio_sink_take_frame(sink: &NativeAudioSink) -> FfiReceivedAudioFrame;
         fn audio_sink_dropped_frames(sink: &NativeAudioSink) -> u64;
         fn close_audio_sink(sink: &NativeAudioSink) -> bool;
+        fn rtp_receiver_attach_encoded_audio_sink(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+        ) -> UniquePtr<NativeEncodedAudioSink>;
+        fn encoded_audio_sink_take_frame(sink: &NativeEncodedAudioSink) -> FfiEncodedAudioFrame;
+        fn encoded_audio_sink_dropped_frames(sink: &NativeEncodedAudioSink) -> u64;
+        fn close_encoded_audio_sink(sink: &NativeEncodedAudioSink) -> bool;
 
         fn create_video_source(
             factory: &NativePeerConnectionFactory,

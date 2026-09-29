@@ -7,9 +7,11 @@
 #include <list>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "api/frame_transformer_interface.h"
 #include "api/make_ref_counted.h"
 #include "api/media_stream_interface.h"
 #include "api/notifier.h"
@@ -66,6 +68,108 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
 
 // Receive callbacks arrive on a WebRTC audio thread. The queue retains at
 // most eight 10 ms blocks; consumers observe loss through DroppedFrames().
+// Opus TOC (RFC 6716 section 3) determines packet duration at 48 kHz.
+std::uint32_t OpusSamples(std::span<const std::uint8_t> data) {
+  if (data.empty()) return 0;
+  const unsigned config = data[0] >> 3;
+  const unsigned code = data[0] & 3;
+  const unsigned count = code == 0 ? 1 : code == 3
+      ? (data.size() > 1 ? data[1] & 63 : 0) : 2;
+  if (count == 0 || count > 48) return 0;
+  const unsigned per_frame = config < 12 ? (480u << (config & 3))
+      : config < 16 ? (480u << (config & 1))
+      : (120u << (config & 3));
+  const unsigned samples = count * per_frame;
+  return samples <= 5760 ? samples : 0;
+}
+
+// Swallow frames before NetEq so observing Opus never invokes its decoder.
+// Upstream retains the transformer after close until the receiver dies.
+class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
+ public:
+  void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    std::lock_guard lock(mutex_);
+    if (!active_) return;
+    const auto data = frame->GetData();
+    if (frame->GetDirection() !=
+            webrtc::TransformableFrameInterface::Direction::kReceiver ||
+        frame->GetMimeType() != "audio/opus" || data.empty() ||
+        data.size() > 65536) {
+      Lost();
+      return;
+    }
+    const auto samples = OpusSamples(data);
+    if (!samples) {
+      Lost();
+      return;
+    }
+    while (!frames_.empty() &&
+           (frames_.size() >= 64 || bytes_ > 262144 - data.size())) {
+      bytes_ -= frames_.front().data.size();
+      frames_.pop_front();
+      Lost();
+    }
+    Frame saved;
+    saved.data.assign(data.begin(), data.end());
+    saved.rtp_timestamp = frame->GetTimestamp();
+    saved.ssrc = frame->GetSsrc();
+    saved.payload_type = frame->GetPayloadType();
+    saved.samples = static_cast<std::uint32_t>(samples);
+    if (auto time = frame->CaptureTime()) saved.capture_us = time->us();
+    if (auto time = frame->ReceiveTime()) saved.receive_us = time->us();
+    bytes_ += saved.data.size();
+    frames_.push_back(std::move(saved));
+  }
+  FfiEncodedAudioFrame Take() {
+    std::lock_guard lock(mutex_);
+    FfiEncodedAudioFrame out{};
+    if (frames_.empty()) return out;
+    auto frame = std::move(frames_.front());
+    frames_.pop_front();
+    bytes_ -= frame.data.size();
+    out.available = true;
+    for (auto byte : frame.data) out.data.push_back(byte);
+    out.rtp_timestamp = frame.rtp_timestamp;
+    out.ssrc = frame.ssrc;
+    out.payload_type = frame.payload_type;
+    out.samples_per_channel = frame.samples;
+    out.has_capture_time = frame.capture_us.has_value();
+    out.capture_time_us = frame.capture_us.value_or(0);
+    out.has_receive_time = frame.receive_us.has_value();
+    out.receive_time_us = frame.receive_us.value_or(0);
+    return out;
+  }
+  std::uint64_t DroppedFrames() const {
+    std::lock_guard lock(mutex_);
+    return dropped_;
+  }
+  void Deactivate() {
+    std::lock_guard lock(mutex_);
+    active_ = false;
+    frames_.clear();
+    bytes_ = 0;
+  }
+
+ private:
+  void Lost() {
+    if (dropped_ != std::numeric_limits<std::uint64_t>::max()) ++dropped_;
+  }
+  struct Frame {
+    std::vector<std::uint8_t> data;
+    std::uint32_t rtp_timestamp = 0;
+    std::uint32_t ssrc = 0;
+    std::uint8_t payload_type = 0;
+    std::uint32_t samples = 0;
+    std::optional<std::int64_t> capture_us;
+    std::optional<std::int64_t> receive_us;
+  };
+  mutable std::mutex mutex_;
+  std::deque<Frame> frames_;
+  std::size_t bytes_ = 0;
+  std::uint64_t dropped_ = 0;
+  bool active_ = true;
+};
+
 class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
  public:
   void OnData(const void* data, int bits, int rate, size_t channels,
@@ -134,6 +238,10 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
 
 }  // namespace
 
+struct NativeEncodedAudioSink::State {
+  webrtc::scoped_refptr<EncodedAudioCollector> collector;
+};
+
 struct NativeAudioSink::State {
   const NativePeerConnection* peer = nullptr;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
@@ -150,6 +258,12 @@ struct NativeAudioSource::State {
 struct NativeAudioTrack::State {
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
 };
+
+NativeEncodedAudioSink::NativeEncodedAudioSink(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeEncodedAudioSink::~NativeEncodedAudioSink() { close_encoded_audio_sink(*this); }
+const std::unique_ptr<NativeEncodedAudioSink::State>&
+NativeEncodedAudioSink::state() const noexcept { return state_; }
 
 NativeAudioSink::NativeAudioSink(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
@@ -234,7 +348,8 @@ std::unique_ptr<NativeAudioSink> rtp_receiver_attach_audio_sink(
     if (candidate == remote) belongs = true;
   }
   if (!belongs || !remote || !remote->track() ||
-      remote->track()->kind() != webrtc::MediaStreamTrackInterface::kAudioKind) {
+      remote->track()->kind() != webrtc::MediaStreamTrackInterface::kAudioKind ||
+      !peer.reserve_audio_receiver(remote->id())) {
     return nullptr;
   }
   auto state = std::make_unique<NativeAudioSink::State>();
@@ -265,6 +380,39 @@ bool close_audio_sink(const NativeAudioSink& sink) noexcept {
   state.signaling_thread->BlockingCall([&] {
     state.track->RemoveSink(state.collector.get());
   });
+  return true;
+}
+std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {
+  if (!peer.peer() || !peer.worker_thread() || !receiver.receiver()) return nullptr;
+  const auto remote = receiver.receiver();
+  bool belongs = false;
+  for (const auto& candidate : peer.peer()->GetReceivers()) {
+    if (candidate == remote) belongs = true;
+  }
+  if (!belongs || remote->media_type() != webrtc::MediaType::AUDIO) return nullptr;
+  bool opus = false;
+  for (const auto& codec : remote->GetParameters().codecs) {
+    if (codec.name == "opus" || codec.name == "OPUS") opus = true;
+  }
+  if (!opus || !peer.reserve_audio_receiver(remote->id())) return nullptr;
+  auto state = std::make_unique<NativeEncodedAudioSink::State>();
+  state->collector = webrtc::make_ref_counted<EncodedAudioCollector>();
+  peer.worker_thread()->BlockingCall([&] {
+    remote->SetFrameTransformer(state->collector);
+  });
+  return std::make_unique<NativeEncodedAudioSink>(std::move(state));
+}
+FfiEncodedAudioFrame encoded_audio_sink_take_frame(
+    const NativeEncodedAudioSink& sink) noexcept {
+  return sink.state()->collector->Take();
+}
+std::uint64_t encoded_audio_sink_dropped_frames(
+    const NativeEncodedAudioSink& sink) noexcept {
+  return sink.state()->collector->DroppedFrames();
+}
+bool close_encoded_audio_sink(const NativeEncodedAudioSink& sink) noexcept {
+  sink.state()->collector->Deactivate();
   return true;
 }
 std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(

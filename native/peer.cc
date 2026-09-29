@@ -659,6 +659,7 @@ struct NativePeerConnection::State {
   webrtc::Thread* signaling_thread = nullptr;
   webrtc::Thread* worker_thread = nullptr;
   std::set<std::string> encoded_receiver_ids;
+  std::set<std::string> audio_receiver_ids;
   bool closed = false;
 };
 
@@ -710,6 +711,10 @@ webrtc::Thread* NativePeerConnection::worker_thread() const noexcept {
 bool NativePeerConnection::reserve_encoded_receiver(
     const std::string& id) const noexcept {
   return !state_->closed && state_->encoded_receiver_ids.insert(id).second;
+}
+bool NativePeerConnection::reserve_audio_receiver(
+    const std::string& id) const noexcept {
+  return !state_->closed && state_->audio_receiver_ids.insert(id).second;
 }
 
 std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(

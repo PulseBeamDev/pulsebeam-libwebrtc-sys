@@ -61,6 +61,7 @@ class NativePeerConnection final {
   webrtc::Thread* signaling_thread() const noexcept;
   webrtc::Thread* worker_thread() const noexcept;
   bool reserve_encoded_receiver(const std::string& id) const noexcept;
+  bool reserve_audio_receiver(const std::string& id) const noexcept;
 
  private:
   std::unique_ptr<State> state_;

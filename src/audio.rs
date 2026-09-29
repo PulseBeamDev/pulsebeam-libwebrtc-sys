@@ -156,6 +156,72 @@ impl AudioSink {
     }
 }
 
+/// A complete encoded Opus packet after RTP depacketization. `data` holds
+/// exactly the Opus packet (RFC 6716), without RTP headers. Duration is
+/// `samples_per_channel` at the 48 kHz Opus clock. A negotiated RED or
+/// non-Opus payload is not exposed as an Opus packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedAudioFrame {
+    pub data: Vec<u8>,
+    pub rtp_timestamp: u32,
+    pub ssrc: u32,
+    pub payload_type: u8,
+    pub samples_per_channel: u32,
+    pub capture_time_us: Option<i64>,
+    pub receive_time_us: Option<i64>,
+}
+
+/// Bounded, decoder-free Opus receiver. Attaching this sink selects encoded
+/// delivery for its receiver and excludes simultaneous decoded delivery.
+pub struct EncodedAudioSink {
+    native: cxx::UniquePtr<ffi::NativeEncodedAudioSink>,
+    _peer: Rc<PeerInner>,
+}
+
+impl EncodedAudioSink {
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeEncodedAudioSink>,
+        peer: Rc<PeerInner>,
+    ) -> Self {
+        Self {
+            native,
+            _peer: peer,
+        }
+    }
+
+    pub fn try_next_frame(&self) -> Option<EncodedAudioFrame> {
+        let frame = ffi::encoded_audio_sink_take_frame(self.native());
+        frame.available.then_some(EncodedAudioFrame {
+            data: frame.data,
+            rtp_timestamp: frame.rtp_timestamp,
+            ssrc: frame.ssrc,
+            payload_type: frame.payload_type,
+            samples_per_channel: frame.samples_per_channel,
+            capture_time_us: frame.has_capture_time.then_some(frame.capture_time_us),
+            receive_time_us: frame.has_receive_time.then_some(frame.receive_time_us),
+        })
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        ffi::encoded_audio_sink_dropped_frames(self.native())
+    }
+
+    /// Stop delivery. Idempotent; the upstream transformer remains inert until
+    /// the receiver ends and cannot be attached again to the same receiver.
+    pub fn close(&mut self) -> Result<(), PeerError> {
+        ffi::close_encoded_audio_sink(self.native())
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::Internal,
+                message: "failed to close encoded audio sink".into(),
+            })
+    }
+
+    fn native(&self) -> &ffi::NativeEncodedAudioSink {
+        self.native.as_ref().expect("validated encoded audio sink")
+    }
+}
+
 /// A caller-fed, sequence-bound raw audio source.
 ///
 /// ```compile_fail
