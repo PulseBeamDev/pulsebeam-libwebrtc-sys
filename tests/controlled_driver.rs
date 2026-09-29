@@ -14,8 +14,8 @@ use pulsebeam_webrtc_sys::{
     ControlledPeerDriver, ControlledSimulatedNetwork, DataChannelConfiguration, DataChannelEvent,
     DataChannelMessage, DataChannelSendResult, DataChannelState, Environment, IceGatheringState,
     IceServer, ManualClock, OperationId, OutboundKind, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, RandomnessLease, SessionDescription,
-    TaskQueueFactory,
+    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RandomnessLease,
+    RtpTransceiverDirection, SessionDescription, SessionDescriptionType, TaskQueueFactory,
 };
 
 #[test]
@@ -155,6 +155,38 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         offer_completed,
         "the controlled peer did not produce an offer"
     );
+    // The pinned upstream video receiver synchronously waits for a task on
+    // its decode queue while applying remote SDP. The cooperative queue
+    // cannot execute that task until this call returns, so reject instead.
+    let source = factory.create_video_source().unwrap();
+    let track = factory
+        .create_video_track("unsupported-video", &source)
+        .unwrap();
+    let error = peer
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap_err();
+    assert_eq!(error.kind, PeerErrorKind::UnsupportedOperation);
+    for local in [true, false] {
+        let description = SessionDescription {
+            kind: SessionDescriptionType::Offer,
+            sdp: "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n".into(),
+        };
+        let rejected = if local {
+            peer.set_local_description(description)
+        } else {
+            peer.set_remote_description(description)
+        };
+        let PeerConnectionEvent::OperationComplete(result) = peer.try_next_event().unwrap() else {
+            panic!("expected controlled video rejection");
+        };
+        assert_eq!(result.operation_id, rejected);
+        assert_eq!(
+            result.result.unwrap_err().kind,
+            PeerErrorKind::UnsupportedOperation
+        );
+    }
+    drop(track);
+    drop(source);
     peer.close().unwrap();
     drop(peer);
 

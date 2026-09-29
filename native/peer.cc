@@ -1126,6 +1126,17 @@ void peer_set_remote_description(const NativePeerConnection& peer,
       webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
 }
 
+void peer_reject_controlled_video(const NativePeerConnection& peer,
+                                  std::uint64_t operation_id) noexcept {
+  const auto& events = peer.state()->events;
+  if (!events->Begin(operation_id)) {
+    return;
+  }
+  events->Complete(ErrorEvent(
+      operation_id, webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
+      "controlled video receive requires a threaded decode queue"));
+}
+
 void peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::uint64_t operation_id,
                             rust::Str sdp_mid,

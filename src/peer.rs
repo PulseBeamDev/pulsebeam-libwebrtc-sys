@@ -1070,6 +1070,14 @@ impl PeerConnection {
         direction: RtpTransceiverDirection,
         rids: &[String],
     ) -> Result<RtpTransceiver, PeerError> {
+        // Upstream recreates receive streams with a synchronous wait on its
+        // decode queue; that queue cannot progress while the caller is blocked.
+        if self.inner._factory._controlled_driver.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "video transceivers require a threaded peer; controlled video receive can deadlock".into(),
+            });
+        }
         if !track.is_local_to(&self.inner._factory) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -1247,6 +1255,10 @@ impl PeerConnection {
 
     pub fn set_local_description(&self, description: SessionDescription) -> OperationId {
         let id = self.next_operation();
+        if self.controlled_video_sdp(&description) {
+            ffi::peer_reject_controlled_video(self.native(), id.0);
+            return id;
+        }
         ffi::peer_set_local_description(
             self.native(),
             id.0,
@@ -1258,6 +1270,10 @@ impl PeerConnection {
 
     pub fn set_remote_description(&self, description: SessionDescription) -> OperationId {
         let id = self.next_operation();
+        if self.controlled_video_sdp(&description) {
+            ffi::peer_reject_controlled_video(self.native(), id.0);
+            return id;
+        }
         ffi::peer_set_remote_description(
             self.native(),
             id.0,
@@ -1336,6 +1352,14 @@ impl PeerConnection {
                 message: "failed to close peer connection".into(),
             })
         }
+    }
+
+    fn controlled_video_sdp(&self, description: &SessionDescription) -> bool {
+        self.inner._factory._controlled_driver.is_some()
+            && description
+                .sdp
+                .lines()
+                .any(|line| line.starts_with("m=video "))
     }
 
     fn next_operation(&self) -> OperationId {
