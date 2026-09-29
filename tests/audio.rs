@@ -219,8 +219,8 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
         received.samples.len(),
         received.samples_per_channel as usize
     );
-    assert!(sink.close());
-    assert!(sink.close());
+    sink.close().unwrap();
+    sink.close().unwrap();
     assert!(sink.try_next_frame().is_none());
     alice.close().unwrap();
     bob.close().unwrap();

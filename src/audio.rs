@@ -8,7 +8,7 @@ use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{
     ffi,
-    peer::{FactoryInner, PeerInner},
+    peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner},
 };
 
 /// The layout and representation of a CPU audio frame.
@@ -107,7 +107,9 @@ pub struct DecodedAudioFrame {
 
 /// A bounded decoded PCM receiver queue. Closing removes the native sink on
 /// the signaling thread before releasing callback memory. Dropped frames are
-/// accounted for; at most eight blocks are retained.
+/// accounted for; at most eight blocks are retained. On headless peers,
+/// `try_next_frame` pulls one 10 ms playout block when the queue is empty;
+/// it does not open an operating-system audio output device.
 pub struct AudioSink {
     native: cxx::UniquePtr<ffi::NativeAudioSink>,
     _peer: Rc<PeerInner>,
@@ -139,8 +141,14 @@ impl AudioSink {
         ffi::audio_sink_dropped_frames(self.native())
     }
 
-    pub fn close(&mut self) -> bool {
+    /// Detach on the signaling thread. Repeated calls succeed.
+    pub fn close(&mut self) -> Result<(), PeerError> {
         ffi::close_audio_sink(self.native())
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::Internal,
+                message: "failed to detach audio sink".into(),
+            })
     }
 
     fn native(&self) -> &ffi::NativeAudioSink {

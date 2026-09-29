@@ -74,7 +74,7 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
     if (!active_) return;
     if (!data || bits != 16 || rate <= 0 || channels < 1 || channels > 2 ||
         frames == 0 || frames > 480 || channels * frames > 960) {
-      ++dropped_;
+      if (dropped_ != std::numeric_limits<std::uint64_t>::max()) ++dropped_;
       return;
     }
     Frame frame;
@@ -89,7 +89,7 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
     std::memcpy(frame.samples.data(), data, frame.samples.size() * sizeof(int16_t));
     if (frames_.size() == 8) {
       frames_.pop_front();
-      ++dropped_;
+      if (dropped_ != std::numeric_limits<std::uint64_t>::max()) ++dropped_;
     }
     frames_.push_back(std::move(frame));
   }
