@@ -11,10 +11,11 @@ fn native_thread_ids() -> BTreeSet<std::ffi::OsString> {
 static DRIVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use pulsebeam_webrtc_sys::{
-    ConnectionState, ControlledPeerDriver, ControlledSimulatedNetwork, Environment,
-    IceGatheringState, IceServer, ManualClock, OperationId, OutboundKind, PeerConfiguration,
-    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, RandomnessLease,
-    SessionDescription, TaskQueueFactory,
+    ControlledPeerDriver, ControlledSimulatedNetwork, DataChannelConfiguration, DataChannelEvent,
+    DataChannelMessage, DataChannelSendResult, DataChannelState, Environment, IceGatheringState,
+    IceServer, ManualClock, OperationId, OutboundKind, PeerConfiguration, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, RandomnessLease, SessionDescription,
+    TaskQueueFactory,
 };
 
 #[test]
@@ -374,7 +375,12 @@ fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
     assert_eq!(connect_with_seed(), connect_with_seed());
 }
 
-fn connect_with_seed() -> (Vec<String>, Vec<String>) {
+fn connect_with_seed() -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<DataChannelMessage>,
+    Vec<DataChannelMessage>,
+) {
     let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
     let queues = TaskQueueFactory::cooperative(&clock).unwrap();
     let randomness = RandomnessLease::acquire(0x53eed).unwrap();
@@ -409,6 +415,9 @@ fn connect_with_seed() -> (Vec<String>, Vec<String>) {
         .unwrap();
     let mut bob = factory_b
         .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    let mut alice_channel = alice
+        .create_data_channel("controlled", DataChannelConfiguration::default())
         .unwrap();
     assert!(
         factory_a
@@ -491,6 +500,13 @@ fn connect_with_seed() -> (Vec<String>, Vec<String>) {
     );
     let mut alice_trace: Vec<_> = alice_events.iter().filter_map(connection_trace).collect();
     let mut bob_trace: Vec<_> = bob_events.iter().filter_map(connection_trace).collect();
+    let mut bob_channel = bob_events
+        .iter()
+        .position(|event| matches!(event, PeerConnectionEvent::DataChannel(_)))
+        .map(|index| match bob_events.remove(index) {
+            PeerConnectionEvent::DataChannel(channel) => channel,
+            _ => unreachable!(),
+        });
     let mut alice_connected = alice_trace.iter().any(|state| state == "Connected");
     let mut bob_connected = bob_trace.iter().any(|state| state == "Connected");
     for _ in 0..10_000 {
@@ -501,12 +517,14 @@ fn connect_with_seed() -> (Vec<String>, Vec<String>) {
             }
         }
         while let Some(event) = bob.try_next_event() {
-            if let Some(state) = connection_trace(&event) {
+            if let PeerConnectionEvent::DataChannel(channel) = event {
+                assert!(bob_channel.replace(channel).is_none());
+            } else if let Some(state) = connection_trace(&event) {
                 bob_connected |= state == "Connected";
                 bob_trace.push(state);
             }
         }
-        if alice_connected && bob_connected {
+        if alice_connected && bob_connected && bob_channel.is_some() {
             break;
         }
         pump(&driver, &queues, &clock, &network);
@@ -515,9 +533,50 @@ fn connect_with_seed() -> (Vec<String>, Vec<String>) {
         alice_connected && bob_connected,
         "ICE did not connect under virtual time"
     );
+    let mut bob_channel = bob_channel.expect("remote data channel was not announced");
+    for _ in 0..10_000 {
+        if alice_channel.state() == DataChannelState::Open
+            && bob_channel.state() == DataChannelState::Open
+        {
+            break;
+        }
+        pump(&driver, &queues, &clock, &network);
+    }
+    assert_eq!(alice_channel.state(), DataChannelState::Open);
+    assert_eq!(bob_channel.state(), DataChannelState::Open);
+    assert_eq!(
+        alice_channel.send(DataChannelMessage::binary([1, 2, 3, 0])),
+        DataChannelSendResult::Sent
+    );
+    assert_eq!(
+        bob_channel.send(DataChannelMessage::text("from bob")),
+        DataChannelSendResult::Sent
+    );
+    let mut received_by_alice = Vec::new();
+    let mut received_by_bob = Vec::new();
+    for _ in 0..10_000 {
+        pump(&driver, &queues, &clock, &network);
+        for event in std::iter::from_fn(|| alice_channel.try_next_event()) {
+            if let DataChannelEvent::Message(message) = event {
+                received_by_alice.push(message);
+            }
+        }
+        for event in std::iter::from_fn(|| bob_channel.try_next_event()) {
+            if let DataChannelEvent::Message(message) = event {
+                received_by_bob.push(message);
+            }
+        }
+        if !received_by_alice.is_empty() && !received_by_bob.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(received_by_alice, [DataChannelMessage::text("from bob")]);
+    assert_eq!(received_by_bob, [DataChannelMessage::binary([1, 2, 3, 0])]);
     #[cfg(target_os = "linux")]
     assert!(native_thread_ids().is_subset(&threads_before));
+    alice_channel.close().unwrap();
+    bob_channel.close().unwrap();
     alice.close().unwrap();
     bob.close().unwrap();
-    (alice_trace, bob_trace)
+    (alice_trace, bob_trace, received_by_alice, received_by_bob)
 }
