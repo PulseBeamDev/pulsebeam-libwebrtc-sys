@@ -15,14 +15,18 @@
 #include "api/environment/environment.h"
 #include "api/environment/environment_factory.h"
 #include "api/packet_socket_factory.h"
+#include "p2p/base/async_stun_tcp_socket.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "rtc_base/async_packet_socket.h"
+#include "rtc_base/socket_adapters.h"
+#include "rtc_base/async_tcp_socket.h"
 #include "rtc_base/ip_address.h"
 #include "rtc_base/network.h"
 #include "rtc_base/network/received_packet.h"
 #include "rtc_base/network/sent_packet.h"
 #include "rtc_base/socket.h"
 #include "rtc_base/socket_address.h"
+#include "rtc_base/ssl_adapter.h"
 #include "rtc_base/thread.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -468,7 +472,7 @@ class SimulatedAsyncTcpSocket final : public webrtc::AsyncPacketSocket {
   int error_ = 0;
 };
 
-std::unique_ptr<webrtc::AsyncPacketSocket> ConnectTcpSocket(
+std::unique_ptr<SimulatedAsyncTcpSocket> ConnectTcpSocket(
     const std::shared_ptr<NativeNetworkEndpoint::State>& endpoint,
     const webrtc::SocketAddress& requested,
     const webrtc::SocketAddress& remote) {
@@ -505,6 +509,105 @@ std::unique_ptr<webrtc::AsyncPacketSocket> ConnectTcpSocket(
   }
   return nullptr;
 }
+
+// Adapt the externally delivered TCP byte stream to WebRTC's Socket API so
+// its existing SSLAdapter performs TURN/TLS, including certificate checks.
+// The adapter never creates an OS socket or an autonomous worker thread.
+class SimulatedTcpRawSocket final : public webrtc::Socket {
+ public:
+  explicit SimulatedTcpRawSocket(std::unique_ptr<SimulatedAsyncTcpSocket> socket)
+      : socket_(std::move(socket)) {
+    socket_->SubscribeConnect(this, [this](webrtc::AsyncPacketSocket*) {
+      NotifyConnectEvent(this);
+      NotifyWriteEvent(this);
+    });
+    socket_->SubscribeReadyToSend(this, [this](webrtc::AsyncPacketSocket*) {
+      NotifyWriteEvent(this);
+    });
+    socket_->SubscribeCloseEvent(this, [this](webrtc::AsyncPacketSocket*, int error) {
+      NotifyCloseEvent(this, error);
+    });
+    socket_->RegisterReceivedPacketCallback(
+        [this](webrtc::AsyncPacketSocket*, const webrtc::ReceivedIpPacket& packet) {
+          const auto bytes = packet.payload();
+          received_.insert(received_.end(), bytes.begin(), bytes.end());
+          NotifyReadEvent(this);
+        });
+  }
+
+  ~SimulatedTcpRawSocket() override {
+    socket_->DeregisterReceivedPacketCallback();
+    socket_->UnsubscribeConnect(this);
+    socket_->UnsubscribeReadyToSend(this);
+    socket_->UnsubscribeCloseEvent(this);
+    socket_->Close();
+  }
+
+  webrtc::SocketAddress GetLocalAddress() const override {
+    return socket_->GetLocalAddress();
+  }
+  webrtc::SocketAddress GetRemoteAddress() const override {
+    return socket_->GetRemoteAddress();
+  }
+  int Bind(const webrtc::SocketAddress&) override { return 0; }
+  int Connect(const webrtc::SocketAddress& address) override {
+    if (address != socket_->GetRemoteAddress()) {
+      socket_->SetError(EINVAL);
+      return -1;
+    }
+    socket_->SetError(EWOULDBLOCK);
+    return -1;
+  }
+  int Send(const void* data, std::size_t size) override {
+    return socket_->Send(data, size, webrtc::AsyncSocketPacketOptions());
+  }
+  int SendTo(const void* data, std::size_t size,
+             const webrtc::SocketAddress& address) override {
+    return socket_->SendTo(data, size, address,
+                           webrtc::AsyncSocketPacketOptions());
+  }
+  int Recv(void* data, std::size_t size, std::int64_t* timestamp) override {
+    if (received_.empty()) {
+      if (socket_->GetState() == webrtc::AsyncPacketSocket::STATE_CLOSED)
+        return 0;
+      socket_->SetError(EWOULDBLOCK);
+      return -1;
+    }
+    const auto count = std::min(size, received_.size());
+    auto* bytes = static_cast<std::uint8_t*>(data);
+    for (std::size_t index = 0; index < count; ++index) {
+      bytes[index] = received_.front();
+      received_.pop_front();
+    }
+    if (timestamp) *timestamp = -1;
+    return static_cast<int>(count);
+  }
+  int Listen(int) override { socket_->SetError(EOPNOTSUPP); return -1; }
+  webrtc::Socket* Accept(webrtc::SocketAddress*) override {
+    socket_->SetError(EOPNOTSUPP);
+    return nullptr;
+  }
+  int Close() override { return socket_->Close(); }
+  int GetError() const override { return socket_->GetError(); }
+  void SetError(int error) override { socket_->SetError(error); }
+  ConnState GetState() const override {
+    switch (socket_->GetState()) {
+      case webrtc::AsyncPacketSocket::STATE_CONNECTED: return CS_CONNECTED;
+      case webrtc::AsyncPacketSocket::STATE_CONNECTING: return CS_CONNECTING;
+      default: return CS_CLOSED;
+    }
+  }
+  int GetOption(Option option, int* value) override {
+    return socket_->GetOption(option, value);
+  }
+  int SetOption(Option option, int value) override {
+    return socket_->SetOption(option, value);
+  }
+
+ private:
+  std::unique_ptr<SimulatedAsyncTcpSocket> socket_;
+  std::deque<std::uint8_t> received_;
+};
 
 class SimulatedDnsResolver final : public webrtc::AsyncDnsResolverInterface {
  public:
@@ -609,13 +712,34 @@ class SimulatedPacketSocketFactory final
     return nullptr;
   }
   std::unique_ptr<webrtc::AsyncPacketSocket> CreateClientTcpSocket(
-      const webrtc::Environment&,
+      const webrtc::Environment& env,
       const webrtc::SocketAddress& local,
       const webrtc::SocketAddress& remote,
       const webrtc::PacketSocketTcpOptions& options) override {
-    if (endpoint_->network->owned_thread ||
-        options.opts & (OPT_TLS | OPT_TLS_FAKE)) return nullptr;
-    return ConnectTcpSocket(endpoint_, local, remote);
+    if (endpoint_->network->owned_thread) return nullptr;
+    auto socket = ConnectTcpSocket(endpoint_, local, remote);
+    if (!socket) return nullptr;
+    const int tls = options.opts & (OPT_TLS | OPT_TLS_FAKE | OPT_TLS_INSECURE);
+    if (tls == 0) return socket;
+    if ((tls & (tls - 1)) != 0) return nullptr;
+    std::unique_ptr<webrtc::Socket> raw =
+        std::make_unique<SimulatedTcpRawSocket>(std::move(socket));
+    if (tls == OPT_TLS_FAKE) {
+      raw = std::make_unique<webrtc::AsyncSSLSocket>(raw.release());
+    } else {
+      std::unique_ptr<webrtc::SSLAdapter> ssl(webrtc::SSLAdapter::Create(raw.release()));
+      if (!ssl) return nullptr;
+      if (tls == OPT_TLS_INSECURE) ssl->SetIgnoreBadCert(true);
+      ssl->SetAlpnProtocols(options.tls_alpn_protocols);
+      ssl->SetEllipticCurves(options.tls_elliptic_curves);
+      ssl->SetCertVerifier(options.tls_cert_verifier);
+      if (ssl->StartSSL(remote.hostname()) != 0) return nullptr;
+      raw = std::move(ssl);
+    }
+    if (raw->Connect(remote) < 0 && !raw->IsBlocking()) return nullptr;
+    if (options.opts & OPT_STUN)
+      return std::make_unique<webrtc::AsyncStunTCPSocket>(env, std::move(raw));
+    return std::make_unique<webrtc::AsyncTCPSocket>(env, std::move(raw));
   }
   std::unique_ptr<webrtc::AsyncDnsResolverInterface> CreateAsyncDnsResolver()
       override {

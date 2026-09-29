@@ -306,6 +306,64 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     tcp_peer.close().unwrap();
     drop(tcp_peer);
     assert!(network.inject_tcp_data(source, destination, &[]).is_err());
+
+    // TLS must run through the same caller-driven TCP byte stream. The
+    // externally delivered connect releases a genuine client handshake; no
+    // server certificate or TURN relay success is asserted by this fixture.
+    let mut tls_peer = factory
+        .create_peer_connection(PeerConfiguration {
+            ice_servers: vec![IceServer {
+                urls: vec!["turns:relay.test:5349?transport=tcp".into()],
+                username: "client".into(),
+                password: "secret".into(),
+            }],
+            ..PeerConfiguration::default()
+        })
+        .unwrap();
+    let offer = completed(
+        &tls_peer,
+        tls_peer.create_offer(),
+        &mut events,
+        &driver,
+        &queues,
+        &clock,
+        &network,
+    )
+    .unwrap();
+    let _operation = tls_peer.set_local_description(offer);
+    let mut tls_connect = false;
+    let mut client_hello = false;
+    for _ in 0..10_000 {
+        driver.run_ready();
+        queues.run_ready();
+        while let Some(packet) = network.next_packet() {
+            match packet.kind {
+                OutboundKind::TcpConnect => {
+                    assert_eq!(packet.destination.ip(), remote_ip);
+                    assert_eq!(packet.destination.port(), 5349);
+                    tls_connect = true;
+                    network.deliver(packet.id).unwrap();
+                }
+                OutboundKind::TcpData => {
+                    assert!(tls_connect);
+                    // TLS handshake record (not plaintext TURN STUN framing).
+                    if packet.payload.starts_with(&[0x16, 0x03]) {
+                        client_hello = true;
+                    }
+                    network.drop_packet(packet.id).unwrap();
+                }
+                OutboundKind::Udp => network.drop_packet(packet.id).unwrap(),
+            }
+        }
+        if client_hello {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+    }
+    assert!(tls_connect, "TURN/TLS never attempted to connect");
+    assert!(client_hello, "TURN/TLS never sent a client handshake");
+    tls_peer.close().unwrap();
+    drop(tls_peer);
     drop(remote);
 
     let mut pending = factory
