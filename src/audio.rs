@@ -11,6 +11,15 @@ use crate::{
     peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner},
 };
 
+/// A platform audio device reported by the native artifact. Device lists can
+/// change; re-enumerate before using an index, and handle selection failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioDevice {
+    pub index: u16,
+    pub name: String,
+    pub id: String,
+}
+
 /// The layout and representation of a CPU audio frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioSampleFormat {
@@ -297,7 +306,7 @@ pub struct AudioTrack {
 
 struct TrackInner {
     native: cxx::UniquePtr<ffi::NativeAudioTrack>,
-    _source: Rc<SourceInner>,
+    _source: Option<Rc<SourceInner>>,
     _factory: Rc<FactoryInner>,
 }
 
@@ -310,7 +319,20 @@ impl AudioTrack {
         Self {
             inner: Rc::new(TrackInner {
                 native,
-                _source: source.inner.clone(),
+                _source: Some(source.inner.clone()),
+                _factory: factory,
+            }),
+        }
+    }
+
+    pub(crate) fn microphone(
+        native: cxx::UniquePtr<ffi::NativeAudioTrack>,
+        factory: Rc<FactoryInner>,
+    ) -> Self {
+        Self {
+            inner: Rc::new(TrackInner {
+                native,
+                _source: None,
                 _factory: factory,
             }),
         }

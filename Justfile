@@ -552,6 +552,7 @@ _bridge-objects flavor target stage definitions_file:
         suffix=o;;
       windows-x86_64) cxx="$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl"; include=(-I"$stage_native/include"); args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
     esac
+    if test "{{ flavor }}" = native; then args+=(-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1); fi
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then args+=(-fsanitize=address); fi
     if test "{{ target }}" = windows-x86_64; then
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"

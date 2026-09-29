@@ -27,8 +27,11 @@ class IosBridgeShellTests(unittest.TestCase):
                     expected_prefix = [
                         "-arch", "arm64", "-isysroot", "/fake SDK path", minimum,
                         "-std=c++20", "-fno-exceptions", "-fno-rtti",
-                        "-Wno-nullability-completeness", f"-I{stage}/include", "-DTEST=1", "-c",
+                        "-Wno-nullability-completeness",
                     ]
+                    if flavor == "native":
+                        expected_prefix.append("-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1")
+                    expected_prefix.extend([f"-I{stage}/include", "-DTEST=1", "-c"])
                     for call in calls:
                         self.assertEqual(call[: len(expected_prefix)], expected_prefix)
                         self.assertEqual(call[-2], "-o")

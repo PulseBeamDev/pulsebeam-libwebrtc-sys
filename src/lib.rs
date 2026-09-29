@@ -20,8 +20,8 @@ pub(crate) use codec::{
 pub(crate) use execution::{RustTask, run_task};
 
 pub use audio::{
-    AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource, AudioTrack,
-    DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
+    AudioDevice, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource,
+    AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
@@ -137,6 +137,12 @@ mod ffi {
     struct FfiSenderParameters {
         transaction_id: String,
         encodings: Vec<FfiSenderEncoding>,
+    }
+
+    struct FfiAudioDevice {
+        index: u16,
+        name: String,
+        id: String,
     }
 
     struct FfiIceServer {
@@ -541,8 +547,21 @@ mod ffi {
             audio_decoder: *const NativeAudioDecoderFactory,
             video_encoder: *const NativeVideoEncoderFactory,
             video_decoder: *const NativeVideoDecoderFactory,
+            native_audio: bool,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn factory_audio_devices(
+            factory: &NativePeerConnectionFactory,
+            recording: bool,
+            devices: &mut Vec<FfiAudioDevice>,
+            error: &mut String,
+        ) -> bool;
+        fn factory_select_audio_device(
+            factory: &NativePeerConnectionFactory,
+            recording: bool,
+            index: u16,
+            error: &mut String,
+        ) -> bool;
         fn create_peer_connection(
             factory: &NativePeerConnectionFactory,
             ice_candidate_pool_size: u16,
@@ -623,6 +642,10 @@ mod ffi {
             channels: u8,
             timestamp_us: i64,
         ) -> bool;
+        fn create_microphone_track(
+            factory: &NativePeerConnectionFactory,
+            id: &str,
+        ) -> UniquePtr<NativeAudioTrack>;
         fn create_audio_track(
             factory: &NativePeerConnectionFactory,
             source: &NativeAudioSource,

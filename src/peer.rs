@@ -306,6 +306,7 @@ pub struct PeerConnectionFactoryBuilder {
     audio_decoder: Option<AudioDecoderFactory>,
     video_encoder: Option<VideoEncoderFactoryHandle>,
     video_decoder: Option<VideoDecoderFactoryHandle>,
+    native_audio: bool,
 }
 
 impl PeerConnectionFactoryBuilder {
@@ -336,6 +337,15 @@ impl PeerConnectionFactoryBuilder {
 
     pub fn packet_socket_factory(mut self, provider: PacketSocketFactoryProvider) -> Self {
         self.packet_socket_factory = Some(provider);
+        self
+    }
+
+    /// Use the native artifact's platform recording and playout device module
+    /// instead of the default headless device. Core artifacts reject this at
+    /// factory construction; native artifacts can still fail if platform
+    /// device initialization is unavailable. No device is opened by default.
+    pub fn native_audio(mut self, enabled: bool) -> Self {
+        self.native_audio = enabled;
         self
     }
 
@@ -395,6 +405,7 @@ impl PeerConnectionFactoryBuilder {
                 optional_ptr(self.audio_decoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_encoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_decoder.as_ref().map(|value| value.native())),
+                self.native_audio,
                 &mut message,
             )
         };
@@ -433,6 +444,7 @@ impl Default for PeerConnectionFactoryBuilder {
             audio_decoder: None,
             video_encoder: None,
             video_decoder: None,
+            native_audio: false,
         }
     }
 }
@@ -465,6 +477,61 @@ pub(crate) struct FactoryInner {
 pub struct PeerConnectionFactory(Rc<FactoryInner>);
 
 impl PeerConnectionFactory {
+    fn native(&self) -> &ffi::NativePeerConnectionFactory {
+        self.0.native.as_ref().expect("validated peer factory")
+    }
+
+    /// Enumerate input or output devices for this native-audio factory.
+    /// No hardware is required: an empty list is a valid result.
+    pub fn audio_devices(&self, recording: bool) -> Result<Vec<crate::AudioDevice>, PeerError> {
+        let mut devices = Vec::new();
+        let mut error = String::new();
+        if !ffi::factory_audio_devices(self.native(), recording, &mut devices, &mut error) {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: error,
+            });
+        }
+        Ok(devices
+            .into_iter()
+            .map(|device| crate::AudioDevice {
+                index: device.index,
+                name: device.name,
+                id: device.id,
+            })
+            .collect())
+    }
+
+    /// Select a currently enumerated recording or playout device. The native
+    /// ADM decides whether switching is possible while audio is active.
+    pub fn select_audio_device(&self, recording: bool, index: u16) -> Result<(), PeerError> {
+        let mut error = String::new();
+        ffi::factory_select_audio_device(self.native(), recording, index, &mut error)
+            .then_some(())
+            .ok_or(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: error,
+            })
+    }
+
+    /// Create a microphone track backed by the selected platform ADM. This
+    /// requires a native-audio factory and does not use injected PCM.
+    pub fn create_microphone_track(&self, id: &str) -> Result<AudioTrack, PeerError> {
+        if id.is_empty() || id.as_bytes().contains(&0) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "invalid audio track id".into(),
+            });
+        }
+        let native = ffi::create_microphone_track(self.native(), id);
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "platform microphone requires an available native audio device".into(),
+            });
+        }
+        Ok(AudioTrack::microphone(native, self.0.clone()))
+    }
     pub fn builder() -> PeerConnectionFactoryBuilder {
         PeerConnectionFactoryBuilder::default()
     }

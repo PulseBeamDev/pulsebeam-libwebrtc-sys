@@ -66,6 +66,8 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
                            std::int64_t timestamp_us) noexcept;
+std::unique_ptr<NativeAudioTrack> create_microphone_track(
+    const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
 std::unique_ptr<NativeAudioTrack> create_audio_track(
     const NativePeerConnectionFactory& factory, const NativeAudioSource& source,
     rust::Str id) noexcept;

@@ -257,6 +257,7 @@ struct NativeAudioSource::State {
 
 struct NativeAudioTrack::State {
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
+  webrtc::scoped_refptr<webrtc::AudioSourceInterface> microphone_source;
 };
 
 NativeEncodedAudioSink::NativeEncodedAudioSink(std::unique_ptr<State> state) noexcept
@@ -317,6 +318,19 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
       samples.size() != (sample_rate_hz / 100) * channels) return false;
   return source.state()->source->Push(samples.data(), static_cast<int>(sample_rate_hz),
                                       channels, sample_rate_hz / 100);
+}
+std::unique_ptr<NativeAudioTrack> create_microphone_track(
+    const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
+  if (!factory.audio_device() || !factory.factory() || id.empty()) return nullptr;
+  auto source = factory.factory()->CreateAudioSource(webrtc::AudioOptions{});
+  if (!source) return nullptr;
+  auto track = factory.factory()->CreateAudioTrack(
+      std::string(id.data(), id.size()), source.get());
+  if (!track) return nullptr;
+  auto state = std::make_unique<NativeAudioTrack::State>();
+  state->track = std::move(track);
+  state->microphone_source = std::move(source);
+  return std::make_unique<NativeAudioTrack>(std::move(state));
 }
 std::unique_ptr<NativeAudioTrack> create_audio_track(
     const NativePeerConnectionFactory& factory, const NativeAudioSource& source,

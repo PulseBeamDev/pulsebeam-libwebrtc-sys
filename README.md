@@ -126,6 +126,23 @@ with the same public WebRTC API:
 Bundled H.264 is disabled in both flavors. H.264 signaling and the public codec
 factory interfaces remain available for caller-supplied implementations.
 
+Headless audio sources accept owned, interleaved signed 16-bit PCM in exactly
+10 ms blocks at 8, 16, 32 or 48 kHz, mono or stereo. The source's capture
+microsecond value is validated but is not used as an RTP or absolute capture
+clock. A receiver can select one decoded PCM sink or one encoded Opus sink
+before packets arrive. The encoded sink delivers complete Opus packets without
+passing them to NetEq's decoder, with RTP timestamp, payload type, SSRC and
+48 kHz sample duration. It does not expose RED or other non-Opus payloads;
+its bounded queue records dropped packets. The decoded headless sink pulls
+10 ms of playout on demand when empty; it does not open a host speaker.
+Native artifacts additionally allow opt-in platform audio with
+`PeerConnectionFactory::builder().native_audio(true)`: enumerate recording
+and playout devices, select them by current index, and make a microphone
+track. Core artifacts reject the opt-in. Device enumeration can be empty and
+selection can fail while a device is active; CI only smoke-tests this path
+without requiring hardware. Direct encoded Opus sending is not provided by
+the pinned WebRTC audio sender API and remains explicitly unsupported.
+
 ## Target matrix
 
 Both flavors support every target in this matrix:

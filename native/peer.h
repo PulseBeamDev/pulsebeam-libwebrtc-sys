@@ -8,6 +8,7 @@
 #include "rust/cxx.h"
 
 namespace webrtc {
+class AudioDeviceModule;
 class PeerConnectionFactoryInterface;
 class PeerConnectionInterface;
 class Thread;
@@ -16,6 +17,7 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiIceServer;
+struct FfiAudioDevice;
 struct FfiDescriptionSnapshot;
 struct FfiPeerEvent;
 class NativeAudioDecoderFactory;
@@ -42,6 +44,7 @@ class NativePeerConnectionFactory final {
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory()
       const noexcept;
   webrtc::Thread* signaling_thread() const noexcept;
+  webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -78,7 +81,14 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeAudioDecoderFactory* audio_decoder,
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
+    bool native_audio,
     rust::String& error) noexcept;
+bool factory_audio_devices(const NativePeerConnectionFactory& factory,
+                           bool recording, rust::Vec<FfiAudioDevice>& devices,
+                           rust::String& error) noexcept;
+bool factory_select_audio_device(const NativePeerConnectionFactory& factory,
+                                 bool recording, std::uint16_t index,
+                                 rust::String& error) noexcept;
 
 std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
