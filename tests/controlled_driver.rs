@@ -166,25 +166,38 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap_err();
     assert_eq!(error.kind, PeerErrorKind::UnsupportedOperation);
-    for local in [true, false] {
-        let description = SessionDescription {
-            kind: SessionDescriptionType::Offer,
-            sdp: "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n".into(),
-        };
-        let rejected = if local {
-            peer.set_local_description(description)
-        } else {
-            peer.set_remote_description(description)
-        };
-        let PeerConnectionEvent::OperationComplete(result) = peer.try_next_event().unwrap() else {
-            panic!("expected controlled video rejection");
-        };
-        assert_eq!(result.operation_id, rejected);
-        assert_eq!(
-            result.result.unwrap_err().kind,
-            PeerErrorKind::UnsupportedOperation
-        );
+    let audio_source = factory.create_audio_source().unwrap();
+    let audio_track = factory
+        .create_audio_track("unsupported-audio", &audio_source)
+        .unwrap();
+    let error = peer
+        .add_audio_transceiver(&audio_track, RtpTransceiverDirection::SendOnly)
+        .unwrap_err();
+    assert_eq!(error.kind, PeerErrorKind::UnsupportedOperation);
+    for media in ["audio", "video"] {
+        for local in [true, false] {
+            let description = SessionDescription {
+                kind: SessionDescriptionType::Offer,
+                sdp: format!("v=0\r\nm={media} 9 UDP/TLS/RTP/SAVPF 96\r\n"),
+            };
+            let rejected = if local {
+                peer.set_local_description(description)
+            } else {
+                peer.set_remote_description(description)
+            };
+            let PeerConnectionEvent::OperationComplete(result) = peer.try_next_event().unwrap()
+            else {
+                panic!("expected controlled {media} rejection");
+            };
+            assert_eq!(result.operation_id, rejected);
+            assert_eq!(
+                result.result.unwrap_err().kind,
+                PeerErrorKind::UnsupportedOperation
+            );
+        }
     }
+    drop(audio_track);
+    drop(audio_source);
     drop(track);
     drop(source);
     peer.close().unwrap();

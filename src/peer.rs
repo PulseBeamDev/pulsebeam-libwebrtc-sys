@@ -1135,6 +1135,12 @@ impl PeerConnection {
         track: &AudioTrack,
         direction: RtpTransceiverDirection,
     ) -> Result<RtpTransceiver, PeerError> {
+        if self.inner._factory._controlled_driver.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "audio transceivers require a threaded peer; controlled audio teardown can deadlock".into(),
+            });
+        }
         if self.inner.closed.get() {
             return Err(PeerError {
                 kind: PeerErrorKind::Closed,
@@ -1255,8 +1261,8 @@ impl PeerConnection {
 
     pub fn set_local_description(&self, description: SessionDescription) -> OperationId {
         let id = self.next_operation();
-        if self.controlled_video_sdp(&description) {
-            ffi::peer_reject_controlled_video(self.native(), id.0);
+        if self.controlled_media_sdp(&description) {
+            ffi::peer_reject_controlled_media(self.native(), id.0);
             return id;
         }
         ffi::peer_set_local_description(
@@ -1270,8 +1276,8 @@ impl PeerConnection {
 
     pub fn set_remote_description(&self, description: SessionDescription) -> OperationId {
         let id = self.next_operation();
-        if self.controlled_video_sdp(&description) {
-            ffi::peer_reject_controlled_video(self.native(), id.0);
+        if self.controlled_media_sdp(&description) {
+            ffi::peer_reject_controlled_media(self.native(), id.0);
             return id;
         }
         ffi::peer_set_remote_description(
@@ -1354,12 +1360,12 @@ impl PeerConnection {
         }
     }
 
-    fn controlled_video_sdp(&self, description: &SessionDescription) -> bool {
+    fn controlled_media_sdp(&self, description: &SessionDescription) -> bool {
         self.inner._factory._controlled_driver.is_some()
             && description
                 .sdp
                 .lines()
-                .any(|line| line.starts_with("m=video "))
+                .any(|line| line.starts_with("m=video ") || line.starts_with("m=audio "))
     }
 
     fn next_operation(&self) -> OperationId {

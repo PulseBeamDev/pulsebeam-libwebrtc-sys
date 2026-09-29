@@ -642,7 +642,7 @@ mod ffi {
             sdp_type: u8,
             sdp: &str,
         );
-        fn peer_reject_controlled_video(peer: &NativePeerConnection, operation_id: u64);
+        fn peer_reject_controlled_media(peer: &NativePeerConnection, operation_id: u64);
         fn peer_add_ice_candidate(
             peer: &NativePeerConnection,
             operation_id: u64,

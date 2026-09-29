@@ -119,7 +119,7 @@ void peer_set_remote_description(const NativePeerConnection& peer,
                                  rust::Str sdp) noexcept;
 // Complete a controlled-mode video operation without entering upstream's
 // synchronous receive-stream recreation (which waits on a cooperative queue).
-void peer_reject_controlled_video(const NativePeerConnection& peer,
+void peer_reject_controlled_media(const NativePeerConnection& peer,
                                   std::uint64_t operation_id) noexcept;
 void peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::uint64_t operation_id,
