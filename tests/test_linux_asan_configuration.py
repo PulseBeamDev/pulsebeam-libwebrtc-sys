@@ -18,7 +18,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         for flavor in FLAVORS:
             with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as temporary:
                 calls = self._run_bridge(Path(temporary), flavor, sanitizer="address")
-                self.assertEqual(len(calls), 9)
+                self.assertEqual(len(calls), 10)
                 self.assertTrue(all("-fsanitize=address" in call for call in calls), calls)
 
     def test_asan_instruments_cpp_smoke_for_both_flavors(self):
@@ -65,7 +65,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
             calls = self._run_bridge(Path(temporary), "core", sanitizer=None)
         with tempfile.TemporaryDirectory() as temporary:
             cpp_call = self._run_cpp_smoke(Path(temporary), "core", sanitizer=None)
-        self.assertEqual(len(calls), 9)
+        self.assertEqual(len(calls), 10)
         self.assertTrue(all("-fsanitize=address" not in call for call in calls), calls)
         self.assertNotIn("-fsanitize=address", cpp_call)
 

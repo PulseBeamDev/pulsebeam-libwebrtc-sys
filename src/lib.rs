@@ -1,5 +1,6 @@
 //! Low-level Rust integration with PulseBeam's pinned libwebrtc artifact.
 
+mod audio;
 mod codec;
 mod data_channel;
 mod encoded_video;
@@ -18,6 +19,7 @@ pub(crate) use codec::{
 };
 pub(crate) use execution::{RustTask, run_task};
 
+pub use audio::{AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSource, AudioTrack};
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
     DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, Nv12Planes, VideoCodecFormat,
@@ -291,6 +293,7 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/peer.h");
         include!("pulsebeam-webrtc-sys/native/data_channel.h");
         include!("pulsebeam-webrtc-sys/native/video.h");
+        include!("pulsebeam-webrtc-sys/native/audio.h");
 
         type NativeEnvironment;
         type NativeManualClock;
@@ -318,6 +321,8 @@ mod ffi {
         type NativeDataChannel;
         type NativeVideoSource;
         type NativeVideoTrack;
+        type NativeAudioSource;
+        type NativeAudioTrack;
         type NativeVideoSink;
         type NativeEncodedVideoSink;
         type NativeRtpSender;
@@ -578,6 +583,33 @@ mod ffi {
         fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
+
+        fn create_audio_source(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeAudioSource>;
+        fn close_audio_source(source: &NativeAudioSource) -> bool;
+        fn audio_source_push_pcm(
+            source: &NativeAudioSource,
+            samples: &[i16],
+            sample_rate_hz: u32,
+            channels: u8,
+            timestamp_us: i64,
+        ) -> bool;
+        fn create_audio_track(
+            factory: &NativePeerConnectionFactory,
+            source: &NativeAudioSource,
+            id: &str,
+        ) -> UniquePtr<NativeAudioTrack>;
+        fn audio_track_id(track: &NativeAudioTrack) -> String;
+        fn audio_track_enabled(track: &NativeAudioTrack) -> bool;
+        fn audio_track_set_enabled(track: &NativeAudioTrack, enabled: bool) -> bool;
+        fn peer_add_audio_transceiver(
+            peer: &NativePeerConnection,
+            track: &NativeAudioTrack,
+            direction: u8,
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> UniquePtr<NativeRtpTransceiver>;
 
         fn create_video_source(
             factory: &NativePeerConnectionFactory,

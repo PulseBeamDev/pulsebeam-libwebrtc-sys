@@ -486,7 +486,7 @@ _export flavor target:
     library_native=$(just --justfile "{{ root }}/Justfile" _native-path "$library")
     { printf 'CREATE %s\n' "$library_native"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
     members=$("$ar" t "$library_native") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "a readable member list for $library" 'llvm-ar could not list archive members'
-    for member in bridge execution network codec peer data_channel video probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "${member}.o or ${member}.obj in $library" "member ${member} is absent"; done
+    for member in bridge execution network codec peer data_channel video audio probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "${member}.o or ${member}.obj in $library" "member ${member} is absent"; done
     bridge_symbol="pulsebeam\$webrtc_sys\$cxxbridge1\$$cxx_abi\$bridge_identity"
     nm=$(just --justfile "{{ root }}/Justfile" _native-path "$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm")
     nm_output=$("$nm" "$library_native") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" bridge-identity "$bridge_symbol in $library" 'llvm-nm could not inspect archive symbols'
@@ -518,7 +518,7 @@ _bridge-objects flavor target stage definitions_file:
     src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"; root_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ root }}"); src_native=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); bridge_native=$(just --justfile "{{ root }}/Justfile" _native-path "$bridge"); stage_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ stage }}")
     generator=$(CARGO_HOME="$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home")" python3 "$root_native/tools/cxx_import.py" install-generator --root "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cxxbridge-tools")")
     rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
-    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ root }}/native/network.h" "{{ root }}/native/codec.h" "{{ root }}/native/peer.h" "{{ root }}/native/data_channel.h" "{{ root }}/native/video.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
+    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ root }}/native/network.h" "{{ root }}/native/codec.h" "{{ root }}/native/peer.h" "{{ root }}/native/data_channel.h" "{{ root }}/native/video.h" "{{ root }}/native/audio.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
     cp "{{ root }}/vendor/cxx/include/cxx.h" "{{ stage }}/include/rust/cxx.h"
     "$generator" "$root_native/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "$root_native/src/lib.rs" > "$bridge/lib.rs.cc"
@@ -561,6 +561,7 @@ _bridge-objects flavor target stage definitions_file:
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\peer.cc" "/Fo$bridge_native\\obj\\peer.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\data_channel.cc" "/Fo$bridge_native\\obj\\data_channel.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video.cc" "/Fo$bridge_native\\obj\\video.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\audio.cc" "/Fo$bridge_native\\obj\\audio.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\probe.cc" "/Fo$bridge_native\\obj\\probe.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\vendor\\cxx\\src\\cxx.cc" "/Fo$bridge_native\\obj\\cxx.$suffix"
     else
@@ -571,11 +572,12 @@ _bridge-objects flavor target stage definitions_file:
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/peer.cc" -o "$bridge/obj/peer.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/data_channel.cc" -o "$bridge/obj/data_channel.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video.cc" -o "$bridge/obj/video.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/audio.cc" -o "$bridge/obj/audio.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.$suffix"
     fi
     if test "{{ target }}" = windows-x86_64; then "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\llvm-readobj" --file-headers "$bridge_native\\obj\\bridge.obj" | grep -F 'Format: COFF-x86-64' >/dev/null; fi
-    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
+    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/audio.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
 
 _link-flags flavor target:
     #!/usr/bin/env bash

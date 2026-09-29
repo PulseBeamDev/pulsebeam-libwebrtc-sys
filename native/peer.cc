@@ -718,7 +718,9 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     error = "video encoder and decoder factories must be supplied together";
     return nullptr;
   }
-  if (audio_encoder || audio_decoder || video_encoder || video_decoder) {
+  // Core peers can add raw audio tracks without supplying external codec
+  // factories. Headless ADM never opens a host microphone or speaker.
+  {
     dependencies.adm = webrtc::make_ref_counted<HeadlessAudioDevice>();
     dependencies.audio_encoder_factory =
         audio_encoder ? audio_encoder->factory()
@@ -735,9 +737,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     dependencies.video_decoder_factory =
         std::make_unique<BorrowedVideoDecoderFactory>(*video_decoder);
   }
-  if (audio_encoder || audio_decoder || video_encoder || video_decoder) {
-    webrtc::EnableMedia(dependencies);
-  }
+  webrtc::EnableMedia(dependencies);
   auto factory =
       webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));
   if (!factory) {

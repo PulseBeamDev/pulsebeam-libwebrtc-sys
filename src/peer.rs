@@ -5,6 +5,8 @@ use std::{
     rc::Rc,
 };
 
+use crate::audio::{AudioSource, AudioTrack};
+
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, Environment, NetworkManagerProvider, NetworkThread,
     PacketSocketFactoryProvider, SignalingThread, VideoDecoderFactoryHandle,
@@ -543,6 +545,7 @@ impl PeerConnectionFactory {
                     _factory: self.0.clone(),
                     closed: Cell::new(false),
                     sender_tracks: RefCell::new(HashMap::new()),
+                    audio_sender_tracks: RefCell::new(HashMap::new()),
                 }),
                 next_operation_id: Cell::new(1),
             })
@@ -558,6 +561,39 @@ impl PeerConnectionFactory {
             ._video_encoder
             .as_ref()
             .is_some_and(|selected| selected.same_provider(encoder))
+    }
+
+    pub fn create_audio_source(&self) -> Result<AudioSource, PeerError> {
+        let native =
+            ffi::create_audio_source(self.0.native.as_ref().expect("validated peer factory"));
+        if native.is_null() {
+            Err(native_build_error("failed to create audio source"))
+        } else {
+            Ok(AudioSource::from_native(native, self.0.clone()))
+        }
+    }
+
+    pub fn create_audio_track(
+        &self,
+        id: &str,
+        source: &AudioSource,
+    ) -> Result<AudioTrack, PeerError> {
+        if id.is_empty() || !source.belongs_to(&self.0) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "audio track requires a nonempty id and a source from this factory".into(),
+            });
+        }
+        let native = ffi::create_audio_track(
+            self.0.native.as_ref().expect("validated peer factory"),
+            source.native(),
+            id,
+        );
+        if native.is_null() {
+            Err(native_build_error("failed to create audio track"))
+        } else {
+            Ok(AudioTrack::local(native, self.0.clone(), source))
+        }
     }
 
     pub fn create_video_source(&self) -> Result<VideoSource, PeerError> {
@@ -615,6 +651,7 @@ pub(crate) struct PeerInner {
     pub(crate) _factory: Rc<FactoryInner>,
     pub(crate) closed: Cell<bool>,
     pub(crate) sender_tracks: RefCell<HashMap<String, VideoTrack>>,
+    pub(crate) audio_sender_tracks: RefCell<HashMap<String, AudioTrack>>,
 }
 
 impl PeerConnection {
@@ -765,6 +802,48 @@ impl PeerConnection {
         }
     }
 
+    /// Adds a local audio track to this peer's negotiated RTP session.
+    pub fn add_audio_transceiver(
+        &self,
+        track: &AudioTrack,
+        direction: RtpTransceiverDirection,
+    ) -> Result<RtpTransceiver, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            });
+        }
+        if !track.belongs_to(&self.inner._factory) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "audio track must belong to this peer factory".into(),
+            });
+        }
+        let mut error_type = 0;
+        let mut message = String::new();
+        let native = ffi::peer_add_audio_transceiver(
+            self.inner.native(),
+            track.native(),
+            direction as u8,
+            &mut error_type,
+            &mut message,
+        );
+        if native.is_null() {
+            Err(PeerError {
+                kind: error_kind(error_type),
+                message,
+            })
+        } else {
+            let transceiver = RtpTransceiver::from_native(native, self.inner.clone());
+            self.inner
+                .audio_sender_tracks
+                .borrow_mut()
+                .insert(transceiver.sender().id(), track.clone());
+            Ok(transceiver)
+        }
+    }
+
     pub fn remove_track(&self, sender: &RtpSender) -> Result<(), PeerError> {
         if !Rc::ptr_eq(&self.inner, &sender.peer) {
             return Err(PeerError {
@@ -781,6 +860,10 @@ impl PeerConnection {
             &mut message,
         ) {
             self.inner.sender_tracks.borrow_mut().remove(&sender.id());
+            self.inner
+                .audio_sender_tracks
+                .borrow_mut()
+                .remove(&sender.id());
             Ok(())
         } else {
             Err(PeerError {
@@ -900,6 +983,7 @@ impl PeerConnection {
         if ffi::close_peer_connection(self.native()) {
             self.inner.closed.set(true);
             self.inner.sender_tracks.borrow_mut().clear();
+            self.inner.audio_sender_tracks.borrow_mut().clear();
             Ok(())
         } else {
             Err(PeerError {

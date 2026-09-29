@@ -23,7 +23,7 @@ class IosBridgeShellTests(unittest.TestCase):
             for target, (sdk, minimum) in self.targets.items():
                 with self.subTest(flavor=flavor, target=target):
                     calls, stage = self._run_bridge(flavor, target)
-                    self.assertEqual(len(calls), 9)
+                    self.assertEqual(len(calls), 10)
                     expected_prefix = [
                         "-arch", "arm64", "-isysroot", "/fake SDK path", minimum,
                         "-std=c++20", "-fno-exceptions", "-fno-rtti",
