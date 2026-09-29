@@ -19,7 +19,10 @@ pub(crate) use codec::{
 };
 pub(crate) use execution::{RustTask, run_task};
 
-pub use audio::{AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSource, AudioTrack};
+pub use audio::{
+    AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource, AudioTrack,
+    DecodedAudioFrame,
+};
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
     DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, Nv12Planes, VideoCodecFormat,
@@ -285,6 +288,16 @@ mod ffi {
         decode_target_indications: Vec<u8>,
     }
 
+    struct FfiReceivedAudioFrame {
+        valid: bool,
+        sample_rate_hz: u32,
+        channels: u8,
+        samples_per_channel: u32,
+        has_capture_time: bool,
+        capture_time_us: i64,
+        samples: Vec<i16>,
+    }
+
     unsafe extern "C++" {
         include!("pulsebeam-webrtc-sys/native/probe.h");
         include!("pulsebeam-webrtc-sys/native/execution.h");
@@ -323,6 +336,7 @@ mod ffi {
         type NativeVideoTrack;
         type NativeAudioSource;
         type NativeAudioTrack;
+        type NativeAudioSink;
         type NativeVideoSink;
         type NativeEncodedVideoSink;
         type NativeRtpSender;
@@ -610,6 +624,13 @@ mod ffi {
             error_type: &mut u8,
             error: &mut String,
         ) -> UniquePtr<NativeRtpTransceiver>;
+        fn rtp_receiver_attach_audio_sink(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+        ) -> UniquePtr<NativeAudioSink>;
+        fn audio_sink_take_frame(sink: &NativeAudioSink) -> FfiReceivedAudioFrame;
+        fn audio_sink_dropped_frames(sink: &NativeAudioSink) -> u64;
+        fn close_audio_sink(sink: &NativeAudioSink) -> bool;
 
         fn create_video_source(
             factory: &NativePeerConnectionFactory,
@@ -645,6 +666,8 @@ mod ffi {
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
         fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;
         fn close_video_sink(sink: &NativeVideoSink) -> bool;
+        fn peer_audio_transceivers(peer: &NativePeerConnection)
+        -> UniquePtr<NativeTransceiverList>;
         fn peer_video_transceivers(peer: &NativePeerConnection)
         -> UniquePtr<NativeTransceiverList>;
         fn peer_video_codec_capabilities(

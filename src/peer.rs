@@ -724,6 +724,43 @@ impl PeerConnection {
             .collect())
     }
 
+    /// Returns the current audio transceiver snapshot.
+    pub fn audio_transceivers(&self) -> Result<Vec<RtpTransceiver>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let list = ffi::peer_audio_transceivers(self.native());
+        let list = list.as_ref().ok_or_else(|| PeerError {
+            kind: PeerErrorKind::InvalidState,
+            message: "audio transceivers are unavailable".into(),
+        })?;
+        (0..ffi::transceiver_list_len(list))
+            .map(|index| {
+                let native = ffi::transceiver_list_at(list, index);
+                if native.is_null() {
+                    Err(PeerError {
+                        kind: PeerErrorKind::Internal,
+                        message: "invalid audio transceiver snapshot".into(),
+                    })
+                } else {
+                    Ok(RtpTransceiver::from_native(native, self.inner.clone()))
+                }
+            })
+            .collect()
+    }
+
+    /// Returns audio receiver handles for the current transceiver snapshot.
+    pub fn audio_receivers(&self) -> Result<Vec<RtpReceiver>, PeerError> {
+        Ok(self
+            .audio_transceivers()?
+            .into_iter()
+            .map(|transceiver| transceiver.receiver())
+            .collect())
+    }
+
     /// Returns video receiver handles for the current transceiver snapshot.
     pub fn video_receivers(&self) -> Result<Vec<RtpReceiver>, PeerError> {
         Ok(self

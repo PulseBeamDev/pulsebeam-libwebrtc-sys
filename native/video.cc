@@ -398,6 +398,8 @@ const std::unique_ptr<NativeRtpReceiver::State>&
 NativeRtpReceiver::state() const noexcept {
   return state_;
 }
+webrtc::scoped_refptr<webrtc::RtpReceiverInterface>
+NativeRtpReceiver::receiver() const noexcept { return state_->receiver; }
 
 NativeRtpTransceiver::NativeRtpTransceiver(
     std::unique_ptr<State> state) noexcept
@@ -561,6 +563,18 @@ NativeTransceiverList::NativeTransceiverList(std::unique_ptr<State> state) noexc
 NativeTransceiverList::~NativeTransceiverList() = default;
 const std::unique_ptr<NativeTransceiverList::State>&
 NativeTransceiverList::state() const noexcept { return state_; }
+
+std::unique_ptr<NativeTransceiverList> peer_audio_transceivers(
+    const NativePeerConnection& peer) noexcept {
+  if (!peer.peer()) return nullptr;
+  auto state = std::make_unique<NativeTransceiverList::State>();
+  for (auto& transceiver : peer.peer()->GetTransceivers()) {
+    if (transceiver && transceiver->media_type() == webrtc::MediaType::AUDIO) {
+      state->transceivers.push_back(std::move(transceiver));
+    }
+  }
+  return std::make_unique<NativeTransceiverList>(std::move(state));
+}
 
 std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
     const NativePeerConnection& peer) noexcept {

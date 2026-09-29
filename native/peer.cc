@@ -1,6 +1,9 @@
 #include "pulsebeam-webrtc-sys/native/peer.h"
 
+#include <array>
+#include <atomic>
 #include <climits>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -64,7 +67,36 @@ constexpr std::uint8_t kClosedError = 255;
 
 class HeadlessAudioDevice
     : public webrtc::webrtc_impl::AudioDeviceModuleDefault<
-          webrtc::AudioDeviceModule> {};
+          webrtc::AudioDeviceModule> {
+ public:
+  int32_t RegisterAudioCallback(webrtc::AudioTransport* callback) override {
+    transport_.store(callback);
+    return 0;
+  }
+  int32_t StartPlayout() override {
+    playing_.store(true);
+    return 0;
+  }
+  int32_t StopPlayout() override {
+    playing_.store(false);
+    return 0;
+  }
+  bool Playing() const override { return playing_.load(); }
+  bool Pump() const {
+    auto* transport = transport_.load();
+    if (!playing_.load() || !transport) return false;
+    std::array<std::int16_t, 480> samples{};
+    int64_t elapsed_ms = 0;
+    int64_t ntp_ms = 0;
+    transport->PullRenderData(16, 48000, 1, 480, samples.data(),
+                              &elapsed_ms, &ntp_ms);
+    return true;
+  }
+
+ private:
+  std::atomic<webrtc::AudioTransport*> transport_{nullptr};
+  std::atomic<bool> playing_{false};
+};
 
 FfiPeerEvent EmptyEvent() { return FfiPeerEvent{}; }
 
@@ -613,12 +645,14 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
 }  // namespace
 
 struct NativePeerConnectionFactory::State {
+  webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   webrtc::Thread* signaling_thread = nullptr;
   webrtc::Thread* worker_thread = nullptr;
 };
 
 struct NativePeerConnection::State {
+  webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer;
   std::shared_ptr<EventState> events;
   std::unique_ptr<PeerObserver> observer;
@@ -720,8 +754,9 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   }
   // Core peers can add raw audio tracks without supplying external codec
   // factories. Headless ADM never opens a host microphone or speaker.
+  auto headless_audio_device = webrtc::make_ref_counted<HeadlessAudioDevice>();
   {
-    dependencies.adm = webrtc::make_ref_counted<HeadlessAudioDevice>();
+    dependencies.adm = headless_audio_device;
     dependencies.audio_encoder_factory =
         audio_encoder ? audio_encoder->factory()
                       : webrtc::CreateBuiltinAudioEncoderFactory();
@@ -745,6 +780,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     return nullptr;
   }
   auto state = std::make_unique<NativePeerConnectionFactory::State>();
+  state->headless_audio_device = std::move(headless_audio_device);
   state->factory = std::move(factory);
   state->signaling_thread = signaling_thread.thread();
   state->worker_thread = worker_thread.thread();
@@ -848,12 +884,17 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     return nullptr;
   }
   auto state = std::make_unique<NativePeerConnection::State>();
+  state->headless_audio_device = factory.state()->headless_audio_device;
   state->peer = result.MoveValue();
   state->events = std::move(events);
   state->observer = std::move(observer);
   state->signaling_thread = factory.state()->signaling_thread;
   state->worker_thread = factory.state()->worker_thread;
   return std::make_unique<NativePeerConnection>(std::move(state));
+}
+
+bool pump_headless_audio(const NativePeerConnection& peer) noexcept {
+  return peer.state()->headless_audio_device->Pump();
 }
 
 void peer_create_offer(const NativePeerConnection& peer,

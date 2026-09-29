@@ -627,6 +627,24 @@ impl RtpReceiver {
         (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
     }
 
+    /// Attach a bounded decoded PCM sink to a receiver on this peer.
+    pub fn attach_audio_sink(&self) -> Result<crate::AudioSink, PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let native = ffi::rtp_receiver_attach_audio_sink(self.peer.native(), self.native());
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "receiver is foreign, ended or not an audio receiver".into(),
+            });
+        }
+        Ok(crate::AudioSink::from_native(native, self.peer.clone()))
+    }
+
     /// Request a fresh remote video keyframe through the negotiated receiver.
     /// Success means the request was submitted, not that the sender delivered
     /// a frame. A foreign, ended or non-video receiver is rejected.

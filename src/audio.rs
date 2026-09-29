@@ -6,7 +6,10 @@
 
 use std::{cell::Cell, fmt, rc::Rc};
 
-use crate::{ffi, peer::FactoryInner};
+use crate::{
+    ffi,
+    peer::{FactoryInner, PeerInner},
+};
 
 /// The layout and representation of a CPU audio frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +90,61 @@ impl AudioPcmFrame {
             return Err(AudioFrameError::InvalidSampleCount);
         }
         Ok(samples_per_channel)
+    }
+}
+
+/// A decoded audio block received from an RTP audio track.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedAudioFrame {
+    pub sample_rate_hz: u32,
+    pub channels: u8,
+    pub samples_per_channel: u32,
+    /// Absolute capture time on the upstream TimeMillis clock, if supplied.
+    pub capture_time_us: Option<i64>,
+    /// Signed 16-bit, native-endian, interleaved samples.
+    pub samples: Vec<i16>,
+}
+
+/// A bounded decoded PCM receiver queue. Closing removes the native sink on
+/// the signaling thread before releasing callback memory. Dropped frames are
+/// accounted for; at most eight blocks are retained.
+pub struct AudioSink {
+    native: cxx::UniquePtr<ffi::NativeAudioSink>,
+    _peer: Rc<PeerInner>,
+}
+
+impl AudioSink {
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeAudioSink>,
+        peer: Rc<PeerInner>,
+    ) -> Self {
+        Self {
+            native,
+            _peer: peer,
+        }
+    }
+
+    pub fn try_next_frame(&self) -> Option<DecodedAudioFrame> {
+        let frame = ffi::audio_sink_take_frame(self.native());
+        frame.valid.then_some(DecodedAudioFrame {
+            sample_rate_hz: frame.sample_rate_hz,
+            channels: frame.channels,
+            samples_per_channel: frame.samples_per_channel,
+            capture_time_us: frame.has_capture_time.then_some(frame.capture_time_us),
+            samples: frame.samples,
+        })
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        ffi::audio_sink_dropped_frames(self.native())
+    }
+
+    pub fn close(&mut self) -> bool {
+        ffi::close_audio_sink(self.native())
+    }
+
+    fn native(&self) -> &ffi::NativeAudioSink {
+        self.native.as_ref().expect("validated audio sink")
     }
 }
 

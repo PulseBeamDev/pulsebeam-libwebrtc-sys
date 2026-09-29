@@ -83,6 +83,7 @@ class NativeRtpReceiver final {
   explicit NativeRtpReceiver(std::unique_ptr<State> state) noexcept;
   ~NativeRtpReceiver();
   const std::unique_ptr<State>& state() const noexcept;
+  webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -139,6 +140,8 @@ std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
 std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept;
 bool close_video_sink(const NativeVideoSink& sink) noexcept;
 
+std::unique_ptr<NativeTransceiverList> peer_audio_transceivers(
+    const NativePeerConnection& peer) noexcept;
 std::unique_ptr<NativeTransceiverList> peer_video_transceivers(
     const NativePeerConnection& peer) noexcept;
 rust::Vec<FfiVideoCodecCapability> peer_video_codec_capabilities(
