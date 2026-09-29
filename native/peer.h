@@ -127,6 +127,10 @@ std::unique_ptr<NativeDataChannel> peer_take_data_channel(
     const NativePeerConnection& peer,
     std::uint64_t arrival_id) noexcept;
 bool close_peer_connection(const NativePeerConnection& peer) noexcept;
+// Route audio lifecycle through WebRTC AudioState, not directly through ADM.
+bool peer_set_native_audio_enabled(const NativePeerConnection& peer,
+                                   bool recording, bool enabled,
+                                   rust::String& error) noexcept;
 // Pull one 10 ms receive block from the headless audio transport. This does
 // not access any operating-system audio device.
 bool pump_headless_audio(const NativePeerConnection& peer) noexcept;

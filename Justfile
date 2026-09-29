@@ -481,6 +481,12 @@ _export flavor target:
     if test -d "$out/gen"; then (cd "$out/gen" && find . -type f \( -name '*.h' -o -name '*.inc' \) -print0 | tar --null -T - -cf -) | tar -C "$stage/include" -xf -; fi
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then mkdir -p "$stage/include/c++/v1"; cp -R "$src/third_party/libc++/src/include/." "$stage/include/c++/v1/"; cp "$src/buildtools/third_party/libc++/__config_site" "$src/buildtools/third_party/libc++/__assertion_handler" "$stage/include/c++/v1/"; fi
     "$gn" desc --root="$src_native" "$out_native" //:webrtc defines --all | sed 's/^/-D/' > "$definitions_file"
+    # DesktopCaptureOptions has an X11-dependent C++ layout. This define is
+    # public on the desktop_capture target, not necessarily on //:webrtc.
+    if [[ "{{ flavor }}" = native && "{{ target }}" = linux-* ]] &&
+       "$gn" desc --root="$src_native" "$out_native" //modules/desktop_capture:desktop_capture defines --all | grep -qx WEBRTC_USE_X11; then
+      grep -qx -- '-DWEBRTC_USE_X11' "$definitions_file" || printf '%s\n' '-DWEBRTC_USE_X11' >> "$definitions_file"
+    fi
     just --justfile "{{ root }}/Justfile" _bridge-objects "{{ flavor }}" "{{ target }}" "$stage" "$definitions_file" >> "$objects"
     library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
     library_native=$(just --justfile "{{ root }}/Justfile" _native-path "$library")
@@ -552,7 +558,17 @@ _bridge-objects flavor target stage definitions_file:
         suffix=o;;
       windows-x86_64) cxx="$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl"; include=(-I"$stage_native/include"); args=(/std:c++20 /GR- /EHs-c- /MT -Wno-nullability-completeness); suffix=obj;;
     esac
-    if test "{{ flavor }}" = native; then args+=(-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1); fi
+    if test "{{ flavor }}" = native; then
+      args+=(-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1)
+      case "{{ target }}" in
+        linux-x86_64) glib="$src/build/linux/debian_bullseye_amd64-sysroot/usr"; triple=x86_64-linux-gnu;;
+        linux-arm64) glib="$src/build/linux/debian_bullseye_arm64-sysroot/usr"; triple=aarch64-linux-gnu;;
+        *) glib=;;
+      esac
+      if test -n "$glib"; then
+        args+=(-isystem "$glib/include/glib-2.0" -isystem "$glib/lib/$triple/glib-2.0/include")
+      fi
+    fi
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then args+=(-fsanitize=address); fi
     if test "{{ target }}" = windows-x86_64; then
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"

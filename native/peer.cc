@@ -657,6 +657,7 @@ struct NativePeerConnectionFactory::State {
 
 struct NativePeerConnection::State {
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
+  bool native_audio_enabled = false;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer;
   std::shared_ptr<EventState> events;
   std::unique_ptr<PeerObserver> observer;
@@ -673,6 +674,10 @@ NativePeerConnectionFactory::NativePeerConnectionFactory(
 NativePeerConnectionFactory::~NativePeerConnectionFactory() {
   if (state_ && state_->factory && state_->signaling_thread) {
     state_->signaling_thread->BlockingCall([this] { state_->factory = nullptr; });
+  }
+  if (state_ && state_->audio_device && state_->worker_thread) {
+    // PulseAudio's ADM must also be destroyed on its construction thread.
+    state_->worker_thread->BlockingCall([this] { state_->audio_device = nullptr; });
   }
 }
 const std::unique_ptr<NativePeerConnectionFactory::State>&
@@ -772,12 +777,27 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_audio_device;
   if (native_audio) {
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO)
-    dependencies.signaling_thread->BlockingCall([&] {
+    dependencies.worker_thread->BlockingCall([&] {
       platform_audio_device = webrtc::CreateAudioDeviceModule(
           *dependencies.env, webrtc::AudioDeviceModule::kPlatformDefaultAudio);
     });
     if (!platform_audio_device) {
       error = "native audio device module unavailable";
+      return nullptr;
+    }
+    // WebRtcVoiceEngine::Init calls adm_helpers::Init on the worker and
+    // RTC_CHECKs the result. Fail gracefully before constructing a peer on
+    // hosts without a usable sound service instead of aborting the process.
+    bool audio_initialized = false;
+    dependencies.worker_thread->BlockingCall([&] {
+      audio_initialized = platform_audio_device->Init() == 0;
+    });
+    if (!audio_initialized) {
+      // The PulseAudio backend checks destructor thread affinity as well.
+      dependencies.worker_thread->BlockingCall([&] {
+        platform_audio_device = nullptr;
+      });
+      error = "native audio device module initialization failed";
       return nullptr;
     }
     dependencies.adm = platform_audio_device;
@@ -807,6 +827,9 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   auto factory =
       webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));
   if (!factory) {
+    if (platform_audio_device) {
+      worker_thread.thread()->BlockingCall([&] { platform_audio_device = nullptr; });
+    }
     error = "CreateModularPeerConnectionFactory failed";
     return nullptr;
   }
@@ -823,12 +846,12 @@ bool factory_audio_devices(const NativePeerConnectionFactory& factory,
                            bool recording, rust::Vec<FfiAudioDevice>& devices,
                            rust::String& error) noexcept {
   auto adm = factory.audio_device();
-  if (!adm || !factory.signaling_thread()) {
+  if (!adm || !factory.state()->worker_thread) {
     error = "device enumeration requires a native-audio factory";
     return false;
   }
   bool ok = false;
-  factory.signaling_thread()->BlockingCall([&] {
+  factory.state()->worker_thread->BlockingCall([&] {
     const int count = recording ? adm->RecordingDevices() : adm->PlayoutDevices();
     if (count < 0) { error = "audio device enumeration failed"; return; }
     for (int index = 0; index < count; ++index) {
@@ -856,12 +879,12 @@ bool factory_select_audio_device(const NativePeerConnectionFactory& factory,
                                  bool recording, std::uint16_t index,
                                  rust::String& error) noexcept {
   auto adm = factory.audio_device();
-  if (!adm || !factory.signaling_thread()) {
+  if (!adm || !factory.state()->worker_thread) {
     error = "device selection requires a native-audio factory";
     return false;
   }
   bool ok = false;
-  factory.signaling_thread()->BlockingCall([&] {
+  factory.state()->worker_thread->BlockingCall([&] {
     const int count = recording ? adm->RecordingDevices() : adm->PlayoutDevices();
     if (count < 0 || index >= count) {
       error = "audio device index is not currently available";
@@ -972,6 +995,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   }
   auto state = std::make_unique<NativePeerConnection::State>();
   state->headless_audio_device = factory.state()->headless_audio_device;
+  state->native_audio_enabled = factory.state()->audio_device != nullptr;
   state->peer = result.MoveValue();
   state->events = std::move(events);
   state->observer = std::move(observer);
@@ -1155,6 +1179,32 @@ std::unique_ptr<NativeRtpTransceiver> peer_take_transceiver(
 std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
     const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept {
   return wrap_rtp_receiver(peer.state()->events->TakeReceiver(arrival_id));
+}
+
+bool peer_set_native_audio_enabled(const NativePeerConnection& peer,
+                                   bool recording, bool enabled,
+                                   rust::String& error) noexcept {
+  const auto& state = peer.state();
+  if (!state || !state->native_audio_enabled) {
+    error = "native audio is not enabled for this factory";
+    return false;
+  }
+  bool ok = false;
+  state->signaling_thread->BlockingCall([&] {
+    if (state->closed || !state->peer) {
+      error = "peer connection is closed";
+      return;
+    }
+    // WebRTC owns the ADM start/stop decisions and only starts a device when
+    // corresponding send/receive streams exist. Do not call ADM directly.
+    if (recording) {
+      state->peer->SetAudioRecording(enabled);
+    } else {
+      state->peer->SetAudioPlayout(enabled);
+    }
+    ok = true;
+  });
+  return ok;
 }
 
 bool close_peer_connection(const NativePeerConnection& peer) noexcept {

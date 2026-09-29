@@ -20,12 +20,14 @@
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/crypto_random.h"
 #include "rtc_base/thread.h"
+#include "rtc_base/time_utils.h"
 #include "system_wrappers/include/clock.h"
 
 namespace pulsebeam::webrtc_sys {
 namespace {
 
 constexpr std::int64_t kNoDeadline = std::numeric_limits<std::int64_t>::min();
+std::atomic_bool driver_active{false};
 
 class SharedClock final : public webrtc::Clock {
  public:
@@ -178,11 +180,42 @@ struct NativeEnvironment::State {
   webrtc::Environment environment;
 };
 
-struct NativeThread::State {
-  explicit State(std::unique_ptr<webrtc::Thread> value) noexcept
-      : thread(std::move(value)) {}
+struct NativeDriverThread::State {
+  struct Clock final : webrtc::ClockInterface {
+    explicit Clock(std::shared_ptr<NativeManualClock::State> value)
+        : state(std::move(value)) {}
+    std::int64_t TimeNanos() const override {
+      const auto micros = state->clock.TimeInMicroseconds();
+      return std::min(micros, std::numeric_limits<std::int64_t>::max() / 1000)
+          * 1000;
+    }
+    std::shared_ptr<NativeManualClock::State> state;
+  };
+
+  State(std::unique_ptr<webrtc::Thread> value,
+        std::shared_ptr<NativeManualClock::State> clock_state)
+      : thread(std::move(value)), clock(std::move(clock_state)) {
+    webrtc::SetClockForTesting(&clock);
+  }
+  ~State() {
+    RTC_CHECK(thread->IsCurrent());
+    thread->UnwrapCurrent();
+    thread.reset();
+    webrtc::SetClockForTesting(nullptr);
+    driver_active.store(false);
+  }
 
   std::unique_ptr<webrtc::Thread> thread;
+  Clock clock;
+};
+
+struct NativeThread::State {
+  explicit State(std::unique_ptr<webrtc::Thread> value) noexcept
+      : owned(std::move(value)), thread(owned.get()) {}
+  explicit State(webrtc::Thread* value) noexcept : thread(value) {}
+
+  std::unique_ptr<webrtc::Thread> owned;
+  webrtc::Thread* thread;
 };
 
 webrtc::Timestamp SharedClock::CurrentTime() {
@@ -300,13 +333,26 @@ NativeRandomnessLease::~NativeRandomnessLease() {
 
 NativeThread::NativeThread(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
+NativeDriverThread::NativeDriverThread(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeDriverThread::~NativeDriverThread() = default;
+const std::unique_ptr<NativeDriverThread::State>& NativeDriverThread::state()
+    const noexcept {
+  return state_;
+}
+webrtc::Thread* NativeDriverThread::thread() const noexcept {
+  return state_ ? state_->thread.get() : nullptr;
+}
+bool NativeDriverThread::uses_clock(const NativeManualClock& clock) const noexcept {
+  return state_ && state_->clock.state == clock.state();
+}
 NativeThread::~NativeThread() = default;
 const std::unique_ptr<NativeThread::State>& NativeThread::state()
     const noexcept {
   return state_;
 }
 webrtc::Thread* NativeThread::thread() const noexcept {
-  return state_ ? state_->thread.get() : nullptr;
+  return state_ ? state_->thread : nullptr;
 }
 
 std::unique_ptr<NativeManualClock> new_manual_clock(
@@ -499,6 +545,50 @@ std::unique_ptr<NativeThread> new_thread(bool network) noexcept {
   }
   return std::make_unique<NativeThread>(
       std::make_unique<NativeThread::State>(std::move(thread)));
+}
+
+std::unique_ptr<NativeDriverThread> new_driver_thread(
+    const NativeManualClock& clock) noexcept {
+  bool expected = false;
+  if (!driver_active.compare_exchange_strong(expected, true)) return nullptr;
+  if (webrtc::Thread::Current() || webrtc::GetClockForTesting()) {
+    driver_active.store(false);
+    return nullptr;
+  }
+  auto thread = webrtc::Thread::CreateWithSocketServer();
+  if (!thread || !thread->WrapCurrent()) {
+    driver_active.store(false);
+    return nullptr;
+  }
+  return std::make_unique<NativeDriverThread>(
+      std::make_unique<NativeDriverThread::State>(std::move(thread), clock.state()));
+}
+
+std::unique_ptr<NativeThread> borrow_driver_thread(
+    const NativeDriverThread& driver) noexcept {
+  if (!driver.thread() || !driver.thread()->IsCurrent()) return nullptr;
+  return std::make_unique<NativeThread>(
+      std::make_unique<NativeThread::State>(driver.thread()));
+}
+
+bool driver_run_ready(const NativeDriverThread& driver) noexcept {
+  return driver.thread() && driver.thread()->IsCurrent() &&
+         driver.thread()->ProcessMessages(0);
+}
+
+std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept {
+  if (!driver.thread() || !driver.thread()->IsCurrent()) return kNoDeadline;
+  const int delay_ms = driver.thread()->GetDelay();
+  if (delay_ms == webrtc::Thread::kForever) return kNoDeadline;
+  const auto now = driver.state()->clock.state->clock.TimeInMicroseconds();
+  const auto delta = static_cast<std::int64_t>(delay_ms) * 1000;
+  return now > std::numeric_limits<std::int64_t>::max() - delta
+             ? std::numeric_limits<std::int64_t>::max()
+             : now + delta;
+}
+
+bool driver_is_current(const NativeDriverThread& driver) noexcept {
+  return driver.thread() && driver.thread()->IsCurrent();
 }
 
 bool thread_post_task(const NativeThread& thread,

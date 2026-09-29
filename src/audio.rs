@@ -13,6 +13,7 @@ use crate::{
 
 /// A platform audio device reported by the native artifact. Device lists can
 /// change; re-enumerate before using an index, and handle selection failure.
+#[cfg(feature = "native")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AudioDevice {
     pub index: u16,
@@ -325,6 +326,7 @@ impl AudioTrack {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn microphone(
         native: cxx::UniquePtr<ffi::NativeAudioTrack>,
         factory: Rc<FactoryInner>,

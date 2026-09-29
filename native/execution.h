@@ -89,6 +89,24 @@ class NativeRandomnessLease final {
   NativeRandomnessLease& operator=(const NativeRandomnessLease&) = delete;
 };
 
+class NativeDriverThread final {
+ public:
+  struct State;
+
+  explicit NativeDriverThread(std::unique_ptr<State> state) noexcept;
+  ~NativeDriverThread();
+
+  NativeDriverThread(const NativeDriverThread&) = delete;
+  NativeDriverThread& operator=(const NativeDriverThread&) = delete;
+
+  const std::unique_ptr<State>& state() const noexcept;
+  webrtc::Thread* thread() const noexcept;
+  bool uses_clock(const NativeManualClock& clock) const noexcept;
+
+ private:
+  std::unique_ptr<State> state_;
+};
+
 class NativeThread final {
  public:
   struct State;
@@ -146,6 +164,13 @@ std::uint64_t next_seeded_random_u64(
     const NativeRandomnessLease& lease) noexcept;
 
 std::unique_ptr<NativeThread> new_thread(bool network) noexcept;
+std::unique_ptr<NativeDriverThread> new_driver_thread(
+    const NativeManualClock& clock) noexcept;
+std::unique_ptr<NativeThread> borrow_driver_thread(
+    const NativeDriverThread& driver) noexcept;
+bool driver_run_ready(const NativeDriverThread& driver) noexcept;
+std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept;
+bool driver_is_current(const NativeDriverThread& driver) noexcept;
 bool thread_post_task(const NativeThread& thread,
                       rust::Box<RustTask> task) noexcept;
 bool thread_post_delayed_task(const NativeThread& thread,

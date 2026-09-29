@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{ManualClock, ffi};
+use crate::{ControlledPeerDriver, ManualClock, ffi};
 
 /// A validated, fully resolved IP socket address.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -60,6 +60,40 @@ struct NetworkInner {
     _clock: ManualClock,
 }
 
+/// A packet network on the caller-pumped peer thread. Unlike
+/// `SimulatedNetwork`, it never starts an OS thread and is sequence-bound.
+/// The adapter currently supports UDP only: TCP sockets, DNS results, and
+/// STUN/TURN servers are not available in controlled mode.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::ControlledSimulatedNetwork>();
+/// ```
+#[derive(Clone)]
+pub struct ControlledSimulatedNetwork(Rc<ControlledNetworkInner>);
+
+struct ControlledNetworkInner {
+    native: cxx::UniquePtr<ffi::NativeSimulatedNetwork>,
+    _clock: ManualClock,
+    driver: ControlledPeerDriver,
+}
+
+#[derive(Clone)]
+enum NetworkRoot {
+    Threaded(SimulatedNetwork),
+    Controlled(ControlledSimulatedNetwork),
+}
+
+impl NetworkRoot {
+    fn is_controlled(&self) -> bool {
+        matches!(self, Self::Controlled(_))
+    }
+
+    fn is_controlled_by(&self, driver: &ControlledPeerDriver) -> bool {
+        matches!(self, Self::Controlled(network) if network.0.driver.same_identity(driver))
+    }
+}
+
 // SAFETY: the native root protects shared packet state with a mutex and
 // marshals every socket operation onto its owned WebRTC network thread.
 unsafe impl Send for NetworkInner {}
@@ -88,28 +122,14 @@ impl SimulatedNetwork {
         } else {
             Ok(NetworkEndpoint {
                 native,
-                network: self.clone(),
+                network: NetworkRoot::Threaded(self.clone()),
                 _creator_sequence: PhantomData,
             })
         }
     }
 
     pub fn next_packet(&self) -> Option<OutboundPacket> {
-        let packet = ffi::take_outbound_packet(self.native());
-        let packet = packet.as_ref()?;
-        Some(OutboundPacket {
-            id: ffi::outbound_packet_id(packet),
-            source: address_from_native(
-                ffi::outbound_packet_source_ip(packet),
-                ffi::outbound_packet_source_port(packet),
-            ),
-            destination: address_from_native(
-                ffi::outbound_packet_destination_ip(packet),
-                ffi::outbound_packet_destination_port(packet),
-            ),
-            payload: ffi::outbound_packet_payload(packet),
-            deadline: Duration::from_micros(ffi::outbound_packet_deadline_us(packet) as u64),
-        })
+        take_packet(self.native())
     }
 
     pub fn deliver(&self, packet_id: u64) -> Result<(), NetworkError> {
@@ -133,6 +153,80 @@ impl SimulatedNetwork {
     }
 }
 
+impl ControlledSimulatedNetwork {
+    pub fn new(clock: &ManualClock, driver: &ControlledPeerDriver) -> Result<Self, NetworkError> {
+        let native = ffi::new_controlled_simulated_network(clock.native(), driver.native());
+        if native.is_null() {
+            Err(NetworkError::NativeConstructionFailed)
+        } else {
+            Ok(Self(Rc::new(ControlledNetworkInner {
+                native,
+                _clock: clock.clone(),
+                driver: driver.clone(),
+            })))
+        }
+    }
+
+    pub fn register_endpoint(&self, ip: IpAddr) -> Result<NetworkEndpoint, NetworkError> {
+        validate_ip(ip)?;
+        let mut error = 0;
+        let native = ffi::register_network_endpoint(self.native(), &ip_bytes(ip), &mut error);
+        if native.is_null() {
+            Err(native_error(error))
+        } else {
+            Ok(NetworkEndpoint {
+                native,
+                network: NetworkRoot::Controlled(self.clone()),
+                _creator_sequence: PhantomData,
+            })
+        }
+    }
+
+    pub fn next_packet(&self) -> Option<OutboundPacket> {
+        take_packet(self.native())
+    }
+
+    pub fn deliver(&self, packet_id: u64) -> Result<(), NetworkError> {
+        deliver(self.native(), packet_id, false)
+    }
+
+    pub fn deliver_copy(&self, packet_id: u64) -> Result<(), NetworkError> {
+        deliver(self.native(), packet_id, true)
+    }
+
+    pub fn drop_packet(&self, packet_id: u64) -> Result<(), NetworkError> {
+        let mut error = 0;
+        ffi::drop_outbound_packet(self.native(), packet_id, &mut error)
+            .then_some(())
+            .ok_or_else(|| native_error(error))
+    }
+
+    fn native(&self) -> &ffi::NativeSimulatedNetwork {
+        self.0
+            .native
+            .as_ref()
+            .expect("validated controlled network")
+    }
+}
+
+fn take_packet(network: &ffi::NativeSimulatedNetwork) -> Option<OutboundPacket> {
+    let packet = ffi::take_outbound_packet(network);
+    let packet = packet.as_ref()?;
+    Some(OutboundPacket {
+        id: ffi::outbound_packet_id(packet),
+        source: address_from_native(
+            ffi::outbound_packet_source_ip(packet),
+            ffi::outbound_packet_source_port(packet),
+        ),
+        destination: address_from_native(
+            ffi::outbound_packet_destination_ip(packet),
+            ffi::outbound_packet_destination_port(packet),
+        ),
+        payload: ffi::outbound_packet_payload(packet),
+        deadline: Duration::from_micros(ffi::outbound_packet_deadline_us(packet) as u64),
+    })
+}
+
 /// A registered local IP and its provider recipes.
 ///
 /// The endpoint is sequence-bound; close it before dropping creator-sequence
@@ -149,7 +243,7 @@ impl SimulatedNetwork {
 /// ```
 pub struct NetworkEndpoint {
     native: cxx::UniquePtr<ffi::NativeNetworkEndpoint>,
-    network: SimulatedNetwork,
+    network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
@@ -208,11 +302,19 @@ impl NetworkEndpoint {
 /// ```
 pub struct NetworkManagerProvider {
     native: cxx::UniquePtr<ffi::NativeNetworkManagerProvider>,
-    _network: SimulatedNetwork,
+    _network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
 impl NetworkManagerProvider {
+    pub(crate) fn is_controlled(&self) -> bool {
+        self._network.is_controlled()
+    }
+
+    pub(crate) fn is_controlled_by(&self, driver: &ControlledPeerDriver) -> bool {
+        self._network.is_controlled_by(driver)
+    }
+
     pub fn is_available(&self) -> bool {
         ffi::network_manager_provider_is_valid(self.native())
     }
@@ -237,11 +339,19 @@ impl NetworkManagerProvider {
 /// ```
 pub struct PacketSocketFactoryProvider {
     native: cxx::UniquePtr<ffi::NativePacketSocketFactoryProvider>,
-    _network: SimulatedNetwork,
+    _network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
 impl PacketSocketFactoryProvider {
+    pub(crate) fn is_controlled(&self) -> bool {
+        self._network.is_controlled()
+    }
+
+    pub(crate) fn is_controlled_by(&self, driver: &ControlledPeerDriver) -> bool {
+        self._network.is_controlled_by(driver)
+    }
+
     pub fn supports_udp(&self) -> bool {
         ffi::packet_socket_factory_supports_udp(self.native())
     }
@@ -296,7 +406,7 @@ impl PacketSocketFactoryProvider {
 /// ```
 pub struct SimulatedUdpSocket {
     native: cxx::UniquePtr<ffi::NativeSimulatedUdpSocket>,
-    _network: SimulatedNetwork,
+    _network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 

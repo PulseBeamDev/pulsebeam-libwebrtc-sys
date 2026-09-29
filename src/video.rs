@@ -91,6 +91,276 @@ pub enum VideoTrackState {
     Ended,
 }
 
+/// A platform screen identified by WebRTC's desktop capture module.
+#[cfg(feature = "native")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScreenSource {
+    pub id: i64,
+    pub name: String,
+}
+
+/// A window shares the desktop capturer's ID and title representation. On
+/// Wayland, IDs can be portal placeholders rather than unrestricted windows.
+#[cfg(feature = "native")]
+pub type WindowSource = ScreenSource;
+
+/// A window uses the same caller-paced capture and lifecycle contract.
+#[cfg(feature = "native")]
+pub type WindowCapture = ScreenCapture;
+
+/// Native screen capture lifecycle. On Wayland, the selection UI is owned by
+/// the desktop portal and may remain pending until the user responds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "native")]
+pub enum ScreenCaptureStatus {
+    PendingSelection,
+    Selected,
+    Streaming,
+    /// The portal reported user cancellation (which may include a denial).
+    CancelledOrDenied,
+    /// Upstream's generic error; missing service, denial, and capture errors
+    /// cannot be distinguished through this callback.
+    Failed,
+    /// The Wayland portal closed an active session (not the same as `stop`).
+    PortalSessionClosed,
+    Closed,
+}
+
+/// Caller-paced native screen capture. Call [`Self::capture_next_frame`] to
+/// request each frame, then use [`Self::source`] to attach a video track.
+#[cfg(feature = "native")]
+pub struct ScreenCapture {
+    native: cxx::UniquePtr<ffi::NativeScreenCapture>,
+    source: VideoSource,
+}
+
+#[cfg(feature = "native")]
+impl ScreenCapture {
+    pub(crate) fn new(
+        native: cxx::UniquePtr<ffi::NativeScreenCapture>,
+        source: VideoSource,
+    ) -> Self {
+        Self { native, source }
+    }
+
+    pub fn source(&self) -> &VideoSource {
+        &self.source
+    }
+
+    /// Capture and conversion failures are accumulated by [`Self::failed_frames`].
+    pub fn capture_next_frame(&self) -> Result<(), PeerError> {
+        let native = self.native.as_ref().expect("validated desktop capture");
+        match self.status() {
+            ScreenCaptureStatus::Closed => {
+                return Err(PeerError {
+                    kind: PeerErrorKind::Closed,
+                    message: "desktop capture is closed".into(),
+                });
+            }
+            ScreenCaptureStatus::CancelledOrDenied => {
+                return Err(PeerError {
+                    kind: PeerErrorKind::Operation,
+                    message: "desktop selection was cancelled or denied".into(),
+                });
+            }
+            ScreenCaptureStatus::Failed => {
+                return Err(PeerError {
+                    kind: PeerErrorKind::Operation,
+                    message: "desktop capture failed".into(),
+                });
+            }
+            ScreenCaptureStatus::PortalSessionClosed => {
+                return Err(PeerError {
+                    kind: PeerErrorKind::Operation,
+                    message: "desktop portal session closed".into(),
+                });
+            }
+            _ => {}
+        }
+        if !ffi::screen_capture_next_frame(native) {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "desktop capture is closed".into(),
+            });
+        }
+        match self.status() {
+            ScreenCaptureStatus::Failed => Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message: "desktop capture failed".into(),
+            }),
+            ScreenCaptureStatus::PortalSessionClosed => Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message: "desktop portal session closed".into(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Portal selection and capture state. `CancelledOrDenied`, `Failed`, and
+    /// `PortalSessionClosed` are terminal; check with [`Self::failed_frames`] after requesting
+    /// frames. Headless X11 selections begin in `Selected`.
+    pub fn status(&self) -> ScreenCaptureStatus {
+        match ffi::screen_capture_status(self.native.as_ref().expect("validated screen capture")) {
+            0 => ScreenCaptureStatus::PendingSelection,
+            1 => ScreenCaptureStatus::Selected,
+            2 => ScreenCaptureStatus::Streaming,
+            3 => ScreenCaptureStatus::CancelledOrDenied,
+            4 => ScreenCaptureStatus::Failed,
+            6 => ScreenCaptureStatus::PortalSessionClosed,
+            _ => ScreenCaptureStatus::Closed,
+        }
+    }
+
+    /// Number of failed capture callbacks or frames rejected before delivery.
+    pub fn failed_frames(&self) -> u64 {
+        ffi::screen_capture_failed_frames(self.native.as_ref().expect("validated screen capture"))
+    }
+
+    /// Stop capture and end the associated video source. Repeated stops succeed.
+    pub fn stop(&mut self) -> Result<(), PeerError> {
+        let stopped = self.native.as_ref().is_some_and(ffi::close_screen);
+        let source_stopped = self.source.close().is_ok();
+        (stopped && source_stopped)
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::Operation,
+                message: "failed to stop desktop capture or end its video source".into(),
+            })
+    }
+}
+
+#[cfg(feature = "native")]
+impl Drop for ScreenCapture {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+/// Pixel layout offered by a platform capture device. Formats other than
+/// I420/NV12 are converted to I420 by WebRTC before track delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "native")]
+pub enum CameraPixelFormat {
+    Unknown,
+    I420,
+    Iyuv,
+    Rgb24,
+    Bgr24,
+    Argb,
+    Abgr,
+    Rgb565,
+    Yuy2,
+    Yv12,
+    Uyvy,
+    Mjpeg,
+    Bgra,
+    Nv12,
+}
+
+#[cfg(feature = "native")]
+impl CameraPixelFormat {
+    pub(crate) fn from_native(value: i32) -> Self {
+        match value {
+            1 => Self::I420,
+            2 => Self::Iyuv,
+            3 => Self::Rgb24,
+            4 => Self::Bgr24,
+            5 => Self::Argb,
+            6 => Self::Abgr,
+            7 => Self::Rgb565,
+            8 => Self::Yuy2,
+            9 => Self::Yv12,
+            10 => Self::Uyvy,
+            11 => Self::Mjpeg,
+            12 => Self::Bgra,
+            13 => Self::Nv12,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// A capture format advertised by a native camera.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(feature = "native")]
+pub struct CameraFormat {
+    pub width: u32,
+    pub height: u32,
+    pub max_fps: u32,
+    pub pixel_format: CameraPixelFormat,
+}
+
+/// A native camera name and stable device identifier reported by WebRTC.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(feature = "native")]
+pub struct CameraDevice {
+    pub name: String,
+    pub id: String,
+}
+
+/// Observable camera delivery state. `Stalled` means no frame arrived within
+/// the caller's timeout, not a diagnosed reason for device loss.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "native")]
+pub enum CameraCaptureStatus {
+    Starting,
+    Streaming,
+    Stalled,
+    Closed,
+    Failed,
+}
+
+/// A running camera bound to a caller-owned video source. Capture stops on
+/// drop; the source remains usable for a track while this handle is alive.
+#[cfg(feature = "native")]
+pub struct CameraCapture {
+    native: cxx::UniquePtr<ffi::NativeCamera>,
+    source: VideoSource,
+}
+
+#[cfg(feature = "native")]
+impl CameraCapture {
+    pub(crate) fn new(native: cxx::UniquePtr<ffi::NativeCamera>, source: VideoSource) -> Self {
+        Self { native, source }
+    }
+
+    pub fn source(&self) -> &VideoSource {
+        &self.source
+    }
+
+    /// Detect stopped delivery after `stale_after` without assuming the cause.
+    /// A capture may be `Starting` until its first frame, or `Stalled` if no
+    /// frame arrives in time (including after a device disappears).
+    pub fn status(&self, stale_after: std::time::Duration) -> CameraCaptureStatus {
+        let millis = stale_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        match ffi::camera_capture_status(self.native.as_ref().expect("validated camera"), millis) {
+            0 => CameraCaptureStatus::Starting,
+            1 => CameraCaptureStatus::Streaming,
+            2 => CameraCaptureStatus::Stalled,
+            3 => CameraCaptureStatus::Closed,
+            _ => CameraCaptureStatus::Failed,
+        }
+    }
+
+    /// Stop the device and end its video source. Reports a device stop failure.
+    pub fn stop(&mut self) -> Result<(), PeerError> {
+        let stopped = self.native.as_ref().is_some_and(ffi::close_camera);
+        let source_stopped = self.source.close().is_ok();
+        (stopped && source_stopped)
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::Operation,
+                message: "failed to stop camera or end its video source".into(),
+            })
+    }
+}
+
+#[cfg(feature = "native")]
+impl Drop for CameraCapture {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
 /// A sequence-bound caller-fed video source.
 ///
 /// ```compile_fail

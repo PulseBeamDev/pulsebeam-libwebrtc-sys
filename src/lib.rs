@@ -19,9 +19,11 @@ pub(crate) use codec::{
 };
 pub(crate) use execution::{RustTask, run_task};
 
+#[cfg(feature = "native")]
+pub use audio::AudioDevice;
 pub use audio::{
-    AudioDevice, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource,
-    AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
+    AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource, AudioTrack,
+    DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
@@ -37,13 +39,14 @@ pub use data_channel::{
 };
 pub use encoded_video::{EncodedH264Input, EncodedH264Source, H264AccessUnit};
 pub use execution::{
-    BuildEnvironmentError, Environment, EnvironmentBuilder, ManualClock, NetworkThread,
-    QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue,
-    TaskQueueFactory, ThreadStartError, WorkerThread,
+    BuildEnvironmentError, ControlledPeerDriver, Environment, EnvironmentBuilder, ManualClock,
+    NetworkThread, QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread,
+    SystemClock, TaskQueue, TaskQueueFactory, ThreadStartError, WorkerThread,
 };
 pub use network::{
-    NetworkAddress, NetworkEndpoint, NetworkError, NetworkManagerProvider, OutboundPacket,
-    PacketSocketFactoryProvider, ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
+    ControlledSimulatedNetwork, NetworkAddress, NetworkEndpoint, NetworkError,
+    NetworkManagerProvider, OutboundPacket, PacketSocketFactoryProvider, ReceivedPacket,
+    SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
     CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceGatheringState,
@@ -52,6 +55,11 @@ pub use peer::{
     PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions, PeerError,
     PeerErrorKind, PeerStatsRecord, PeerStatsSnapshot, SessionDescription, SessionDescriptionType,
     SignalingState, TransportStats,
+};
+#[cfg(feature = "native")]
+pub use video::{
+    CameraCapture, CameraCaptureStatus, CameraDevice, CameraFormat, CameraPixelFormat,
+    ScreenCapture, ScreenCaptureStatus, ScreenSource, WindowCapture, WindowSource,
 };
 pub use video::{
     DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, RtpReceiver, RtpSender,
@@ -137,6 +145,23 @@ mod ffi {
     struct FfiSenderParameters {
         transaction_id: String,
         encodings: Vec<FfiSenderEncoding>,
+    }
+
+    struct FfiScreenSource {
+        id: i64,
+        name: String,
+    }
+
+    struct FfiCameraFormat {
+        width: u32,
+        height: u32,
+        max_fps: u32,
+        pixel_format: i32,
+    }
+
+    struct FfiCameraDevice {
+        name: String,
+        id: String,
     }
 
     struct FfiAudioDevice {
@@ -332,6 +357,7 @@ mod ffi {
         type NativeRandomnessLease;
         type NativeTaskQueue;
         type NativeTaskQueueFactory;
+        type NativeDriverThread;
         type NativeThread;
         type NativeSimulatedNetwork;
         type NativeNetworkEndpoint;
@@ -351,6 +377,8 @@ mod ffi {
         type NativePeerConnectionFactory;
         type NativePeerConnection;
         type NativeDataChannel;
+        type NativeScreenCapture;
+        type NativeCamera;
         type NativeVideoSource;
         type NativeVideoTrack;
         type NativeAudioSource;
@@ -401,6 +429,11 @@ mod ffi {
         fn next_seeded_random_u64(lease: &NativeRandomnessLease) -> u64;
 
         fn new_thread(network: bool) -> UniquePtr<NativeThread>;
+        fn new_driver_thread(clock: &NativeManualClock) -> UniquePtr<NativeDriverThread>;
+        fn borrow_driver_thread(driver: &NativeDriverThread) -> UniquePtr<NativeThread>;
+        fn driver_run_ready(driver: &NativeDriverThread) -> bool;
+        fn driver_next_deadline_us(driver: &NativeDriverThread) -> i64;
+        fn driver_is_current(driver: &NativeDriverThread) -> bool;
         fn thread_post_task(thread: &NativeThread, task: Box<RustTask>) -> bool;
         fn thread_post_delayed_task(
             thread: &NativeThread,
@@ -409,6 +442,10 @@ mod ffi {
         ) -> bool;
 
         fn new_simulated_network(clock: &NativeManualClock) -> UniquePtr<NativeSimulatedNetwork>;
+        fn new_controlled_simulated_network(
+            clock: &NativeManualClock,
+            driver: &NativeDriverThread,
+        ) -> UniquePtr<NativeSimulatedNetwork>;
         fn register_network_endpoint(
             network: &NativeSimulatedNetwork,
             ip: &[u8],
@@ -603,6 +640,12 @@ mod ffi {
             arrival_id: u64,
         ) -> UniquePtr<NativeDataChannel>;
         fn close_peer_connection(peer: &NativePeerConnection) -> bool;
+        fn peer_set_native_audio_enabled(
+            peer: &NativePeerConnection,
+            recording: bool,
+            enabled: bool,
+            error: &mut String,
+        ) -> bool;
 
         fn create_data_channel(
             peer: &NativePeerConnection,
@@ -676,6 +719,37 @@ mod ffi {
         fn encoded_audio_sink_dropped_frames(sink: &NativeEncodedAudioSink) -> u64;
         fn close_encoded_audio_sink(sink: &NativeEncodedAudioSink) -> bool;
 
+        fn screen_sources(
+            windows: bool,
+            screens: &mut Vec<FfiScreenSource>,
+            error: &mut String,
+        ) -> bool;
+        fn open_screen(
+            source: &NativeVideoSource,
+            screen_id: i64,
+            window: bool,
+            error: &mut String,
+        ) -> UniquePtr<NativeScreenCapture>;
+        fn screen_capture_next_frame(capture: &NativeScreenCapture) -> bool;
+        fn screen_capture_status(capture: &NativeScreenCapture) -> u8;
+        fn screen_capture_failed_frames(capture: &NativeScreenCapture) -> u64;
+        fn close_screen(capture: &NativeScreenCapture) -> bool;
+        fn camera_devices(devices: &mut Vec<FfiCameraDevice>, error: &mut String) -> bool;
+        fn camera_formats(
+            device_id: &str,
+            formats: &mut Vec<FfiCameraFormat>,
+            error: &mut String,
+        ) -> bool;
+        fn open_camera(
+            source: &NativeVideoSource,
+            device_id: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            error: &mut String,
+        ) -> UniquePtr<NativeCamera>;
+        fn camera_capture_status(camera: &NativeCamera, stale_after_ms: u64) -> u8;
+        fn close_camera(camera: &NativeCamera) -> bool;
         fn create_video_source(
             factory: &NativePeerConnectionFactory,
         ) -> UniquePtr<NativeVideoSource>;

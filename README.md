@@ -138,10 +138,36 @@ its bounded queue records dropped packets. The decoded headless sink pulls
 Native artifacts additionally allow opt-in platform audio with
 `PeerConnectionFactory::builder().native_audio(true)`: enumerate recording
 and playout devices, select them by current index, and make a microphone
-track. Core artifacts reject the opt-in. Device enumeration can be empty and
-selection can fail while a device is active; CI only smoke-tests this path
-without requiring hardware. Direct encoded Opus sending is not provided by
+track. A native peer can request recording/playout enable or disable with
+`set_native_audio_enabled(recording, enabled)`. WebRTC starts and stops the
+selected device as matching media streams appear or disappear; the setting is
+shared by peers from the same factory. The upstream setter does not report
+asynchronous device startup or playout failures. Platform-device methods and
+types are not exposed without the `native` Cargo feature. Enumeration can be
+empty and selection can fail while a device is active; CI smoke-tests this
+path without requiring hardware. Direct encoded Opus sending is not provided by
 the pinned WebRTC audio sender API and remains explicitly unsupported.
+
+Native camera devices expose names, IDs, and capture capabilities through
+`camera_devices()` and `camera_formats(id)`. `open_camera(id, width, height,
+fps)` starts the closest upstream matching capability and owns a source for
+`create_video_track(track_id, capture.source())`; an unsupported selection
+returns an error. Refresh enumeration after device changes rather than caching
+indices. `CameraCapture::status(timeout)` reports starting, streaming, stalled,
+closed, or stopped capture; stalled means no frames arrived within the caller's
+timeout, not a confirmed device-loss cause. `screen_sources()` and `window_sources()` enumerate desktop source
+IDs, and `open_screen(id)` / `open_window(id)` create caller-paced captures.
+Call `capture_next_frame()` to request a frame, inspect `status()` and
+`failed_frames()`, and call `stop()` to end the capture and source. Wayland
+portal selection may remain pending and can be cancelled or fail; an open
+capture does not prove that frames were delivered. `stop()` reports failure
+when a native device cannot stop or its source cannot end, while `Drop` is
+best-effort. Native device smoke tests run without hardware or a display and
+do not qualify actual microphone, camera, X11/Wayland portal, or speaker paths.
+`examples/native_devices.rs` uses the public API for discovery and opt-in
+capture. A portal response classified as cancelled by upstream can include a
+denial; upstream's generic error does not distinguish missing service from
+other failures. Wayland portal session closure has its own capture status.
 
 ## Target matrix
 
@@ -200,6 +226,18 @@ WebRTC has no usable runtime injection point for deterministic cryptographic
 entropy. This repository does not patch WebRTC or BoringSSL to add one.
 Consumers must not expect certificates, DTLS material, SRTP keys, or encrypted
 bytes to repeat for the same simulation seed.
+
+`ControlledPeerDriver` borrows the caller's thread for peer network, worker and
+signaling roles. Pair it with a matching manual-clock environment, cooperative
+task queues, and `ControlledSimulatedNetwork` to pump multiple peers with
+`run_ready` and `next_deadline`. Only one driver may own the process-global
+WebRTC clock at a time; drop all controlled peers, endpoints, and networks to
+release it. Native audio, independently threaded peer roles, and ICE server
+configurations are rejected. This controlled network supports externally
+scheduled UDP delivery but not DNS or TCP outcomes. See
+[`tests/controlled_driver.rs`](tests/controlled_driver.rs) for gathered-SDP
+connectivity under virtual time and [`docs/capability-matrix.md`](docs/capability-matrix.md)
+for remaining evidence gaps.
 
 ## H.264 boundary
 
@@ -518,6 +556,10 @@ Upgrade CXX as one reviewable change:
    `just refresh-cxx` once more and confirm that it produces no diff.
 
 ## Acceptance coverage
+
+See [the capability-to-API/test matrix](docs/capability-matrix.md) for the
+approved Linux scope, the public Rust surfaces, proven paths, and open gaps.
+The table below describes repository jobs, not proof of every capability.
 
 | Contract | Automated job or release check |
 |---|---|

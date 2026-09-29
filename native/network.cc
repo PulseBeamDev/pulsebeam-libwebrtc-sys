@@ -115,10 +115,14 @@ void CloseRegistration(const std::shared_ptr<SocketRegistration>& registration);
 
 struct NativeSimulatedNetwork::State {
   explicit State(const NativeManualClock* clock_value) noexcept
-      : clock(clock_value), thread(webrtc::Thread::Create()) {}
+      : clock(clock_value), owned_thread(webrtc::Thread::Create()),
+        thread(owned_thread.get()) {}
+  State(const NativeManualClock* clock_value, webrtc::Thread* borrowed) noexcept
+      : clock(clock_value), thread(borrowed) {}
 
   const NativeManualClock* clock;
-  std::unique_ptr<webrtc::Thread> thread;
+  std::unique_ptr<webrtc::Thread> owned_thread;
+  webrtc::Thread* thread;
   std::mutex mutex;
   std::map<webrtc::IPAddress, std::weak_ptr<NativeNetworkEndpoint::State>>
       endpoints;
@@ -572,6 +576,15 @@ std::unique_ptr<NativeSimulatedNetwork> new_simulated_network(
   return std::make_unique<NativeSimulatedNetwork>(std::move(state));
 }
 
+std::unique_ptr<NativeSimulatedNetwork> new_controlled_simulated_network(
+    const NativeManualClock& clock,
+    const NativeDriverThread& driver) noexcept {
+  if (!driver.thread() || !driver.thread()->IsCurrent() ||
+      !driver.uses_clock(clock)) return nullptr;
+  return std::make_unique<NativeSimulatedNetwork>(
+      std::make_shared<NativeSimulatedNetwork::State>(&clock, driver.thread()));
+}
+
 std::unique_ptr<NativeNetworkEndpoint> register_network_endpoint(
     const NativeSimulatedNetwork& network,
     rust::Slice<const std::uint8_t> ip_bytes,
@@ -655,7 +668,7 @@ std::unique_ptr<NativeSimulatedUdpSocket> create_simulated_udp_socket(
     return nullptr;
   }
   auto state = std::make_unique<NativeSimulatedUdpSocket::State>();
-  state->thread = endpoint->network->thread.get();
+  state->thread = endpoint->network->thread;
   state->thread->BlockingCall([&] {
     auto factory = provider.Create();
     webrtc::Environment environment = webrtc::CreateEnvironment();

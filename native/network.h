@@ -13,6 +13,7 @@ class PacketSocketFactory;
 namespace pulsebeam::webrtc_sys {
 
 class NativeManualClock;
+class NativeDriverThread;
 
 class NativeSimulatedNetwork final {
  public:
@@ -111,6 +112,9 @@ class NativeReceivedPacket final {
 
 std::unique_ptr<NativeSimulatedNetwork> new_simulated_network(
     const NativeManualClock& clock) noexcept;
+std::unique_ptr<NativeSimulatedNetwork> new_controlled_simulated_network(
+    const NativeManualClock& clock,
+    const NativeDriverThread& driver) noexcept;
 std::unique_ptr<NativeNetworkEndpoint> register_network_endpoint(
     const NativeSimulatedNetwork& network,
     rust::Slice<const std::uint8_t> ip,

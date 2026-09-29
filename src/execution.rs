@@ -261,6 +261,11 @@ impl Environment {
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
     }
 
+    pub(crate) fn uses_controlled_clock(&self, clock: &ManualClock) -> bool {
+        self._task_queue_factory.is_cooperative()
+            && ffi::task_queue_factory_uses_clock(self._task_queue_factory.native(), clock.native())
+    }
+
     pub(crate) fn native(&self) -> &ffi::NativeEnvironment {
         self.native.as_ref().expect("validated environment")
     }
@@ -406,7 +411,7 @@ pub struct ThreadStartError;
 
 impl fmt::Display for ThreadStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("failed to start WebRTC thread")
+        formatter.write_str("failed to initialize WebRTC thread")
     }
 }
 
@@ -431,6 +436,13 @@ macro_rules! thread_handle {
         }
 
         impl $name {
+            pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeThread>) -> Self {
+                Self {
+                    native,
+                    _creator_sequence: PhantomData,
+                }
+            }
+
             pub fn start() -> Result<Self, ThreadStartError> {
                 let native = ffi::new_thread($network);
                 if native.is_null() {
@@ -475,6 +487,73 @@ macro_rules! thread_handle {
 thread_handle!(NetworkThread, true);
 thread_handle!(WorkerThread, false);
 thread_handle!(SignalingThread, false);
+
+/// One caller-owned, sequence-bound WebRTC thread for peer network, worker,
+/// and signaling roles. It never starts an OS thread. Pump it and the matching
+/// cooperative task queue after advancing the manual clock. Only one such
+/// driver may be active per process because WebRTC's thread clock is global.
+/// Native devices are not supported with this driver.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::ControlledPeerDriver>();
+/// ```
+#[derive(Clone)]
+pub struct ControlledPeerDriver(Rc<DriverInner>);
+
+struct DriverInner {
+    native: cxx::UniquePtr<ffi::NativeDriverThread>,
+    clock: ManualClock,
+    _creator_sequence: PhantomData<Rc<()>>,
+}
+
+impl ControlledPeerDriver {
+    pub fn new(clock: &ManualClock) -> Result<Self, ThreadStartError> {
+        let native = ffi::new_driver_thread(clock.native());
+        if native.is_null() {
+            Err(ThreadStartError)
+        } else {
+            Ok(Self(Rc::new(DriverInner {
+                native,
+                clock: clock.clone(),
+                _creator_sequence: PhantomData,
+            })))
+        }
+    }
+
+    /// Drain currently runnable native thread messages without waiting.
+    /// Returns true on success (including an idle thread), false off-thread.
+    pub fn run_ready(&self) -> bool {
+        ffi::driver_run_ready(self.native())
+    }
+
+    /// Approximate deadline of the next native thread task, rounded to ms.
+    /// Combine it with `TaskQueueFactory::next_deadline` and pending packets.
+    pub fn next_deadline(&self) -> Option<Duration> {
+        let deadline = ffi::driver_next_deadline_us(self.native());
+        (deadline != NO_DEADLINE).then(|| Duration::from_micros(deadline as u64))
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        ffi::driver_is_current(self.native())
+    }
+
+    pub(crate) fn clock(&self) -> &ManualClock {
+        &self.0.clock
+    }
+
+    pub(crate) fn borrow_thread(&self) -> cxx::UniquePtr<ffi::NativeThread> {
+        ffi::borrow_driver_thread(self.native())
+    }
+
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn native(&self) -> &ffi::NativeDriverThread {
+        self.0.native.as_ref().expect("validated controlled driver")
+    }
+}
 
 #[cfg(test)]
 mod tests {

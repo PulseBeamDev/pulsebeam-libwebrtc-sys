@@ -22,6 +22,26 @@ struct FfiCodecFormat;
 struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
 
+class NativeScreenCapture final {
+ public:
+  struct State;
+  explicit NativeScreenCapture(std::unique_ptr<State> state) noexcept;
+  ~NativeScreenCapture();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+
+class NativeCamera final {
+ public:
+  struct State;
+  explicit NativeCamera(std::unique_ptr<State> state) noexcept;
+  ~NativeCamera();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+
 class NativeVideoSource final {
  public:
   struct State;
@@ -110,6 +130,34 @@ class NativeRtpTransceiver final {
  private:
   std::unique_ptr<State> state_;
 };
+
+struct FfiCameraDevice;
+struct FfiCameraFormat;
+bool camera_formats(rust::Str device_id,
+                    rust::Vec<FfiCameraFormat>& formats,
+                    rust::String& error) noexcept;
+struct FfiScreenSource;
+bool screen_sources(bool windows, rust::Vec<FfiScreenSource>& screens,
+                    rust::String& error) noexcept;
+std::unique_ptr<NativeScreenCapture> open_screen(
+    const NativeVideoSource& source, std::int64_t screen_id, bool window,
+    rust::String& error) noexcept;
+bool screen_capture_next_frame(const NativeScreenCapture& capture) noexcept;
+std::uint8_t screen_capture_status(const NativeScreenCapture& capture) noexcept;
+std::uint64_t screen_capture_failed_frames(const NativeScreenCapture& capture) noexcept;
+bool close_screen(const NativeScreenCapture& capture) noexcept;
+bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
+                    rust::String& error) noexcept;
+std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
+                                           rust::Str device_id,
+                                           std::uint32_t width,
+                                           std::uint32_t height,
+                                           std::uint32_t fps,
+                                           rust::String& error) noexcept;
+// Starting, streaming, stalled, closed, or capture stopped unexpectedly.
+std::uint8_t camera_capture_status(const NativeCamera& camera,
+                                   std::uint64_t stale_after_ms) noexcept;
+bool close_camera(const NativeCamera& camera) noexcept;
 
 std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept;
