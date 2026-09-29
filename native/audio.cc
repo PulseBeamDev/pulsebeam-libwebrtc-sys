@@ -1,5 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/audio.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <deque>
@@ -19,6 +21,7 @@
 #include "api/scoped_refptr.h"
 #include "api/rtp_transceiver_interface.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/thread.h"
@@ -32,6 +35,17 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
  public:
   SourceState state() const override { return closed_.load() ? kEnded : kLive; }
   bool remote() const override { return false; }
+  const webrtc::AudioOptions options() const override {
+    std::lock_guard lock(mutex_);
+    return options_;
+  }
+  void SetOptions(const webrtc::AudioOptions& options) override {
+    {
+      std::lock_guard lock(mutex_);
+      options_ = options;
+    }
+    FireOnChanged();
+  }
 
   void AddSink(webrtc::AudioTrackSinkInterface* sink) override {
     std::lock_guard lock(mutex_);
@@ -40,6 +54,10 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
   void RemoveSink(webrtc::AudioTrackSinkInterface* sink) override {
     std::lock_guard lock(mutex_);
     sinks_.remove(sink);
+  }
+  bool HasSinks() {
+    std::lock_guard lock(mutex_);
+    return !closed_ && !sinks_.empty();
   }
   bool Push(const std::int16_t* samples, int sample_rate, size_t channels,
             size_t frames) {
@@ -61,8 +79,9 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
   }
 
  private:
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::list<webrtc::AudioTrackSinkInterface*> sinks_;
+  webrtc::AudioOptions options_;
   std::atomic<bool> closed_{false};
 };
 
@@ -253,11 +272,16 @@ struct NativeAudioSink::State {
 struct NativeAudioSource::State {
   webrtc::scoped_refptr<PushAudioSource> source;
   webrtc::Thread* signaling_thread = nullptr;
+  std::mutex frame_mutex;
+  std::shared_ptr<opus_carrier::Budget> budget;
+  std::uint32_t budget_id = 0;
+  std::uint8_t encoded_channels = 0;
 };
 
 struct NativeAudioTrack::State {
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
   webrtc::scoped_refptr<webrtc::AudioSourceInterface> microphone_source;
+  webrtc::Thread* signaling_thread = nullptr;
 };
 
 NativeEncodedAudioSink::NativeEncodedAudioSink(std::unique_ptr<State> state) noexcept
@@ -300,10 +324,46 @@ std::unique_ptr<NativeAudioSource> create_audio_source(
       [&] { state->source = webrtc::make_ref_counted<PushAudioSource>(); });
   return std::make_unique<NativeAudioSource>(std::move(state));
 }
+std::unique_ptr<NativeAudioSource> create_encoded_audio_source(
+    const NativePeerConnectionFactory& factory, std::uint8_t channels) noexcept {
+  if (channels != 1 && channels != 2) return nullptr;
+  auto source = create_audio_source(factory);
+  if (source) source->state()->encoded_channels = channels;
+  return source;
+}
+rust::Vec<FfiAudioCodecCapability> peer_audio_codec_capabilities(
+    const NativePeerConnectionFactory& factory, bool sender) noexcept {
+  rust::Vec<FfiAudioCodecCapability> result;
+  if (!factory.factory() || !factory.signaling_thread()) return result;
+  const auto capabilities = factory.signaling_thread()->BlockingCall([&] {
+    return sender
+        ? factory.factory()->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO)
+        : factory.factory()->GetRtpReceiverCapabilities(webrtc::MediaType::AUDIO);
+  });
+  for (const auto& codec : capabilities.codecs) {
+    FfiAudioCodecCapability item;
+    item.format.name = codec.name;
+    for (const auto& [key, value] : codec.parameters) {
+      item.format.parameters.push_back({key, value});
+    }
+    item.clock_rate = codec.clock_rate.value_or(-1);
+    item.channels = codec.num_channels.value_or(-1);
+    result.push_back(std::move(item));
+  }
+  return result;
+}
 bool close_audio_source(const NativeAudioSource& source) noexcept {
   auto& state = *source.state();
   if (!state.source || !state.signaling_thread) return false;
-  state.signaling_thread->BlockingCall([&] { state.source->Close(); });
+  {
+    std::lock_guard lock(state.frame_mutex);
+    if (state.budget_id) {
+      opus_carrier::Unregister(state.budget_id);
+      state.budget_id = 0;
+      state.budget.reset();
+    }
+    state.signaling_thread->BlockingCall([&] { state.source->Close(); });
+  }
   return true;
 }
 bool audio_source_push_pcm(const NativeAudioSource& source,
@@ -319,6 +379,59 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
   return source.state()->source->Push(samples.data(), static_cast<int>(sample_rate_hz),
                                       channels, sample_rate_hz / 100);
 }
+bool audio_source_push_opus(const NativeAudioSource& source,
+                            rust::Slice<const std::uint8_t> payload,
+                            std::uint32_t rtp_timestamp,
+                            std::uint32_t samples_per_channel) noexcept {
+  using namespace opus_carrier;
+  // The private carrier matches the negotiated encoder's mono/stereo input.
+  const auto channels = source.state()->encoded_channels;
+  const auto block_bytes = kBytesPerChannelBlock * channels;
+  if ((channels != 1 && channels != 2) ||
+      samples_per_channel == 0 || samples_per_channel > 2880 ||
+      samples_per_channel % 480 != 0 || payload.empty() ||
+      payload.size() > kMaxPayloadBytes ||
+      ((payload[0] & 4) != 0) != (channels == 2) ||
+      OpusSamples({payload.data(), payload.size()}) != samples_per_channel ||
+      payload.size() + kHeaderBytes >
+          (samples_per_channel / 480) * block_bytes) return false;
+  auto& state = *source.state();
+  std::lock_guard lock(state.frame_mutex);
+  if (!state.source->HasSinks()) return false;
+  if (!state.budget) {
+    state.budget = std::make_shared<Budget>();
+    state.budget_id = Register(state.budget);
+  }
+  const auto slots = samples_per_channel / 480;
+  const auto packet = Reserve(*state.budget, slots);
+  if (!packet) return false;
+  for (std::uint32_t slot = 0; slot < slots; ++slot) {
+    std::array<std::int16_t, 960> samples{};
+    auto* bytes = reinterpret_cast<std::uint8_t*>(samples.data());
+    if (slot == 0) {
+      std::memcpy(bytes, kMagic.data(), kMagic.size());
+      Store16(bytes + 8, static_cast<std::uint16_t>(payload.size()));
+      Store16(bytes + 10, static_cast<std::uint16_t>(samples_per_channel));
+      Store32(bytes + 12, rtp_timestamp);
+      Store32(bytes + 16, Checksum({payload.data(), payload.size()}));
+      Store32(bytes + 20, state.budget_id);
+      Store32(bytes + 24, *packet);
+    }
+    const auto available = slot == 0 ? block_bytes - kHeaderBytes : block_bytes;
+    const auto payload_offset = slot == 0 ? 0 :
+        (block_bytes - kHeaderBytes) + (slot - 1) * block_bytes;
+    if (payload_offset < payload.size()) {
+      std::memcpy(bytes + (slot == 0 ? kHeaderBytes : 0),
+                  payload.data() + payload_offset,
+                  std::min(available, payload.size() - payload_offset));
+    }
+    if (!state.source->Push(samples.data(), 48000, channels, 480)) {
+      Acknowledge(state.budget_id, *packet);
+      return false;
+    }
+  }
+  return true;
+}
 std::unique_ptr<NativeAudioTrack> create_microphone_track(
     const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
   if (!factory.audio_device() || !factory.factory() || id.empty()) return nullptr;
@@ -330,6 +443,7 @@ std::unique_ptr<NativeAudioTrack> create_microphone_track(
   auto state = std::make_unique<NativeAudioTrack::State>();
   state->track = std::move(track);
   state->microphone_source = std::move(source);
+  state->signaling_thread = factory.signaling_thread();
   return std::make_unique<NativeAudioTrack>(std::move(state));
 }
 std::unique_ptr<NativeAudioTrack> create_audio_track(
@@ -342,6 +456,7 @@ std::unique_ptr<NativeAudioTrack> create_audio_track(
   if (!track) return nullptr;
   auto state = std::make_unique<NativeAudioTrack::State>();
   state->track = std::move(track);
+  state->signaling_thread = factory.signaling_thread();
   return std::make_unique<NativeAudioTrack>(std::move(state));
 }
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept {
@@ -352,6 +467,35 @@ bool audio_track_enabled(const NativeAudioTrack& track) noexcept {
 }
 bool audio_track_set_enabled(const NativeAudioTrack& track, bool enabled) noexcept {
   return track.state()->track->set_enabled(enabled);
+}
+bool audio_track_set_processing_options(const NativeAudioTrack& track,
+                                        std::uint8_t echo, std::uint8_t noise,
+                                        std::uint8_t gain,
+                                        rust::String& error) noexcept {
+  if (!track.state()->signaling_thread || echo > 3 || noise > 3 || gain > 3) {
+    error = "invalid audio processing options or closed signaling thread";
+    return false;
+  }
+  const auto option = [](std::uint8_t choice, std::optional<bool>& enabled,
+                         std::optional<webrtc::AudioProcessingMode>& mode) {
+    enabled = choice != 0;
+    if (choice != 0) {
+      mode = static_cast<webrtc::AudioProcessingMode>(choice - 1);
+    }
+  };
+  webrtc::AudioOptions options;
+  option(echo, options.echo_cancellation, options.echo_cancellation_mode);
+  option(noise, options.noise_suppression, options.noise_suppression_mode);
+  option(gain, options.auto_gain_control, options.auto_gain_control_mode);
+  webrtc::AudioProcessingOptionsResult result;
+  track.state()->signaling_thread->BlockingCall([&] {
+    result = track.state()->track->SetAudioProcessingOptions(options);
+  });
+  if (!result.ok()) {
+    error = result.message;
+    return false;
+  }
+  return true;
 }
 std::unique_ptr<NativeAudioSink> rtp_receiver_attach_audio_sink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {

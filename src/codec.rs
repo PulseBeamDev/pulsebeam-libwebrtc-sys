@@ -267,6 +267,109 @@ pub struct EncodedVideoFrame {
     pub qp: Option<u8>,
 }
 
+/// Packetizer metadata for an externally encoded frame. The codec must match
+/// the negotiated encoder format. Layer identities are never inferred from size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EncodedVideoMetadata {
+    pub codec: EncodedVideoCodec,
+    pub simulcast_index: Option<u8>,
+    pub spatial_index: Option<u8>,
+    pub temporal_index: Option<u8>,
+    pub end_of_picture: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EncodedVideoCodec {
+    Vp8 {
+        non_reference: bool,
+        layer_sync: bool,
+        key_index: Option<u8>,
+    },
+    Vp9 {
+        first_frame_in_picture: bool,
+        inter_picture_predicted: bool,
+        flexible_mode: bool,
+        num_spatial_layers: u8,
+        inter_layer_predicted: bool,
+        temporal_up_switch: bool,
+    },
+    H264,
+    Av1,
+    H265,
+}
+
+impl EncodedVideoMetadata {
+    fn ffi(self) -> ffi::FfiEncodedVideoMetadata {
+        let (
+            codec,
+            non_reference,
+            layer_sync,
+            key_index,
+            first_frame_in_picture,
+            inter_picture_predicted,
+            flexible_mode,
+            num_spatial_layers,
+            inter_layer_predicted,
+            temporal_up_switch,
+        ) = match self.codec {
+            EncodedVideoCodec::Vp8 {
+                non_reference,
+                layer_sync,
+                key_index,
+            } => (
+                1,
+                non_reference,
+                layer_sync,
+                key_index.map_or(-1, i32::from),
+                false,
+                false,
+                false,
+                1,
+                false,
+                false,
+            ),
+            EncodedVideoCodec::Vp9 {
+                first_frame_in_picture,
+                inter_picture_predicted,
+                flexible_mode,
+                num_spatial_layers,
+                inter_layer_predicted,
+                temporal_up_switch,
+            } => (
+                2,
+                false,
+                false,
+                -1,
+                first_frame_in_picture,
+                inter_picture_predicted,
+                flexible_mode,
+                num_spatial_layers,
+                inter_layer_predicted,
+                temporal_up_switch,
+            ),
+            EncodedVideoCodec::H264 => (3, false, false, -1, false, false, false, 1, false, false),
+            EncodedVideoCodec::Av1 => (4, false, false, -1, false, false, false, 1, false, false),
+            EncodedVideoCodec::H265 => (5, false, false, -1, false, false, false, 1, false, false),
+        };
+        ffi::FfiEncodedVideoMetadata {
+            codec,
+            simulcast_index: self.simulcast_index.map_or(-1, i32::from),
+            spatial_index: self.spatial_index.map_or(-1, i32::from),
+            temporal_index: self.temporal_index.map_or(-1, i32::from),
+            end_of_picture: self.end_of_picture,
+            non_reference,
+            layer_sync,
+            key_index,
+            first_frame_in_picture,
+            inter_picture_predicted,
+            flexible_mode,
+            num_spatial_layers,
+            inter_layer_predicted,
+            temporal_up_switch,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VideoEncoderSettings {
     pub width: u32,
@@ -297,6 +400,7 @@ pub struct VideoEncoderInfo {
     pub implementation_name: String,
     pub hardware_accelerated: bool,
     pub supports_native_handle: bool,
+    pub supports_simulcast: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -412,6 +516,22 @@ unsafe impl Sync for EncodedImageCallback {}
 
 impl EncodedImageCallback {
     pub fn emit(&self, frame: &EncodedVideoFrame) -> Result<(), CodecError> {
+        self.emit_inner(frame, None)
+    }
+
+    pub fn emit_with_metadata(
+        &self,
+        frame: &EncodedVideoFrame,
+        metadata: EncodedVideoMetadata,
+    ) -> Result<(), CodecError> {
+        self.emit_inner(frame, Some(metadata))
+    }
+
+    fn emit_inner(
+        &self,
+        frame: &EncodedVideoFrame,
+        metadata: Option<EncodedVideoMetadata>,
+    ) -> Result<(), CodecError> {
         let native = self
             .native
             .as_ref()
@@ -424,6 +544,25 @@ impl EncodedImageCallback {
             frame.rtp_timestamp,
             frame.frame_type == VideoFrameType::Key,
             frame.qp.map_or(-1, i32::from),
+            &metadata.map_or_else(
+                || ffi::FfiEncodedVideoMetadata {
+                    codec: 0,
+                    simulcast_index: -1,
+                    spatial_index: -1,
+                    temporal_index: -1,
+                    end_of_picture: true,
+                    non_reference: false,
+                    layer_sync: false,
+                    key_index: -1,
+                    first_frame_in_picture: false,
+                    inter_picture_predicted: false,
+                    flexible_mode: false,
+                    num_spatial_layers: 1,
+                    inter_layer_predicted: false,
+                    temporal_up_switch: false,
+                },
+                EncodedVideoMetadata::ffi,
+            ),
         )
         .then_some(())
         .ok_or(CodecError::Released)
@@ -595,6 +734,7 @@ impl VideoDecoderFactoryHandle {
 
 struct AudioEncoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeAudioEncoderFactory>,
+    opus_frames: bool,
 }
 struct AudioDecoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeAudioDecoderFactory>,
@@ -614,13 +754,34 @@ pub struct AudioEncoderFactory(Arc<AudioEncoderFactoryInner>);
 pub struct AudioDecoderFactory(Arc<AudioDecoderFactoryInner>);
 
 impl AudioEncoderFactory {
+    /// Construct an Opus-only peer audio encoder factory for prerecorded
+    /// mono or stereo Opus packets. Raw PCM tracks require a separate peer factory.
+    /// The sender passes bytes through without invoking an Opus encoder.
+    pub fn with_opus_frames() -> Result<Self, CodecError> {
+        let native = ffi::new_opus_carrier_audio_encoder_factory();
+        if native.is_null() {
+            Err(CodecError::ConstructionFailed)
+        } else {
+            Ok(Self(Arc::new(AudioEncoderFactoryInner {
+                native,
+                opus_frames: true,
+            })))
+        }
+    }
+
     pub fn builtin() -> Result<Self, CodecError> {
         let native = ffi::new_builtin_audio_encoder_factory();
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
-            Ok(Self(Arc::new(AudioEncoderFactoryInner { native })))
+            Ok(Self(Arc::new(AudioEncoderFactoryInner {
+                native,
+                opus_frames: false,
+            })))
         }
+    }
+    pub(crate) fn supports_opus_frames(&self) -> bool {
+        self.0.opus_frames
     }
     pub fn is_available(&self) -> bool {
         !self.0.native.is_null()
@@ -959,11 +1120,13 @@ pub(crate) fn encoder_get_info(encoder: &RustVideoEncoder) -> ffi::FfiEncoderInf
                 implementation_name: "failed Rust encoder".into(),
                 hardware_accelerated: false,
                 supports_native_handle: false,
+                supports_simulcast: false,
             },
             |i| ffi::FfiEncoderInfo {
                 implementation_name: i.implementation_name,
                 hardware_accelerated: i.hardware_accelerated,
                 supports_native_handle: i.supports_native_handle,
+                supports_simulcast: i.supports_simulcast,
             },
         )
 }
@@ -1224,6 +1387,7 @@ mod tests {
                 implementation_name: "test-only reversible H264-shaped encoder".into(),
                 hardware_accelerated: false,
                 supports_native_handle: false,
+                supports_simulcast: false,
             }
         }
     }

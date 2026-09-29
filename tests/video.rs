@@ -13,7 +13,8 @@ mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, DecodedImageCallback, EncodedH264Input, EncodedImageCallback,
-    EncodedVideoFrame, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
+    EncodedVideoAccessUnit, EncodedVideoCodec, EncodedVideoFrame, EncodedVideoInput,
+    EncodedVideoMetadata, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
     PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
     PeerStatsRecord, RtpTransceiver, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
     VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
@@ -125,16 +126,17 @@ impl VideoEncoder for TestEncoder {
             implementation_name: "test-only H264-shaped encoder".into(),
             hardware_accelerated: false,
             supports_native_handle: false,
+            supports_simulcast: false,
         }
     }
 }
 
-struct DecoderFactory(Arc<Counters>);
+struct DecoderFactory(Arc<Counters>, VideoCodecFormat);
 
 impl VideoDecoderFactory for DecoderFactory {
     fn supported_formats(&self) -> Vec<VideoCodecFormat> {
         self.0.decoder_factory.fetch_add(1, Ordering::SeqCst);
-        vec![h264()]
+        vec![self.1.clone()]
     }
 
     fn query_support(
@@ -144,14 +146,14 @@ impl VideoDecoderFactory for DecoderFactory {
         _: Option<VideoResolution>,
     ) -> CodecSupport {
         CodecSupport {
-            supported: format.name.eq_ignore_ascii_case("H264"),
+            supported: format == &self.1,
             power_efficient: false,
         }
     }
 
     fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
         self.0.decoder_create.fetch_add(1, Ordering::SeqCst);
-        if format.name.eq_ignore_ascii_case("H264") {
+        if format == &self.1 {
             Ok(Box::new(TestDecoder(self.0.clone())))
         } else {
             Err(CodecError::UnsupportedFormat)
@@ -218,6 +220,15 @@ impl Pair {
         fail_encoder: bool,
         encoder: Option<VideoEncoderFactoryHandle>,
     ) -> Self {
+        Self::new_with_codec(counters, fail_encoder, encoder, h264())
+    }
+
+    fn new_with_codec(
+        counters: Arc<Counters>,
+        fail_encoder: bool,
+        encoder: Option<VideoEncoderFactoryHandle>,
+        decoder_format: VideoCodecFormat,
+    ) -> Self {
         let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
         let environment = Environment::builder().clock(&clock).build().unwrap();
         let network = SimulatedNetwork::new(&clock).unwrap();
@@ -233,8 +244,16 @@ impl Pair {
             counters.clone(),
             fail_encoder,
             encoder,
+            h264(),
         );
-        let bob_factory = factory(environment, &bob_endpoint, counters, false, None);
+        let bob_factory = factory(
+            environment,
+            &bob_endpoint,
+            counters,
+            false,
+            None,
+            decoder_format,
+        );
         let alice = alice_factory
             .create_peer_connection(PeerConfiguration::default())
             .unwrap();
@@ -324,6 +343,7 @@ fn factory(
     counters: Arc<Counters>,
     fail_encoder: bool,
     encoder: Option<VideoEncoderFactoryHandle>,
+    decoder_format: VideoCodecFormat,
 ) -> PeerConnectionFactory {
     PeerConnectionFactory::builder()
         .environment(environment)
@@ -336,7 +356,9 @@ fn factory(
             })
             .unwrap()
         }))
-        .video_decoder_factory(VideoDecoderFactoryHandle::new(DecoderFactory(counters)).unwrap())
+        .video_decoder_factory(
+            VideoDecoderFactoryHandle::new(DecoderFactory(counters, decoder_format)).unwrap(),
+        )
         .build()
         .unwrap()
 }
@@ -684,6 +706,182 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
     sink.close();
     pair.alice.close().unwrap();
     pair.bob.close().unwrap();
+}
+
+fn verify_direct_encoded_codec(
+    name: &str,
+    unit: &[u8],
+    width: u32,
+    height: u32,
+    codec: EncodedVideoCodec,
+) {
+    let counters = Arc::new(Counters::default());
+    let format = match name {
+        "VP9" => VideoCodecFormat::new(name).with_parameter("profile-id", "0"),
+        "AV1" => VideoCodecFormat::new(name)
+            .with_parameter("level-idx", "5")
+            .with_parameter("profile", "0")
+            .with_parameter("tier", "0"),
+        "H265" => VideoCodecFormat::new(name)
+            .with_parameter("level-id", "93")
+            .with_parameter("tx-mode", "SRST"),
+        _ => VideoCodecFormat::new(name),
+    };
+    let input = EncodedVideoInput::new_for_format(VideoCodecFormat::new(name)).unwrap();
+    let mut pair = Pair::new_with_codec(
+        counters.clone(),
+        false,
+        Some(input.encoder_factory()),
+        format.clone(),
+    );
+    let mut source = input.create_source(&pair.alice_factory).unwrap();
+    let track = source
+        .create_track(&pair.alice_factory, "encoded-input")
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format() == &format)
+        .collect();
+    assert!(!codecs.is_empty());
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    let mut bob_events = pair.negotiate();
+    let remote = (0..2_000_000)
+        .find_map(|_| {
+            if let Some(remote) = take_remote_transceiver(&mut bob_events) {
+                return Some(remote);
+            }
+            bob_events.extend(pair.progress().1);
+            None
+        })
+        .expect("remote encoded transceiver did not arrive");
+    let mut sink = remote.receiver().attach_encoded_sink().unwrap();
+    for _ in 0..100_000 {
+        pair.progress();
+        if transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly) {
+            break;
+        }
+    }
+    let metadata = EncodedVideoMetadata {
+        codec,
+        simulcast_index: None,
+        spatial_index: None,
+        temporal_index: None,
+        end_of_picture: true,
+    };
+    assert_eq!(
+        source.push_encoded(EncodedVideoAccessUnit {
+            data: unit.to_vec(),
+            width,
+            height,
+            timestamp_us: 2_000_000,
+            key_frame: true,
+            qp: None,
+            metadata: EncodedVideoMetadata {
+                codec: EncodedVideoCodec::H264,
+                ..metadata
+            },
+        }),
+        Err(CodecError::InvalidFrame)
+    );
+    source
+        .push_encoded(EncodedVideoAccessUnit {
+            data: unit.to_vec(),
+            width,
+            height,
+            timestamp_us: 2_000_000,
+            key_frame: true,
+            qp: None,
+            metadata,
+        })
+        .unwrap();
+    let received = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .unwrap_or_else(|| panic!("encoded {name} frame did not reach receiver: pending={}, dropped={}, sink_dropped={}, direction={:?}, rate={:?}", source.pending_frames(), source.dropped_frames(), sink.dropped_frames(), transceiver.current_direction(), source.latest_rate_control()));
+    assert_eq!(received.data, unit);
+    assert!(received.key_frame);
+    assert!(
+        received
+            .mime_type
+            .eq_ignore_ascii_case(&format!("video/{name}"))
+    );
+    assert_eq!(counters.encode.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.decode.load(Ordering::SeqCst), 0);
+    source.close().unwrap();
+    sink.close();
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
+}
+
+#[test]
+fn direct_encoded_vp8_is_packetized_without_a_software_encoder() {
+    // Valid 16x16 VP8 keyframe generated with libvpx; IVF framing removed.
+    let unit = [
+        16, 2, 0, 157, 1, 42, 16, 0, 16, 0, 0, 71, 8, 133, 133, 136, 153, 132, 136, 2, 2, 0, 12,
+        13, 96, 0, 254, 255, 171, 80, 128,
+    ];
+    verify_direct_encoded_codec(
+        "VP8",
+        &unit,
+        16,
+        16,
+        EncodedVideoCodec::Vp8 {
+            non_reference: false,
+            layer_sync: false,
+            key_index: None,
+        },
+    );
+}
+
+#[test]
+fn direct_encoded_vp9_and_av1_are_packetized() {
+    // Single keyframes generated by libvpx-vp9 and SVT-AV1; IVF framing removed.
+    let vp9 = [
+        130, 73, 131, 66, 0, 0, 240, 0, 246, 6, 56, 36, 28, 24, 74, 0, 0, 32, 64, 0, 34, 155, 255,
+        255, 149, 118, 246, 223, 244, 172, 146, 21, 235, 239, 55, 79, 202, 128, 145, 200, 72, 205,
+        184, 252, 166, 144, 210, 80, 128, 68, 193, 71, 141, 184, 4, 0, 0,
+    ];
+    verify_direct_encoded_codec(
+        "VP9",
+        &vp9,
+        16,
+        16,
+        EncodedVideoCodec::Vp9 {
+            first_frame_in_picture: true,
+            inter_picture_predicted: false,
+            flexible_mode: false,
+            num_spatial_layers: 1,
+            inter_layer_predicted: false,
+            temporal_up_switch: false,
+        },
+    );
+    let av1 = [
+        10, 11, 2, 0, 0, 5, 21, 127, 252, 74, 249, 0, 64, 50, 14, 16, 0, 243, 130, 63, 254, 105,
+        131, 0, 0, 8, 148, 19, 216,
+    ];
+    verify_direct_encoded_codec("AV1", &av1, 64, 64, EncodedVideoCodec::Av1);
+}
+
+#[test]
+fn direct_encoded_h265_is_packetized() {
+    // Valid 64x64 HEVC IDR access unit from x265 with encoder SEI disabled.
+    let unit = [
+        0, 0, 0, 1, 64, 1, 12, 1, 255, 255, 1, 96, 0, 0, 3, 0, 144, 0, 0, 3, 0, 0, 3, 0, 30, 149,
+        152, 9, 0, 0, 0, 1, 66, 1, 1, 1, 96, 0, 0, 3, 0, 144, 0, 0, 3, 0, 0, 3, 0, 30, 160, 32,
+        129, 5, 150, 86, 105, 36, 202, 240, 22, 128, 128, 0, 0, 3, 0, 128, 0, 0, 3, 0, 132, 0, 0,
+        0, 1, 68, 1, 193, 114, 180, 34, 64, 0, 0, 0, 1, 40, 1, 175, 19, 128, 230, 104, 227, 255,
+        253, 23, 207, 199, 246, 207,
+    ];
+    verify_direct_encoded_codec("H265", &unit, 64, 64, EncodedVideoCodec::H265);
 }
 
 #[test]

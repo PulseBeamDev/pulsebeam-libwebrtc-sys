@@ -145,8 +145,32 @@ shared by peers from the same factory. The upstream setter does not report
 asynchronous device startup or playout failures. Platform-device methods and
 types are not exposed without the `native` Cargo feature. Enumeration can be
 empty and selection can fail while a device is active; CI smoke-tests this
-path without requiring hardware. Direct encoded Opus sending is not provided by
-the pinned WebRTC audio sender API and remains explicitly unsupported.
+path without requiring hardware.
+
+For prerecorded Opus, select `AudioEncoderFactory::with_opus_frames()` on the
+peer factory, then create an `EncodedAudioSource` and audio track with
+`create_encoded_audio_source(channels)` (1 for mono, 2 for stereo) and
+`create_encoded_audio_track()`. For stereo, the receiver must request
+`stereo=1` in its negotiated Opus answer for that audio m-line. Selecting the
+sender's advertised stereo capability with `set_audio_codec_preferences` alone
+does not make the built-in receiver answer request stereo; its default answer
+requests mono. Confirm the answer's fmtp before pushing stereo packets, since
+a mono sender cannot consume a stereo carrier. Push complete Opus packets (without RTP
+headers) with a matching mono/stereo TOC as `OpusInputFrame`, supplying the
+48 kHz RTP timestamp and matching 10 to 60 ms duration. Input is limited to
+1200 bytes per packet and must fit within 960 bytes per channel per 10 ms
+block, minus 28 bytes for the first block's internal header. The adapter carries those
+bytes to an Opus pass-through encoder without calling the Opus encoder;
+WebRTC creates the RTP headers,
+RTCP and encrypted transport. Each source is independent. The source admits at
+most 24 outstanding 10 ms blocks and returns `Backpressure` before admitting
+more, including when no track is attached. Retry without advancing the input
+timestamp. This factory is Opus-only and rejects raw PCM sources; use a
+separate peer factory for raw PCM tracks. The adapter does not validate that
+packet bodies can be decoded. WebRTC cannot
+re-encode these packets to match a changing bitrate; the caller controls
+source bitrate and pacing. Controlled peers continue to reject audio transceivers because their cooperative codec queues
+can deadlock; this input adapter does not change that limitation.
 
 Native camera devices expose names, IDs, and capture capabilities through
 `camera_devices()` and `camera_formats(id)`. `open_camera(id, width, height,
@@ -210,6 +234,24 @@ including after explicit close. Polling `try_next_frame()` does not guarantee
 receipt of every decoded frame. The cap applies per sink; applications should
 close unused sinks to release retained frames.
 
+## Audio processing
+
+`PeerConnectionFactory::builder().audio_processing(config)` configures the
+factory's WebRTC software AEC, NS and AGC module for raw PCM. A local raw
+`AudioTrack` may call `set_audio_processing_options` to request disabled,
+automatic, platform or software AEC, NS and AGC. The setter stores a request;
+it does not fail when a platform effect is unavailable. During application,
+libwebrtc may leave an unavailable platform-only effect disabled and log a
+warning. Platform effects also require opt-in native audio. Inspect
+`factory.audio_processing_state()` after starting capture to distinguish the
+request from resolved software/platform effects and availability. A stored
+request before attachment is not evidence of active processing. The voice engine is shared by tracks
+in one factory, so concurrent per-track options are not independent. Encoded
+Opus bypasses PCM processing; the synthetic Opus-frame adapter currently
+rejects combining an encoded-input factory with PCM processing or native
+microphones, and encoded tracks reject processing options. This is an adapter
+constraint, not an Opus limitation.
+
 ## Injection and determinism boundary
 
 The exported API retains the upstream extension points required by PulseBeam:
@@ -244,6 +286,24 @@ validation; TCP listeners remain unsupported. See
 connectivity under virtual time, [`tests/controlled_turn_tls.rs`](tests/controlled_turn_tls.rs)
 for TLS and authenticated TURN relay candidate gathering, and
 [`docs/capability-matrix.md`](docs/capability-matrix.md) for remaining evidence gaps.
+
+## QA responsibility
+
+This adapter tests what it owns: public Rust/CXX construction and configuration,
+representative raw/encoded payload and metadata mapping, negotiation and
+rejection paths, backpressure, and resource shutdown. For simulcast/SVC and
+H.264, use focused adapter integration or smoke tests, not an exhaustive
+matrix of codec profiles, layers, packetization, and RTP metadata combinations.
+The pinned libwebrtc project's QA is responsible for its codec, packetization,
+and media-engine correctness. Physical device and desktop portal behavior remains the upstream project's
+qualification responsibility; this repository does not establish that upstream
+qualification for the pinned revision. Our headless smoke tests report
+service-dependent scenarios they cannot exercise rather than count those
+scenarios as passing.
+This division does not waive missing adapter capabilities, broken supported
+paths, controlled-media deadlocks, or representative adapter-side metadata
+checks. See the capability matrix for tested paths and known gaps. The approved
+Linux spec and its acceptance requirements are not amended by this guidance.
 
 ## H.264 boundary
 
@@ -432,10 +492,19 @@ Closing the sink clears queued frames and resumes normal WebRTC decoding; this
 pinned upstream receiver cannot safely be attached a second time, even after
 close. This is not a raw RTP payload API.
 
-For direct encoded H.264 sending, create `EncodedH264Input`, configure its
-`encoder_factory()` on the peer factory builder, then call `create_source()`
-and `create_track()` on the same peer factory. Feed `H264AccessUnit` values
-with strictly increasing nonnegative microsecond timestamps. Each value is
+For direct encoded sending, create `EncodedVideoInput::new_for_format()` with
+an actual VP8, VP9, AV1 or H265 format (or `EncodedH264Input::new()` for the
+constrained-baseline H.264 format), configure its `encoder_factory()` on the
+peer factory builder, then call `create_source()` and `create_track()` on that
+factory. Feed codec-matched `EncodedVideoAccessUnit` values with explicit
+`EncodedVideoMetadata` via `push_encoded()`. Formats are advertised by the
+supplied encoder factory; they are not claims that a bundled encoder exists.
+A bare VP9, AV1 or H265 format uses the pinned upstream default fmtp; pass
+explicit parameters when advertising another compatible profile or level.
+The encoded bytes must match the negotiated format and the artifact must
+include that codec's RTP packetizer. For H.264 the original `push()` method
+accepts `H264AccessUnit` values with strictly increasing nonnegative
+microsecond timestamps. Each value is
 one Annex-B access unit (three- or four-byte start codes), with explicit
 keyframe, dimensions and optional QP. Keyframes must contain SPS, PPS and IDR;
 delta frames contain non-IDR slices. The advertised format is constrained
@@ -446,14 +515,18 @@ access-unit bytes bypass encoding, and WebRTC derives the RTP timestamp from
 its capture clock. Each source has a stable `stream_id`; a bounded shared
 16-frame/8 MiB pending queue evicts oldest frames under pressure, with
 per-source `dropped_frames()` and `pending_frames()` observability. This adapter
-does not supply a decoder or support encoded simulcast/SVC or packetization
-mode 0. `take_keyframe_request()` reports and clears sender feedback after
+does not supply a decoder. The direct input source does not support encoded
+simulcast/SVC or H.264 packetization mode 0. `take_keyframe_request()` reports
+and clears sender feedback after
 WebRTC asks the adapter to encode a frame; a delta frame submitted during a
 keyframe request is rejected. `latest_rate_control()` exposes the last
-per-stream rate update observed during encoding. The adapter does not expose
-simulcast layer/dependency metadata or packetization mode 0. Multiple RIDs,
-SVC modes and resolution scaling on an encoded source are rejected explicitly
-before changing a sender.
+per-stream rate update observed during encoding. The generic
+`EncodedImageCallback::emit_with_metadata()` path also accepts codec-specific
+VP8/VP9 packetization fields and explicit simulcast, spatial and temporal
+indices for caller-provided encoders; `emit()` retains the ordinary
+single-layer behavior. The direct input source still rejects layered units:
+multiple RIDs, SVC modes and resolution scaling on that source are rejected
+explicitly before changing a sender.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
 remote video receiver without guaranteeing that a remote sender honors it.

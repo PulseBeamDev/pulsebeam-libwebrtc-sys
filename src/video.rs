@@ -1,7 +1,8 @@
 use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{
-    CodecError, CodecParameter, VideoCodecFormat, VideoFrame, VideoResolution, ffi,
+    AudioCodecCapability, CodecError, CodecParameter, VideoCodecFormat, VideoFrame,
+    VideoResolution, ffi,
     peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner, error_kind},
 };
 
@@ -1154,6 +1155,39 @@ impl RtpTransceiver {
         let mut error_type = 0;
         let mut message = String::new();
         ffi::rtp_transceiver_set_video_codec_preferences(
+            self.native(),
+            self.peer.factory_native(),
+            &formats,
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
+    }
+
+    /// Order supported audio codecs for this transceiver's next negotiation.
+    /// Stereo Opus also requires the receiver to answer with `stereo=1` on
+    /// the matching audio m-line; preferences alone do not request stereo.
+    pub fn set_audio_codec_preferences(
+        &self,
+        codecs: &[AudioCodecCapability],
+    ) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let formats: Vec<_> = codecs
+            .iter()
+            .map(AudioCodecCapability::ffi_format)
+            .collect();
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::rtp_transceiver_set_audio_codec_preferences(
             self.native(),
             self.peer.factory_native(),
             &formats,

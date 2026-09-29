@@ -13,6 +13,8 @@ class NativeRtpTransceiver;
 class NativeRtpReceiver;
 struct FfiReceivedAudioFrame;
 struct FfiEncodedAudioFrame;
+struct FfiAudioCodecCapability;
+struct FfiCodecFormat;
 
 class NativeAudioSource final {
  public:
@@ -60,12 +62,25 @@ class NativeAudioTrack final {
 
 std::unique_ptr<NativeAudioSource> create_audio_source(
     const NativePeerConnectionFactory& factory) noexcept;
+std::unique_ptr<NativeAudioSource> create_encoded_audio_source(
+    const NativePeerConnectionFactory& factory, std::uint8_t channels) noexcept;
+rust::Vec<FfiAudioCodecCapability> peer_audio_codec_capabilities(
+    const NativePeerConnectionFactory& factory, bool sender) noexcept;
+bool rtp_transceiver_set_audio_codec_preferences(
+    const NativeRtpTransceiver& transceiver,
+    const NativePeerConnectionFactory& factory,
+    rust::Slice<const FfiCodecFormat> formats, std::uint8_t& error_type,
+    rust::String& error) noexcept;
 bool close_audio_source(const NativeAudioSource& source) noexcept;
 bool audio_source_push_pcm(const NativeAudioSource& source,
                            rust::Slice<const std::int16_t> samples,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
                            std::int64_t timestamp_us) noexcept;
+bool audio_source_push_opus(const NativeAudioSource& source,
+                            rust::Slice<const std::uint8_t> payload,
+                            std::uint32_t rtp_timestamp,
+                            std::uint32_t samples_per_channel) noexcept;
 std::unique_ptr<NativeAudioTrack> create_microphone_track(
     const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
 std::unique_ptr<NativeAudioTrack> create_audio_track(
@@ -74,6 +89,10 @@ std::unique_ptr<NativeAudioTrack> create_audio_track(
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept;
 bool audio_track_enabled(const NativeAudioTrack& track) noexcept;
 bool audio_track_set_enabled(const NativeAudioTrack& track, bool enabled) noexcept;
+bool audio_track_set_processing_options(const NativeAudioTrack& track,
+                                        std::uint8_t echo, std::uint8_t noise,
+                                        std::uint8_t gain,
+                                        rust::String& error) noexcept;
 std::unique_ptr<NativeAudioSink> rtp_receiver_attach_audio_sink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
 FfiReceivedAudioFrame audio_sink_take_frame(const NativeAudioSink& sink) noexcept;

@@ -17,6 +17,7 @@ class VideoEncoderFactory;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiCodecFormat;
+struct FfiEncodedVideoMetadata;
 struct FfiCodecSupport;
 struct FfiCodecTestResult;
 struct RustVideoDecoderFactory;
@@ -118,6 +119,8 @@ std::unique_ptr<NativeVideoDecoderFactory>
 new_video_decoder_factory(rust::Box<RustVideoDecoderFactory> factory) noexcept;
 std::unique_ptr<NativeAudioEncoderFactory>
 new_builtin_audio_encoder_factory() noexcept;
+std::unique_ptr<NativeAudioEncoderFactory>
+new_opus_carrier_audio_encoder_factory() noexcept;
 std::unique_ptr<NativeAudioDecoderFactory>
 new_builtin_audio_decoder_factory() noexcept;
 
@@ -161,7 +164,8 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,
                            std::uint32_t rtp_timestamp, bool key_frame,
-                           std::int32_t qp) noexcept;
+                           std::int32_t qp,
+                           const FfiEncodedVideoMetadata &metadata) noexcept;
 bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,

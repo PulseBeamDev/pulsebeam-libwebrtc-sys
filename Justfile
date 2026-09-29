@@ -524,7 +524,7 @@ _bridge-objects flavor target stage definitions_file:
     src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"; root_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ root }}"); src_native=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); bridge_native=$(just --justfile "{{ root }}/Justfile" _native-path "$bridge"); stage_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ stage }}")
     generator=$(CARGO_HOME="$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home")" python3 "$root_native/tools/cxx_import.py" install-generator --root "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cxxbridge-tools")")
     rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
-    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ root }}/native/network.h" "{{ root }}/native/codec.h" "{{ root }}/native/peer.h" "{{ root }}/native/data_channel.h" "{{ root }}/native/video.h" "{{ root }}/native/audio.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
+    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ root }}/native/network.h" "{{ root }}/native/codec.h" "{{ root }}/native/peer.h" "{{ root }}/native/data_channel.h" "{{ root }}/native/video.h" "{{ root }}/native/audio.h" "{{ root }}/native/opus_carrier.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
     cp "{{ root }}/vendor/cxx/include/cxx.h" "{{ stage }}/include/rust/cxx.h"
     "$generator" "$root_native/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "$root_native/src/lib.rs" > "$bridge/lib.rs.cc"

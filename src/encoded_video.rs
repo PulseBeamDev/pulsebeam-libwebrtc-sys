@@ -11,10 +11,11 @@ use std::{
 };
 
 use crate::{
-    CodecError, CodecSupport, EncodedImageCallback, EncodedVideoFrame, PeerConnectionFactory,
-    PeerError, PeerErrorKind, VideoCodecFormat, VideoEncoder, VideoEncoderFactory,
-    VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame, VideoFrameType,
-    VideoRateControl, VideoResolution, VideoSource, VideoTrack, ffi,
+    CodecError, CodecSupport, EncodedImageCallback, EncodedVideoCodec, EncodedVideoFrame,
+    EncodedVideoMetadata, PeerConnectionFactory, PeerError, PeerErrorKind, VideoCodecFormat,
+    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
+    VideoEncoderSettings, VideoFrame, VideoFrameType, VideoRateControl, VideoResolution,
+    VideoSource, VideoTrack, ffi,
 };
 
 const MAX_PENDING: usize = 16;
@@ -34,6 +35,20 @@ pub struct H264AccessUnit {
     pub qp: Option<u8>,
 }
 
+/// One complete compressed access unit. Its codec metadata must match the
+/// format selected when constructing the input factory. Timestamps are
+/// monotonic capture microseconds, not caller-controlled wire RTP timestamps.
+#[derive(Clone, Debug)]
+pub struct EncodedVideoAccessUnit {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub timestamp_us: i64,
+    pub key_frame: bool,
+    pub qp: Option<u8>,
+    pub metadata: EncodedVideoMetadata,
+}
+
 #[derive(Default)]
 struct SourceFeedback {
     keyframe_requested: AtomicBool,
@@ -44,7 +59,7 @@ struct Pending {
     source_id: u64,
     dropped: Arc<AtomicU64>,
     feedback: Arc<SourceFeedback>,
-    frame: H264AccessUnit,
+    frame: EncodedVideoAccessUnit,
 }
 
 #[derive(Default)]
@@ -62,7 +77,7 @@ impl Broker {
         source_id: u64,
         dropped: Arc<AtomicU64>,
         feedback: Arc<SourceFeedback>,
-        frame: H264AccessUnit,
+        frame: EncodedVideoAccessUnit,
     ) -> Result<i64, CodecError> {
         let size = frame.data.len();
         if size > MAX_PENDING_BYTES || self.next_token == i64::MAX {
@@ -113,23 +128,57 @@ impl Broker {
     }
 }
 
-/// Codec setup for encoded-only H.264 sending. Supply `encoder_factory()` to
+/// Codec setup for encoded video sending. Supply `encoder_factory()` to
 /// the peer factory builder, then create sources using that same factory.
-/// One format is advertised: constrained-baseline H.264, level 3.1, packetization
-/// mode 1. This does not provide an H.264 decoder.
+/// `new()` advertises constrained-baseline H.264, level 3.1, packetization
+/// mode 1. `new_for_format` accepts VP8, VP9, AV1 or H265, without supplying
+/// a decoder. The caller must provide a frame matching its advertised format.
 #[derive(Clone)]
 pub struct EncodedH264Input {
     broker: Arc<Mutex<Broker>>,
     encoder: VideoEncoderFactoryHandle,
+    format: VideoCodecFormat,
 }
 
 impl EncodedH264Input {
     pub fn new() -> Result<Self, CodecError> {
+        Self::new_for_format(format())
+    }
+
+    /// Advertise a single encoded-input format without requiring a bundled
+    /// software encoder. Format parameters must agree with the compressed input.
+    pub fn new_for_format(mut format: VideoCodecFormat) -> Result<Self, CodecError> {
+        if format.name == "VP9" && !format.parameters.iter().any(|p| p.key == "profile-id") {
+            format = format.with_parameter("profile-id", "0");
+        }
+        if format.name == "AV1" && format.parameters.is_empty() {
+            format = format
+                .with_parameter("level-idx", "5")
+                .with_parameter("profile", "0")
+                .with_parameter("tier", "0");
+        }
+        if format.name == "H265" && format.parameters.is_empty() {
+            format = format
+                .with_parameter("level-id", "93")
+                .with_parameter("tx-mode", "SRST");
+        }
+        if !matches!(
+            format.name.as_str(),
+            "H264" | "VP8" | "VP9" | "AV1" | "H265"
+        ) || (format.name == "H264" && format != self::format())
+        {
+            return Err(CodecError::UnsupportedFormat);
+        }
         let broker = Arc::new(Mutex::new(Broker::default()));
         let encoder = VideoEncoderFactoryHandle::new(InputFactory {
             broker: broker.clone(),
+            format: format.clone(),
         })?;
-        Ok(Self { broker, encoder })
+        Ok(Self {
+            broker,
+            encoder,
+            format,
+        })
     }
 
     pub fn encoder_factory(&self) -> VideoEncoderFactoryHandle {
@@ -143,7 +192,7 @@ impl EncodedH264Input {
         if !factory.uses_video_encoder(&self.encoder) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
-                message: "factory is not configured with this encoded H.264 input".into(),
+                message: "factory is not configured with this encoded video input".into(),
             });
         }
         let source = factory.create_video_source()?;
@@ -161,6 +210,7 @@ impl EncodedH264Input {
         Ok(EncodedH264Source {
             source,
             broker: self.broker.clone(),
+            format: self.format.clone(),
             id,
             closed: false,
             last_timestamp_us: Cell::new(None),
@@ -177,6 +227,7 @@ impl EncodedH264Input {
 pub struct EncodedH264Source {
     source: VideoSource,
     broker: Arc<Mutex<Broker>>,
+    format: VideoCodecFormat,
     id: u64,
     closed: bool,
     last_timestamp_us: Cell<Option<i64>>,
@@ -207,9 +258,35 @@ impl EncodedH264Source {
     }
 
     pub fn push(&self, frame: H264AccessUnit) -> Result<(), CodecError> {
+        self.push_encoded(EncodedVideoAccessUnit {
+            data: frame.data,
+            width: frame.width,
+            height: frame.height,
+            timestamp_us: frame.timestamp_us,
+            key_frame: frame.key_frame,
+            qp: frame.qp,
+            metadata: EncodedVideoMetadata {
+                codec: EncodedVideoCodec::H264,
+                simulcast_index: None,
+                spatial_index: None,
+                temporal_index: None,
+                end_of_picture: true,
+            },
+        })
+    }
+
+    pub fn push_encoded(&self, frame: EncodedVideoAccessUnit) -> Result<(), CodecError> {
         if self.closed {
             return Err(CodecError::Released);
         }
+        let matching_codec = matches!(
+            (self.format.name.as_str(), frame.metadata.codec),
+            ("H264", EncodedVideoCodec::H264)
+                | ("VP8", EncodedVideoCodec::Vp8 { .. })
+                | ("VP9", EncodedVideoCodec::Vp9 { .. })
+                | ("AV1", EncodedVideoCodec::Av1)
+                | ("H265", EncodedVideoCodec::H265)
+        );
         if frame.width == 0
             || frame.height == 0
             || frame.width > 4096
@@ -220,8 +297,17 @@ impl EncodedH264Source {
                 .get()
                 .is_some_and(|last| frame.timestamp_us <= last)
             || (!self.seen_keyframe.get() && !frame.key_frame)
-            || frame.qp.is_some_and(|qp| qp > 51)
-            || !valid_annex_b(&frame.data, frame.key_frame)
+            || (self.format.name == "H264" && frame.qp.is_some_and(|qp| qp > 51))
+            || matches!(frame.metadata.codec, EncodedVideoCodec::Vp8 { key_index: Some(index), .. } if index > 31)
+            || matches!(frame.metadata.codec, EncodedVideoCodec::Vp9 { num_spatial_layers, .. } if num_spatial_layers != 1)
+            || !matching_codec
+            || frame.metadata.simulcast_index.is_some()
+            || frame.metadata.spatial_index.is_some()
+            || frame.metadata.temporal_index.is_some()
+            || !frame.metadata.end_of_picture
+            || frame.data.is_empty()
+            || frame.data.len() > MAX_PENDING_BYTES
+            || (self.format.name == "H264" && !valid_annex_b(&frame.data, frame.key_frame))
         {
             return Err(CodecError::InvalidFrame);
         }
@@ -356,10 +442,11 @@ fn format() -> VideoCodecFormat {
 
 struct InputFactory {
     broker: Arc<Mutex<Broker>>,
+    format: VideoCodecFormat,
 }
 impl VideoEncoderFactory for InputFactory {
     fn supported_formats(&self) -> Vec<VideoCodecFormat> {
-        vec![format()]
+        vec![self.format.clone()]
     }
     fn query_support(
         &self,
@@ -368,12 +455,12 @@ impl VideoEncoderFactory for InputFactory {
         _: Option<VideoResolution>,
     ) -> CodecSupport {
         CodecSupport {
-            supported: format == &self::format() && mode.is_none(),
+            supported: format == &self.format && (mode.is_none() || mode == Some("L1T1")),
             power_efficient: false,
         }
     }
     fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoEncoder>, CodecError> {
-        if format != &self::format() {
+        if format != &self.format {
             return Err(CodecError::UnsupportedFormat);
         }
         Ok(Box::new(InputEncoder {
@@ -436,18 +523,21 @@ impl VideoEncoder for InputEncoder {
         if (unit.width, unit.height) != (frame.width, frame.height) {
             return Err(CodecError::InvalidFrame);
         }
-        callback.emit(&EncodedVideoFrame {
-            data: unit.data,
-            width: unit.width,
-            height: unit.height,
-            rtp_timestamp: frame.rtp_timestamp,
-            frame_type: if unit.key_frame {
-                VideoFrameType::Key
-            } else {
-                VideoFrameType::Delta
+        callback.emit_with_metadata(
+            &EncodedVideoFrame {
+                data: unit.data,
+                width: unit.width,
+                height: unit.height,
+                rtp_timestamp: frame.rtp_timestamp,
+                frame_type: if unit.key_frame {
+                    VideoFrameType::Key
+                } else {
+                    VideoFrameType::Delta
+                },
+                qp: unit.qp,
             },
-            qp: unit.qp,
-        })
+            unit.metadata,
+        )
     }
     fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
         self.rates = Some(rates);
@@ -459,12 +549,18 @@ impl VideoEncoder for InputEncoder {
     }
     fn info(&self) -> VideoEncoderInfo {
         VideoEncoderInfo {
-            implementation_name: "encoded H264 input".into(),
+            implementation_name: "direct encoded video input".into(),
             hardware_accelerated: false,
             supports_native_handle: false,
+            supports_simulcast: false,
         }
     }
 }
+
+/// Codec-neutral name for the encoded input factory.
+pub type EncodedVideoInput = EncodedH264Input;
+/// Codec-neutral name for a direct encoded source.
+pub type EncodedVideoSource = EncodedH264Source;
 
 #[cfg(test)]
 mod tests {

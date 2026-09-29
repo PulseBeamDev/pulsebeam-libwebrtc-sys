@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/audio_codecs/audio_encoder_factory.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/environment/environment_factory.h"
@@ -29,6 +30,7 @@
 #include "modules/video_coding/include/video_error_codes.h"
 #include "media/engine/simulcast_encoder_adapter.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
+#include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 
 namespace pulsebeam::webrtc_sys {
 
@@ -48,7 +50,7 @@ struct NativeEncodedImageCallback::State {
   std::mutex mutex;
   webrtc::EncodedImageCallback *callback = nullptr;
   bool active = false;
-  bool h264 = false;
+  webrtc::VideoCodecType codec_type = webrtc::kVideoCodecGeneric;
   webrtc::H264PacketizationMode h264_packetization_mode =
       webrtc::H264PacketizationMode::NonInterleaved;
 };
@@ -133,7 +135,11 @@ public:
         callback_(std::make_shared<NativeEncodedImageCallback>(
             std::make_shared<NativeEncodedImageCallback::State>())),
         failed_(!encoder_is_valid(*encoder_)) {
-    callback_->state()->h264 = format.name == "H264";
+    if (format.name == "H264") callback_->state()->codec_type = webrtc::kVideoCodecH264;
+    else if (format.name == "VP8") callback_->state()->codec_type = webrtc::kVideoCodecVP8;
+    else if (format.name == "VP9") callback_->state()->codec_type = webrtc::kVideoCodecVP9;
+    else if (format.name == "AV1") callback_->state()->codec_type = webrtc::kVideoCodecAV1;
+    else if (format.name == "H265") callback_->state()->codec_type = webrtc::kVideoCodecH265;
     const auto packetization_mode =
         format.parameters.find("packetization-mode");
     if (packetization_mode != format.parameters.end() &&
@@ -213,6 +219,7 @@ public:
     result.implementation_name = std::string(info.implementation_name);
     result.is_hardware_accelerated = info.hardware_accelerated;
     result.supports_native_handle = info.supports_native_handle;
+    result.supports_simulcast = info.supports_simulcast;
     return result;
   }
 
@@ -535,6 +542,164 @@ new_video_decoder_factory(rust::Box<RustVideoDecoderFactory> factory) noexcept {
   return std::make_unique<NativeVideoDecoderFactory>(
       std::make_unique<RustDecoderFactory>(std::move(factory)));
 }
+namespace {
+// This factory is exclusively for Opus-frame tracks. Ordinary PCM must use
+// a separate peer factory: a PCM sentinel cannot be made collision-free.
+class OpusCarrierEncoder final : public webrtc::AudioEncoder {
+ public:
+  OpusCarrierEncoder(webrtc::AudioEncoderFactory::Options options,
+                     std::uint8_t channels)
+      : options_(std::move(options)), channels_(channels) {}
+  ~OpusCarrierEncoder() override { ReleasePacket(); }
+
+  int SampleRateHz() const override { return 48000; }
+  size_t NumChannels() const override { return channels_; }
+  size_t Num10MsFramesInNextPacket() const override {
+    return next_slots_;
+  }
+  size_t Max10MsFramesInAPacket() const override { return 6; }
+  int GetTargetBitrate() const override {
+    return 32000;
+  }
+  void Reset() override {
+    ReleasePacket();
+    remaining_ = 0;
+    bytes_.clear();
+    first_timestamp_.reset();
+  }
+  std::optional<std::pair<webrtc::TimeDelta, webrtc::TimeDelta>>
+  GetFrameLengthRange() const override {
+    return std::pair(webrtc::TimeDelta::Millis(10),
+                     webrtc::TimeDelta::Millis(60));
+  }
+
+ private:
+  EncodedInfo EncodeImpl(std::uint32_t timestamp,
+                         std::span<const std::int16_t> audio,
+                         webrtc::Buffer* encoded) override {
+    using namespace opus_carrier;
+    EncodedInfo info;
+    auto block = std::span(reinterpret_cast<const std::uint8_t*>(audio.data()),
+                           audio.size_bytes());
+    const auto block_bytes = kBytesPerChannelBlock * channels_;
+    if (block.size() != block_bytes) return info;
+    if (remaining_ == 0) {
+      if (!HasMagic(block)) return info;
+      expected_bytes_ = Load16(block.data() + 8);
+      const auto duration = Load16(block.data() + 10);
+      if (duration < 480 || duration > 2880 || duration % 480 != 0 ||
+          expected_bytes_ == 0 ||
+          expected_bytes_ + kHeaderBytes > (duration / 480) * block_bytes) {
+        return info;
+      }
+      next_slots_ = duration / 480;
+      remaining_ = next_slots_;
+      packet_timestamp_ = Load32(block.data() + 12);
+      checksum_ = Load32(block.data() + 16);
+      source_id_ = Load32(block.data() + 20);
+      packet_id_ = Load32(block.data() + 24);
+      if (!first_timestamp_) {
+        first_timestamp_ = packet_timestamp_;
+        first_encoder_timestamp_ = timestamp;
+      }
+      bytes_.clear();
+      bytes_.reserve(expected_bytes_);
+      block = block.subspan(kHeaderBytes);
+    }
+    const auto needed = expected_bytes_ - bytes_.size();
+    bytes_.insert(bytes_.end(), block.begin(),
+                  block.begin() + std::min(needed, block.size()));
+    if (--remaining_ != 0) return info;
+    if (bytes_.size() != expected_bytes_ || Checksum(bytes_) != checksum_) {
+      bytes_.clear();
+      ReleasePacket();
+      return info;
+    }
+    encoded->AppendData(bytes_.data(), bytes_.size());
+    info.encoded_bytes = bytes_.size();
+    info.encoded_timestamp = first_encoder_timestamp_ +
+                             (packet_timestamp_ - *first_timestamp_);
+    info.payload_type = options_.payload_type;
+    info.encoder_type = CodecType::kOpus;
+    bytes_.clear();
+    ReleasePacket();
+    return info;
+  }
+
+  void ReleasePacket() {
+    if (source_id_) opus_carrier::Acknowledge(source_id_, packet_id_);
+    source_id_ = 0;
+    packet_id_ = 0;
+  }
+
+  const webrtc::AudioEncoderFactory::Options options_;
+  const std::uint8_t channels_;
+  std::vector<std::uint8_t> bytes_;
+  std::optional<std::uint32_t> first_timestamp_;
+  std::uint32_t first_encoder_timestamp_ = 0;
+  std::uint32_t packet_timestamp_ = 0;
+  std::uint32_t checksum_ = 0;
+  std::uint32_t source_id_ = 0;
+  std::uint32_t packet_id_ = 0;
+  size_t expected_bytes_ = 0;
+  size_t next_slots_ = 2;
+  size_t remaining_ = 0;
+};
+
+class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
+ public:
+  OpusCarrierFactory() : builtin_(webrtc::CreateBuiltinAudioEncoderFactory()) {}
+  std::vector<webrtc::AudioCodecSpec> GetSupportedEncoders() override {
+    std::vector<webrtc::AudioCodecSpec> opus;
+    for (auto spec : builtin_->GetSupportedEncoders()) {
+      if (OpusChannels(spec.format)) {
+        spec.format.parameters["stereo"] = "0";
+        spec.info.num_channels = 1;
+        opus.push_back(spec);
+        spec.format.parameters["stereo"] = "1";
+        spec.info.num_channels = 2;
+        opus.push_back(std::move(spec));
+      }
+    }
+    return opus;
+  }
+  std::optional<webrtc::AudioCodecInfo> QueryAudioEncoder(
+      const webrtc::SdpAudioFormat& format) override {
+    const auto channels = OpusChannels(format);
+    if (!channels) return std::nullopt;
+    auto info = builtin_->QueryAudioEncoder(format);
+    if (info) info->num_channels = *channels;
+    return info;
+  }
+  std::unique_ptr<webrtc::AudioEncoder> Create(
+      const webrtc::Environment&, const webrtc::SdpAudioFormat& format,
+      Options options) override {
+    if (!QueryAudioEncoder(format)) return nullptr;
+    return std::make_unique<OpusCarrierEncoder>(
+        std::move(options), *OpusChannels(format));
+  }
+ private:
+  static std::optional<std::uint8_t> OpusChannels(
+      const webrtc::SdpAudioFormat& format) {
+    if (format.name != "opus" || format.clockrate_hz != 48000 ||
+        format.num_channels != 2) return std::nullopt;
+    const auto stereo = format.parameters.find("stereo");
+    if (stereo == format.parameters.end() || stereo->second == "0") return 1;
+    if (stereo->second == "1") return 2;
+    return std::nullopt;
+  }
+ private:
+  webrtc::scoped_refptr<webrtc::AudioEncoderFactory> builtin_;
+};
+} // namespace
+
+std::unique_ptr<NativeAudioEncoderFactory>
+new_opus_carrier_audio_encoder_factory() noexcept {
+  auto state = std::make_unique<NativeAudioEncoderFactory::State>();
+  state->factory = webrtc::make_ref_counted<OpusCarrierFactory>();
+  return std::make_unique<NativeAudioEncoderFactory>(std::move(state));
+}
+
 std::unique_ptr<NativeAudioEncoderFactory>
 new_builtin_audio_encoder_factory() noexcept {
   auto state = std::make_unique<NativeAudioEncoderFactory::State>();
@@ -638,7 +803,8 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,
                            std::uint32_t rtp_timestamp, bool key_frame,
-                           std::int32_t qp) noexcept {
+                           std::int32_t qp,
+                           const FfiEncodedVideoMetadata &metadata) noexcept {
   auto state = callback.state();
   std::lock_guard lock(state->mutex);
   if (!state->active || state->callback == nullptr)
@@ -652,15 +818,62 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
   image.SetFrameType(key_frame ? webrtc::VideoFrameType::kVideoFrameKey
                                : webrtc::VideoFrameType::kVideoFrameDelta);
   image.qp_ = qp;
+  if (metadata.simulcast_index < -1 ||
+      metadata.simulcast_index >= static_cast<int>(webrtc::kMaxSimulcastStreams) ||
+      metadata.spatial_index < -1 ||
+      metadata.spatial_index >= static_cast<int>(webrtc::kMaxSpatialLayers) ||
+      metadata.temporal_index < -1 ||
+      metadata.temporal_index >= static_cast<int>(webrtc::kMaxTemporalStreams) ||
+      metadata.num_spatial_layers == 0 ||
+      metadata.num_spatial_layers > webrtc::kMaxVp9NumberOfSpatialLayers)
+    return false;
+  if (metadata.simulcast_index >= 0)
+    image.SetSimulcastIndex(metadata.simulcast_index);
+  if (metadata.spatial_index >= 0)
+    image.SetSpatialIndex(metadata.spatial_index);
+  if (metadata.temporal_index >= 0)
+    image.SetTemporalIndex(metadata.temporal_index);
+  const auto codec = state->codec_type;
+  if (metadata.codec != 0 &&
+      !((metadata.codec == 1 && codec == webrtc::kVideoCodecVP8) ||
+        (metadata.codec == 2 && codec == webrtc::kVideoCodecVP9) ||
+        (metadata.codec == 3 && codec == webrtc::kVideoCodecH264) ||
+        (metadata.codec == 4 && codec == webrtc::kVideoCodecAV1) ||
+        (metadata.codec == 5 && codec == webrtc::kVideoCodecH265)))
+    return false;
   std::optional<webrtc::CodecSpecificInfo> codec_specific;
-  if (state->h264) {
+  if (codec != webrtc::kVideoCodecGeneric) {
     codec_specific.emplace();
-    codec_specific->codecType = webrtc::kVideoCodecH264;
-    codec_specific->codecSpecific.H264.packetization_mode =
-        state->h264_packetization_mode;
-    codec_specific->codecSpecific.H264.temporal_idx = webrtc::kNoTemporalIdx;
-    codec_specific->codecSpecific.H264.base_layer_sync = false;
-    codec_specific->codecSpecific.H264.idr_frame = key_frame;
+    codec_specific->codecType = codec;
+    codec_specific->end_of_picture = metadata.end_of_picture;
+    if (codec == webrtc::kVideoCodecH264) {
+      codec_specific->codecSpecific.H264.packetization_mode =
+          state->h264_packetization_mode;
+      codec_specific->codecSpecific.H264.temporal_idx =
+          metadata.temporal_index < 0 ? webrtc::kNoTemporalIdx : metadata.temporal_index;
+      codec_specific->codecSpecific.H264.base_layer_sync = metadata.layer_sync;
+      codec_specific->codecSpecific.H264.idr_frame = key_frame;
+    } else if (codec == webrtc::kVideoCodecVP8) {
+      auto &vp8 = codec_specific->codecSpecific.VP8;
+      vp8.nonReference = metadata.non_reference;
+      vp8.temporalIdx = metadata.temporal_index < 0
+          ? webrtc::kNoTemporalIdx : metadata.temporal_index;
+      vp8.layerSync = metadata.layer_sync;
+      vp8.keyIdx = metadata.key_index;
+    } else if (codec == webrtc::kVideoCodecVP9) {
+      auto &vp9 = codec_specific->codecSpecific.VP9;
+      vp9.first_frame_in_picture = metadata.first_frame_in_picture;
+      vp9.inter_pic_predicted = metadata.inter_picture_predicted;
+      vp9.flexible_mode = metadata.flexible_mode;
+      vp9.temporal_idx = metadata.temporal_index < 0
+          ? webrtc::kNoTemporalIdx : metadata.temporal_index;
+      vp9.temporal_up_switch = metadata.temporal_up_switch;
+      vp9.inter_layer_predicted = metadata.inter_layer_predicted;
+      vp9.num_spatial_layers = metadata.num_spatial_layers;
+      vp9.spatial_layer_resolution_present = key_frame && metadata.num_spatial_layers == 1;
+      vp9.width[0] = width;
+      vp9.height[0] = height;
+    }
   }
   return state->callback->OnEncodedImage(
              image, codec_specific ? &*codec_specific : nullptr).error ==

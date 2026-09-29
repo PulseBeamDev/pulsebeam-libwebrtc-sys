@@ -1,6 +1,7 @@
 //! Low-level Rust integration with PulseBeam's pinned libwebrtc artifact.
 
 mod audio;
+mod audio_processing;
 mod codec;
 mod data_channel;
 mod encoded_video;
@@ -22,22 +23,31 @@ pub(crate) use execution::{RustTask, run_task};
 #[cfg(feature = "native")]
 pub use audio::AudioDevice;
 pub use audio::{
-    AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink, AudioSource, AudioTrack,
-    DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
+    AudioCodecCapability, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink,
+    AudioSource, AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
+    EncodedAudioSource, OpusInputError, OpusInputFrame,
+};
+pub use audio_processing::{
+    AudioProcessingConfig, AudioProcessingOptions, AudioProcessingState, GainControl,
+    NoiseSuppression, ProcessingChoice, ProcessingComponentState, ProcessingImplementation,
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
-    DecodedImageCallback, EncodedImageCallback, EncodedVideoFrame, Nv12Planes, VideoCodecFormat,
-    VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo,
-    VideoDecoderSettings, VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle,
-    VideoEncoderInfo, VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType,
-    VideoPlane, VideoRateControl, VideoResolution, VideoRotation,
+    DecodedImageCallback, EncodedImageCallback, EncodedVideoCodec, EncodedVideoFrame,
+    EncodedVideoMetadata, Nv12Planes, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
+    VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
+    VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
+    VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane, VideoRateControl, VideoResolution,
+    VideoRotation,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
     DataChannelMessageKind, DataChannelPriority, DataChannelSendResult, DataChannelState,
 };
-pub use encoded_video::{EncodedH264Input, EncodedH264Source, H264AccessUnit};
+pub use encoded_video::{
+    EncodedH264Input, EncodedH264Source, EncodedVideoAccessUnit, EncodedVideoInput,
+    EncodedVideoSource, H264AccessUnit,
+};
 pub use execution::{
     BuildEnvironmentError, ControlledPeerDriver, Environment, EnvironmentBuilder, ManualClock,
     NetworkThread, QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread,
@@ -87,6 +97,12 @@ mod ffi {
         scalability_modes: Vec<String>,
     }
 
+    struct FfiAudioCodecCapability {
+        format: FfiCodecFormat,
+        clock_rate: i32,
+        channels: i32,
+    }
+
     struct FfiCodecSupport {
         supported: bool,
         power_efficient: bool,
@@ -119,6 +135,24 @@ mod ffi {
         implementation_name: String,
         hardware_accelerated: bool,
         supports_native_handle: bool,
+        supports_simulcast: bool,
+    }
+
+    struct FfiEncodedVideoMetadata {
+        codec: u8,
+        simulcast_index: i32,
+        spatial_index: i32,
+        temporal_index: i32,
+        end_of_picture: bool,
+        non_reference: bool,
+        layer_sync: bool,
+        key_index: i32,
+        first_frame_in_picture: bool,
+        inter_picture_predicted: bool,
+        flexible_mode: bool,
+        num_spatial_layers: u8,
+        inter_layer_predicted: bool,
+        temporal_up_switch: bool,
     }
 
     struct FfiDecoderInfo {
@@ -168,6 +202,33 @@ mod ffi {
         index: u16,
         name: String,
         id: String,
+    }
+
+    struct FfiAudioProcessingConfig {
+        enabled: bool,
+        echo_cancellation: bool,
+        noise_suppression: u8,
+        gain_control: u8,
+    }
+
+    struct FfiAudioProcessingState {
+        has_module: bool,
+        echo_software: i8,
+        echo_platform_available: bool,
+        echo_platform: i8,
+        echo_effective: u8,
+        noise_software: i8,
+        noise_platform_available: bool,
+        noise_platform: i8,
+        noise_effective: u8,
+        gain_software: i8,
+        gain_platform_available: bool,
+        gain_platform: i8,
+        gain_effective: u8,
+        highpass_software: i8,
+        highpass_platform_available: bool,
+        highpass_platform: i8,
+        highpass_effective: u8,
     }
 
     struct FfiIceServer {
@@ -530,6 +591,7 @@ mod ffi {
             factory: Box<RustVideoDecoderFactory>,
         ) -> UniquePtr<NativeVideoDecoderFactory>;
         fn new_builtin_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
+        fn new_opus_carrier_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
         fn new_builtin_audio_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
         fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
         fn video_encoder_query(
@@ -569,6 +631,7 @@ mod ffi {
             rtp_timestamp: u32,
             key_frame: bool,
             qp: i32,
+            metadata: &FfiEncodedVideoMetadata,
         ) -> bool;
         fn decoded_callback_emit(
             callback: &NativeDecodedImageCallback,
@@ -600,8 +663,12 @@ mod ffi {
             video_encoder: *const NativeVideoEncoderFactory,
             video_decoder: *const NativeVideoDecoderFactory,
             native_audio: bool,
+            processing: &FfiAudioProcessingConfig,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn factory_audio_processing_state(
+            factory: &NativePeerConnectionFactory,
+        ) -> FfiAudioProcessingState;
         fn factory_audio_devices(
             factory: &NativePeerConnectionFactory,
             recording: bool,
@@ -690,9 +757,30 @@ mod ffi {
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
 
+        fn audio_source_push_opus(
+            source: &NativeAudioSource,
+            payload: &[u8],
+            rtp_timestamp: u32,
+            samples_per_channel: u32,
+        ) -> bool;
         fn create_audio_source(
             factory: &NativePeerConnectionFactory,
         ) -> UniquePtr<NativeAudioSource>;
+        fn create_encoded_audio_source(
+            factory: &NativePeerConnectionFactory,
+            channels: u8,
+        ) -> UniquePtr<NativeAudioSource>;
+        fn peer_audio_codec_capabilities(
+            factory: &NativePeerConnectionFactory,
+            sender: bool,
+        ) -> Vec<FfiAudioCodecCapability>;
+        fn rtp_transceiver_set_audio_codec_preferences(
+            transceiver: &NativeRtpTransceiver,
+            factory: &NativePeerConnectionFactory,
+            formats: &[FfiCodecFormat],
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn close_audio_source(source: &NativeAudioSource) -> bool;
         fn audio_source_push_pcm(
             source: &NativeAudioSource,
@@ -713,6 +801,13 @@ mod ffi {
         fn audio_track_id(track: &NativeAudioTrack) -> String;
         fn audio_track_enabled(track: &NativeAudioTrack) -> bool;
         fn audio_track_set_enabled(track: &NativeAudioTrack, enabled: bool) -> bool;
+        fn audio_track_set_processing_options(
+            track: &NativeAudioTrack,
+            echo: u8,
+            noise: u8,
+            gain: u8,
+            error: &mut String,
+        ) -> bool;
         fn peer_add_audio_transceiver(
             peer: &NativePeerConnection,
             track: &NativeAudioTrack,

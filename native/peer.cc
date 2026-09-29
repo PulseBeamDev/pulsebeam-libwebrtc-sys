@@ -23,6 +23,7 @@
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO)
 #include "api/audio/create_audio_device_module.h"
 #endif
+#include "api/audio/builtin_audio_processing_builder.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/enable_media.h"
@@ -742,6 +743,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
     bool native_audio,
+    const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept {
   webrtc::PeerConnectionFactoryDependencies dependencies;
   dependencies.env = environment.environment();
@@ -823,6 +825,33 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     dependencies.video_decoder_factory =
         std::make_unique<BorrowedVideoDecoderFactory>(*video_decoder);
   }
+  if (processing.enabled) {
+    if (processing.noise_suppression > 4 || processing.gain_control > 4) {
+      error = "invalid audio processing configuration";
+      return nullptr;
+    }
+    webrtc::AudioProcessing::Config config;
+    config.echo_canceller.enabled = processing.echo_cancellation;
+    config.noise_suppression.enabled = processing.noise_suppression != 0;
+    if (processing.noise_suppression != 0) {
+      config.noise_suppression.level = static_cast<
+          webrtc::AudioProcessing::Config::NoiseSuppression::Level>(
+              processing.noise_suppression - 1);
+    }
+    config.gain_controller1.enabled = processing.gain_control >= 1 &&
+                                      processing.gain_control <= 3;
+    if (config.gain_controller1.enabled) {
+      config.gain_controller1.mode = static_cast<
+          webrtc::AudioProcessing::Config::GainController1::Mode>(
+              processing.gain_control - 1);
+    }
+    config.gain_controller2.enabled = processing.gain_control == 4;
+    if (config.gain_controller2.enabled) {
+      config.gain_controller2.adaptive_digital.enabled = true;
+    }
+    dependencies.audio_processing_builder =
+        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>(config);
+  }
   webrtc::EnableMedia(dependencies);
   auto factory =
       webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));
@@ -840,6 +869,40 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   state->signaling_thread = signaling_thread.thread();
   state->worker_thread = worker_thread.thread();
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
+}
+
+FfiAudioProcessingState factory_audio_processing_state(
+    const NativePeerConnectionFactory& factory) noexcept {
+  FfiAudioProcessingState result{};
+  if (!factory.factory() || !factory.state()->worker_thread) return result;
+  const auto encode = [](const std::optional<bool>& value) -> std::int8_t {
+    return value ? (*value ? 1 : 0) : -1;
+  };
+  factory.state()->worker_thread->BlockingCall([&] {
+    const auto state = factory.factory()->GetAudioProcessingState();
+    result.has_module = state.has_audio_processing_module;
+    const auto fill = [&](const webrtc::AudioProcessingComponentState& component,
+                          std::int8_t& software, bool& available,
+                          std::int8_t& platform, std::uint8_t& effective) {
+      software = encode(component.software_active);
+      available = component.platform_available;
+      platform = encode(component.platform_active);
+      effective = static_cast<std::uint8_t>(component.effective);
+    };
+    fill(state.echo_cancellation, result.echo_software,
+         result.echo_platform_available, result.echo_platform,
+         result.echo_effective);
+    fill(state.noise_suppression, result.noise_software,
+         result.noise_platform_available, result.noise_platform,
+         result.noise_effective);
+    fill(state.auto_gain_control, result.gain_software,
+         result.gain_platform_available, result.gain_platform,
+         result.gain_effective);
+    fill(state.high_pass_filter, result.highpass_software,
+         result.highpass_platform_available, result.highpass_platform,
+         result.highpass_effective);
+  });
+  return result;
 }
 
 bool factory_audio_devices(const NativePeerConnectionFactory& factory,

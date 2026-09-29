@@ -4,9 +4,9 @@ use std::{net::Ipv4Addr, thread, time::Duration};
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    AudioPcmFrame, Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RtpTransceiverDirection,
-    SessionDescription, SimulatedNetwork,
+    AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment, ManualClock, OperationId,
+    OpusInputFrame, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    PeerErrorKind, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
 };
 
 fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> {
@@ -103,6 +103,283 @@ fn encoded_opus_receiver_gets_packets_without_decoded_sink() {
     sink.close().unwrap();
     sink.close().unwrap();
     assert!(sink.try_next_frame().is_none());
+    alice.close().unwrap();
+    bob.close().unwrap();
+}
+
+#[test]
+fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
+    #[cfg(feature = "native")]
+    assert_eq!(
+        PeerConnectionFactory::builder()
+            .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+            .native_audio(true)
+            .build()
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::InvalidParameter
+    );
+    let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
+    let environment = Environment::builder().clock(&clock).build().unwrap();
+    let network = SimulatedNetwork::new(&clock).unwrap();
+    let a = network
+        .register_endpoint(Ipv4Addr::new(10, 9, 0, 1).into())
+        .unwrap();
+    let b = network
+        .register_endpoint(Ipv4Addr::new(10, 9, 0, 2).into())
+        .unwrap();
+    let alice_factory = PeerConnectionFactory::builder()
+        .environment(environment.clone())
+        .network_manager(a.network_manager().unwrap())
+        .packet_socket_factory(a.packet_socket_factory().unwrap())
+        .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+        .build()
+        .unwrap();
+    let bob_factory = PeerConnectionFactory::builder()
+        .environment(environment)
+        .network_manager(b.network_manager().unwrap())
+        .packet_socket_factory(b.packet_socket_factory().unwrap())
+        .build()
+        .unwrap();
+    assert_eq!(
+        bob_factory
+            .create_encoded_audio_source(1)
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::UnsupportedOperation
+    );
+    let mut alice = alice_factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    let mut bob = bob_factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    assert_eq!(
+        alice_factory.create_audio_source().err().unwrap().kind,
+        PeerErrorKind::UnsupportedOperation
+    );
+    let first = alice_factory.create_encoded_audio_source(1).unwrap();
+    let second = alice_factory.create_encoded_audio_source(2).unwrap();
+    assert_eq!((first.channels(), second.channels()), (1, 2));
+    assert_eq!(
+        alice_factory
+            .create_encoded_audio_source(3)
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::InvalidParameter
+    );
+    for (data, duration, expected) in [
+        (
+            vec![0xfc, 0x01],
+            960,
+            pulsebeam_webrtc_sys::OpusInputError::InvalidPacket,
+        ),
+        (
+            vec![0xf8, 0x01],
+            480,
+            pulsebeam_webrtc_sys::OpusInputError::InvalidDuration,
+        ),
+        (
+            vec![0xf8; 1201],
+            960,
+            pulsebeam_webrtc_sys::OpusInputError::InvalidPacket,
+        ),
+    ] {
+        assert_eq!(
+            first.push_opus(&OpusInputFrame {
+                data,
+                rtp_timestamp: 0,
+                samples_per_channel: duration,
+            }),
+            Err(expected)
+        );
+    }
+    assert_eq!(
+        first.push_opus(&OpusInputFrame {
+            data: vec![0xf8, 0xff, 0xfe],
+            rtp_timestamp: 0,
+            samples_per_channel: 960,
+        }),
+        Err(pulsebeam_webrtc_sys::OpusInputError::Backpressure)
+    );
+    let track_a = alice_factory
+        .create_encoded_audio_track("opus-a", &first)
+        .unwrap();
+    let track_b = alice_factory
+        .create_encoded_audio_track("opus-b", &second)
+        .unwrap();
+    let capabilities = alice.audio_sender_capabilities().unwrap();
+    let opus = |stereo: &str| {
+        capabilities
+            .iter()
+            .find(|codec| {
+                codec.name().eq_ignore_ascii_case("opus")
+                    && codec
+                        .parameters()
+                        .iter()
+                        .any(|param| param.key == "stereo" && param.value == stereo)
+            })
+            .cloned()
+            .expect("mono and stereo Opus must both be advertised")
+    };
+    alice
+        .add_audio_transceiver(&track_a, RtpTransceiverDirection::SendOnly)
+        .unwrap()
+        .set_audio_codec_preferences(&[opus("0")])
+        .unwrap();
+    alice
+        .add_audio_transceiver(&track_b, RtpTransceiverDirection::SendOnly)
+        .unwrap()
+        .set_audio_codec_preferences(&[opus("1")])
+        .unwrap();
+
+    let offer = finish(&alice, alice.create_offer()).unwrap();
+    finish(&alice, alice.set_local_description(offer));
+    let gathered =
+        non_trickle::gathered_local_description(&alice, &clock, &network, &mut Vec::new());
+    finish(&bob, bob.set_remote_description(gathered));
+    let mut answer = finish(&bob, bob.create_answer()).unwrap();
+    // The receiver explicitly requests stereo on the second m-line. An
+    // ordinary built-in answer defaults to mono even when it can decode stereo.
+    let sections: Vec<_> = answer.sdp.split("m=audio").collect();
+    assert_eq!(sections.len(), 3);
+    answer.sdp = format!(
+        "{}m=audio{}m=audio{}",
+        sections[0],
+        sections[1],
+        sections[2].replacen("useinbandfec=1", "useinbandfec=1;stereo=1", 1)
+    );
+    finish(&bob, bob.set_local_description(answer));
+    let gathered = non_trickle::gathered_local_description(&bob, &clock, &network, &mut Vec::new());
+    finish(&alice, alice.set_remote_description(gathered));
+
+    let receivers = bob.audio_receivers().unwrap();
+    assert_eq!(receivers.len(), 2);
+    let sinks: Vec<_> = receivers
+        .iter()
+        .map(|r| r.attach_encoded_audio_sink().unwrap())
+        .collect();
+    let mut connected = [false; 2];
+    for _ in 0..100_000 {
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        for (index, peer) in [&alice, &bob].into_iter().enumerate() {
+            while let Some(event) = peer.try_next_event() {
+                if let PeerConnectionEvent::ConnectionStateChanged(ConnectionState::Connected) =
+                    event
+                {
+                    connected[index] = true;
+                }
+            }
+        }
+        if connected == [true; 2] {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert_eq!(
+        connected, [true; 2],
+        "peers must connect before pushing Opus"
+    );
+    let packets = [vec![0xf8, 0xff, 0xfe], vec![0xfc, 0x12, 0x34, 0x56]];
+    let mut seen = [false; 2];
+    let mut sink_stream = [None; 2];
+    let mut last_push_timestamp = 0;
+    for tick in 0..100_000u32 {
+        if tick % 20 == 0 {
+            last_push_timestamp = tick * 48;
+            for (source, data) in [(&first, &packets[0]), (&second, &packets[1])] {
+                source
+                    .push_opus(&OpusInputFrame {
+                        data: data.clone(),
+                        rtp_timestamp: tick * 48,
+                        samples_per_channel: 960,
+                    })
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "Opus push failed at tick={tick} channels={} error={error:?}",
+                            source.channels()
+                        )
+                    });
+            }
+        }
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        while alice.try_next_event().is_some() {}
+        while bob.try_next_event().is_some() {}
+        for (sink_index, sink) in sinks.iter().enumerate() {
+            while let Some(frame) = sink.try_next_frame() {
+                let stream = packets
+                    .iter()
+                    .position(|payload| frame.data == *payload)
+                    .expect("foreign or re-encoded payload");
+                if let Some((previous, ssrc)) = sink_stream[sink_index] {
+                    assert_eq!((stream, frame.ssrc), (previous, ssrc));
+                } else {
+                    sink_stream[sink_index] = Some((stream, frame.ssrc));
+                }
+                seen[stream] = true;
+                assert_eq!(frame.samples_per_channel, 960);
+            }
+        }
+        if seen == [true; 2] {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert_eq!(seen, [true; 2], "both sources must arrive byte-identically");
+    assert_ne!(sink_stream[0], sink_stream[1], "tracks must stay isolated");
+
+    let variants = [
+        (vec![0xf0, 0x11], 480),
+        (vec![0xff, 3, 0x11, 0x12, 0x13], 2880),
+    ];
+    for (source, (data, samples_per_channel)) in [(&first, &variants[0]), (&second, &variants[1])] {
+        source
+            .push_opus(&OpusInputFrame {
+                data: data.clone(),
+                rtp_timestamp: last_push_timestamp + 960,
+                samples_per_channel: *samples_per_channel,
+            })
+            .unwrap();
+    }
+    let mut variant_seen = [false; 2];
+    for _ in 0..20_000 {
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        while alice.try_next_event().is_some() {}
+        while bob.try_next_event().is_some() {}
+        for (sink_index, sink) in sinks.iter().enumerate() {
+            while let Some(frame) = sink.try_next_frame() {
+                if frame.data == variants[0].0 {
+                    assert_eq!(frame.samples_per_channel, 480);
+                    assert_eq!(sink_stream[sink_index].unwrap().0, 0);
+                    variant_seen[0] = true;
+                } else if frame.data == variants[1].0 {
+                    assert_eq!(frame.samples_per_channel, 2880);
+                    assert_eq!(sink_stream[sink_index].unwrap().0, 1);
+                    variant_seen[1] = true;
+                }
+            }
+        }
+        if variant_seen == [true; 2] {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert_eq!(
+        variant_seen, [true; 2],
+        "10 ms and 60 ms Opus must arrive intact"
+    );
     alice.close().unwrap();
     bob.close().unwrap();
 }

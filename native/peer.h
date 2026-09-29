@@ -18,6 +18,8 @@ namespace pulsebeam::webrtc_sys {
 
 struct FfiIceServer;
 struct FfiAudioDevice;
+struct FfiAudioProcessingConfig;
+struct FfiAudioProcessingState;
 struct FfiDescriptionSnapshot;
 struct FfiPeerEvent;
 class NativeAudioDecoderFactory;
@@ -82,7 +84,10 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
     bool native_audio,
+    const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept;
+FfiAudioProcessingState factory_audio_processing_state(
+    const NativePeerConnectionFactory& factory) noexcept;
 bool factory_audio_devices(const NativePeerConnectionFactory& factory,
                            bool recording, rust::Vec<FfiAudioDevice>& devices,
                            rust::String& error) noexcept;

@@ -1244,6 +1244,51 @@ bool rtp_transceiver_set_video_codec_preferences(
   return true;
 }
 
+bool rtp_transceiver_set_audio_codec_preferences(
+    const NativeRtpTransceiver& transceiver,
+    const NativePeerConnectionFactory& factory,
+    rust::Slice<const FfiCodecFormat> formats, std::uint8_t& error_type,
+    rust::String& error) noexcept {
+  if (!factory.factory() || !factory.signaling_thread()) {
+    error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_STATE);
+    error = "peer is unavailable";
+    return false;
+  }
+  const auto capabilities = factory.signaling_thread()->BlockingCall([&] {
+    return factory.factory()->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO);
+  });
+  std::vector<webrtc::RtpCodecCapability> selected;
+  for (const auto& format : formats) {
+    std::map<std::string, std::string> parameters;
+    for (const auto& item : format.parameters) {
+      if (!parameters.emplace(std::string(item.key), std::string(item.value)).second) {
+        error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
+        error = "duplicate codec parameter";
+        return false;
+      }
+    }
+    const auto it = std::find_if(capabilities.codecs.begin(), capabilities.codecs.end(),
+        [&](const auto& codec) {
+          return codec.name == std::string(format.name) && codec.parameters == parameters;
+        });
+    if (it == capabilities.codecs.end() ||
+        std::find(selected.begin(), selected.end(), *it) != selected.end()) {
+      error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
+      error = "unknown or repeated audio codec capability";
+      return false;
+    }
+    selected.push_back(*it);
+  }
+  auto outcome = factory.signaling_thread()->BlockingCall([&] {
+    return transceiver.state()->transceiver->SetCodecPreferences(selected);
+  });
+  if (!outcome.ok()) {
+    SetError(outcome, error_type, error);
+    return false;
+  }
+  return true;
+}
+
 bool rtp_transceiver_stop(const NativeRtpTransceiver& transceiver,
                           std::uint8_t& error_type,
                           rust::String& error) noexcept {

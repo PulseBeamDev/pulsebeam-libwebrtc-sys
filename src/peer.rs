@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::audio::{AudioSource, AudioTrack};
+use crate::audio::{AudioCodecCapability, AudioSource, AudioTrack, EncodedAudioSource};
 
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, ControlledPeerDriver, Environment,
@@ -308,6 +308,7 @@ pub struct PeerConnectionFactoryBuilder {
     video_encoder: Option<VideoEncoderFactoryHandle>,
     video_decoder: Option<VideoDecoderFactoryHandle>,
     native_audio: bool,
+    audio_processing: Option<crate::AudioProcessingConfig>,
 }
 
 impl PeerConnectionFactoryBuilder {
@@ -358,6 +359,14 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
+    /// Create WebRTC's software audio processing module with the requested
+    /// initial AEC, noise suppression and gain-control configuration. This
+    /// affects decoded PCM, never directly supplied encoded Opus packets.
+    pub fn audio_processing(mut self, config: crate::AudioProcessingConfig) -> Self {
+        self.audio_processing = Some(config);
+        self
+    }
+
     pub fn audio_encoder_factory(mut self, factory: AudioEncoderFactory) -> Self {
         self.audio_encoder = Some(factory);
         self
@@ -379,6 +388,17 @@ impl PeerConnectionFactoryBuilder {
     }
 
     pub fn build(self) -> Result<PeerConnectionFactory, PeerError> {
+        if (self.native_audio || self.audio_processing.is_some())
+            && self
+                .audio_encoder
+                .as_ref()
+                .is_some_and(AudioEncoderFactory::supports_opus_frames)
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "Opus-frame factories cannot share a platform microphone or PCM audio processing module".into(),
+            });
+        }
         let environment = match self.environment {
             Some(environment) => environment,
             None => Environment::builder().build().map_err(native_build_error)?,
@@ -454,6 +474,15 @@ impl PeerConnectionFactoryBuilder {
                 optional_ptr(self.video_encoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_decoder.as_ref().map(|value| value.native())),
                 self.native_audio,
+                &self.audio_processing.map_or(
+                    ffi::FfiAudioProcessingConfig {
+                        enabled: false,
+                        echo_cancellation: false,
+                        noise_suppression: 0,
+                        gain_control: 0,
+                    },
+                    crate::AudioProcessingConfig::ffi,
+                ),
                 &mut message,
             )
         };
@@ -495,6 +524,7 @@ impl Default for PeerConnectionFactoryBuilder {
             video_encoder: None,
             video_decoder: None,
             native_audio: false,
+            audio_processing: None,
         }
     }
 }
@@ -530,6 +560,12 @@ pub struct PeerConnectionFactory(Rc<FactoryInner>);
 impl PeerConnectionFactory {
     fn native(&self) -> &ffi::NativePeerConnectionFactory {
         self.0.native.as_ref().expect("validated peer factory")
+    }
+
+    /// Read WebRTC's factory-wide audio processing state. Unknown status and
+    /// platform availability are not proof that a device effect is active.
+    pub fn audio_processing_state(&self) -> crate::AudioProcessingState {
+        ffi::factory_audio_processing_state(self.native()).into()
     }
 
     /// Enumerate input or output devices for this native-audio factory.
@@ -571,6 +607,12 @@ impl PeerConnectionFactory {
     /// requires a native-audio factory and does not use injected PCM.
     #[cfg(feature = "native")]
     pub fn create_microphone_track(&self, id: &str) -> Result<AudioTrack, PeerError> {
+        if self.uses_opus_frames() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "Opus-frame factories cannot encode microphone PCM".into(),
+            });
+        }
         if id.is_empty() || id.as_bytes().contains(&0) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -685,6 +727,17 @@ impl PeerConnectionFactory {
     }
 
     pub fn create_audio_source(&self) -> Result<AudioSource, PeerError> {
+        if self.uses_opus_frames() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "Opus-frame factories cannot encode raw PCM; use a separate peer factory"
+                    .into(),
+            });
+        }
+        self.create_audio_source_inner()
+    }
+
+    fn create_audio_source_inner(&self) -> Result<AudioSource, PeerError> {
         let native =
             ffi::create_audio_source(self.0.native.as_ref().expect("validated peer factory"));
         if native.is_null() {
@@ -692,6 +745,54 @@ impl PeerConnectionFactory {
         } else {
             Ok(AudioSource::from_native(native, self.0.clone()))
         }
+    }
+
+    /// Create an Opus source with its own delivery/stream identity. `channels`
+    /// must match the Opus packets and the negotiated mono/stereo format.
+    pub fn create_encoded_audio_source(
+        &self,
+        channels: u8,
+    ) -> Result<EncodedAudioSource, PeerError> {
+        if !self.uses_opus_frames() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "Opus-frame input requires an Opus-frame encoder factory".into(),
+            });
+        }
+        if !matches!(channels, 1 | 2) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "encoded Opus channels must be 1 or 2".into(),
+            });
+        }
+        let native = ffi::create_encoded_audio_source(
+            self.0.native.as_ref().expect("validated peer factory"),
+            channels,
+        );
+        if native.is_null() {
+            Err(native_build_error("failed to create encoded audio source"))
+        } else {
+            Ok(EncodedAudioSource::from_source(
+                AudioSource::from_native(native, self.0.clone()),
+                channels,
+            ))
+        }
+    }
+
+    fn uses_opus_frames(&self) -> bool {
+        self.0
+            ._audio_encoder
+            .as_ref()
+            .is_some_and(AudioEncoderFactory::supports_opus_frames)
+    }
+
+    pub fn create_encoded_audio_track(
+        &self,
+        id: &str,
+        source: &EncodedAudioSource,
+    ) -> Result<AudioTrack, PeerError> {
+        self.create_audio_track(id, source.source())
+            .map(AudioTrack::mark_encoded)
     }
 
     pub fn create_audio_track(
@@ -921,6 +1022,38 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    /// Audio RTP codecs available for sending on this peer.
+    pub fn audio_sender_capabilities(&self) -> Result<Vec<AudioCodecCapability>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        Ok(
+            ffi::peer_audio_codec_capabilities(self.inner.factory_native(), true)
+                .into_iter()
+                .map(AudioCodecCapability::from_ffi)
+                .collect(),
+        )
+    }
+
+    /// Audio RTP codecs available for receiving on this peer.
+    pub fn audio_receiver_capabilities(&self) -> Result<Vec<AudioCodecCapability>, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        Ok(
+            ffi::peer_audio_codec_capabilities(self.inner.factory_native(), false)
+                .into_iter()
+                .map(AudioCodecCapability::from_ffi)
+                .collect(),
+        )
+    }
+
     /// Video RTP codecs available for sending on this peer (including RTX/RED when supported).
     pub fn video_sender_capabilities(&self) -> Result<Vec<VideoCodecCapability>, PeerError> {
         if self.inner.closed.get() {

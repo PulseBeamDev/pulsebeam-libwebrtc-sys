@@ -7,9 +7,63 @@
 use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{
-    ffi,
+    CodecParameter, ffi,
     peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner},
 };
+
+/// An audio RTP capability reported by the selected peer factory. Opus uses
+/// SDP channel count 2 even for mono; its `stereo` fmtp selects send channels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioCodecCapability {
+    name: String,
+    parameters: Vec<CodecParameter>,
+    clock_rate: Option<u32>,
+    channels: Option<u8>,
+}
+
+impl AudioCodecCapability {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn parameters(&self) -> &[CodecParameter] {
+        &self.parameters
+    }
+    pub fn clock_rate(&self) -> Option<u32> {
+        self.clock_rate
+    }
+    pub fn channels(&self) -> Option<u8> {
+        self.channels
+    }
+    pub(crate) fn from_ffi(value: ffi::FfiAudioCodecCapability) -> Self {
+        Self {
+            name: value.format.name,
+            parameters: value
+                .format
+                .parameters
+                .into_iter()
+                .map(|item| CodecParameter {
+                    key: item.key,
+                    value: item.value,
+                })
+                .collect(),
+            clock_rate: u32::try_from(value.clock_rate).ok(),
+            channels: u8::try_from(value.channels).ok(),
+        }
+    }
+    pub(crate) fn ffi_format(&self) -> ffi::FfiCodecFormat {
+        ffi::FfiCodecFormat {
+            name: self.name.clone(),
+            parameters: self
+                .parameters
+                .iter()
+                .map(|item| ffi::FfiCodecParameter {
+                    key: item.key.clone(),
+                    value: item.value.clone(),
+                })
+                .collect(),
+        }
+    }
+}
 
 /// A platform audio device reported by the native artifact. Device lists can
 /// change; re-enumerate before using an index, and handle selection failure.
@@ -299,6 +353,116 @@ impl AudioSource {
     }
 }
 
+/// One RFC 6716 mono Opus packet, without RTP headers. The RTP clock is
+/// 48 kHz; supported packet durations are 10, 20, 30, 40, 50, or 60 ms.
+/// The packet's TOC duration must agree with `samples_per_channel`.
+/// The payload is at most 1200 bytes and must fit in 960 bytes per 10 ms
+/// slot, less 28 internal header bytes in its first slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpusInputFrame {
+    pub data: Vec<u8>,
+    pub rtp_timestamp: u32,
+    pub samples_per_channel: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpusInputError {
+    InvalidPacket,
+    InvalidDuration,
+    InvalidTimestamp,
+    Backpressure,
+    Released,
+}
+impl fmt::Display for OpusInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for OpusInputError {}
+
+/// A sequence-bound Opus input source. Create its factory with
+/// [`crate::AudioEncoderFactory::with_opus_frames`]. Frames bypass Opus
+/// encoding; each source carries its own bytes through a 48 kHz bridge
+/// matching its configured mono or stereo format.
+/// The factory accepts Opus-only tracks, not raw PCM tracks. At most 24
+/// in-flight 10 ms slots are admitted per source; retry on `Backpressure`.
+/// No frame is queued if the source has no attached track.
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::EncodedAudioSource>();
+/// ```
+pub struct EncodedAudioSource {
+    source: AudioSource,
+    channels: u8,
+    last_timestamp: Cell<Option<u32>>,
+}
+impl EncodedAudioSource {
+    pub(crate) fn from_source(source: AudioSource, channels: u8) -> Self {
+        Self {
+            source,
+            channels,
+            last_timestamp: Cell::new(None),
+        }
+    }
+
+    pub fn channels(&self) -> u8 {
+        self.channels
+    }
+
+    pub fn push_opus(&self, frame: &OpusInputFrame) -> Result<(), OpusInputError> {
+        if self.source.inner.closed.get() {
+            return Err(OpusInputError::Released);
+        }
+        let bytes = &frame.data;
+        if bytes.is_empty() || bytes.len() > 1200 || (bytes[0] & 4 != 0) != (self.channels == 2) {
+            return Err(OpusInputError::InvalidPacket);
+        }
+        let config = bytes[0] >> 3;
+        let count = match bytes[0] & 3 {
+            0 => 1,
+            3 => bytes.get(1).map(|b| b & 63).unwrap_or(0) as u32,
+            _ => 2,
+        };
+        let samples = (if config < 12 {
+            480u32 << (config & 3)
+        } else if config < 16 {
+            480u32 << (config & 1)
+        } else {
+            120u32 << (config & 3)
+        }) * count;
+        if samples != frame.samples_per_channel
+            || !matches!(samples, 480 | 960 | 1440 | 1920 | 2400 | 2880)
+            || bytes.len() + 28 > (samples as usize / 480) * 960 * self.channels as usize
+        {
+            return Err(OpusInputError::InvalidDuration);
+        }
+        if let Some(last) = self.last_timestamp.get()
+            && (frame.rtp_timestamp.wrapping_sub(last) == 0
+                || frame.rtp_timestamp.wrapping_sub(last) >= (1 << 31))
+        {
+            return Err(OpusInputError::InvalidTimestamp);
+        }
+        if !ffi::audio_source_push_opus(
+            self.source.native(),
+            bytes,
+            frame.rtp_timestamp,
+            frame.samples_per_channel,
+        ) {
+            return Err(OpusInputError::Backpressure);
+        }
+        self.last_timestamp.set(Some(frame.rtp_timestamp));
+        Ok(())
+    }
+
+    pub fn close(&mut self) -> Result<(), AudioFrameError> {
+        self.source.close()
+    }
+
+    pub(crate) fn source(&self) -> &AudioSource {
+        &self.source
+    }
+}
+
 /// A sequence-bound local audio track retaining its source and factory.
 #[derive(Clone)]
 pub struct AudioTrack {
@@ -309,6 +473,7 @@ struct TrackInner {
     native: cxx::UniquePtr<ffi::NativeAudioTrack>,
     _source: Option<Rc<SourceInner>>,
     _factory: Rc<FactoryInner>,
+    encoded: bool,
 }
 
 impl AudioTrack {
@@ -322,6 +487,7 @@ impl AudioTrack {
                 native,
                 _source: Some(source.inner.clone()),
                 _factory: factory,
+                encoded: false,
             }),
         }
     }
@@ -336,8 +502,46 @@ impl AudioTrack {
                 native,
                 _source: None,
                 _factory: factory,
+                encoded: false,
             }),
         }
+    }
+
+    pub(crate) fn mark_encoded(mut self) -> Self {
+        Rc::get_mut(&mut self.inner)
+            .expect("new audio track has one owner")
+            .encoded = true;
+        self
+    }
+
+    /// Request upstream AEC, NS and AGC choices for a local PCM track. The
+    /// engine is factory-wide: requests from different tracks can conflict.
+    /// A stored request does not prove an effect is active; inspect the
+    /// factory's `audio_processing_state` after starting capture.
+    pub fn set_audio_processing_options(
+        &self,
+        options: crate::AudioProcessingOptions,
+    ) -> Result<(), crate::PeerError> {
+        if self.inner.encoded {
+            return Err(crate::PeerError {
+                kind: crate::PeerErrorKind::InvalidParameter,
+                message: "encoded Opus bypasses PCM audio processing".into(),
+            });
+        }
+        let mut error = String::new();
+        if !ffi::audio_track_set_processing_options(
+            self.native(),
+            options.echo_cancellation as u8,
+            options.noise_suppression as u8,
+            options.gain_control as u8,
+            &mut error,
+        ) {
+            return Err(crate::PeerError {
+                kind: crate::PeerErrorKind::InvalidParameter,
+                message: error,
+            });
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> String {
