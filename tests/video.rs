@@ -15,7 +15,7 @@ use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, DecodedImageCallback, EncodedH264Input, EncodedImageCallback,
     EncodedVideoFrame, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
     PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
-    RtpTransceiver, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
+    PeerStatsRecord, RtpTransceiver, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
     VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
     VideoDecoderInfo, VideoDecoderSettings, VideoEncoder, VideoEncoderFactory,
     VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame,
@@ -265,6 +265,10 @@ impl Pair {
     }
 
     fn negotiate(&self) -> Vec<PeerConnectionEvent> {
+        self.negotiate_with_receive_rids(false)
+    }
+
+    fn negotiate_with_receive_rids(&self, receive_rids: bool) -> Vec<PeerConnectionEvent> {
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
         let offer =
@@ -292,13 +296,19 @@ impl Pair {
             self.bob.set_local_description(answer.clone()),
             &mut bob_events,
         );
-        let gathered = non_trickle::gathered_local_description(
+        let mut gathered = non_trickle::gathered_local_description(
             &self.bob,
             &self.clock,
             &self.network,
             &mut bob_events,
         );
         assert_eq!(gathered.kind, answer.kind);
+        if receive_rids {
+            // Simulate an SFU accepting both offered RIDs in its answer.
+            gathered
+                .sdp
+                .push_str("a=rid:f recv\r\na=rid:h recv\r\na=simulcast:recv f;h\r\n");
+        }
         completion(
             &self.alice,
             self.alice.set_remote_description(gathered),
@@ -1114,7 +1124,8 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
 
 #[test]
 fn video_rids_are_validated_and_fixed_before_negotiation() {
-    let pair = Pair::new(Arc::new(Counters::default()), false);
+    let counters = Arc::new(Counters::default());
+    let mut pair = Pair::new(counters.clone(), false);
     let source = pair.alice_factory.create_video_source().unwrap();
     let track = pair
         .alice_factory
@@ -1143,7 +1154,8 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
             &["f".into(), "h".into()],
         )
         .unwrap();
-    let snapshot = transceiver.sender().parameters().unwrap();
+    let sender = transceiver.sender();
+    let snapshot = sender.parameters().unwrap();
     assert_eq!(
         snapshot
             .encodings
@@ -1153,7 +1165,123 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
         vec!["f", "h"]
     );
     assert!(snapshot.encodings.iter().all(|entry| entry.active));
+    let mut configured = snapshot.clone();
+    configured.encodings[0].scale_resolution_down_by = Some(8.0);
+    configured.encodings[1].scale_resolution_down_by = Some(4.0);
+    sender.set_parameters(configured).unwrap();
     assert_eq!(pair.alice.video_transceivers().unwrap().len(), 1);
+    let mut bob_events = pair.negotiate_with_receive_rids(true);
+    let remote = (0..2_000_000)
+        .find_map(|_| {
+            if let Some(transceiver) = take_remote_transceiver(&mut bob_events) {
+                return Some(transceiver);
+            }
+            bob_events.extend(pair.progress().1);
+            None
+        })
+        .expect("simulcast receiver missing");
+    let mut encoded = remote.receiver().attach_encoded_sink().unwrap();
+    let negotiated = transceiver.sender().parameters().unwrap();
+    assert_eq!(
+        negotiated
+            .encodings
+            .iter()
+            .map(|e| e.rid.as_str())
+            .collect::<Vec<_>>(),
+        vec!["f", "h"],
+        "remote={:?}",
+        pair.alice
+            .descriptions()
+            .unwrap()
+            .current_remote
+            .unwrap()
+            .sdp
+            .lines()
+            .filter(|line| line.contains("rid")
+                || line.contains("simulcast")
+                || line.contains("extmap:"))
+            .collect::<Vec<_>>()
+    );
+    let mut ssrcs = std::collections::HashSet::new();
+    for index in 0..12 {
+        source
+            .push_frame(
+                &VideoFrame::i420(
+                    640,
+                    360,
+                    synthetic_i420(640, 360),
+                    2_000_000 + index * 33_333,
+                    index as u32,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        for _ in 0..100_000 {
+            pair.progress();
+            while let Some(frame) = encoded.try_next_frame() {
+                ssrcs.insert(frame.ssrc);
+            }
+            if ssrcs.len() == 2 {
+                break;
+            }
+        }
+        if ssrcs.len() == 2 {
+            break;
+        }
+    }
+    assert!(
+        counters.encoder_create.load(Ordering::SeqCst) >= 2,
+        "simulcast must instantiate one encoder per layer"
+    );
+    assert!(
+        !ssrcs.is_empty(),
+        "at least one layer must arrive at the peer receiver"
+    );
+    let operation = pair.alice.request_stats().unwrap();
+    let snapshot = (0..100_000)
+        .find_map(|_| {
+            pair.progress().0.into_iter().find_map(|event| match event {
+                PeerConnectionEvent::Stats(stats) if stats.operation_id == operation => Some(stats),
+                _ => None,
+            })
+        })
+        .expect("sender stats missing");
+    let outgoing = snapshot
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            PeerStatsRecord::OutboundRtp(stats) if stats.kind.as_deref() == Some("video") => {
+                Some((stats.rid.as_deref(), stats.ssrc, stats.packets_sent))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outgoing
+            .iter()
+            .filter_map(|(rid, _, _)| *rid)
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from(["f", "h"]),
+        "each simulcast RID needs an outbound stream: {outgoing:?}"
+    );
+    assert_eq!(
+        outgoing
+            .iter()
+            .filter_map(|(_, ssrc, _)| *ssrc)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        2,
+        "simulcast layers must use distinct SSRCs: {outgoing:?}"
+    );
+    assert!(
+        outgoing
+            .iter()
+            .all(|(_, _, packets)| packets.unwrap_or(0) > 0),
+        "both layers must send RTP: {outgoing:?}"
+    );
+    encoded.close();
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
 }
 
 #[test]

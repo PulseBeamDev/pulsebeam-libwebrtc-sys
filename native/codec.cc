@@ -27,6 +27,7 @@
 #include "api/video_codecs/video_encoder_factory.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_error_codes.h"
+#include "media/engine/simulcast_encoder_adapter.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -278,9 +279,9 @@ private:
   bool released_ = false;
 };
 
-class RustEncoderFactory final : public webrtc::VideoEncoderFactory {
+class RustPlainEncoderFactory final : public webrtc::VideoEncoderFactory {
 public:
-  explicit RustEncoderFactory(rust::Box<RustVideoEncoderFactory> factory)
+  explicit RustPlainEncoderFactory(rust::Box<RustVideoEncoderFactory> factory)
       : factory_(std::move(factory)) {}
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
     std::vector<webrtc::SdpVideoFormat> result;
@@ -308,6 +309,30 @@ public:
 
 private:
   rust::Box<RustVideoEncoderFactory> factory_;
+};
+
+class RustEncoderFactory final : public webrtc::VideoEncoderFactory {
+public:
+  explicit RustEncoderFactory(rust::Box<RustVideoEncoderFactory> factory)
+      : plain_(std::make_unique<RustPlainEncoderFactory>(std::move(factory))) {}
+  std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
+    return plain_->GetSupportedFormats();
+  }
+  CodecSupport QueryCodecSupport(
+      const webrtc::SdpVideoFormat &format,
+      std::optional<std::string> scalability_mode,
+      std::optional<webrtc::Resolution> resolution) const override {
+    return plain_->QueryCodecSupport(format, scalability_mode, resolution);
+  }
+  std::unique_ptr<webrtc::VideoEncoder> Create(
+      const webrtc::Environment &env,
+      const webrtc::SdpVideoFormat &format) override {
+    return std::make_unique<webrtc::SimulcastEncoderAdapter>(
+        env, plain_.get(), nullptr, format);
+  }
+
+private:
+  std::unique_ptr<RustPlainEncoderFactory> plain_;
 };
 
 class RustDecoderFactory final : public webrtc::VideoDecoderFactory {
