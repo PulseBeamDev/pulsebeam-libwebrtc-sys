@@ -1,4 +1,6 @@
 use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -8,9 +10,12 @@ use std::{
 };
 
 use pulsebeam_webrtc_sys::{
-    Environment, ManualClock, NetworkThread, RandomnessLease, RandomnessLeaseError,
-    TaskQueueFactory, WorkerThread,
+    BuildEnvironmentError, ControlledWorld, Environment, MAX_CONTROLLED_TIME, ManualClock,
+    NetworkThread, RandomnessLease, RandomnessLeaseError, TaskQueue, TaskQueueFactory,
+    WorkerThread,
 };
+
+static GLOBAL_HOOKS: Mutex<()> = Mutex::new(());
 
 #[test]
 fn cooperative_environment_runs_ready_work_in_deadline_order() {
@@ -52,6 +57,7 @@ fn cooperative_environment_runs_ready_work_in_deadline_order() {
 
 #[test]
 fn seeded_randomness_is_repeatable_exclusive_and_retained_by_roots() {
+    let _exclusive = GLOBAL_HOOKS.lock().unwrap();
     fn sequence(seed: u64) -> Vec<u64> {
         let lease = RandomnessLease::acquire(seed).unwrap();
         let clock = ManualClock::new(Duration::ZERO).unwrap();
@@ -144,28 +150,32 @@ fn mismatched_clock_fails_without_consuming_dependencies() {
 }
 
 #[test]
-fn factory_contract_serializes_a_queue_and_default_queues_execute() {
+fn cooperative_factory_rejects_wrong_thread_and_default_queues_execute() {
     let clock = ManualClock::new(Duration::ZERO).unwrap();
     let factory = TaskQueueFactory::cooperative(&clock).unwrap();
     let queue = factory
         .create_queue("serialized", Default::default())
         .unwrap();
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    assert!(queue.post(move || {
-        entered_tx.send(()).unwrap();
-        release_rx.recv().unwrap();
-    }));
-    assert!(queue.post(|| {}));
-
-    let first_factory = factory.clone();
-    let first = std::thread::spawn(move || first_factory.run_ready());
-    entered_rx.recv().unwrap();
-    let second_factory = factory.clone();
-    let second = std::thread::spawn(move || second_factory.run_ready());
-    assert_eq!(second.join().unwrap(), 0);
-    release_tx.send(()).unwrap();
-    assert_eq!(first.join().unwrap(), 2);
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = ran.clone();
+    assert!(queue.post(move || observed.store(true, Ordering::Release)));
+    let other_factory = factory.clone();
+    std::thread::spawn(move || {
+        assert_eq!(other_factory.run_ready(), 0);
+        assert_eq!(
+            other_factory.pump(1),
+            Err(BuildEnvironmentError::WrongThread)
+        );
+        assert!(matches!(
+            other_factory.create_queue("wrong-thread", Default::default()),
+            Err(BuildEnvironmentError::WrongThread)
+        ));
+    })
+    .join()
+    .unwrap();
+    assert!(!ran.load(Ordering::Acquire));
+    assert_eq!(factory.pump(1).unwrap().dispatched, 1);
+    assert!(ran.load(Ordering::Acquire));
 
     let default_factory = TaskQueueFactory::default_threaded().unwrap();
     let default_queue = default_factory
@@ -174,4 +184,103 @@ fn factory_contract_serializes_a_queue_and_default_queues_execute() {
     let (completed_tx, completed_rx) = mpsc::channel();
     assert!(default_queue.post(move || completed_tx.send(()).unwrap()));
     completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        default_queue.post_local(|| {}),
+        Err(BuildEnvironmentError::NotCooperative)
+    ));
+}
+
+#[test]
+fn bounded_world_pump_returns_under_self_reposting_and_retains_hooks() {
+    let _exclusive = GLOBAL_HOOKS.lock().unwrap();
+    fn repost(queue: Rc<RefCell<TaskQueue>>, count: Rc<Cell<usize>>) {
+        let next_queue = queue.clone();
+        queue
+            .borrow()
+            .post_local(move || {
+                count.set(count.get() + 1);
+                repost(next_queue, count);
+            })
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let world = ControlledWorld::acquire(42, Duration::from_secs(10)).unwrap();
+        assert!(ControlledWorld::acquire(43, Duration::ZERO).is_err());
+        assert_eq!(
+            RandomnessLease::acquire(43).err(),
+            Some(RandomnessLeaseError::AlreadyAcquired)
+        );
+        let queue = Rc::new(RefCell::new(
+            world.create_queue("reposting", Default::default()).unwrap(),
+        ));
+        let count = Rc::new(Cell::new(0));
+        repost(queue.clone(), count.clone());
+        assert_eq!(world.pump(0).dispatched, 0);
+        assert_eq!(count.get(), 0);
+        let result = world.pump(7);
+        assert_eq!(result.dispatched, 7);
+        assert!(result.ready);
+        assert_eq!(result.next_deadline, Some(Duration::from_secs(10)));
+        assert_eq!(count.get(), 7);
+        assert_eq!(world.now(), Duration::from_secs(10));
+        assert_eq!(world.pump(3).dispatched, 3);
+        assert_eq!(count.get(), 10);
+        assert!(world.driver().run_ready());
+        assert_eq!(count.get(), 1_034);
+        assert!(world.pump(0).ready);
+        assert_eq!(world.now(), Duration::from_secs(10));
+        drop(world);
+        assert!(ControlledWorld::acquire(42, Duration::ZERO).is_err());
+        queue.borrow_mut().close();
+        drop(queue);
+        let next = ControlledWorld::acquire(42, Duration::ZERO).unwrap();
+        assert_eq!(next.next_deadline(), None);
+    }
+    {
+        let clock = ManualClock::new(Duration::ZERO).unwrap();
+        let factory = TaskQueueFactory::cooperative(&clock).unwrap();
+        let queue = Rc::new(RefCell::new(
+            factory
+                .create_queue("legacy-reposting", Default::default())
+                .unwrap(),
+        ));
+        let count = Rc::new(Cell::new(0));
+        repost(queue.clone(), count.clone());
+        assert_eq!(factory.run_ready(), 1_024);
+        assert_eq!(count.get(), 1_024);
+        assert!(factory.pump(0).unwrap().ready);
+        assert_eq!(clock.now(), Duration::ZERO);
+        queue.borrow_mut().close();
+    }
+    let randomness = RandomnessLease::acquire(9).unwrap();
+    let first = randomness.next_u64();
+    assert!(ControlledWorld::acquire(42, Duration::ZERO).is_err());
+    let second = randomness.next_u64();
+    drop(randomness);
+    let randomness = RandomnessLease::acquire(9).unwrap();
+    assert_eq!(first, randomness.next_u64());
+    assert_eq!(second, randomness.next_u64());
+}
+
+#[test]
+fn clock_range_and_delayed_work_reject_before_mutation() {
+    assert!(matches!(
+        ManualClock::new(MAX_CONTROLLED_TIME + Duration::from_micros(1)),
+        Err(BuildEnvironmentError::TimestampOutOfRange)
+    ));
+    let clock = ManualClock::new(MAX_CONTROLLED_TIME).unwrap();
+    assert_eq!(
+        clock.advance(Duration::from_micros(1)),
+        Err(BuildEnvironmentError::TimestampOutOfRange)
+    );
+    assert_eq!(clock.now(), MAX_CONTROLLED_TIME);
+    let factory = TaskQueueFactory::cooperative(&clock).unwrap();
+    let queue = factory.create_queue("range", Default::default()).unwrap();
+    assert_eq!(
+        queue.post_delayed(Duration::from_micros(1), || {}),
+        Err(BuildEnvironmentError::TimestampOutOfRange)
+    );
+    assert_eq!(factory.next_deadline(), None);
+    assert!(queue.post(|| {}));
+    assert_eq!(factory.pump(1).unwrap().dispatched, 1);
 }

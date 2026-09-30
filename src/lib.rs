@@ -49,9 +49,10 @@ pub use encoded_video::{
     EncodedVideoSource, H264AccessUnit,
 };
 pub use execution::{
-    BuildEnvironmentError, ControlledPeerDriver, Environment, EnvironmentBuilder, ManualClock,
-    NetworkThread, QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread,
-    SystemClock, TaskQueue, TaskQueueFactory, ThreadStartError, WorkerThread,
+    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder,
+    MAX_CONTROLLED_TIME, ManualClock, NetworkThread, PumpResult, QueuePriority, RandomnessLease,
+    RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue, TaskQueueFactory,
+    ThreadStartError, WorkerThread, WorldAcquireError,
 };
 pub use network::{
     ControlledSimulatedNetwork, NetworkAddress, NetworkEndpoint, NetworkError,
@@ -465,6 +466,7 @@ mod ffi {
             clock: &NativeManualClock,
         ) -> UniquePtr<NativeTaskQueueFactory>;
         fn task_queue_factory_is_cooperative(factory: &NativeTaskQueueFactory) -> bool;
+        fn task_queue_factory_is_current(factory: &NativeTaskQueueFactory) -> bool;
         fn task_queue_factory_uses_clock(
             factory: &NativeTaskQueueFactory,
             clock: &NativeManualClock,
@@ -477,6 +479,7 @@ mod ffi {
         fn post_task(queue: &NativeTaskQueue, task: Box<RustTask>) -> bool;
         fn post_delayed_task(queue: &NativeTaskQueue, delay_us: i64, task: Box<RustTask>) -> bool;
         fn run_ready_tasks(factory: &NativeTaskQueueFactory) -> usize;
+        fn pump_ready_tasks(factory: &NativeTaskQueueFactory, budget: usize) -> usize;
         fn next_task_deadline_us(factory: &NativeTaskQueueFactory) -> i64;
 
         unsafe fn create_environment(
@@ -491,8 +494,17 @@ mod ffi {
 
         fn new_thread(network: bool) -> UniquePtr<NativeThread>;
         fn new_driver_thread(clock: &NativeManualClock) -> UniquePtr<NativeDriverThread>;
+        fn new_seeded_driver_thread(
+            clock: &NativeManualClock,
+            seed: u64,
+        ) -> UniquePtr<NativeDriverThread>;
+        fn driver_pump(driver: &NativeDriverThread, budget: usize) -> usize;
         fn borrow_driver_thread(driver: &NativeDriverThread) -> UniquePtr<NativeThread>;
         fn driver_run_ready(driver: &NativeDriverThread) -> bool;
+        fn test_driver_lifecycle_yield(
+            driver: &NativeDriverThread,
+            factory: &NativeTaskQueueFactory,
+        ) -> bool;
         fn driver_next_deadline_us(driver: &NativeDriverThread) -> i64;
         fn driver_is_current(driver: &NativeDriverThread) -> bool;
         fn thread_post_task(thread: &NativeThread, task: Box<RustTask>) -> bool;

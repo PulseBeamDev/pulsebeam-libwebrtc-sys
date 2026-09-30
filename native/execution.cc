@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -19,6 +19,9 @@
 #include "api/units/timestamp.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/crypto_random.h"
+#include "rtc_base/event.h"
+#include "rtc_base/null_socket_server.h"
+#include "rtc_base/synchronization/yield_policy.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include "system_wrappers/include/clock.h"
@@ -28,6 +31,14 @@ namespace {
 
 constexpr std::int64_t kNoDeadline = std::numeric_limits<std::int64_t>::min();
 std::atomic_bool driver_active{false};
+std::mutex hooks_mutex;
+bool randomness_active = false;
+thread_local std::vector<webrtc::TaskQueueBase*> suspended_queues;
+// Stay within NTP era zero as well as the signed nanosecond clock. Native
+// NTP seconds otherwise wrap in 2036 even though the microsecond clock fits.
+constexpr std::int64_t kMaxTimeUs =
+    (static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) -
+     2208988800LL) * 1000000 + 999999;
 
 class SharedClock final : public webrtc::Clock {
  public:
@@ -55,8 +66,14 @@ using TaskKey = std::pair<std::int64_t, std::uint64_t>;
 class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
  public:
   CooperativeTaskQueue(std::shared_ptr<NativeTaskQueueFactory::State> state,
-                       std::string name) noexcept
-      : state_(std::move(state)), name_(std::move(name)) {}
+                       std::string name,
+                       webrtc::TaskQueueBase* identity = nullptr,
+                       bool lifecycle = true) noexcept
+      : state_(std::move(state)), name_(std::move(name)),
+        identity_(identity ? identity : this), lifecycle_(lifecycle) {}
+
+  webrtc::TaskQueueBase* identity() const { return identity_; }
+  bool lifecycle() const { return lifecycle_; }
 
   absl::string_view queue_name() const override { return name_; }
   void Delete() override;
@@ -74,6 +91,8 @@ class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
  private:
   std::shared_ptr<NativeTaskQueueFactory::State> state_;
   std::string name_;
+  webrtc::TaskQueueBase* identity_;
+  const bool lifecycle_;
 };
 
 class CooperativeTaskQueueFactory final : public webrtc::TaskQueueFactory {
@@ -146,6 +165,9 @@ struct NativeManualClock::State {
 
   webrtc::SimulatedClock clock;
   std::mutex advance_mutex;
+  std::mutex factories_mutex;
+  std::vector<std::weak_ptr<NativeTaskQueueFactory::State>> factories;
+  std::atomic<std::uint64_t> next_sequence{0};
 };
 
 struct NativeTaskQueueFactory::State {
@@ -158,9 +180,8 @@ struct NativeTaskQueueFactory::State {
   std::shared_ptr<NativeManualClock::State> clock;
   std::unique_ptr<webrtc::TaskQueueFactory> default_factory;
   mutable std::mutex mutex;
-  std::condition_variable idle;
+  const std::thread::id creator = std::this_thread::get_id();
   std::map<TaskKey, ScheduledTask> tasks;
-  std::uint64_t next_sequence = 0;
   std::map<CooperativeTaskQueue*, std::size_t> running;
   std::map<CooperativeTaskQueue*, bool> deleted;
 };
@@ -180,33 +201,105 @@ struct NativeEnvironment::State {
   webrtc::Environment environment;
 };
 
-struct NativeDriverThread::State {
+namespace {
+std::shared_ptr<NativeTaskQueueFactory::State> MakeCooperativeState(
+    const std::shared_ptr<NativeManualClock::State>& clock) {
+  auto state = std::make_shared<NativeTaskQueueFactory::State>(clock);
+  std::lock_guard lock(clock->factories_mutex);
+  clock->factories.push_back(state);
+  return state;
+}
+
+std::size_t PumpClock(const std::shared_ptr<NativeManualClock::State>& clock,
+                      std::size_t budget,
+                      webrtc::TaskQueueBase* excluded = nullptr,
+                      bool lifecycle_only = false);
+std::int64_t ClockDeadline(
+    const std::shared_ptr<NativeManualClock::State>& clock);
+
+// Intercept thread posts rather than using upstream's elapsed-time pump,
+// which has no finite dispatch bound at frozen virtual time.
+class ControlledThread final : public webrtc::Thread {
+ public:
+  explicit ControlledThread(
+      std::shared_ptr<NativeTaskQueueFactory::State> state)
+      : webrtc::Thread(std::make_unique<webrtc::NullSocketServer>()),
+        queue_(new CooperativeTaskQueue(std::move(state), "peer", this)) {}
+  ~ControlledThread() override {
+    Stop();
+    ClearPending();
+  }
+  void ClearPending() {
+    if (auto* queue = std::exchange(queue_, nullptr)) queue->Delete();
+  }
+ protected:
+  void PostTaskImpl(absl::AnyInvocable<void() &&> task,
+                    const PostTaskTraits& traits,
+                    const webrtc::Location& location) override {
+    if (queue_ && !IsQuitting()) queue_->PostTask(std::move(task), location);
+  }
+  void PostDelayedTaskImpl(absl::AnyInvocable<void() &&> task,
+                           webrtc::TimeDelta delay,
+                           const PostDelayedTaskTraits& traits,
+                           const webrtc::Location& location) override {
+    if (queue_ && !IsQuitting()) queue_->PostDelayedTask(std::move(task), delay, location);
+  }
+ private:
+  CooperativeTaskQueue* queue_;
+};
+}  // namespace
+
+struct NativeDriverThread::State : webrtc::YieldInterface {
   struct Clock final : webrtc::ClockInterface {
     explicit Clock(std::shared_ptr<NativeManualClock::State> value)
         : state(std::move(value)) {}
     std::int64_t TimeNanos() const override {
       const auto micros = state->clock.TimeInMicroseconds();
-      return std::min(micros, std::numeric_limits<std::int64_t>::max() / 1000)
-          * 1000;
+      RTC_CHECK_LE(micros, kMaxTimeUs);
+      return micros * 1000;
     }
     std::shared_ptr<NativeManualClock::State> state;
   };
 
   State(std::unique_ptr<webrtc::Thread> value,
-        std::shared_ptr<NativeManualClock::State> clock_state)
-      : thread(std::move(value)), clock(std::move(clock_state)) {
+        std::shared_ptr<NativeManualClock::State> clock_state,
+        bool seeded = false)
+      : thread(std::move(value)), clock(std::move(clock_state)), seeded(seeded) {
     webrtc::SetClockForTesting(&clock);
+    yield_policy = std::make_unique<webrtc::ScopedYieldPolicy>(this);
+  }
+  void YieldExecution() override {
+    // Supported Event waits have finite engine-owned ready dependencies.
+    // Caller queues are never native lifecycle dependencies: pumping them
+    // here could hang even after the event was signaled if they self-repost.
+    // Never move time or reenter a suspended queue.
+    suspended_queues.push_back(webrtc::TaskQueueBase::Current());
+    PumpClock(clock.state, std::numeric_limits<std::size_t>::max(),
+              webrtc::TaskQueueBase::Current(), true);
+    suspended_queues.pop_back();
   }
   ~State() {
     RTC_CHECK(thread->IsCurrent());
+    thread->Quit();
+    // Pending captures can release native peers/codec queues. Destroy them
+    // while the driver is still current and cooperative lifecycle yields work.
+    static_cast<ControlledThread*>(thread.get())->ClearPending();
     thread->UnwrapCurrent();
     thread.reset();
+    yield_policy.reset();
+    std::lock_guard lock(hooks_mutex);
     webrtc::SetClockForTesting(nullptr);
+    if (seeded) {
+      webrtc::SetDefaultRandomGenerator();
+      randomness_active = false;
+    }
     driver_active.store(false);
   }
 
   std::unique_ptr<webrtc::Thread> thread;
   Clock clock;
+  bool seeded;
+  std::unique_ptr<webrtc::ScopedYieldPolicy> yield_policy;
 };
 
 struct NativeThread::State {
@@ -235,7 +328,7 @@ void CooperativeTaskQueue::PostTaskImpl(absl::AnyInvocable<void() &&> task,
     return;
   }
   const std::int64_t deadline = state_->clock->clock.TimeInMicroseconds();
-  state_->tasks.emplace(TaskKey{deadline, state_->next_sequence++},
+  state_->tasks.emplace(TaskKey{deadline, state_->clock->next_sequence++},
                         ScheduledTask{this, false, std::move(task)});
 }
 
@@ -250,20 +343,21 @@ void CooperativeTaskQueue::PostDelayedTaskImpl(
   }
   const std::int64_t now = state_->clock->clock.TimeInMicroseconds();
   const std::int64_t delta = std::max<std::int64_t>(0, delay.us());
-  const std::int64_t deadline =
-      delta > std::numeric_limits<std::int64_t>::max() - now
-          ? std::numeric_limits<std::int64_t>::max()
-          : now + delta;
-  state_->tasks.emplace(TaskKey{deadline, state_->next_sequence++},
+  if (delta > kMaxTimeUs - now) return;
+  const std::int64_t deadline = now + delta;
+  state_->tasks.emplace(TaskKey{deadline, state_->clock->next_sequence++},
                         ScheduledTask{this, true, std::move(task)});
 }
 
 void CooperativeTaskQueue::Run(absl::AnyInvocable<void() &&> task) noexcept {
-  CurrentTaskQueueSetter current(this);
+  CurrentTaskQueueSetter current(identity_);
   std::move(task)();
+  task = nullptr;
 }
 
 void CooperativeTaskQueue::Delete() {
+  RTC_CHECK(state_->creator == std::this_thread::get_id());
+  bool destroy = false;
   std::vector<absl::AnyInvocable<void() &&>> immediate;
   std::vector<absl::AnyInvocable<void() &&>> delayed;
   {
@@ -279,16 +373,19 @@ void CooperativeTaskQueue::Delete() {
       destination.push_back(std::move(iterator->second.task));
       iterator = state_->tasks.erase(iterator);
     }
-    state_->idle.wait(lock, [&] { return state_->running[this] == 0; });
-    state_->running.erase(this);
-    state_->deleted.erase(this);
+    destroy = state_->running[this] == 0;
+    if (destroy) {
+      state_->running.erase(this);
+      state_->deleted.erase(this);
+    }
   }
   {
-    CurrentTaskQueueSetter current(this);
+    CurrentTaskQueueSetter current(identity_);
     immediate.clear();
   }
   delayed.clear();
-  delete this;
+  // Retiring a queue from inside its dispatch never waits for that dispatch.
+  if (destroy) delete this;
 }
 
 NativeManualClock::NativeManualClock(std::shared_ptr<State> state) noexcept
@@ -328,7 +425,9 @@ webrtc::Environment NativeEnvironment::environment() const noexcept {
 }
 
 NativeRandomnessLease::~NativeRandomnessLease() {
+  std::lock_guard lock(hooks_mutex);
   webrtc::SetDefaultRandomGenerator();
+  randomness_active = false;
 }
 
 NativeThread::NativeThread(std::unique_ptr<State> state) noexcept
@@ -357,6 +456,7 @@ webrtc::Thread* NativeThread::thread() const noexcept {
 
 std::unique_ptr<NativeManualClock> new_manual_clock(
     std::int64_t initial_time_us) noexcept {
+  if (initial_time_us < 0 || initial_time_us > kMaxTimeUs) return nullptr;
   return std::make_unique<NativeManualClock>(
       std::make_shared<NativeManualClock::State>(initial_time_us));
 }
@@ -370,7 +470,7 @@ bool advance_manual_clock(const NativeManualClock& clock,
   std::lock_guard lock(clock.state()->advance_mutex);
   const std::int64_t now = clock.state()->clock.TimeInMicroseconds();
   if (delta_us < 0 ||
-      delta_us > std::numeric_limits<std::int64_t>::max() - now) {
+      delta_us > kMaxTimeUs - now) {
     return false;
   }
   clock.state()->clock.AdvanceTimeMicroseconds(delta_us);
@@ -390,7 +490,7 @@ new_default_task_queue_factory() noexcept {
 std::unique_ptr<NativeTaskQueueFactory> new_cooperative_task_queue_factory(
     const NativeManualClock& clock) noexcept {
   return std::make_unique<NativeTaskQueueFactory>(
-      std::make_shared<NativeTaskQueueFactory::State>(clock.state()));
+      MakeCooperativeState(clock.state()));
 }
 
 bool task_queue_factory_is_cooperative(
@@ -407,17 +507,18 @@ std::unique_ptr<NativeTaskQueue> create_task_queue(
     const NativeTaskQueueFactory& factory,
     rust::Str name,
     std::uint8_t priority) noexcept {
+  if (!task_queue_factory_is_current(factory)) return nullptr;
   const absl::string_view queue_name(name.data(), name.size());
-  std::unique_ptr<webrtc::TaskQueueFactory> cooperative_factory;
-  webrtc::TaskQueueFactory* implementation =
-      factory.state()->default_factory.get();
+  std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> queue;
   if (factory.state()->cooperative()) {
-    cooperative_factory =
-        std::make_unique<CooperativeTaskQueueFactory>(factory.state());
-    implementation = cooperative_factory.get();
+    // This entry point creates public caller queues, unlike the factory
+    // installed into a native Environment for engine-owned media work.
+    queue.reset(new CooperativeTaskQueue(
+        factory.state(), std::string(queue_name), nullptr, false));
+  } else {
+    queue = factory.state()->default_factory->CreateTaskQueue(
+        queue_name, ToPriority(priority));
   }
-  auto queue =
-      implementation->CreateTaskQueue(queue_name, ToPriority(priority));
   if (!queue) {
     return nullptr;
   }
@@ -447,44 +548,114 @@ bool post_delayed_task(const NativeTaskQueue& queue,
   return true;
 }
 
-std::size_t run_ready_tasks(const NativeTaskQueueFactory& factory) noexcept {
-  const auto& state = factory.state();
-  if (!state->cooperative()) {
-    return 0;
+namespace {
+using QueueState = NativeTaskQueueFactory::State;
+
+std::vector<std::shared_ptr<QueueState>> ClockFactories(
+    const std::shared_ptr<NativeManualClock::State>& clock) {
+  std::vector<std::shared_ptr<QueueState>> result;
+  std::lock_guard lock(clock->factories_mutex);
+  for (auto it = clock->factories.begin(); it != clock->factories.end();) {
+    if (auto state = it->lock()) {
+      result.push_back(std::move(state));
+      ++it;
+    } else {
+      it = clock->factories.erase(it);
+    }
+  }
+  return result;
+}
+
+std::size_t PumpStates(const std::vector<std::shared_ptr<QueueState>>& states,
+                       std::size_t budget,
+                       webrtc::TaskQueueBase* excluded = nullptr,
+                       bool lifecycle_only = false) {
+  for (const auto& state : states) {
+    if (state->creator != std::this_thread::get_id()) return 0;
   }
   std::size_t count = 0;
-  for (;;) {
+  while (count < budget) {
+    std::shared_ptr<QueueState> selected;
+    TaskKey key{std::numeric_limits<std::int64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max()};
+    for (const auto& state : states) {
+      std::lock_guard lock(state->mutex);
+      const auto now = state->clock->clock.TimeInMicroseconds();
+      for (auto it = state->tasks.begin();
+           it != state->tasks.end() && it->first.first <= now; ++it) {
+        auto* queue = it->second.queue;
+        if ((lifecycle_only && !queue->lifecycle()) ||
+            state->running[queue] != 0 || queue->identity() == excluded ||
+            std::find(suspended_queues.begin(), suspended_queues.end(),
+                      queue->identity()) != suspended_queues.end()) continue;
+        if (it->first < key) {
+          selected = state;
+          key = it->first;
+        }
+        break;
+      }
+    }
+    if (!selected) break;
     CooperativeTaskQueue* queue;
     absl::AnyInvocable<void() &&> task;
     {
-      std::lock_guard lock(state->mutex);
-      const std::int64_t now = state->clock->clock.TimeInMicroseconds();
-      auto iterator = state->tasks.begin();
-      while (iterator != state->tasks.end() && iterator->first.first <= now &&
-             state->running[iterator->second.queue] != 0) {
-        ++iterator;
-      }
-      if (iterator == state->tasks.end() || iterator->first.first > now) {
-        break;
-      }
-      queue = iterator->second.queue;
-      if (state->deleted[queue]) {
-        state->tasks.erase(iterator);
-        continue;
-      }
-      ++state->running[queue];
-      task = std::move(iterator->second.task);
-      state->tasks.erase(iterator);
+      std::lock_guard lock(selected->mutex);
+      auto it = selected->tasks.find(key);
+      queue = it->second.queue;
+      ++selected->running[queue];
+      task = std::move(it->second.task);
+      selected->tasks.erase(it);
     }
     queue->Run(std::move(task));
+    bool destroy = false;
     {
-      std::lock_guard lock(state->mutex);
-      --state->running[queue];
-      state->idle.notify_all();
+      std::lock_guard lock(selected->mutex);
+      if (--selected->running[queue] == 0 && selected->deleted[queue]) {
+        selected->running.erase(queue);
+        selected->deleted.erase(queue);
+        destroy = true;
+      }
     }
+    if (destroy) delete queue;
     ++count;
   }
   return count;
+}
+
+std::size_t PumpClock(const std::shared_ptr<NativeManualClock::State>& clock,
+                      std::size_t budget, webrtc::TaskQueueBase* excluded,
+                      bool lifecycle_only) {
+  return PumpStates(ClockFactories(clock), budget, excluded, lifecycle_only);
+}
+
+std::int64_t ClockDeadline(
+    const std::shared_ptr<NativeManualClock::State>& clock) {
+  std::int64_t deadline = kNoDeadline;
+  for (const auto& state : ClockFactories(clock)) {
+    std::lock_guard lock(state->mutex);
+    if (!state->tasks.empty()) {
+      const auto value = state->tasks.begin()->first.first;
+      if (deadline == kNoDeadline || value < deadline) deadline = value;
+    }
+  }
+  return deadline;
+}
+}  // namespace
+
+bool task_queue_factory_is_current(
+    const NativeTaskQueueFactory& factory) noexcept {
+  return !factory.state()->cooperative() ||
+         factory.state()->creator == std::this_thread::get_id();
+}
+
+std::size_t pump_ready_tasks(const NativeTaskQueueFactory& factory,
+                            std::size_t budget) noexcept {
+  if (!factory.state()->cooperative()) return 0;
+  return PumpStates({factory.state()}, budget);
+}
+
+std::size_t run_ready_tasks(const NativeTaskQueueFactory& factory) noexcept {
+  return pump_ready_tasks(factory, 1024);
 }
 
 std::int64_t next_task_deadline_us(
@@ -500,6 +671,7 @@ std::int64_t next_task_deadline_us(
 std::unique_ptr<NativeEnvironment> create_environment(
     const NativeManualClock* clock,
     const NativeTaskQueueFactory& factory) noexcept {
+  if (!task_queue_factory_is_current(factory)) return nullptr;
   webrtc::EnvironmentFactory environment_factory;
   if (clock != nullptr) {
     environment_factory.Set(std::make_unique<SharedClock>(clock->state()));
@@ -528,6 +700,9 @@ std::int64_t environment_time_us(
 
 std::unique_ptr<NativeRandomnessLease> new_seeded_randomness(
     std::uint64_t seed) noexcept {
+  std::lock_guard lock(hooks_mutex);
+  if (randomness_active) return nullptr;
+  randomness_active = true;
   webrtc::SetRandomGenerator(std::make_unique<SeededRandom>(seed));
   return std::make_unique<NativeRandomnessLease>();
 }
@@ -549,17 +724,12 @@ std::unique_ptr<NativeThread> new_thread(bool network) noexcept {
 
 std::unique_ptr<NativeDriverThread> new_driver_thread(
     const NativeManualClock& clock) noexcept {
-  bool expected = false;
-  if (!driver_active.compare_exchange_strong(expected, true)) return nullptr;
-  if (webrtc::Thread::Current() || webrtc::GetClockForTesting()) {
-    driver_active.store(false);
-    return nullptr;
-  }
-  auto thread = webrtc::Thread::CreateWithSocketServer();
-  if (!thread || !thread->WrapCurrent()) {
-    driver_active.store(false);
-    return nullptr;
-  }
+  std::lock_guard lock(hooks_mutex);
+  if (driver_active.load() || webrtc::Thread::Current() ||
+      webrtc::GetClockForTesting()) return nullptr;
+  auto thread = std::make_unique<ControlledThread>(MakeCooperativeState(clock.state()));
+  if (!thread->WrapCurrent()) return nullptr;
+  driver_active.store(true);
   return std::make_unique<NativeDriverThread>(
       std::make_unique<NativeDriverThread::State>(std::move(thread), clock.state()));
 }
@@ -571,20 +741,51 @@ std::unique_ptr<NativeThread> borrow_driver_thread(
       std::make_unique<NativeThread::State>(driver.thread()));
 }
 
+std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
+    const NativeManualClock& clock, std::uint64_t seed) noexcept {
+  std::lock_guard lock(hooks_mutex);
+  if (driver_active.load() || randomness_active || webrtc::Thread::Current() ||
+      webrtc::GetClockForTesting()) return nullptr;
+  auto thread = std::make_unique<ControlledThread>(MakeCooperativeState(clock.state()));
+  if (!thread->WrapCurrent()) return nullptr;
+  driver_active.store(true);
+  randomness_active = true;
+  webrtc::SetRandomGenerator(std::make_unique<SeededRandom>(seed));
+  return std::make_unique<NativeDriverThread>(
+      std::make_unique<NativeDriverThread::State>(std::move(thread), clock.state(), true));
+}
+
+std::size_t driver_pump(const NativeDriverThread& driver,
+                        std::size_t budget) noexcept {
+  if (!driver.thread() || !driver.thread()->IsCurrent()) return 0;
+  return PumpClock(driver.state()->clock.state, budget);
+}
+
 bool driver_run_ready(const NativeDriverThread& driver) noexcept {
-  return driver.thread() && driver.thread()->IsCurrent() &&
-         driver.thread()->ProcessMessages(0);
+  if (!driver.thread() || !driver.thread()->IsCurrent()) return false;
+  driver_pump(driver, 1024);
+  return true;
+}
+
+bool test_driver_lifecycle_yield(
+    const NativeDriverThread& driver,
+    const NativeTaskQueueFactory& factory) noexcept {
+  if (!driver_is_current(driver) ||
+      factory.state()->clock != driver.state()->clock.state ||
+      !task_queue_factory_is_current(factory)) return false;
+  const auto before = driver.state()->clock.state->clock.TimeInMicroseconds();
+  webrtc::Event event;
+  CooperativeTaskQueueFactory implementation(factory.state());
+  auto queue = implementation.CreateTaskQueue(
+      "lifecycle-probe", webrtc::TaskQueueFactory::Priority::NORMAL);
+  queue->PostTask([&event] { event.Set(); });
+  return event.Wait(webrtc::TimeDelta::PlusInfinity()) &&
+         driver.state()->clock.state->clock.TimeInMicroseconds() == before;
 }
 
 std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept {
   if (!driver.thread() || !driver.thread()->IsCurrent()) return kNoDeadline;
-  const int delay_ms = driver.thread()->GetDelay();
-  if (delay_ms == webrtc::Thread::kForever) return kNoDeadline;
-  const auto now = driver.state()->clock.state->clock.TimeInMicroseconds();
-  const auto delta = static_cast<std::int64_t>(delay_ms) * 1000;
-  return now > std::numeric_limits<std::int64_t>::max() - delta
-             ? std::numeric_limits<std::int64_t>::max()
-             : now + delta;
+  return ClockDeadline(driver.state()->clock.state);
 }
 
 bool driver_is_current(const NativeDriverThread& driver) noexcept {

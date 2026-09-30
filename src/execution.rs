@@ -1,20 +1,15 @@
-use std::{
-    fmt,
-    marker::PhantomData,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{fmt, marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 
 use crate::ffi;
 
 const NO_DEADLINE: i64 = i64::MIN;
-static RANDOMNESS_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Largest timestamp within both WebRTC's nanosecond clock and NTP era zero.
+pub const MAX_CONTROLLED_TIME: Duration =
+    Duration::from_micros((u32::MAX as u64 - 2_208_988_800) * 1_000_000 + 999_999);
 
-pub(crate) struct RustTask(Option<Box<dyn FnOnce() + Send + 'static>>);
+// Non-Send closures enter native code only through creator-thread cooperative
+// queues. Threaded posting methods continue to require Send closures.
+pub(crate) struct RustTask(Option<Box<dyn FnOnce() + 'static>>);
 
 pub(crate) fn run_task(mut task: Box<RustTask>) {
     if let Some(task) = task.0.take() {
@@ -56,6 +51,9 @@ unsafe impl Sync for ManualClockInner {}
 
 impl ManualClock {
     pub fn new(initial_time: Duration) -> Result<Self, BuildEnvironmentError> {
+        if initial_time > MAX_CONTROLLED_TIME {
+            return Err(BuildEnvironmentError::TimestampOutOfRange);
+        }
         let initial_time_us =
             duration_micros(initial_time).ok_or(BuildEnvironmentError::TimestampOutOfRange)?;
         let native = ffi::new_manual_clock(initial_time_us);
@@ -139,6 +137,7 @@ impl TaskQueueFactory {
         name: &str,
         priority: QueuePriority,
     ) -> Result<TaskQueue, BuildEnvironmentError> {
+        self.check_current()?;
         if name.as_bytes().contains(&0) {
             return Err(BuildEnvironmentError::InvalidQueueName);
         }
@@ -148,15 +147,45 @@ impl TaskQueueFactory {
         } else {
             Ok(TaskQueue {
                 native,
+                factory: self.clone(),
+                driver: None,
                 _creator_sequence: PhantomData,
             })
         }
     }
 
-    /// Runs all cooperative work whose deadline is at or before the clock.
-    /// Returns zero for a default threaded factory.
+    /// Dispatch up to 1,024 ready cooperative tasks without moving time.
+    /// Returns zero for a default threaded factory or off the cooperative
+    /// factory's creator thread. Work may remain ready; use `pump` for a
+    /// caller-selected budget and a remaining-work snapshot.
     pub fn run_ready(&self) -> usize {
-        ffi::run_ready_tasks(self.native())
+        self.pump(1_024).map_or(0, |result| result.dispatched)
+    }
+
+    /// Dispatch at most `budget` top-level tasks. Nested lifecycle yields do
+    /// not count against it. A zero budget never dispatches work.
+    pub fn pump(&self, budget: usize) -> Result<PumpResult, BuildEnvironmentError> {
+        self.check_current()?;
+        let dispatched = ffi::pump_ready_tasks(self.native(), budget);
+        let next_deadline = self.next_deadline();
+        let ready = self
+            .0
+            .clock
+            .as_ref()
+            .is_some_and(|clock| next_deadline.is_some_and(|deadline| deadline <= clock.now()));
+        Ok(PumpResult {
+            dispatched,
+            ready,
+            next_deadline,
+        })
+    }
+
+    fn check_current(&self) -> Result<(), BuildEnvironmentError> {
+        if ffi::task_queue_factory_is_current(self.native()) {
+            Ok(())
+        } else {
+            Err(BuildEnvironmentError::WrongThread)
+        }
     }
 
     /// Returns the next cooperative deadline, or `None` when no work is queued.
@@ -190,10 +219,26 @@ impl TaskQueueFactory {
 /// ```
 pub struct TaskQueue {
     native: cxx::UniquePtr<ffi::NativeTaskQueue>,
+    factory: TaskQueueFactory,
+    driver: Option<ControlledPeerDriver>,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
 impl TaskQueue {
+    /// Post caller-thread work. Reject threaded factories before retaining the
+    /// closure; the native cooperative queue only runs/destroys it on this
+    /// queue's creator thread. This permits cooperative self-reposting work.
+    pub fn post_local(&self, task: impl FnOnce() + 'static) -> Result<bool, BuildEnvironmentError> {
+        if !self.factory.is_cooperative() {
+            return Err(BuildEnvironmentError::NotCooperative);
+        }
+        self.factory.check_current()?;
+        Ok(self
+            .native
+            .as_ref()
+            .is_some_and(|native| ffi::post_task(native, Box::new(RustTask(Some(Box::new(task)))))))
+    }
+
     pub fn post(&self, task: impl FnOnce() + Send + 'static) -> bool {
         self.native
             .as_ref()
@@ -206,6 +251,14 @@ impl TaskQueue {
         task: impl FnOnce() + Send + 'static,
     ) -> Result<bool, BuildEnvironmentError> {
         let delay_us = duration_micros(delay).ok_or(BuildEnvironmentError::TimestampOutOfRange)?;
+        if self.factory.0.clock.as_ref().is_some_and(|clock| {
+            clock
+                .now()
+                .checked_add(delay)
+                .is_none_or(|deadline| deadline > MAX_CONTROLLED_TIME)
+        }) {
+            return Err(BuildEnvironmentError::TimestampOutOfRange);
+        }
         Ok(self
             .native
             .as_ref()
@@ -263,6 +316,7 @@ impl Environment {
 
     pub(crate) fn uses_controlled_clock(&self, clock: &ManualClock) -> bool {
         self._task_queue_factory.is_cooperative()
+            && self._task_queue_factory.check_current().is_ok()
             && ffi::task_queue_factory_uses_clock(self._task_queue_factory.native(), clock.native())
     }
 
@@ -299,6 +353,7 @@ impl EnvironmentBuilder {
             Some(factory) => factory,
             None => TaskQueueFactory::default_threaded()?,
         };
+        factory.check_current()?;
         let clock = match (&self.clock, &factory.0.clock) {
             (None, Some(factory_clock)) => Some(factory_clock.clone()),
             (Some(clock), Some(_))
@@ -332,6 +387,8 @@ pub enum BuildEnvironmentError {
     MismatchedCooperativeClock,
     NativeConstructionFailed,
     TimestampOutOfRange,
+    WrongThread,
+    NotCooperative,
 }
 
 impl fmt::Display for BuildEnvironmentError {
@@ -342,7 +399,11 @@ impl fmt::Display for BuildEnvironmentError {
                 "the environment clock differs from the cooperative factory clock"
             }
             Self::NativeConstructionFailed => "native WebRTC construction failed",
-            Self::TimestampOutOfRange => "timestamp is outside WebRTC's signed microsecond range",
+            Self::TimestampOutOfRange => {
+                "timestamp is outside the controlled clock's NTP-era-zero range"
+            }
+            Self::WrongThread => "cooperative execution requires the factory's creator thread",
+            Self::NotCooperative => "local tasks require a cooperative queue",
         })
     }
 }
@@ -364,13 +425,9 @@ unsafe impl Sync for RandomnessState {}
 
 impl RandomnessLease {
     pub fn acquire(seed: u64) -> Result<Self, RandomnessLeaseError> {
-        RANDOMNESS_ACTIVE
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| RandomnessLeaseError::AlreadyAcquired)?;
         let native = ffi::new_seeded_randomness(seed);
         if native.is_null() {
-            RANDOMNESS_ACTIVE.store(false, Ordering::Release);
-            return Err(RandomnessLeaseError::NativeConstructionFailed);
+            return Err(RandomnessLeaseError::AlreadyAcquired);
         }
         Ok(Self(Arc::new(RandomnessState {
             native: Some(native),
@@ -385,7 +442,6 @@ impl RandomnessLease {
 impl Drop for RandomnessState {
     fn drop(&mut self) {
         drop(self.native.take());
-        RANDOMNESS_ACTIVE.store(false, Ordering::Release);
     }
 }
 
@@ -489,8 +545,8 @@ thread_handle!(WorkerThread, false);
 thread_handle!(SignalingThread, false);
 
 /// One caller-owned, sequence-bound WebRTC thread for peer network, worker,
-/// and signaling roles. It never starts an OS thread. Pump it and the matching
-/// cooperative task queue after advancing the manual clock. Only one such
+/// and signaling roles. It never starts an OS thread. Its budgeted pump also
+/// dispatches cooperative media queues sharing the manual clock. Only one such
 /// driver may be active per process because WebRTC's thread clock is global.
 /// Native devices are not supported with this driver.
 ///
@@ -521,14 +577,32 @@ impl ControlledPeerDriver {
         }
     }
 
-    /// Drain currently runnable native thread messages without waiting.
-    /// Returns true on success (including an idle thread), false off-thread.
+    /// Dispatch up to 1,024 ready tasks without moving time or waiting.
+    /// Returns true on the creator thread (including when idle), false
+    /// off-thread. Success does not imply a drain; use `pump` for a
+    /// caller-selected budget and a remaining-work snapshot.
     pub fn run_ready(&self) -> bool {
-        ffi::driver_run_ready(self.native())
+        if !self.is_current() {
+            return false;
+        }
+        self.pump(1_024);
+        true
     }
 
-    /// Approximate deadline of the next native thread task, rounded to ms.
-    /// Combine it with `TaskQueueFactory::next_deadline` and pending packets.
+    /// Dispatch at most `budget` tasks across this driver's peer and media
+    /// queues. All queues sharing its clock use deadline then posting order.
+    pub fn pump(&self, budget: usize) -> PumpResult {
+        let dispatched = ffi::driver_pump(self.native(), budget);
+        let next_deadline = self.next_deadline();
+        PumpResult {
+            dispatched,
+            ready: next_deadline.is_some_and(|deadline| deadline <= self.0.clock.now()),
+            next_deadline,
+        }
+    }
+
+    /// Earliest pending deadline across native peer and media task queues,
+    /// with microsecond precision. Pending external packets are caller-owned.
     pub fn next_deadline(&self) -> Option<Duration> {
         let deadline = ffi::driver_next_deadline_us(self.native());
         (deadline != NO_DEADLINE).then(|| Duration::from_micros(deadline as u64))
@@ -555,6 +629,120 @@ impl ControlledPeerDriver {
     }
 }
 
+/// Snapshot after a caller-selected finite dispatch budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PumpResult {
+    pub dispatched: usize,
+    pub ready: bool,
+    pub next_deadline: Option<Duration>,
+}
+
+/// Exclusive seeded, caller-thread-controlled execution domain.
+///
+/// Acquisition installs the process clock and non-cryptographic random hook
+/// atomically, or leaves existing hooks untouched. Peer factories, networks
+/// and queues retain the driver until their caller-thread teardown finishes.
+/// Production peers and independent parallel worlds must not coexist with it.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::ControlledWorld>();
+/// ```
+///
+/// ```compile_fail
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<pulsebeam_webrtc_sys::ControlledWorld>();
+/// ```
+pub struct ControlledWorld {
+    factory: TaskQueueFactory,
+    clock: ManualClock,
+    driver: ControlledPeerDriver,
+}
+
+impl ControlledWorld {
+    pub fn acquire(seed: u64, initial_time: Duration) -> Result<Self, WorldAcquireError> {
+        let clock = ManualClock::new(initial_time).map_err(WorldAcquireError::Environment)?;
+        let factory =
+            TaskQueueFactory::cooperative(&clock).map_err(WorldAcquireError::Environment)?;
+        let native = ffi::new_seeded_driver_thread(clock.native(), seed);
+        if native.is_null() {
+            return Err(WorldAcquireError::HooksUnavailable);
+        }
+        let driver = ControlledPeerDriver(Rc::new(DriverInner {
+            native,
+            clock: clock.clone(),
+            _creator_sequence: PhantomData,
+        }));
+        Ok(Self {
+            factory,
+            clock,
+            driver,
+        })
+    }
+
+    pub fn now(&self) -> Duration {
+        self.clock.now()
+    }
+
+    /// Move virtual time without executing any queued work. Fractional
+    /// microseconds are truncated; time is never advanced by pumping/yielding.
+    pub fn advance(&self, delta: Duration) -> Result<(), BuildEnvironmentError> {
+        self.clock.advance(delta)
+    }
+
+    pub fn pump(&self, budget: usize) -> PumpResult {
+        self.driver.pump(budget)
+    }
+
+    pub fn next_deadline(&self) -> Option<Duration> {
+        self.driver.next_deadline()
+    }
+
+    pub fn driver(&self) -> &ControlledPeerDriver {
+        &self.driver
+    }
+
+    pub fn create_queue(
+        &self,
+        name: &str,
+        priority: QueuePriority,
+    ) -> Result<TaskQueue, BuildEnvironmentError> {
+        let mut queue = self.factory.create_queue(name, priority)?;
+        queue.driver = Some(self.driver.clone());
+        Ok(queue)
+    }
+
+    /// Build a factory with matching clock, cooperative queues and driver.
+    /// Supply controlled packet providers before `build`.
+    pub fn peer_factory_builder(
+        &self,
+    ) -> Result<crate::PeerConnectionFactoryBuilder, BuildEnvironmentError> {
+        let environment = Environment::builder()
+            .task_queue_factory(&self.factory)
+            .build()?;
+        Ok(crate::PeerConnectionFactory::builder()
+            .environment(environment)
+            .controlled_driver(&self.driver))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorldAcquireError {
+    Environment(BuildEnvironmentError),
+    HooksUnavailable,
+}
+impl fmt::Display for WorldAcquireError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Environment(error) => error.fmt(f),
+            Self::HooksUnavailable => {
+                f.write_str("controlled clock/randomness hooks or caller thread are already owned")
+            }
+        }
+    }
+}
+impl std::error::Error for WorldAcquireError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +755,41 @@ mod tests {
         assert_send_sync::<TaskQueueFactory>();
         assert_send_sync::<Environment>();
         assert_send_sync::<RandomnessLease>();
+    }
+
+    #[test]
+    fn lifecycle_yield_leaves_self_reposting_caller_work_for_the_pump() {
+        use std::cell::{Cell, RefCell};
+
+        fn repost(queue: Rc<RefCell<TaskQueue>>, count: Rc<Cell<usize>>) {
+            let next_queue = queue.clone();
+            queue
+                .borrow()
+                .post_local(move || {
+                    count.set(count.get() + 1);
+                    repost(next_queue, count);
+                })
+                .unwrap();
+        }
+
+        let world = ControlledWorld::acquire(81, Duration::from_secs(99)).unwrap();
+        let queue = Rc::new(RefCell::new(
+            world
+                .create_queue("caller-reposting", QueuePriority::Normal)
+                .unwrap(),
+        ));
+        let count = Rc::new(Cell::new(0));
+        repost(queue.clone(), count.clone());
+        assert!(ffi::test_driver_lifecycle_yield(
+            world.driver.native(),
+            world.factory.native(),
+        ));
+        assert_eq!(count.get(), 0);
+        assert_eq!(world.now(), Duration::from_secs(99));
+        assert!(world.pump(0).ready);
+        assert_eq!(world.pump(3).dispatched, 3);
+        assert_eq!(count.get(), 3);
+        queue.borrow_mut().close();
     }
 
     #[test]

@@ -137,6 +137,8 @@ std::unique_ptr<NativeTaskQueueFactory> new_cooperative_task_queue_factory(
     const NativeManualClock& clock) noexcept;
 bool task_queue_factory_is_cooperative(
     const NativeTaskQueueFactory& factory) noexcept;
+bool task_queue_factory_is_current(
+    const NativeTaskQueueFactory& factory) noexcept;
 bool task_queue_factory_uses_clock(const NativeTaskQueueFactory& factory,
                                    const NativeManualClock& clock) noexcept;
 std::unique_ptr<NativeTaskQueue> create_task_queue(
@@ -148,6 +150,8 @@ bool post_delayed_task(const NativeTaskQueue& queue,
                        std::int64_t delay_us,
                        rust::Box<RustTask> task) noexcept;
 std::size_t run_ready_tasks(const NativeTaskQueueFactory& factory) noexcept;
+std::size_t pump_ready_tasks(const NativeTaskQueueFactory& factory,
+                            std::size_t budget) noexcept;
 std::int64_t next_task_deadline_us(
     const NativeTaskQueueFactory& factory) noexcept;
 
@@ -166,9 +170,16 @@ std::uint64_t next_seeded_random_u64(
 std::unique_ptr<NativeThread> new_thread(bool network) noexcept;
 std::unique_ptr<NativeDriverThread> new_driver_thread(
     const NativeManualClock& clock) noexcept;
+std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
+    const NativeManualClock& clock, std::uint64_t seed) noexcept;
+std::size_t driver_pump(const NativeDriverThread& driver,
+                        std::size_t budget) noexcept;
 std::unique_ptr<NativeThread> borrow_driver_thread(
     const NativeDriverThread& driver) noexcept;
 bool driver_run_ready(const NativeDriverThread& driver) noexcept;
+bool test_driver_lifecycle_yield(
+    const NativeDriverThread& driver,
+    const NativeTaskQueueFactory& factory) noexcept;
 std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept;
 bool driver_is_current(const NativeDriverThread& driver) noexcept;
 bool thread_post_task(const NativeThread& thread,
