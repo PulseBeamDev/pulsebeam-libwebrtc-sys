@@ -7,9 +7,11 @@ use std::{
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    ConnectionState, Environment, IceGatheringState, IceServer, IceTransportPolicy, ManualClock,
-    OperationCompletion, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerErrorKind, PeerStatsRecord, SessionDescription, SimulatedNetwork,
+    ConnectionState, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
+    DataChannelSendResult, DataChannelState, Environment, IceGatheringState, IceServer,
+    IceTransportPolicy, ManualClock, OperationCompletion, OperationId, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, PeerStatsRecord,
+    SessionDescription, SimulatedNetwork,
 };
 
 fn factory(
@@ -82,6 +84,18 @@ fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
     drop(alice_factory);
     drop(bob_factory);
 
+    let channel_config = DataChannelConfiguration {
+        negotiated: true,
+        id: Some(2),
+        ..Default::default()
+    };
+    let alice_channel = alice
+        .create_data_channel("restart-probe", channel_config.clone())
+        .unwrap();
+    let bob_channel = bob
+        .create_data_channel("restart-probe", channel_config)
+        .unwrap();
+
     let mut alice_events = Vec::new();
     let mut bob_events = Vec::new();
     let offer_id = alice.create_offer();
@@ -131,7 +145,11 @@ fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
             network.deliver(packet.id).unwrap();
             delivered_packets += 1;
         }
-        if alice_connected && bob_connected {
+        if alice_connected
+            && bob_connected
+            && alice_channel.state() == DataChannelState::Open
+            && bob_channel.state() == DataChannelState::Open
+        {
             break;
         }
         clock.advance(std::time::Duration::from_millis(1)).unwrap();
@@ -218,35 +236,48 @@ fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
         non_trickle::gathered_local_description(&bob, &clock, &network, &mut bob_events);
     let set_remote = alice.set_remote_description(gathered_answer);
     require_success(&alice, set_remote, &mut alice_events);
-    let mut alice_reconnected = false;
-    let mut bob_reconnected = false;
+    // An ICE restart may keep the aggregate PeerConnection state Connected.
+    // Upstream suppresses duplicate state notifications, so require actual
+    // bidirectional application delivery after exchanging the new credentials.
+    let from_alice = DataChannelMessage::binary(b"alice-after-restart".to_vec());
+    let from_bob = DataChannelMessage::binary(b"bob-after-restart".to_vec());
+    assert_eq!(
+        alice_channel.send(from_alice.clone()),
+        DataChannelSendResult::Sent
+    );
+    assert_eq!(
+        bob_channel.send(from_bob.clone()),
+        DataChannelSendResult::Sent
+    );
+    let mut alice_received = false;
+    let mut bob_received = false;
     let mut restart_packets = 0;
     for _ in 0..2_000_000 {
-        for event in alice_events
-            .drain(..)
-            .chain(std::iter::from_fn(|| alice.try_next_event()))
-        {
-            alice_reconnected |= connected(event);
+        while let Some(event) = alice_channel.try_next_event() {
+            if let DataChannelEvent::Message(message) = event {
+                assert_eq!(message, from_bob);
+                alice_received = true;
+            }
         }
-        for event in bob_events
-            .drain(..)
-            .chain(std::iter::from_fn(|| bob.try_next_event()))
-        {
-            bob_reconnected |= connected(event);
+        while let Some(event) = bob_channel.try_next_event() {
+            if let DataChannelEvent::Message(message) = event {
+                assert_eq!(message, from_alice);
+                bob_received = true;
+            }
         }
         while let Some(packet) = network.next_packet() {
             network.deliver(packet.id).unwrap();
             restart_packets += 1;
         }
-        if alice_reconnected && bob_reconnected {
+        if alice_received && bob_received {
             break;
         }
         clock.advance(std::time::Duration::from_millis(1)).unwrap();
         thread::yield_now();
     }
     assert!(
-        alice_reconnected && bob_reconnected && restart_packets > 0,
-        "ICE restart did not reconnect: packets={restart_packets}, alice={alice_reconnected}, bob={bob_reconnected}"
+        alice_received && bob_received && restart_packets > 0,
+        "ICE restart did not deliver bidirectionally: packets={restart_packets}, alice={alice_received}, bob={bob_received}"
     );
 
     alice.close().unwrap();
