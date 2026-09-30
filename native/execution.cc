@@ -206,6 +206,13 @@ std::shared_ptr<NativeTaskQueueFactory::State> MakeCooperativeState(
     const std::shared_ptr<NativeManualClock::State>& clock) {
   auto state = std::make_shared<NativeTaskQueueFactory::State>(clock);
   std::lock_guard lock(clock->factories_mutex);
+  // A clock is one cooperative dispatch domain. Reject foreign creators
+  // before registration, otherwise one inaccessible factory stalls PumpClock
+  // and leaves its ready deadline permanently visible to the caller.
+  for (const auto& weak : clock->factories) {
+    if (auto existing = weak.lock(); existing && existing->creator != state->creator)
+      return nullptr;
+  }
   clock->factories.push_back(state);
   return state;
 }
@@ -489,8 +496,9 @@ new_default_task_queue_factory() noexcept {
 
 std::unique_ptr<NativeTaskQueueFactory> new_cooperative_task_queue_factory(
     const NativeManualClock& clock) noexcept {
-  return std::make_unique<NativeTaskQueueFactory>(
-      MakeCooperativeState(clock.state()));
+  auto state = MakeCooperativeState(clock.state());
+  if (!state) return nullptr;
+  return std::make_unique<NativeTaskQueueFactory>(std::move(state));
 }
 
 bool task_queue_factory_is_cooperative(
@@ -727,7 +735,9 @@ std::unique_ptr<NativeDriverThread> new_driver_thread(
   std::lock_guard lock(hooks_mutex);
   if (driver_active.load() || webrtc::Thread::Current() ||
       webrtc::GetClockForTesting()) return nullptr;
-  auto thread = std::make_unique<ControlledThread>(MakeCooperativeState(clock.state()));
+  auto queues = MakeCooperativeState(clock.state());
+  if (!queues) return nullptr;
+  auto thread = std::make_unique<ControlledThread>(std::move(queues));
   if (!thread->WrapCurrent()) return nullptr;
   driver_active.store(true);
   return std::make_unique<NativeDriverThread>(
@@ -746,7 +756,9 @@ std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
   std::lock_guard lock(hooks_mutex);
   if (driver_active.load() || randomness_active || webrtc::Thread::Current() ||
       webrtc::GetClockForTesting()) return nullptr;
-  auto thread = std::make_unique<ControlledThread>(MakeCooperativeState(clock.state()));
+  auto queues = MakeCooperativeState(clock.state());
+  if (!queues) return nullptr;
+  auto thread = std::make_unique<ControlledThread>(std::move(queues));
   if (!thread->WrapCurrent()) return nullptr;
   driver_active.store(true);
   randomness_active = true;

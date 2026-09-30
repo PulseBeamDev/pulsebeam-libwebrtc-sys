@@ -67,6 +67,13 @@ its clock. Compatibility `run_ready` dispatches at most 1,024 tasks and may
 leave work ready. Cooperative factory `run_ready` returns zero off-thread;
 explicit factory pump returns `BuildEnvironmentError::WrongThread`.
 
+All live cooperative factories sharing a `ManualClock` must be created on
+one OS thread, including through the lower-level APIs. Creating a foreign-thread
+factory returns `BuildEnvironmentError::NativeConstructionFailed` before
+registration; acquiring a driver with a pre-existing foreign factory also fails
+before changing global hooks. Factories on independent clocks are unaffected.
+This prevents inaccessible queues from stalling the clock-wide pump.
+
 `TaskQueue::post_local` accepts sequence-bound closures only for cooperative
 queues, enabling self-reposting caller work. Threaded posting retains its
 `Send` bound. Dispatch budgets bound task count, not the execution time of
@@ -140,7 +147,8 @@ queue deadline.
 
 Replay requires identical binding/artifact, builtin decoder configuration,
 initial world time, seed, ordered input and external decisions. Compare logical
-operation/state/stream outcomes, virtual timing, PCM samples and visible packed
+operation/state/stream outcomes, normalized SDP and ICE candidate contents and
+observation times, virtual timing, PCM samples and visible packed
 pixels. Exclude certificates, cryptographic material/ciphertext, native
 thread-token diagnostics, pixel padding and wall-clock profiling values. Do
 not exclude decoded contents or logical delivery times. Cross-build equivalence

@@ -10,8 +10,8 @@ use std::{
 };
 
 use pulsebeam_webrtc_sys::{
-    BuildEnvironmentError, ControlledWorld, Environment, MAX_CONTROLLED_TIME, ManualClock,
-    NetworkThread, RandomnessLease, RandomnessLeaseError, TaskQueue, TaskQueueFactory,
+    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, MAX_CONTROLLED_TIME,
+    ManualClock, NetworkThread, RandomnessLease, RandomnessLeaseError, TaskQueue, TaskQueueFactory,
     WorkerThread,
 };
 
@@ -188,6 +188,44 @@ fn cooperative_factory_rejects_wrong_thread_and_default_queues_execute() {
         default_queue.post_local(|| {}),
         Err(BuildEnvironmentError::NotCooperative)
     ));
+}
+
+#[test]
+fn shared_clock_rejects_foreign_queue_creators_without_stalling_driver() {
+    let _exclusive = GLOBAL_HOOKS.lock().unwrap();
+    let clock = ManualClock::new(Duration::ZERO).unwrap();
+    let factory = TaskQueueFactory::cooperative(&clock).unwrap();
+    let driver = ControlledPeerDriver::new(&clock).unwrap();
+    let queue = factory.create_queue("caller", Default::default()).unwrap();
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = ran.clone();
+    assert!(queue.post(move || observed.store(true, Ordering::Release)));
+    let other_clock = clock.clone();
+    std::thread::spawn(move || {
+        assert!(matches!(
+            TaskQueueFactory::cooperative(&other_clock),
+            Err(BuildEnvironmentError::NativeConstructionFailed)
+        ));
+    })
+    .join()
+    .unwrap();
+    assert_eq!(driver.pump(1).dispatched, 1);
+    assert!(ran.load(Ordering::Acquire));
+    assert_eq!(driver.next_deadline(), None);
+    drop(queue);
+    drop(factory);
+    drop(driver);
+
+    // A pre-existing foreign factory must also reject driver acquisition,
+    // without taking global hooks. Once it is gone, acquisition works again.
+    let other_clock = clock.clone();
+    let foreign = std::thread::spawn(move || TaskQueueFactory::cooperative(&other_clock).unwrap())
+        .join()
+        .unwrap();
+    assert!(ControlledPeerDriver::new(&clock).is_err());
+    drop(foreign);
+    let driver = ControlledPeerDriver::new(&clock).unwrap();
+    assert_eq!(driver.pump(1).dispatched, 0);
 }
 
 #[test]

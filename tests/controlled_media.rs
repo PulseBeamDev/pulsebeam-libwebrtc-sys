@@ -38,6 +38,47 @@ const VP8: [&[u8]; 2] = [
     include_bytes!("fixtures/simulation-blue.vp8"),
 ];
 
+// Keep every logical SDP field and candidate attribute. Only credential and
+// certificate values are excluded from replay, not codec/stream negotiation,
+// addresses, ports, priorities, or the timing of candidate observations.
+fn normalized_candidate(candidate: &str) -> String {
+    let mut credential = false;
+    candidate
+        .split_whitespace()
+        .map(|field| {
+            if credential {
+                credential = false;
+                "[secret]"
+            } else {
+                credential = matches!(field, "ufrag" | "pwd");
+                field
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalized_sdp(sdp: &str) -> String {
+    sdp.lines()
+        .map(|line| {
+            if let Some((prefix, _)) = line.split_once(':')
+                && matches!(prefix, "a=ice-ufrag" | "a=ice-pwd")
+            {
+                return format!("{prefix}:[secret]");
+            }
+            if let Some(fingerprint) = line.strip_prefix("a=fingerprint:") {
+                let algorithm = fingerprint.split_whitespace().next().unwrap_or("");
+                return format!("a=fingerprint:{algorithm} [secret]");
+            }
+            if let Some(candidate) = line.strip_prefix("a=candidate:") {
+                return format!("a=candidate:{}", normalized_candidate(candidate));
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Trace {
     events: Vec<String>,
@@ -139,8 +180,13 @@ impl Observations {
                 let description = match event {
                     PeerConnectionEvent::OperationComplete(result) => {
                         let status = match &result.result {
-                            Ok(_) => "ok".to_owned(),
-                            Err(error) => format!("error:{:?}", error.kind),
+                            Ok(Some(description)) => format!(
+                                "ok:{:?}:{}",
+                                description.kind,
+                                normalized_sdp(&description.sdp)
+                            ),
+                            Ok(None) => "ok:none".to_owned(),
+                            Err(error) => format!("error:{:?}:{}", error.kind, error.message),
                         };
                         let description = format!("operation:{:?}:{status}", result.operation_id);
                         assert!(
@@ -184,11 +230,15 @@ impl Observations {
                         "channel".into()
                     }
                     PeerConnectionEvent::Closed => "closed".into(),
-                    // Gathering candidates are represented by the gathering
-                    // outcome. SDP/ICE credentials and certificate fingerprints
-                    // are not part of the logical trace.
-                    PeerConnectionEvent::IceCandidate(_)
-                    | PeerConnectionEvent::NegotiationNeeded { .. } => continue,
+                    PeerConnectionEvent::IceCandidate(candidate) => format!(
+                        "candidate:{}:{}:{}",
+                        candidate.sdp_mid,
+                        candidate.sdp_mline_index,
+                        normalized_candidate(&candidate.candidate)
+                    ),
+                    PeerConnectionEvent::NegotiationNeeded { event_id } => {
+                        format!("negotiation-needed:{event_id}")
+                    }
                     other => panic!("unexpected peer event: {other:?}"),
                 };
                 self.trace
@@ -259,10 +309,17 @@ impl Observations {
             self.step(world, network, peers, false);
             if self.gathered[who] {
                 let descriptions = peers[who].descriptions().unwrap();
-                return descriptions
+                let description = descriptions
                     .pending_local
                     .or(descriptions.current_local)
                     .unwrap();
+                self.trace.events.push(format!(
+                    "{}:{who}:gathered-sdp:{:?}:{}",
+                    world.now().as_micros(),
+                    description.kind,
+                    normalized_sdp(&description.sdp)
+                ));
+                return description;
             }
             world.advance(Duration::from_millis(1)).unwrap();
         }
@@ -1022,6 +1079,24 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
     // All native roots have gone away; only passive owned outputs survive.
     eprintln!("CONTROLLED_MEDIA_END");
     trace
+}
+
+#[test]
+fn replay_normalization_excludes_only_crypto_values() {
+    let sdp = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:first\r\na=ice-pwd:password\r\na=fingerprint:sha-256 AA:BB\r\na=mid:0\r\na=candidate:1 1 udp 123 10.77.0.1 5000 typ host ufrag first\r\n";
+    let changed_secrets = sdp
+        .replace("first", "second")
+        .replace("password", "different")
+        .replace("AA:BB", "CC:DD");
+    assert_eq!(normalized_sdp(sdp), normalized_sdp(&changed_secrets));
+    for (old, new) in [
+        ("5000", "5001"),
+        ("a=mid:0", "a=mid:1"),
+        ("111", "112"),
+        ("sha-256", "sha-512"),
+    ] {
+        assert_ne!(normalized_sdp(sdp), normalized_sdp(&sdp.replace(old, new)));
+    }
 }
 
 #[test]
