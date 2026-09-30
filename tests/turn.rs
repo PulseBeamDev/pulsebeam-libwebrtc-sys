@@ -59,6 +59,33 @@ impl TurnServer {
             "--listening-port",
             &port.to_string(),
         ]);
+        if ip.is_ipv4() {
+            // A local hostname may resolve to both interface families. The
+            // production allocator then contacts TURN over both, so listen
+            // on usable IPv6 addresses too rather than leave UDP gathering
+            // waiting for an unanswered IPv6 endpoint. Keep the IPv4 relay
+            // address and all hostname/credential/connection assertions.
+            let hostname = Command::new("hostname").output().unwrap();
+            let hostname = String::from_utf8(hostname.stdout).unwrap();
+            let listeners: std::collections::BTreeSet<_> = (hostname.trim(), port)
+                .to_socket_addrs()
+                .unwrap()
+                .filter_map(|address| match address.ip() {
+                    IpAddr::V6(address)
+                        if !address.is_loopback()
+                            && !address.is_unspecified()
+                            && !address.is_multicast()
+                            && !address.is_unicast_link_local() =>
+                    {
+                        Some(address)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for listener in listeners {
+                command.args(["--listening-ip", &listener.to_string()]);
+            }
+        }
         if let Some((cert, key)) = cert_and_key {
             command.args([
                 "--no-tcp",
