@@ -60,13 +60,14 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
     return !closed_ && !sinks_.empty();
   }
   bool Push(const std::int16_t* samples, int sample_rate, size_t channels,
-            size_t frames) {
+            size_t frames,
+            std::optional<std::int64_t> capture_time_ms = std::nullopt) {
     std::lock_guard lock(mutex_);
     if (closed_) return false;
     for (auto* sink : sinks_) {
-      // An arbitrary caller timestamp is not a WebRTC absolute capture clock.
-      // Do not misreport it to the voice engine as TimeMillis()-based metadata.
-      sink->OnData(samples, 16, sample_rate, channels, frames, std::nullopt);
+      // Only explicitly mapped controlled timing is forwarded. Ordinary raw
+      // caller timestamps are not automatically a TimeMillis capture clock.
+      sink->OnData(samples, 16, sample_rate, channels, frames, capture_time_ms);
     }
     return true;
   }
@@ -383,6 +384,15 @@ bool audio_source_push_opus(const NativeAudioSource& source,
                             rust::Slice<const std::uint8_t> payload,
                             std::uint32_t rtp_timestamp,
                             std::uint32_t samples_per_channel) noexcept {
+  return audio_source_push_opus_at(source, payload, rtp_timestamp,
+                                   samples_per_channel, -1);
+}
+bool audio_source_push_opus_at(const NativeAudioSource& source,
+                            rust::Slice<const std::uint8_t> payload,
+                            std::uint32_t rtp_timestamp,
+                            std::uint32_t samples_per_channel,
+                            std::int64_t capture_time_us) noexcept {
+  if (capture_time_us < -1) return false;
   using namespace opus_carrier;
   // The private carrier matches the negotiated encoder's mono/stereo input.
   const auto channels = source.state()->encoded_channels;
@@ -425,7 +435,9 @@ bool audio_source_push_opus(const NativeAudioSource& source,
                   payload.data() + payload_offset,
                   std::min(available, payload.size() - payload_offset));
     }
-    if (!state.source->Push(samples.data(), 48000, channels, 480)) {
+    const auto capture_ms = capture_time_us < 0 ? std::nullopt :
+        std::optional<std::int64_t>(capture_time_us / 1000 + slot * 10);
+    if (!state.source->Push(samples.data(), 48000, channels, 480, capture_ms)) {
       Acknowledge(state.budget_id, *packet);
       return false;
     }
@@ -521,6 +533,11 @@ std::unique_ptr<NativeAudioSink> rtp_receiver_attach_audio_sink(
   return std::make_unique<NativeAudioSink>(std::move(state));
 }
 FfiReceivedAudioFrame audio_sink_take_frame(const NativeAudioSink& sink) noexcept {
+  // A retired receiver must not drain stale PCM or trigger headless playout
+  // for unrelated live receivers when its empty sink is polled.
+  if (sink.state()->closed.load() ||
+      sink.state()->track->state() == webrtc::MediaStreamTrackInterface::kEnded)
+    return {};
   auto frame = sink.state()->collector->Take();
   if (!frame.valid && !sink.state()->closed.load() &&
       pump_headless_audio(*sink.state()->peer)) {

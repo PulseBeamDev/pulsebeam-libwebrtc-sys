@@ -301,6 +301,7 @@ pub struct PeerConnectionFactoryBuilder {
     worker_thread: Option<WorkerThread>,
     signaling_thread: Option<SignalingThread>,
     controlled_driver: Option<ControlledPeerDriver>,
+    controlled_media: bool,
     network_manager: Option<NetworkManagerProvider>,
     packet_socket_factory: Option<PacketSocketFactoryProvider>,
     audio_encoder: Option<AudioEncoderFactory>,
@@ -321,6 +322,15 @@ impl PeerConnectionFactoryBuilder {
     /// environment built with this driver's clock and cooperative queues.
     pub fn controlled_driver(mut self, driver: &ControlledPeerDriver) -> Self {
         self.controlled_driver = Some(driver.clone());
+        self
+    }
+
+    /// Opt into the controlled Opus/VP8 encoded-media profile. Requires a
+    /// seeded ControlledWorld, the crate's Opus carrier and direct VP8 input,
+    /// and explicitly selected builtin_opus/builtin_vp8 decoder factories.
+    /// Unsupported factories and processing/devices are rejected before work.
+    pub fn controlled_media(mut self) -> Self {
+        self.controlled_media = true;
         self
     }
 
@@ -388,6 +398,17 @@ impl PeerConnectionFactoryBuilder {
     }
 
     pub fn build(self) -> Result<PeerConnectionFactory, PeerError> {
+        if self.controlled_driver.is_some()
+            && let (Some(manager), Some(sockets)) =
+                (&self.network_manager, &self.packet_socket_factory)
+            && (!manager.same_endpoint(sockets) || !sockets.supports_udp())
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "controlled network and packet providers must share an open endpoint"
+                    .into(),
+            });
+        }
         if (self.native_audio || self.audio_processing.is_some())
             && self
                 .audio_encoder
@@ -399,6 +420,34 @@ impl PeerConnectionFactoryBuilder {
                 message: "Opus-frame factories cannot share a platform microphone or PCM audio processing module".into(),
             });
         }
+        if self.controlled_media
+            && (!self
+                .controlled_driver
+                .as_ref()
+                .is_some_and(ControlledPeerDriver::is_seeded)
+                || !self
+                    .audio_encoder
+                    .as_ref()
+                    .is_some_and(AudioEncoderFactory::supports_opus_frames)
+                || !self
+                    .audio_decoder
+                    .as_ref()
+                    .is_some_and(AudioDecoderFactory::is_builtin_opus)
+                || !self
+                    .video_encoder
+                    .as_ref()
+                    .is_some_and(VideoEncoderFactoryHandle::is_direct_vp8)
+                || !self
+                    .video_decoder
+                    .as_ref()
+                    .is_some_and(VideoDecoderFactoryHandle::is_builtin_vp8)
+                || self.audio_processing.is_some())
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "controlled media requires a seeded world, direct VP8 and Opus-carrier input, builtin VP8/Opus decoders and no PCM processing".into(),
+            });
+        }
         let environment = match self.environment {
             Some(environment) => environment,
             None => Environment::builder().build().map_err(native_build_error)?,
@@ -407,6 +456,7 @@ impl PeerConnectionFactoryBuilder {
             if !driver.is_current()
                 || !environment.uses_controlled_clock(driver.clock())
                 || self.native_audio
+                || self.audio_processing.is_some()
                 || self.network_thread.is_some()
                 || self.worker_thread.is_some()
                 || self.signaling_thread.is_some()
@@ -499,6 +549,7 @@ impl PeerConnectionFactoryBuilder {
             _worker_thread: worker_thread,
             _signaling_thread: signaling_thread,
             _controlled_driver: self.controlled_driver,
+            controlled_media: self.controlled_media,
             _network_manager: self.network_manager,
             _packet_socket_factory: self.packet_socket_factory,
             _audio_encoder: self.audio_encoder,
@@ -517,6 +568,7 @@ impl Default for PeerConnectionFactoryBuilder {
             worker_thread: None,
             signaling_thread: None,
             controlled_driver: None,
+            controlled_media: false,
             network_manager: None,
             packet_socket_factory: None,
             audio_encoder: None,
@@ -536,12 +588,21 @@ pub(crate) struct FactoryInner {
     _worker_thread: WorkerThread,
     _signaling_thread: SignalingThread,
     _controlled_driver: Option<ControlledPeerDriver>,
+    pub(crate) controlled_media: bool,
     _network_manager: Option<NetworkManagerProvider>,
     _packet_socket_factory: Option<PacketSocketFactoryProvider>,
     _audio_encoder: Option<AudioEncoderFactory>,
     _audio_decoder: Option<AudioDecoderFactory>,
     _video_encoder: Option<VideoEncoderFactoryHandle>,
     _video_decoder: Option<VideoDecoderFactoryHandle>,
+}
+
+impl FactoryInner {
+    pub(crate) fn controlled_time(&self) -> Option<std::time::Duration> {
+        self._controlled_driver
+            .as_ref()
+            .map(|driver| driver.clock().now())
+    }
 }
 
 /// A sequence-bound owner for modular WebRTC peer-connection construction.
@@ -682,6 +743,17 @@ impl PeerConnectionFactory {
                 });
             }
         }
+        let controlled_id = self
+            .0
+            ._controlled_driver
+            .as_ref()
+            .map(|driver| {
+                driver.allocate_peer_id().ok_or_else(|| PeerError {
+                    kind: PeerErrorKind::InvalidState,
+                    message: "controlled peer identifier exhausted".into(),
+                })
+            })
+            .transpose()?;
         let mut message = String::new();
         let native = ffi::create_peer_connection(
             self.0.native.as_ref().expect("validated peer factory"),
@@ -706,6 +778,7 @@ impl PeerConnectionFactory {
                 inner: Rc::new(PeerInner {
                     native,
                     _factory: self.0.clone(),
+                    controlled_id,
                     closed: Cell::new(false),
                     sender_tracks: RefCell::new(HashMap::new()),
                     audio_sender_tracks: RefCell::new(HashMap::new()),
@@ -792,7 +865,7 @@ impl PeerConnectionFactory {
         source: &EncodedAudioSource,
     ) -> Result<AudioTrack, PeerError> {
         self.create_audio_track(id, source.source())
-            .map(AudioTrack::mark_encoded)
+            .map(AudioTrack::mark_opus_frames)
     }
 
     pub fn create_audio_track(
@@ -1016,12 +1089,20 @@ pub struct PeerConnection {
 pub(crate) struct PeerInner {
     native: cxx::UniquePtr<ffi::NativePeerConnection>,
     pub(crate) _factory: Rc<FactoryInner>,
+    pub(crate) controlled_id: Option<u64>,
     pub(crate) closed: Cell<bool>,
     pub(crate) sender_tracks: RefCell<HashMap<String, VideoTrack>>,
     pub(crate) audio_sender_tracks: RefCell<HashMap<String, AudioTrack>>,
 }
 
 impl PeerConnection {
+    /// Stable identifier within the controlled world, allocated in peer
+    /// creation order. Owned media outputs carry this recipient identity.
+    /// Ordinary production peers have no controlled identity.
+    pub fn controlled_id(&self) -> Option<u64> {
+        self.inner.controlled_id
+    }
+
     /// Audio RTP codecs available for sending on this peer.
     pub fn audio_sender_capabilities(&self) -> Result<Vec<AudioCodecCapability>, PeerError> {
         if self.inner.closed.get() {
@@ -1187,12 +1268,12 @@ impl PeerConnection {
         direction: RtpTransceiverDirection,
         rids: &[String],
     ) -> Result<RtpTransceiver, PeerError> {
-        // Upstream recreates receive streams with a synchronous wait on its
-        // decode queue; that queue cannot progress while the caller is blocked.
-        if self.inner._factory._controlled_driver.is_some() {
+        if self.inner._factory._controlled_driver.is_some()
+            && (!self.inner._factory.controlled_media || !track.is_direct_vp8())
+        {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedOperation,
-                message: "video transceivers require a threaded peer; controlled video receive can deadlock".into(),
+                message: "controlled video requires the admitted direct VP8 media profile".into(),
             });
         }
         if !track.is_local_to(&self.inner._factory) {
@@ -1201,7 +1282,7 @@ impl PeerConnection {
                 message: "video track must belong to this peer factory".into(),
             });
         }
-        if track.is_encoded_h264() && rids.len() > 1 {
+        if track.is_direct_encoded() && rids.len() > 1 {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedParameter,
                 message: "encoded H264 input cannot use multiple RIDs".into(),
@@ -1252,10 +1333,12 @@ impl PeerConnection {
         track: &AudioTrack,
         direction: RtpTransceiverDirection,
     ) -> Result<RtpTransceiver, PeerError> {
-        if self.inner._factory._controlled_driver.is_some() {
+        if self.inner._factory._controlled_driver.is_some()
+            && (!self.inner._factory.controlled_media || !track.is_opus_frames())
+        {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedOperation,
-                message: "audio transceivers require a threaded peer; controlled audio teardown can deadlock".into(),
+                message: "controlled audio requires the admitted Opus-carrier media profile".into(),
             });
         }
         if self.inner.closed.get() {
@@ -1479,6 +1562,7 @@ impl PeerConnection {
 
     fn controlled_media_sdp(&self, description: &SessionDescription) -> bool {
         self.inner._factory._controlled_driver.is_some()
+            && !self.inner._factory.controlled_media
             && description
                 .sdp
                 .lines()
@@ -1498,6 +1582,13 @@ impl PeerConnection {
 }
 
 impl PeerInner {
+    pub(crate) fn controlled_time(&self) -> Option<std::time::Duration> {
+        self._factory
+            ._controlled_driver
+            .as_ref()
+            .map(|driver| driver.clock().now())
+    }
+
     pub(crate) fn factory_native(&self) -> &ffi::NativePeerConnectionFactory {
         self._factory
             .native

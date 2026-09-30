@@ -169,6 +169,17 @@ pub struct DecodedAudioFrame {
     pub samples: Vec<i16>,
 }
 
+/// Owned decoded PCM with its recipient and receiver identity. `observed_at`
+/// is the controlled timeline at the explicit playout/poll invocation, not a
+/// wall-clock profiling value. Capture timing remains in `frame` when supplied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceivedAudioFrame {
+    pub peer_id: Option<u64>,
+    pub receiver_id: String,
+    pub observed_at: Option<std::time::Duration>,
+    pub frame: DecodedAudioFrame,
+}
+
 /// A bounded decoded PCM receiver queue. Closing removes the native sink on
 /// the signaling thread before releasing callback memory. Dropped frames are
 /// accounted for; at most eight blocks are retained. On headless peers,
@@ -177,20 +188,35 @@ pub struct DecodedAudioFrame {
 pub struct AudioSink {
     native: cxx::UniquePtr<ffi::NativeAudioSink>,
     _peer: Rc<PeerInner>,
+    receiver_id: String,
 }
 
 impl AudioSink {
     pub(crate) fn from_native(
         native: cxx::UniquePtr<ffi::NativeAudioSink>,
         peer: Rc<PeerInner>,
+        receiver_id: String,
     ) -> Self {
         Self {
             native,
             _peer: peer,
+            receiver_id,
         }
     }
 
+    pub fn try_next_received_frame(&self) -> Option<ReceivedAudioFrame> {
+        self.try_next_frame().map(|frame| ReceivedAudioFrame {
+            peer_id: self._peer.controlled_id,
+            receiver_id: self.receiver_id.clone(),
+            observed_at: self._peer.controlled_time(),
+            frame,
+        })
+    }
+
     pub fn try_next_frame(&self) -> Option<DecodedAudioFrame> {
+        if self._peer.closed.get() {
+            return None;
+        }
         let frame = ffi::audio_sink_take_frame(self.native());
         frame.valid.then_some(DecodedAudioFrame {
             sample_rate_hz: frame.sample_rate_hz,
@@ -409,7 +435,39 @@ impl EncodedAudioSource {
         self.channels
     }
 
+    /// Supply a packet with capture timing on the controlled world's timeline.
+    /// Capture metadata is forwarded at millisecond precision; RTP timestamps
+    /// remain caller-supplied 48 kHz ticks. Ordinary production clocks do not
+    /// provide this mapping and are rejected by this explicit-timing API.
+    pub fn push_opus_at(
+        &self,
+        frame: &OpusInputFrame,
+        capture_time: std::time::Duration,
+    ) -> Result<(), OpusInputError> {
+        if !self.source.inner._factory.controlled_media {
+            return Err(OpusInputError::InvalidTimestamp);
+        }
+        self.push_opus_with_time(frame, Some(capture_time))
+    }
+
+    /// In the controlled media profile, use the current world time for capture.
+    /// Otherwise preserve the original timestamp-free production carrier API.
     pub fn push_opus(&self, frame: &OpusInputFrame) -> Result<(), OpusInputError> {
+        let capture_time = self.source.inner._factory.controlled_media.then(|| {
+            self.source
+                .inner
+                ._factory
+                .controlled_time()
+                .expect("controlled media clock")
+        });
+        self.push_opus_with_time(frame, capture_time)
+    }
+
+    fn push_opus_with_time(
+        &self,
+        frame: &OpusInputFrame,
+        capture_time: Option<std::time::Duration>,
+    ) -> Result<(), OpusInputError> {
         if self.source.inner.closed.get() {
             return Err(OpusInputError::Released);
         }
@@ -442,11 +500,26 @@ impl EncodedAudioSource {
         {
             return Err(OpusInputError::InvalidTimestamp);
         }
-        if !ffi::audio_source_push_opus(
+        let capture_us = if let Some(time) = capture_time {
+            let duration = std::time::Duration::from_micros(
+                u64::from(frame.samples_per_channel) * 1_000_000 / 48_000,
+            );
+            if time
+                .checked_add(duration)
+                .is_none_or(|end| end > crate::MAX_CONTROLLED_TIME)
+            {
+                return Err(OpusInputError::InvalidTimestamp);
+            }
+            i64::try_from(time.as_micros()).map_err(|_| OpusInputError::InvalidTimestamp)?
+        } else {
+            -1
+        };
+        if !ffi::audio_source_push_opus_at(
             self.source.native(),
             bytes,
             frame.rtp_timestamp,
             frame.samples_per_channel,
+            capture_us,
         ) {
             return Err(OpusInputError::Backpressure);
         }
@@ -469,11 +542,17 @@ pub struct AudioTrack {
     inner: Rc<TrackInner>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AudioInputKind {
+    Pcm,
+    OpusFrames,
+}
+
 struct TrackInner {
     native: cxx::UniquePtr<ffi::NativeAudioTrack>,
     _source: Option<Rc<SourceInner>>,
     _factory: Rc<FactoryInner>,
-    encoded: bool,
+    input_kind: AudioInputKind,
 }
 
 impl AudioTrack {
@@ -487,7 +566,7 @@ impl AudioTrack {
                 native,
                 _source: Some(source.inner.clone()),
                 _factory: factory,
-                encoded: false,
+                input_kind: AudioInputKind::Pcm,
             }),
         }
     }
@@ -502,16 +581,20 @@ impl AudioTrack {
                 native,
                 _source: None,
                 _factory: factory,
-                encoded: false,
+                input_kind: AudioInputKind::Pcm,
             }),
         }
     }
 
-    pub(crate) fn mark_encoded(mut self) -> Self {
+    pub(crate) fn mark_opus_frames(mut self) -> Self {
         Rc::get_mut(&mut self.inner)
             .expect("new audio track has one owner")
-            .encoded = true;
+            .input_kind = AudioInputKind::OpusFrames;
         self
+    }
+
+    pub(crate) fn is_opus_frames(&self) -> bool {
+        self.inner.input_kind == AudioInputKind::OpusFrames
     }
 
     /// Request upstream AEC, NS and AGC choices for a local PCM track. The
@@ -522,7 +605,7 @@ impl AudioTrack {
         &self,
         options: crate::AudioProcessingOptions,
     ) -> Result<(), crate::PeerError> {
-        if self.inner.encoded {
+        if self.is_opus_frames() {
             return Err(crate::PeerError {
                 kind: crate::PeerErrorKind::InvalidParameter,
                 message: "encoded Opus bypasses PCM audio processing".into(),

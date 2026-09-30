@@ -423,6 +423,10 @@ impl VideoSource {
             .ok_or(CodecError::Released)
     }
 
+    pub(crate) fn controlled_media(&self) -> bool {
+        self.inner._factory.controlled_media
+    }
+
     pub(crate) fn belongs_to(&self, factory: &Rc<FactoryInner>) -> bool {
         Rc::ptr_eq(&self.inner._factory, factory)
     }
@@ -448,12 +452,22 @@ pub struct VideoTrack {
     inner: Rc<TrackInner>,
 }
 
+/// Provenance assigned only by the crate's direct encoded-input adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DirectEncodedVideo {
+    H264,
+    Vp8,
+    Vp9,
+    Av1,
+    H265,
+}
+
 struct TrackInner {
     native: cxx::UniquePtr<ffi::NativeVideoTrack>,
     _factory: Option<Rc<FactoryInner>>,
     _peer: Option<Rc<PeerInner>>,
     _source: Option<Rc<SourceInner>>,
-    encoded_h264: Cell<bool>,
+    encoded_codec: Cell<Option<DirectEncodedVideo>>,
 }
 
 impl VideoTrack {
@@ -468,7 +482,7 @@ impl VideoTrack {
                 _factory: Some(factory),
                 _peer: None,
                 _source: Some(source.inner.clone()),
-                encoded_h264: Cell::new(false),
+                encoded_codec: Cell::new(None),
             }),
         }
     }
@@ -480,7 +494,7 @@ impl VideoTrack {
                 _factory: None,
                 _peer: Some(peer),
                 _source: None,
-                encoded_h264: Cell::new(false),
+                encoded_codec: Cell::new(None),
             }),
         }
     }
@@ -517,12 +531,16 @@ impl VideoTrack {
         }
     }
 
-    pub(crate) fn mark_encoded_h264(&self) {
-        self.inner.encoded_h264.set(true);
+    pub(crate) fn mark_direct_encoded(&self, codec: DirectEncodedVideo) {
+        self.inner.encoded_codec.set(Some(codec));
     }
 
-    pub(crate) fn is_encoded_h264(&self) -> bool {
-        self.inner.encoded_h264.get()
+    pub(crate) fn is_direct_encoded(&self) -> bool {
+        self.inner.encoded_codec.get().is_some()
+    }
+
+    pub(crate) fn is_direct_vp8(&self) -> bool {
+        self.inner.encoded_codec.get() == Some(DirectEncodedVideo::Vp8)
     }
 
     pub(crate) fn is_local_to(&self, factory: &Rc<FactoryInner>) -> bool {
@@ -535,6 +553,16 @@ impl VideoTrack {
     pub(crate) fn native(&self) -> &ffi::NativeVideoTrack {
         self.inner.native.as_ref().expect("validated video track")
     }
+}
+
+/// Owned CPU frame with its recipient and wire track identity. Diagnostic
+/// observation timing follows the controlled world, without advancing it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceivedVideoFrame {
+    pub peer_id: Option<u64>,
+    pub track_id: String,
+    pub observed_at: Option<std::time::Duration>,
+    pub frame: VideoFrame,
 }
 
 /// A sequence-bound caller-polled video sink.
@@ -564,7 +592,38 @@ impl VideoSink {
         ffi::video_sink_dropped_frames(self.native.as_ref().expect("validated video sink"))
     }
 
+    pub fn try_next_received_frame(&self) -> Option<ReceivedVideoFrame> {
+        self.try_next_frame().map(|frame| ReceivedVideoFrame {
+            peer_id: self
+                ._track
+                ._peer
+                .as_ref()
+                .and_then(|peer| peer.controlled_id),
+            track_id: ffi::video_track_id(
+                self._track.native.as_ref().expect("validated video track"),
+            ),
+            observed_at: self
+                ._track
+                ._peer
+                .as_ref()
+                .and_then(|peer| peer.controlled_time()),
+            frame,
+        })
+    }
+
     pub fn try_next_frame(&self) -> Option<VideoFrame> {
+        if self
+            ._track
+            ._peer
+            .as_ref()
+            .is_some_and(|peer| peer.closed.get())
+        {
+            return None;
+        }
+        if ffi::video_track_state(self._track.native.as_ref().expect("validated video track")) == 1
+        {
+            return None;
+        }
         let native =
             ffi::video_sink_take_frame(self.native.as_ref().expect("validated video sink"));
         let native = native.as_ref()?;
@@ -654,7 +713,13 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
-            if track.is_encoded_h264() && self.parameters()?.encodings.len() > 1 {
+            if self.peer._factory.controlled_media && !track.is_direct_vp8() {
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedOperation,
+                    message: "controlled sender replacement requires direct VP8 input".into(),
+                });
+            }
+            if track.is_direct_encoded() && self.parameters()?.encodings.len() > 1 {
                 return Err(PeerError {
                     kind: PeerErrorKind::UnsupportedParameter,
                     message: "encoded H264 input cannot replace a simulcast sender".into(),
@@ -764,7 +829,7 @@ impl RtpSender {
     /// Updates supported fields using the latest parameters snapshot. Unexposed
     /// fields are preserved, and native validation rejects unsupported modes.
     pub fn set_parameters(&self, parameters: RtpSenderParameters) -> Result<(), PeerError> {
-        if self.track().is_some_and(|track| track.is_encoded_h264())
+        if self.track().is_some_and(|track| track.is_direct_encoded())
             && (parameters.encodings.len() > 1
                 || parameters.encodings.iter().any(|encoding| {
                     encoding.scalability_mode.is_some()
@@ -913,7 +978,11 @@ impl RtpReceiver {
                 message: "receiver is foreign, ended or not an audio receiver".into(),
             });
         }
-        Ok(crate::AudioSink::from_native(native, self.peer.clone()))
+        Ok(crate::AudioSink::from_native(
+            native,
+            self.peer.clone(),
+            self.id(),
+        ))
     }
 
     /// Receive encoded Opus without decoding. Select this instead of a decoded

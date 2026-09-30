@@ -25,7 +25,7 @@ pub use audio::AudioDevice;
 pub use audio::{
     AudioCodecCapability, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink,
     AudioSource, AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
-    EncodedAudioSource, OpusInputError, OpusInputFrame,
+    EncodedAudioSource, OpusInputError, OpusInputFrame, ReceivedAudioFrame,
 };
 pub use audio_processing::{
     AudioProcessingConfig, AudioProcessingOptions, AudioProcessingState, GainControl,
@@ -33,12 +33,12 @@ pub use audio_processing::{
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
-    DecodedImageCallback, EncodedImageCallback, EncodedVideoCodec, EncodedVideoFrame,
-    EncodedVideoMetadata, Nv12Planes, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
-    VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings, VideoEncoder,
-    VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings,
-    VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane, VideoRateControl, VideoResolution,
-    VideoRotation,
+    DecodedImageCallback, DecoderStatistics, EncodedImageCallback, EncodedVideoCodec,
+    EncodedVideoFrame, EncodedVideoMetadata, Nv12Planes, VideoCodecFormat, VideoDecoder,
+    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
+    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
+    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
+    VideoRateControl, VideoResolution, VideoRotation,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
@@ -73,9 +73,10 @@ pub use video::{
     ScreenCapture, ScreenCaptureStatus, ScreenSource, WindowCapture, WindowSource,
 };
 pub use video::{
-    DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, RtpReceiver, RtpSender,
-    RtpSenderEncoding, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
-    VideoCodecCapability, VideoSink, VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
+    DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, ReceivedVideoFrame,
+    RtpReceiver, RtpSender, RtpSenderEncoding, RtpSenderParameters, RtpTransceiver,
+    RtpTransceiverDirection, VideoCodecCapability, VideoSink, VideoSource, VideoSourceState,
+    VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -288,6 +289,18 @@ mod ffi {
         binary: bool,
         sent_data_size: u64,
         data: Vec<u8>,
+    }
+
+    struct FfiDecoderStatistics {
+        decoder_creations: u64,
+        configure_calls: u64,
+        decode_calls: u64,
+        input_packets: u64,
+        last_input_hash: u64,
+        decoded_outputs: u64,
+        decode_errors: u64,
+        thread_token: u64,
+        thread_mismatches: u64,
     }
 
     #[allow(dead_code)]
@@ -605,6 +618,11 @@ mod ffi {
         fn new_builtin_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
         fn new_opus_carrier_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
         fn new_builtin_audio_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
+        fn new_builtin_vp8_decoder_factory() -> UniquePtr<NativeVideoDecoderFactory>;
+        fn new_builtin_opus_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
+        fn video_decoder_statistics(factory: &NativeVideoDecoderFactory) -> FfiDecoderStatistics;
+        fn audio_decoder_statistics(factory: &NativeAudioDecoderFactory) -> FfiDecoderStatistics;
+        fn native_codec_thread_token() -> u64;
         fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
         fn video_encoder_query(
             factory: &NativeVideoEncoderFactory,
@@ -774,6 +792,13 @@ mod ffi {
             payload: &[u8],
             rtp_timestamp: u32,
             samples_per_channel: u32,
+        ) -> bool;
+        fn audio_source_push_opus_at(
+            source: &NativeAudioSource,
+            payload: &[u8],
+            rtp_timestamp: u32,
+            samples_per_channel: u32,
+            capture_time_us: i64,
         ) -> bool;
         fn create_audio_source(
             factory: &NativePeerConnectionFactory,

@@ -618,9 +618,11 @@ pub struct RustVideoDecoder {
 
 struct EncoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeVideoEncoderFactory>,
+    direct_encoded: Option<crate::video::DirectEncodedVideo>,
 }
 struct DecoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeVideoDecoderFactory>,
+    builtin_vp8: bool,
 }
 
 // SAFETY: the provider is Send + Sync and native factory methods only perform shared calls.
@@ -646,9 +648,27 @@ impl VideoEncoderFactoryHandle {
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
-            Ok(Self(Arc::new(EncoderFactoryInner { native })))
+            Ok(Self(Arc::new(EncoderFactoryInner {
+                native,
+                direct_encoded: None,
+            })))
         }
     }
+    pub(crate) fn new_direct_encoded(
+        provider: impl VideoEncoderFactory,
+        codec: crate::video::DirectEncodedVideo,
+    ) -> Result<Self, CodecError> {
+        let mut handle = Self::new(provider)?;
+        Arc::get_mut(&mut handle.0)
+            .expect("new factory has one owner")
+            .direct_encoded = Some(codec);
+        Ok(handle)
+    }
+
+    pub(crate) fn is_direct_vp8(&self) -> bool {
+        self.0.direct_encoded == Some(crate::video::DirectEncodedVideo::Vp8)
+    }
+
     pub fn supported_formats(&self) -> Vec<VideoCodecFormat> {
         ffi::video_encoder_formats(self.native())
             .into_iter()
@@ -687,6 +707,32 @@ impl VideoEncoderFactoryHandle {
 }
 
 impl VideoDecoderFactoryHandle {
+    /// Select the pinned real libvpx VP8 software decoder, with no other codecs
+    /// or hardware fallback. The pinned decoder uses one libvpx thread.
+    pub fn builtin_vp8() -> Result<Self, CodecError> {
+        let native = ffi::new_builtin_vp8_decoder_factory();
+        if native.is_null() {
+            Err(CodecError::ConstructionFailed)
+        } else {
+            Ok(Self(Arc::new(DecoderFactoryInner {
+                native,
+                builtin_vp8: true,
+            })))
+        }
+    }
+
+    pub(crate) fn is_builtin_vp8(&self) -> bool {
+        self.0.builtin_vp8
+    }
+
+    /// Observations of actual native configure/decode/output calls. Custom
+    /// Rust decoder providers do not produce these builtin-codec observations.
+    pub fn decoder_statistics(&self) -> Option<DecoderStatistics> {
+        self.0
+            .builtin_vp8
+            .then(|| DecoderStatistics::from(ffi::video_decoder_statistics(self.native())))
+    }
+
     pub fn new(provider: impl VideoDecoderFactory) -> Result<Self, CodecError> {
         let native = ffi::new_video_decoder_factory(Box::new(RustVideoDecoderFactory {
             provider: Box::new(provider),
@@ -695,7 +741,10 @@ impl VideoDecoderFactoryHandle {
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
-            Ok(Self(Arc::new(DecoderFactoryInner { native })))
+            Ok(Self(Arc::new(DecoderFactoryInner {
+                native,
+                builtin_vp8: false,
+            })))
         }
     }
     pub fn supported_formats(&self) -> Vec<VideoCodecFormat> {
@@ -738,6 +787,7 @@ struct AudioEncoderFactoryInner {
 }
 struct AudioDecoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeAudioDecoderFactory>,
+    builtin_opus: bool,
 }
 // SAFETY: upstream audio codec factories are ref-counted, thread-safe factory interfaces.
 unsafe impl Send for AudioEncoderFactoryInner {}
@@ -757,6 +807,8 @@ impl AudioEncoderFactory {
     /// Construct an Opus-only peer audio encoder factory for prerecorded
     /// mono or stereo Opus packets. Raw PCM tracks require a separate peer factory.
     /// The sender passes bytes through without invoking an Opus encoder.
+    /// Mono/stereo share one advertised `opus/48000/2` RTP codec. The remote
+    /// receiver's `stereo` fmtp preference selects the carrier channel count.
     pub fn with_opus_frames() -> Result<Self, CodecError> {
         let native = ffi::new_opus_carrier_audio_encoder_factory();
         if native.is_null() {
@@ -794,12 +846,39 @@ impl AudioEncoderFactory {
     }
 }
 impl AudioDecoderFactory {
+    /// Select only the pinned real software Opus decoder. Parsed primary and
+    /// FEC frames retain their decoder and preserve upstream decode behavior.
+    pub fn builtin_opus() -> Result<Self, CodecError> {
+        let native = ffi::new_builtin_opus_decoder_factory();
+        if native.is_null() {
+            Err(CodecError::ConstructionFailed)
+        } else {
+            Ok(Self(Arc::new(AudioDecoderFactoryInner {
+                native,
+                builtin_opus: true,
+            })))
+        }
+    }
+
+    pub(crate) fn is_builtin_opus(&self) -> bool {
+        self.0.builtin_opus
+    }
+
+    pub fn decoder_statistics(&self) -> Option<DecoderStatistics> {
+        self.0
+            .builtin_opus
+            .then(|| DecoderStatistics::from(ffi::audio_decoder_statistics(self.native())))
+    }
+
     pub fn builtin() -> Result<Self, CodecError> {
         let native = ffi::new_builtin_audio_decoder_factory();
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
-            Ok(Self(Arc::new(AudioDecoderFactoryInner { native })))
+            Ok(Self(Arc::new(AudioDecoderFactoryInner {
+                native,
+                builtin_opus: false,
+            })))
         }
     }
     pub fn is_available(&self) -> bool {
@@ -810,6 +889,48 @@ impl AudioDecoderFactory {
             .native
             .as_ref()
             .expect("validated audio decoder factory")
+    }
+}
+
+/// Owned observations from the selected real software decoder factories.
+/// Counts include parsed audio frame decoding, not only legacy decode entry
+/// points. Thread tokens are process-local diagnostic identities, not replay
+/// values; mismatches compare actual native thread identities without hashing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DecoderStatistics {
+    pub decoder_creations: u64,
+    pub configure_calls: u64,
+    pub decode_calls: u64,
+    /// Decoder-input packet/access-unit count (audio parsing includes FEC).
+    pub input_packets: u64,
+    /// FNV-1a of the most recent compressed decoder input, for observing
+    /// byte-preserving encoded input. This is not a cryptographic checksum.
+    pub last_input_hash: u64,
+    pub decoded_outputs: u64,
+    pub decode_errors: u64,
+    pub thread_token: u64,
+    pub thread_mismatches: u64,
+}
+
+impl DecoderStatistics {
+    pub fn current_thread_token() -> u64 {
+        ffi::native_codec_thread_token()
+    }
+}
+
+impl From<ffi::FfiDecoderStatistics> for DecoderStatistics {
+    fn from(value: ffi::FfiDecoderStatistics) -> Self {
+        Self {
+            decoder_creations: value.decoder_creations,
+            configure_calls: value.configure_calls,
+            decode_calls: value.decode_calls,
+            input_packets: value.input_packets,
+            last_input_hash: value.last_input_hash,
+            decoded_outputs: value.decoded_outputs,
+            decode_errors: value.decode_errors,
+            thread_token: value.thread_token,
+            thread_mismatches: value.thread_mismatches,
+        }
     }
 }
 

@@ -138,6 +138,7 @@ pub struct EncodedH264Input {
     broker: Arc<Mutex<Broker>>,
     encoder: VideoEncoderFactoryHandle,
     format: VideoCodecFormat,
+    codec: crate::video::DirectEncodedVideo,
 }
 
 impl EncodedH264Input {
@@ -169,15 +170,28 @@ impl EncodedH264Input {
         {
             return Err(CodecError::UnsupportedFormat);
         }
+        use crate::video::DirectEncodedVideo;
+        let codec = match format.name.as_str() {
+            "H264" => DirectEncodedVideo::H264,
+            "VP8" => DirectEncodedVideo::Vp8,
+            "VP9" => DirectEncodedVideo::Vp9,
+            "AV1" => DirectEncodedVideo::Av1,
+            "H265" => DirectEncodedVideo::H265,
+            _ => unreachable!("validated encoded format"),
+        };
         let broker = Arc::new(Mutex::new(Broker::default()));
-        let encoder = VideoEncoderFactoryHandle::new(InputFactory {
-            broker: broker.clone(),
-            format: format.clone(),
-        })?;
+        let encoder = VideoEncoderFactoryHandle::new_direct_encoded(
+            InputFactory {
+                broker: broker.clone(),
+                format: format.clone(),
+            },
+            codec,
+        )?;
         Ok(Self {
             broker,
             encoder,
             format,
+            codec,
         })
     }
 
@@ -211,6 +225,7 @@ impl EncodedH264Input {
             source,
             broker: self.broker.clone(),
             format: self.format.clone(),
+            codec: self.codec,
             id,
             closed: false,
             last_timestamp_us: Cell::new(None),
@@ -228,6 +243,7 @@ pub struct EncodedH264Source {
     source: VideoSource,
     broker: Arc<Mutex<Broker>>,
     format: VideoCodecFormat,
+    codec: crate::video::DirectEncodedVideo,
     id: u64,
     closed: bool,
     last_timestamp_us: Cell<Option<i64>>,
@@ -253,7 +269,7 @@ impl EncodedH264Source {
             });
         }
         let track = factory.create_video_track(id, &self.source)?;
-        track.mark_encoded_h264();
+        track.mark_direct_encoded(self.codec);
         Ok(track)
     }
 
@@ -292,6 +308,9 @@ impl EncodedH264Source {
             || frame.width > 4096
             || frame.height > 4096
             || frame.timestamp_us < 0
+            || (self.source.controlled_media()
+                && frame.timestamp_us as u128 > crate::MAX_CONTROLLED_TIME.as_micros())
+            || (self.source.controlled_media() && self.format.name == "VP8" && !valid_vp8(&frame))
             || self
                 .last_timestamp_us
                 .get()
@@ -385,6 +404,26 @@ impl Drop for EncodedH264Source {
     fn drop(&mut self) {
         let _ = self.close();
     }
+}
+
+// Reject structurally invalid profile input before reservation or dispatch.
+// Entropy-coded corruption remains the real upstream decoder's responsibility.
+fn valid_vp8(frame: &EncodedVideoAccessUnit) -> bool {
+    let data = &frame.data;
+    if data.len() < 3 {
+        return false;
+    }
+    let tag = u32::from(data[0]) | (u32::from(data[1]) << 8) | (u32::from(data[2]) << 16);
+    if (tag & 1 == 0) != frame.key_frame || (tag >> 5) as usize > data.len() - 3 {
+        return false;
+    }
+    if !frame.key_frame {
+        return true;
+    }
+    data.len() >= 10
+        && data[3..6] == [0x9d, 0x01, 0x2a]
+        && u32::from(u16::from_le_bytes([data[6], data[7]]) & 0x3fff) == frame.width
+        && u32::from(u16::from_le_bytes([data[8], data[9]]) & 0x3fff) == frame.height
 }
 
 fn valid_annex_b(data: &[u8], key: bool) -> bool {
@@ -513,12 +552,17 @@ impl VideoEncoder for InputEncoder {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
         }
         let unit = pending.frame;
-        if frame_types.contains(&VideoFrameType::Key) && !unit.key_frame {
+        if frame_types.contains(&VideoFrameType::Key) {
+            // Preserve the request even when this supplied unit satisfies it.
+            // Feedback belongs to the source identified by the trigger token,
+            // so replacement on a stable sender cannot misroute the request.
             pending
                 .feedback
                 .keyframe_requested
                 .store(true, Ordering::Release);
-            return Err(CodecError::InvalidFrame);
+            if !unit.key_frame {
+                return Err(CodecError::InvalidFrame);
+            }
         }
         if (unit.width, unit.height) != (frame.width, frame.height) {
             return Err(CodecError::InvalidFrame);

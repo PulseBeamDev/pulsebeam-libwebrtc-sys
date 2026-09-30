@@ -20,6 +20,8 @@ struct FfiCodecFormat;
 struct FfiEncodedVideoMetadata;
 struct FfiCodecSupport;
 struct FfiCodecTestResult;
+struct FfiDecoderStatistics;
+struct CodecDecoderObservations;
 struct RustVideoDecoderFactory;
 struct RustVideoEncoderFactory;
 
@@ -81,12 +83,15 @@ private:
 class NativeVideoDecoderFactory final {
 public:
   explicit NativeVideoDecoderFactory(
-      std::unique_ptr<webrtc::VideoDecoderFactory> factory) noexcept;
+      std::unique_ptr<webrtc::VideoDecoderFactory> factory,
+      std::shared_ptr<CodecDecoderObservations> observations = nullptr) noexcept;
   ~NativeVideoDecoderFactory();
   webrtc::VideoDecoderFactory &factory() const noexcept;
+  const std::shared_ptr<CodecDecoderObservations> &observations() const noexcept;
 
 private:
   std::unique_ptr<webrtc::VideoDecoderFactory> factory_;
+  std::shared_ptr<CodecDecoderObservations> observations_;
 };
 
 class NativeAudioEncoderFactory final {
@@ -123,6 +128,15 @@ std::unique_ptr<NativeAudioEncoderFactory>
 new_opus_carrier_audio_encoder_factory() noexcept;
 std::unique_ptr<NativeAudioDecoderFactory>
 new_builtin_audio_decoder_factory() noexcept;
+std::unique_ptr<NativeVideoDecoderFactory>
+new_builtin_vp8_decoder_factory() noexcept;
+std::unique_ptr<NativeAudioDecoderFactory>
+new_builtin_opus_decoder_factory() noexcept;
+FfiDecoderStatistics video_decoder_statistics(
+    const NativeVideoDecoderFactory &factory) noexcept;
+FfiDecoderStatistics audio_decoder_statistics(
+    const NativeAudioDecoderFactory &factory) noexcept;
+std::uint64_t native_codec_thread_token() noexcept;
 
 rust::Vec<FfiCodecFormat>
 video_encoder_formats(const NativeVideoEncoderFactory &factory) noexcept;

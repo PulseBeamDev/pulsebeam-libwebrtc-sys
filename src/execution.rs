@@ -560,6 +560,8 @@ pub struct ControlledPeerDriver(Rc<DriverInner>);
 struct DriverInner {
     native: cxx::UniquePtr<ffi::NativeDriverThread>,
     clock: ManualClock,
+    seeded: bool,
+    next_peer_id: std::cell::Cell<u64>,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
@@ -572,6 +574,8 @@ impl ControlledPeerDriver {
             Ok(Self(Rc::new(DriverInner {
                 native,
                 clock: clock.clone(),
+                seeded: false,
+                next_peer_id: std::cell::Cell::new(1),
                 _creator_sequence: PhantomData,
             })))
         }
@@ -610,6 +614,16 @@ impl ControlledPeerDriver {
 
     pub(crate) fn is_current(&self) -> bool {
         ffi::driver_is_current(self.native())
+    }
+
+    pub(crate) fn is_seeded(&self) -> bool {
+        self.0.seeded
+    }
+
+    pub(crate) fn allocate_peer_id(&self) -> Option<u64> {
+        let id = self.0.next_peer_id.get();
+        self.0.next_peer_id.set(id.checked_add(1)?);
+        Some(id)
     }
 
     pub(crate) fn clock(&self) -> &ManualClock {
@@ -671,6 +685,8 @@ impl ControlledWorld {
         let driver = ControlledPeerDriver(Rc::new(DriverInner {
             native,
             clock: clock.clone(),
+            seeded: true,
+            next_peer_id: std::cell::Cell::new(1),
             _creator_sequence: PhantomData,
         }));
         Ok(Self {
@@ -710,6 +726,12 @@ impl ControlledWorld {
         let mut queue = self.factory.create_queue(name, priority)?;
         queue.driver = Some(self.driver.clone());
         Ok(queue)
+    }
+
+    /// Create a packet network on this world's timeline without exposing a
+    /// separately sendable clock handle. Delivery and shaping remain external.
+    pub fn create_network(&self) -> Result<crate::ControlledSimulatedNetwork, crate::NetworkError> {
+        crate::ControlledSimulatedNetwork::new(&self.clock, &self.driver)
     }
 
     /// Build a factory with matching clock, cooperative queues and driver.

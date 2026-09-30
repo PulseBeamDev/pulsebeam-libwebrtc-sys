@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -10,6 +11,9 @@
 #include <utility>
 #include <vector>
 
+#include "absl/strings/match.h"
+#include "api/audio_codecs/audio_decoder.h"
+#include "api/audio_codecs/audio_decoder_factory.h"
 #include "api/audio_codecs/audio_encoder_factory.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
@@ -26,6 +30,7 @@
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder.h"
 #include "api/video_codecs/video_encoder_factory.h"
+#include "modules/video_coding/codecs/vp8/include/vp8.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_error_codes.h"
 #include "media/engine/simulcast_encoder_adapter.h"
@@ -33,6 +38,269 @@
 #include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 
 namespace pulsebeam::webrtc_sys {
+
+struct CodecDecoderObservations {
+  void Hit(std::uint64_t FfiDecoderStatistics::*field) {
+    std::lock_guard lock(mutex);
+    ObserveLocked();
+    ++(value.*field);
+  }
+  void Observe() {
+    std::lock_guard lock(mutex);
+    ObserveLocked();
+  }
+  void Input(const std::uint8_t* data, std::size_t size) {
+    std::lock_guard lock(mutex);
+    ObserveLocked();
+    ++value.input_packets;
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (std::size_t i = 0; i < size; ++i) hash = (hash ^ data[i]) * 1099511628211ULL;
+    value.last_input_hash = hash;
+  }
+  FfiDecoderStatistics Snapshot() const {
+    std::lock_guard lock(mutex);
+    return value;
+  }
+ private:
+  void ObserveLocked() {
+    const auto current = std::this_thread::get_id();
+    if (!thread) {
+      thread = current;
+      value.thread_token = native_codec_thread_token();
+    } else if (*thread != current) {
+      ++value.thread_mismatches;
+    }
+  }
+  mutable std::mutex mutex;
+  std::optional<std::thread::id> thread;
+  FfiDecoderStatistics value{};
+};
+
+namespace {
+class ObservedVp8Decoder final : public webrtc::VideoDecoder {
+ public:
+  ObservedVp8Decoder(std::unique_ptr<webrtc::VideoDecoder> decoder,
+                    std::shared_ptr<CodecDecoderObservations> observations)
+      : callback_(observations), decoder_(std::move(decoder)),
+        observations_(std::move(observations)) {}
+  bool Configure(const Settings& settings) override {
+    observations_->Hit(&FfiDecoderStatistics::configure_calls);
+    Settings serial = settings;
+    serial.set_number_of_cores(1);
+    const bool result = decoder_->Configure(serial);
+    if (!result) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+    return result;
+  }
+  std::int32_t Decode(const webrtc::EncodedImage& image,
+                      std::int64_t render_time_ms) override {
+    observations_->Hit(&FfiDecoderStatistics::decode_calls);
+    observations_->Input(image.data(), image.size());
+    const auto result = decoder_->Decode(image, render_time_ms);
+    if (result < 0) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+    return result;
+  }
+  std::int32_t Decode(const webrtc::EncodedImage& image, bool missing,
+                      std::int64_t render_time_ms) override {
+    observations_->Hit(&FfiDecoderStatistics::decode_calls);
+    observations_->Input(image.data(), image.size());
+    const auto result = decoder_->Decode(image, missing, render_time_ms);
+    if (result < 0) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+    return result;
+  }
+  std::int32_t RegisterDecodeCompleteCallback(
+      webrtc::DecodedImageCallback* callback) override {
+    observations_->Observe();
+    callback_.target = callback;
+    return decoder_->RegisterDecodeCompleteCallback(callback ? &callback_ : nullptr);
+  }
+  std::int32_t Release() override {
+    observations_->Observe();
+    decoder_->RegisterDecodeCompleteCallback(nullptr);
+    callback_.target = nullptr;
+    return decoder_->Release();
+  }
+  DecoderInfo GetDecoderInfo() const override { return decoder_->GetDecoderInfo(); }
+  const char* ImplementationName() const override { return decoder_->ImplementationName(); }
+ private:
+  class Callback final : public webrtc::DecodedImageCallback {
+   public:
+    explicit Callback(std::shared_ptr<CodecDecoderObservations> observations)
+        : observations_(std::move(observations)) {}
+    std::int32_t Decoded(webrtc::VideoFrame& frame) override {
+      observations_->Hit(&FfiDecoderStatistics::decoded_outputs);
+      if (!target) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+      const auto result = target->Decoded(frame);
+      if (result < 0) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+      return result;
+    }
+    std::int32_t Decoded(webrtc::VideoFrame& frame, std::int64_t time_ms) override {
+      observations_->Hit(&FfiDecoderStatistics::decoded_outputs);
+      if (!target) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+      const auto result = target->Decoded(frame, time_ms);
+      if (result < 0) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+      return result;
+    }
+    void Decoded(webrtc::VideoFrame& frame, std::optional<std::int32_t> time_ms,
+                 std::optional<std::uint8_t> qp) override {
+      observations_->Hit(&FfiDecoderStatistics::decoded_outputs);
+      if (target) target->Decoded(frame, time_ms, qp);
+    }
+    webrtc::DecodedImageCallback* target = nullptr;
+   private:
+    std::shared_ptr<CodecDecoderObservations> observations_;
+  };
+  // Keep the callback proxy alive while the underlying decoder is destroyed.
+  Callback callback_;
+  std::unique_ptr<webrtc::VideoDecoder> decoder_;
+  std::shared_ptr<CodecDecoderObservations> observations_;
+};
+
+class ObservedVp8Factory final : public webrtc::VideoDecoderFactory {
+ public:
+  explicit ObservedVp8Factory(std::shared_ptr<CodecDecoderObservations> observations)
+      : observations_(std::move(observations)) {}
+  std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
+    return {webrtc::SdpVideoFormat("VP8")};
+  }
+  CodecSupport QueryCodecSupport(const webrtc::SdpVideoFormat& format,
+      bool reference_scaling, std::optional<webrtc::Resolution>) const override {
+    return {absl::EqualsIgnoreCase(format.name, "VP8") && !reference_scaling, false};
+  }
+  std::unique_ptr<webrtc::VideoDecoder> Create(const webrtc::Environment& env,
+      const webrtc::SdpVideoFormat& format) override {
+    if (!absl::EqualsIgnoreCase(format.name, "VP8")) return nullptr;
+    observations_->Hit(&FfiDecoderStatistics::decoder_creations);
+    return std::make_unique<ObservedVp8Decoder>(
+        webrtc::CreateVp8Decoder(env), observations_);
+  }
+ private:
+  std::shared_ptr<CodecDecoderObservations> observations_;
+};
+
+class ObservedOpusDecoder final : public webrtc::AudioDecoder {
+ public:
+  ObservedOpusDecoder(std::unique_ptr<webrtc::AudioDecoder> decoder,
+                     std::shared_ptr<CodecDecoderObservations> observations)
+      : decoder_(std::move(decoder)), observations_(std::move(observations)) {}
+  std::vector<ParseResult> ParsePayload(webrtc::Buffer&& payload,
+                                        std::uint32_t timestamp) override {
+    observations_->Observe();
+    observations_->Input(payload.data(), payload.size());
+    auto frames = decoder_->ParsePayload(std::move(payload), timestamp);
+    for (auto& result : frames) {
+      if (result.frame) result.frame = std::make_unique<Frame>(
+          decoder_, std::move(result.frame), observations_);
+    }
+    return frames;
+  }
+  void Reset() override { observations_->Observe(); decoder_->Reset(); }
+  int SampleRateHz() const override { return decoder_->SampleRateHz(); }
+  std::size_t Channels() const override { return decoder_->Channels(); }
+  int ErrorCode() override { return decoder_->ErrorCode(); }
+  int PacketDuration(const std::uint8_t* data, std::size_t size) const override {
+    return decoder_->PacketDuration(data, size);
+  }
+  int PacketDurationRedundant(const std::uint8_t* data, std::size_t size) const override {
+    return decoder_->PacketDurationRedundant(data, size);
+  }
+  bool PacketHasFec(const std::uint8_t* data, std::size_t size) const override {
+    return decoder_->PacketHasFec(data, size);
+  }
+  bool HasDecodePlc() const override { return decoder_->HasDecodePlc(); }
+  std::size_t DecodePlc(std::size_t frames, std::int16_t* decoded) override {
+    observations_->Observe();
+    return decoder_->DecodePlc(frames, decoded);
+  }
+  void GeneratePlc(std::size_t samples, webrtc::BufferT<std::int16_t>* output) override {
+    observations_->Observe(); decoder_->GeneratePlc(samples, output);
+  }
+ protected:
+  int DecodeInternal(const std::uint8_t* data, std::size_t size, int rate,
+                     std::int16_t* decoded, SpeechType* speech) override {
+    observations_->Hit(&FfiDecoderStatistics::decode_calls);
+    // The wrapper's nonvirtual public Decode has already checked capacity
+    // against the same delegated PacketDuration/Channels before reaching here.
+    observations_->Input(data, size);
+    const int result = decoder_->Decode(data, size, rate,
+        std::numeric_limits<std::size_t>::max(), decoded, speech);
+    CountResult(result);
+    return result;
+  }
+  int DecodeRedundantInternal(const std::uint8_t* data, std::size_t size, int rate,
+                     std::int16_t* decoded, SpeechType* speech) override {
+    observations_->Hit(&FfiDecoderStatistics::decode_calls);
+    observations_->Input(data, size);
+    const int result = decoder_->DecodeRedundant(data, size, rate,
+        std::numeric_limits<std::size_t>::max(), decoded, speech);
+    CountResult(result);
+    return result;
+  }
+ private:
+  class Frame final : public EncodedAudioFrame {
+   public:
+    Frame(std::shared_ptr<webrtc::AudioDecoder> decoder,
+          std::unique_ptr<EncodedAudioFrame> frame,
+          std::shared_ptr<CodecDecoderObservations> observations)
+        : decoder_(std::move(decoder)), frame_(std::move(frame)),
+          observations_(std::move(observations)) {}
+    std::size_t Duration() const override { return frame_->Duration(); }
+    bool IsDtxPacket() const override { return frame_->IsDtxPacket(); }
+    std::optional<DecodeResult> Decode(std::span<std::int16_t> output) const override {
+      observations_->Hit(&FfiDecoderStatistics::decode_calls);
+      auto result = frame_->Decode(output);
+      if (!result) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+      else if (result->num_decoded_samples != 0)
+        observations_->Hit(&FfiDecoderStatistics::decoded_outputs);
+      return result;
+    }
+   private:
+    // Frames hold raw decoder pointers upstream. Destroy each frame before
+    // releasing its decoder even if it outlives our wrapping decoder.
+    std::shared_ptr<webrtc::AudioDecoder> decoder_;
+    std::unique_ptr<EncodedAudioFrame> frame_;
+    std::shared_ptr<CodecDecoderObservations> observations_;
+  };
+  void CountResult(int result) {
+    if (result < 0) observations_->Hit(&FfiDecoderStatistics::decode_errors);
+    else if (result > 0) observations_->Hit(&FfiDecoderStatistics::decoded_outputs);
+  }
+  std::shared_ptr<webrtc::AudioDecoder> decoder_;
+  std::shared_ptr<CodecDecoderObservations> observations_;
+};
+
+class ObservedOpusFactory : public webrtc::AudioDecoderFactory {
+ public:
+  explicit ObservedOpusFactory(std::shared_ptr<CodecDecoderObservations> observations)
+      : builtin_(webrtc::CreateBuiltinAudioDecoderFactory()),
+        observations_(std::move(observations)) {}
+  std::vector<webrtc::AudioCodecSpec> GetSupportedDecoders() override {
+    auto formats = builtin_->GetSupportedDecoders();
+    std::erase_if(formats, [](const auto& spec) {
+      return !absl::EqualsIgnoreCase(spec.format.name, "opus");
+    });
+    return formats;
+  }
+  bool IsSupportedDecoder(const webrtc::SdpAudioFormat& format) override {
+    return absl::EqualsIgnoreCase(format.name, "opus") && builtin_->IsSupportedDecoder(format);
+  }
+  std::unique_ptr<webrtc::AudioDecoder> Create(const webrtc::Environment& env,
+      const webrtc::SdpAudioFormat& format) override {
+    return Create(env, format, std::nullopt);
+  }
+  std::unique_ptr<webrtc::AudioDecoder> Create(const webrtc::Environment& env,
+      const webrtc::SdpAudioFormat& format,
+      std::optional<webrtc::AudioCodecPairId> pair_id) override {
+    if (!IsSupportedDecoder(format)) return nullptr;
+    auto decoder = builtin_->Create(env, format, pair_id);
+    if (!decoder) return nullptr;
+    observations_->Hit(&FfiDecoderStatistics::decoder_creations);
+    return std::make_unique<ObservedOpusDecoder>(std::move(decoder), observations_);
+  }
+ private:
+  webrtc::scoped_refptr<webrtc::AudioDecoderFactory> builtin_;
+  std::shared_ptr<CodecDecoderObservations> observations_;
+};
+} // namespace
 
 struct NativeVideoFrame::State {
   std::uint32_t width = 0, height = 0, rtp_timestamp = 0;
@@ -64,6 +332,7 @@ struct NativeAudioEncoderFactory::State {
 };
 struct NativeAudioDecoderFactory::State {
   webrtc::scoped_refptr<webrtc::AudioDecoderFactory> factory;
+  std::shared_ptr<CodecDecoderObservations> observations;
 };
 
 namespace {
@@ -500,13 +769,17 @@ NativeVideoEncoderFactory::factory() const noexcept {
   return *factory_;
 }
 NativeVideoDecoderFactory::NativeVideoDecoderFactory(
-    std::unique_ptr<webrtc::VideoDecoderFactory> factory) noexcept
-    : factory_(std::move(factory)) {}
+    std::unique_ptr<webrtc::VideoDecoderFactory> factory,
+    std::shared_ptr<CodecDecoderObservations> observations) noexcept
+    : factory_(std::move(factory)), observations_(std::move(observations)) {}
 NativeVideoDecoderFactory::~NativeVideoDecoderFactory() = default;
 webrtc::VideoDecoderFactory &
 NativeVideoDecoderFactory::factory() const noexcept {
   return *factory_;
 }
+const std::shared_ptr<CodecDecoderObservations>&
+NativeVideoDecoderFactory::observations() const noexcept { return observations_; }
+
 NativeAudioEncoderFactory::NativeAudioEncoderFactory(
     std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
@@ -655,9 +928,11 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
       if (OpusChannels(spec.format)) {
         spec.format.parameters["stereo"] = "0";
         spec.info.num_channels = 1;
-        opus.push_back(spec);
-        spec.format.parameters["stereo"] = "1";
-        spec.info.num_channels = 2;
+        // Opus has one RFC 7587 RTP identity (opus/48000/2). The pinned
+        // payload mapper ignores stereo fmtp when matching audio codecs, so
+        // advertising stereo=0 and stereo=1 separately creates duplicate PTs.
+        // Advertise the canonical format once; Query/Create still honor the
+        // remote stereo preference for mono and stereo carrier streams.
         opus.push_back(std::move(spec));
       }
     }
@@ -715,6 +990,33 @@ new_builtin_audio_decoder_factory() noexcept {
   return state->factory
              ? std::make_unique<NativeAudioDecoderFactory>(std::move(state))
              : nullptr;
+}
+
+std::unique_ptr<NativeVideoDecoderFactory>
+new_builtin_vp8_decoder_factory() noexcept {
+  auto observations = std::make_shared<CodecDecoderObservations>();
+  return std::make_unique<NativeVideoDecoderFactory>(
+      std::make_unique<ObservedVp8Factory>(observations), observations);
+}
+
+std::unique_ptr<NativeAudioDecoderFactory>
+new_builtin_opus_decoder_factory() noexcept {
+  auto state = std::make_unique<NativeAudioDecoderFactory::State>();
+  state->observations = std::make_shared<CodecDecoderObservations>();
+  state->factory = webrtc::make_ref_counted<ObservedOpusFactory>(state->observations);
+  return std::make_unique<NativeAudioDecoderFactory>(std::move(state));
+}
+
+FfiDecoderStatistics video_decoder_statistics(
+    const NativeVideoDecoderFactory& factory) noexcept {
+  return factory.observations() ? factory.observations()->Snapshot() : FfiDecoderStatistics{};
+}
+FfiDecoderStatistics audio_decoder_statistics(
+    const NativeAudioDecoderFactory& factory) noexcept {
+  return factory.state().observations ? factory.state().observations->Snapshot() : FfiDecoderStatistics{};
+}
+std::uint64_t native_codec_thread_token() noexcept {
+  return static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
 }
 
 rust::Vec<FfiCodecFormat>

@@ -212,28 +212,24 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         .create_encoded_audio_track("opus-b", &second)
         .unwrap();
     let capabilities = alice.audio_sender_capabilities().unwrap();
-    let opus = |stereo: &str| {
-        capabilities
-            .iter()
-            .find(|codec| {
-                codec.name().eq_ignore_ascii_case("opus")
-                    && codec
-                        .parameters()
-                        .iter()
-                        .any(|param| param.key == "stereo" && param.value == stereo)
-            })
-            .cloned()
-            .expect("mono and stereo Opus must both be advertised")
-    };
+    // Mono/stereo share one RFC 7587 RTP codec identity. Stereo is a
+    // receiver preference, not a second codec/payload type advertisement.
+    let opus: Vec<_> = capabilities
+        .iter()
+        .filter(|codec| codec.name().eq_ignore_ascii_case("opus"))
+        .cloned()
+        .collect();
+    assert_eq!(opus.len(), 1, "duplicate Opus RTP advertisements");
+    let opus = &opus[0];
     alice
         .add_audio_transceiver(&track_a, RtpTransceiverDirection::SendOnly)
         .unwrap()
-        .set_audio_codec_preferences(&[opus("0")])
+        .set_audio_codec_preferences(&[opus.clone()])
         .unwrap();
     alice
         .add_audio_transceiver(&track_b, RtpTransceiverDirection::SendOnly)
         .unwrap()
-        .set_audio_codec_preferences(&[opus("1")])
+        .set_audio_codec_preferences(&[opus.clone()])
         .unwrap();
 
     let offer = finish(&alice, alice.create_offer()).unwrap();

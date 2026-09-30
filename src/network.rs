@@ -133,6 +133,7 @@ impl SimulatedNetwork {
             Ok(NetworkEndpoint {
                 native,
                 network: NetworkRoot::Threaded(self.clone()),
+                identity: Rc::new(()),
                 _creator_sequence: PhantomData,
             })
         }
@@ -187,6 +188,7 @@ impl ControlledSimulatedNetwork {
             Ok(NetworkEndpoint {
                 native,
                 network: NetworkRoot::Controlled(self.clone()),
+                identity: Rc::new(()),
                 _creator_sequence: PhantomData,
             })
         }
@@ -295,6 +297,7 @@ fn take_packet(network: &ffi::NativeSimulatedNetwork) -> Option<OutboundPacket> 
 pub struct NetworkEndpoint {
     native: cxx::UniquePtr<ffi::NativeNetworkEndpoint>,
     network: NetworkRoot,
+    identity: Rc<()>,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
@@ -306,6 +309,7 @@ impl NetworkEndpoint {
         } else {
             Ok(NetworkManagerProvider {
                 native,
+                endpoint_identity: self.identity.clone(),
                 _network: self.network.clone(),
                 _creator_sequence: PhantomData,
             })
@@ -319,6 +323,7 @@ impl NetworkEndpoint {
         } else {
             Ok(PacketSocketFactoryProvider {
                 native,
+                endpoint_identity: self.identity.clone(),
                 _network: self.network.clone(),
                 _creator_sequence: PhantomData,
             })
@@ -353,11 +358,16 @@ impl NetworkEndpoint {
 /// ```
 pub struct NetworkManagerProvider {
     native: cxx::UniquePtr<ffi::NativeNetworkManagerProvider>,
+    endpoint_identity: Rc<()>,
     _network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
 
 impl NetworkManagerProvider {
+    pub(crate) fn same_endpoint(&self, sockets: &PacketSocketFactoryProvider) -> bool {
+        Rc::ptr_eq(&self.endpoint_identity, &sockets.endpoint_identity)
+    }
+
     pub(crate) fn is_controlled(&self) -> bool {
         self._network.is_controlled()
     }
@@ -390,6 +400,7 @@ impl NetworkManagerProvider {
 /// ```
 pub struct PacketSocketFactoryProvider {
     native: cxx::UniquePtr<ffi::NativePacketSocketFactoryProvider>,
+    endpoint_identity: Rc<()>,
     _network: NetworkRoot,
     _creator_sequence: PhantomData<Rc<()>>,
 }
