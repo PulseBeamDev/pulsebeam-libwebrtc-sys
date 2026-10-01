@@ -489,6 +489,16 @@ public:
     result.is_hardware_accelerated = info.hardware_accelerated;
     result.supports_native_handle = info.supports_native_handle;
     result.supports_simulcast = info.supports_simulcast;
+    static_assert(webrtc::kMaxSpatialLayers == 5,
+                  "Rust EncoderInfo must match native spatial capacity");
+    // Rust represents either no override or the exact native array shape.
+    // Preserve the constructor defaults when no capability was supplied.
+    if (!info.fps_allocation.empty()) {
+      for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
+        const auto& fractions = info.fps_allocation[spatial].fractions;
+        result.fps_allocation[spatial].assign(fractions.begin(), fractions.end());
+      }
+    }
     return result;
   }
 

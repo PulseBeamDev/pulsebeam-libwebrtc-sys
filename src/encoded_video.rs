@@ -597,6 +597,7 @@ impl VideoEncoder for InputEncoder {
             hardware_accelerated: false,
             supports_native_handle: false,
             supports_simulcast: false,
+            fps_allocation: None,
         }
     }
 }

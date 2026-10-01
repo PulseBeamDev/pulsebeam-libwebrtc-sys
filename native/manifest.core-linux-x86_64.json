@@ -2,7 +2,7 @@
   "schema_version": 3,
   "bridge": {
     "identity": "pulsebeam-webrtc-sys-bridge-v2",
-    "native_adapter_sha256": "66529c21dc8e710ac969938499ba3f4c97323626692831c5f5d46533cedd85af",
+    "native_adapter_sha256": "031a4473ca748bd1f789383809a5a46cce492d38e54caf8d13a70461f3cb5534",
     "cxx": {
       "version": "1.0.200",
       "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
@@ -10,9 +10,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "c2bb3a404585400e56ce606983548cd1d6d2dc82b7a173f9706b08591dfd0d5f",
-      "generated_header_sha256": "1c8af4c661d93e54a4b57e3a154b63dedd51dfffa3cb91289c7a01c4e3aa8d36",
-      "generated_source_sha256": "e97a3325230a907c9f96ad0efd260a01e3020eabee56e8ffec19023b9ff0f1b9"
+      "bridge_source_sha256": "1f002cee71f063ddeb9884ecb7710c352b134c644366a6d3f18c9cc8c24825b7",
+      "generated_header_sha256": "5b8eb319534ceb5959c11c0555097cc1efad56d9b5c438b4d97db8a9c776aaa2",
+      "generated_source_sha256": "f7eb06fb7cb2ae4d617877ac8db8afb8634714bca95d1d933dc6dd2f18d2c3a8"
     }
   },
   "sources": {

@@ -141,11 +141,16 @@ mod ffi {
         bandwidth_bps: u64,
     }
 
+    struct FfiTemporalFrameRates {
+        fractions: Vec<u8>,
+    }
+
     struct FfiEncoderInfo {
         implementation_name: String,
         hardware_accelerated: bool,
         supports_native_handle: bool,
         supports_simulcast: bool,
+        fps_allocation: Vec<FfiTemporalFrameRates>,
     }
 
     struct FfiEncodedVideoMetadata {

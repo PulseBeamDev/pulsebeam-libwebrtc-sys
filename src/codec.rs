@@ -401,6 +401,13 @@ pub struct VideoEncoderInfo {
     pub hardware_accelerated: bool,
     pub supports_native_handle: bool,
     pub supports_simulcast: bool,
+    /// Native encoder frame-rate fractions for five spatial/simulcast slots.
+    /// Each vector describes cumulative temporal layers, with 0 meaning 0%
+    /// and 255 meaning 100%. An empty vector means unspecified frame rates.
+    /// `None` retains the engine's default single full-rate temporal layer.
+    /// These are encoder capability facts, not a producer VLA declaration;
+    /// libwebrtc computes allocation and generates negotiated VLA itself.
+    pub fps_allocation: Option<[Vec<u8>; 5]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1242,14 +1249,27 @@ pub(crate) fn encoder_get_info(encoder: &RustVideoEncoder) -> ffi::FfiEncoderInf
                 hardware_accelerated: false,
                 supports_native_handle: false,
                 supports_simulcast: false,
+                fps_allocation: Vec::new(),
             },
-            |i| ffi::FfiEncoderInfo {
-                implementation_name: i.implementation_name,
-                hardware_accelerated: i.hardware_accelerated,
-                supports_native_handle: i.supports_native_handle,
-                supports_simulcast: i.supports_simulcast,
-            },
+            encoder_info_to_ffi,
         )
+}
+
+fn encoder_info_to_ffi(info: VideoEncoderInfo) -> ffi::FfiEncoderInfo {
+    ffi::FfiEncoderInfo {
+        implementation_name: info.implementation_name,
+        hardware_accelerated: info.hardware_accelerated,
+        supports_native_handle: info.supports_native_handle,
+        supports_simulcast: info.supports_simulcast,
+        fps_allocation: info.fps_allocation.map_or_else(Vec::new, |spatial| {
+            spatial
+                .into_iter()
+                .map(|temporal| ffi::FfiTemporalFrameRates {
+                    fractions: temporal,
+                })
+                .collect()
+        }),
+    }
 }
 
 pub(crate) fn decoder_factory_formats(
@@ -1509,6 +1529,7 @@ mod tests {
                 hardware_accelerated: false,
                 supports_native_handle: false,
                 supports_simulcast: false,
+                fps_allocation: Some([vec![255], vec![], vec![], vec![], vec![]]),
             }
         }
     }
@@ -1568,6 +1589,39 @@ mod tests {
                 hardware_accelerated: false,
             }
         }
+    }
+
+    #[test]
+    fn encoder_frame_rate_capabilities_preserve_native_shape_and_defaults() {
+        let info = |fps_allocation| VideoEncoderInfo {
+            implementation_name: "capability DTO".into(),
+            hardware_accelerated: false,
+            supports_native_handle: false,
+            supports_simulcast: false,
+            fps_allocation,
+        };
+        assert!(encoder_info_to_ffi(info(None)).fps_allocation.is_empty());
+        let fractions = [
+            vec![64, 128, 255],
+            vec![128, 255],
+            vec![],
+            vec![255],
+            vec![],
+        ];
+        let converted = encoder_info_to_ffi(info(Some(fractions.clone())));
+        assert_eq!(converted.fps_allocation.len(), 5);
+        for (native, original) in converted.fps_allocation.iter().zip(fractions) {
+            assert_eq!(native.fractions, original);
+        }
+        // Explicitly unspecified fractions differ from retaining native defaults.
+        let unspecified = encoder_info_to_ffi(info(Some(Default::default())));
+        assert_eq!(unspecified.fps_allocation.len(), 5);
+        assert!(
+            unspecified
+                .fps_allocation
+                .iter()
+                .all(|layer| layer.fractions.is_empty())
+        );
     }
 
     #[test]

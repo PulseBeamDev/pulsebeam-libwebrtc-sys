@@ -127,6 +127,7 @@ impl VideoEncoder for TestEncoder {
             hardware_accelerated: false,
             supports_native_handle: false,
             supports_simulcast: false,
+            fps_allocation: Some([vec![255], vec![], vec![], vec![], vec![]]),
         }
     }
 }
