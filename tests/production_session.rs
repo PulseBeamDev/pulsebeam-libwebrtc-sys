@@ -182,6 +182,93 @@ fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
     .unwrap();
 }
 
+#[test]
+fn temporal_actor_keeps_native_extension_control_owned_across_migration() {
+    const DD: &str =
+        "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
+    const VLA: &str = "http://www.webrtc.org/experiments/rtp-hdrext/video-layers-allocation00";
+    use pulsebeam_webrtc_sys::RtpHeaderExtensionDirection;
+    assert!(
+        ProductionSession::new_l1t3(ProductionSessionConfig::default(), [64, 128, 255]).is_err()
+    );
+    let h264 = VideoCodecFormat::new("H264")
+        .with_parameter("level-asymmetry-allowed", "1")
+        .with_parameter("packetization-mode", "1")
+        .with_parameter("profile-level-id", "42e01f");
+    let mut session = ProductionSession::new_l1t3(
+        ProductionSessionConfig {
+            video_format: Some(h264),
+        },
+        [64, 128, 255],
+    )
+    .unwrap();
+    let peer = session.create_peer(PeerConfiguration::default()).unwrap();
+    let source = session.create_video_source().unwrap();
+    let transceiver = session
+        .publish_video(
+            peer,
+            source,
+            "temporal",
+            RtpTransceiverDirection::SendOnly,
+            &[],
+        )
+        .unwrap();
+    let sender = session.sender(transceiver).unwrap();
+    let defaults = session.header_extensions_to_negotiate(transceiver).unwrap();
+    let (mut session, configured) = thread::spawn(move || {
+        let mut configured = defaults.clone();
+        for uri in [DD, VLA] {
+            let extension = configured
+                .iter_mut()
+                .find(|extension| extension.uri() == uri)
+                .unwrap();
+            assert_eq!(extension.direction, RtpHeaderExtensionDirection::Stopped);
+            extension.direction = RtpHeaderExtensionDirection::SendReceive;
+        }
+        session
+            .set_header_extensions_to_negotiate(transceiver, &configured)
+            .unwrap();
+        assert_eq!(
+            session.header_extensions_to_negotiate(transceiver).unwrap(),
+            configured
+        );
+        assert!(
+            session
+                .negotiated_header_extensions(transceiver)
+                .unwrap()
+                .iter()
+                .all(|extension| extension.direction == RtpHeaderExtensionDirection::Stopped)
+        );
+        let mut parameters = session.sender_parameters(sender).unwrap();
+        parameters.encodings[0].scalability_mode = Some("L1T3".into());
+        assert!(session.set_sender_parameters(sender, parameters).is_err());
+        assert_eq!(session.take_video_encoder_error(source).unwrap(), None);
+        assert_eq!(session.video_feedback(source).unwrap(), (false, None));
+        let operation = session.create_offer(peer, false).unwrap();
+        let offer = finish(&mut session, peer, operation).unwrap();
+        assert!(offer.sdp.contains("H264/90000"));
+        assert!(offer.sdp.contains(DD));
+        assert!(offer.sdp.contains(VLA));
+        (session, configured)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        assert_eq!(
+            session.header_extensions_to_negotiate(transceiver).unwrap(),
+            configured
+        );
+        session.close_peer(peer).unwrap();
+        assert!(session.header_extensions_to_negotiate(transceiver).is_err());
+        session.shutdown().unwrap();
+        drop(session);
+        // Snapshots are independently owned, not handles into the native graph.
+        assert!(configured.iter().any(|extension| extension.uri() == DD));
+    })
+    .join()
+    .unwrap();
+}
+
 fn set_local_and_gather(
     session: &mut ProductionSession,
     peer: SessionPeerId,

@@ -19,10 +19,10 @@ use crate::{
     EncodedReceivedVideoFrame, EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink,
     EncodedVideoSource, IceCandidate, OperationCompletion, OperationId, PeerConfiguration,
     PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerDescriptions, PeerError,
-    PeerErrorKind, PeerStatsSnapshot, RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, SessionDescription, VideoCodecFormat, VideoDecoder,
-    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoRateControl, VideoResolution,
-    readiness::Readiness,
+    PeerErrorKind, PeerStatsSnapshot, RtpHeaderExtensionCapability, RtpReceiver, RtpSender,
+    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, SessionDescription,
+    VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
+    VideoRateControl, VideoResolution, readiness::Readiness,
 };
 
 macro_rules! resource_id {
@@ -205,6 +205,27 @@ unsafe impl Send for ProductionSession {}
 
 impl ProductionSession {
     pub fn new(config: ProductionSessionConfig) -> Result<Self, PeerError> {
+        Self::build(config, None)
+    }
+
+    /// Create the actor with direct, single-encoding H264 L1T3 input.
+    /// Configuration must select the supported constrained-baseline H264 format.
+    /// Native DD must be negotiated and L1T3 selected on the sender before input.
+    /// `fps` passes cumulative native temporal frame-rate capabilities unchanged.
+    pub fn new_l1t3(config: ProductionSessionConfig, fps: [u8; 3]) -> Result<Self, PeerError> {
+        if config.video_format.is_none() {
+            return Err(error(
+                PeerErrorKind::UnsupportedParameter,
+                "L1T3 requires an H264 video format",
+            ));
+        }
+        Self::build(config, Some(fps))
+    }
+
+    fn build(
+        config: ProductionSessionConfig,
+        temporal_fps: Option<[u8; 3]>,
+    ) -> Result<Self, PeerError> {
         if config
             .video_format
             .as_ref()
@@ -223,8 +244,11 @@ impl ProductionSession {
         let input = config
             .video_format
             .map(|format| {
-                let input =
-                    EncodedVideoInput::new_for_format(format.clone()).map_err(codec_error)?;
+                let input = match temporal_fps {
+                    Some(fps) => EncodedVideoInput::new_l1t3_for_format(format.clone(), fps),
+                    None => EncodedVideoInput::new_for_format(format.clone()),
+                }
+                .map_err(codec_error)?;
                 let decoder = VideoDecoderFactoryHandle::new(EncodedReceiveFactory(format))
                     .map_err(codec_error)?;
                 Ok::<_, PeerError>((input, decoder))
@@ -561,6 +585,17 @@ impl ProductionSession {
         Ok((source.take_keyframe_request(), source.latest_rate_control()))
     }
 
+    /// Retrieve the latest source-keyed asynchronous video adapter failure.
+    pub fn take_video_encoder_error(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<Option<CodecError>, PeerError> {
+        let Some(Source::Video(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        Ok(source.take_encoder_error())
+    }
+
     pub fn publish_opus(
         &mut self,
         peer: SessionPeerId,
@@ -698,6 +733,44 @@ impl ProductionSession {
             .value
             .set_parameters(parameters)
     }
+    pub fn header_extensions_to_negotiate(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Vec<RtpHeaderExtensionCapability>, PeerError> {
+        self.transceivers
+            .get(&transceiver)
+            .ok_or_else(missing)?
+            .value
+            .value
+            .header_extensions_to_negotiate()
+    }
+
+    pub fn negotiated_header_extensions(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Vec<RtpHeaderExtensionCapability>, PeerError> {
+        self.transceivers
+            .get(&transceiver)
+            .ok_or_else(missing)?
+            .value
+            .value
+            .negotiated_header_extensions()
+    }
+
+    pub fn set_header_extensions_to_negotiate(
+        &mut self,
+        transceiver: SessionTransceiverId,
+        extensions: &[RtpHeaderExtensionCapability],
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.transceivers
+            .get(&transceiver)
+            .ok_or_else(missing)?
+            .value
+            .value
+            .set_header_extensions_to_negotiate(extensions)
+    }
+
     pub fn set_direction(
         &mut self,
         transceiver: SessionTransceiverId,

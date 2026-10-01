@@ -449,6 +449,26 @@ pub struct VideoRateControl {
     pub bitrate_bps: u32,
     pub framerate_fps: f64,
     pub bandwidth_bps: u64,
+    /// Native bitrate allocation by spatial/simulcast slot then temporal layer.
+    /// Cells are per-layer, not cumulative. `None` preserves an unset cell;
+    /// `Some(0)` preserves an explicitly zero allocation. No VLA is inferred.
+    pub layer_bitrates_bps: [[Option<u32>; 4]; 5],
+}
+
+impl VideoRateControl {
+    fn from_ffi(r: ffi::FfiRateControl) -> Self {
+        Self {
+            bitrate_bps: r.bitrate_bps,
+            framerate_fps: r.framerate_fps,
+            bandwidth_bps: r.bandwidth_bps,
+            layer_bitrates_bps: std::array::from_fn(|spatial| {
+                std::array::from_fn(|temporal| {
+                    r.has_layer_bitrate[spatial][temporal]
+                        .then_some(r.layer_bitrates_bps[spatial][temporal])
+                })
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1297,13 +1317,7 @@ pub(crate) fn encoder_encode(
     })
 }
 pub(crate) fn encoder_set_rates(encoder: &mut RustVideoEncoder, r: ffi::FfiRateControl) -> i32 {
-    with_encoder(encoder, |c| {
-        c.set_rates(VideoRateControl {
-            bitrate_bps: r.bitrate_bps,
-            framerate_fps: r.framerate_fps,
-            bandwidth_bps: r.bandwidth_bps,
-        })
-    })
+    with_encoder(encoder, |c| c.set_rates(VideoRateControl::from_ffi(r)))
 }
 pub(crate) fn encoder_release(encoder: &mut RustVideoEncoder) -> i32 {
     let result = with_encoder(encoder, |c| c.release());
@@ -1523,6 +1537,32 @@ pub(crate) fn decoder_get_info(decoder: &RustVideoDecoder) -> ffi::FfiDecoderInf
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn native_rate_allocation_preserves_unset_and_explicit_zero_cells() {
+        let mut r = ffi::FfiRateControl {
+            bitrate_bps: 100_007,
+            framerate_fps: 30.0,
+            bandwidth_bps: 200_000,
+            layer_bitrates_bps: [[0; 4]; 5],
+            has_layer_bitrate: [[false; 4]; 5],
+        };
+        r.layer_bitrates_bps[0][0] = 100_000;
+        r.has_layer_bitrate[0][0] = true;
+        r.has_layer_bitrate[0][2] = true;
+        r.layer_bitrates_bps[4][3] = 7;
+        r.has_layer_bitrate[4][3] = true;
+        r.layer_bitrates_bps[1][0] = 999;
+        let rates = VideoRateControl::from_ffi(r);
+        assert_eq!(rates.bitrate_bps, 100_007);
+        assert_eq!(rates.framerate_fps, 30.0);
+        assert_eq!(rates.bandwidth_bps, 200_000);
+        assert_eq!(rates.layer_bitrates_bps[0][0], Some(100_000));
+        assert_eq!(rates.layer_bitrates_bps[0][1], None);
+        assert_eq!(rates.layer_bitrates_bps[0][2], Some(0));
+        assert_eq!(rates.layer_bitrates_bps[4][3], Some(7));
+        assert_eq!(rates.layer_bitrates_bps[1][0], None);
+    }
 
     const MASK: u8 = 0xa5;
     fn h264() -> VideoCodecFormat {

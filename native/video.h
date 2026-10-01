@@ -21,6 +21,7 @@ struct FfiSenderParameters;
 struct FfiCodecFormat;
 struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
+struct FfiRtpHeaderExtension;
 
 class NativeScreenCapture final {
  public:
@@ -232,6 +233,12 @@ std::int8_t rtp_transceiver_current_direction(
     const NativeRtpTransceiver& transceiver) noexcept;
 bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept;
+rust::Vec<FfiRtpHeaderExtension> rtp_transceiver_header_extensions(
+    const NativeRtpTransceiver& transceiver, bool negotiated) noexcept;
+bool rtp_transceiver_set_header_extensions(
+    const NativeRtpTransceiver& transceiver,
+    rust::Slice<const FfiRtpHeaderExtension> extensions,
+    std::uint8_t& error_type, rust::String& error) noexcept;
 bool rtp_transceiver_mid(const NativeRtpTransceiver& transceiver,
                          rust::String& mid) noexcept;
 bool rtp_transceiver_set_video_codec_preferences(

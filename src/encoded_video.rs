@@ -5,7 +5,7 @@ use std::{
     cell::Cell,
     collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -53,6 +53,7 @@ pub struct EncodedVideoAccessUnit {
 struct SourceFeedback {
     keyframe_requested: AtomicBool,
     rates: Mutex<Option<VideoRateControl>>,
+    encoder_error: Mutex<Option<CodecError>>,
 }
 
 struct Pending {
@@ -60,6 +61,18 @@ struct Pending {
     dropped: Arc<AtomicU64>,
     feedback: Arc<SourceFeedback>,
     frame: EncodedVideoAccessUnit,
+}
+
+impl Pending {
+    fn reject(&self, error: CodecError) -> CodecError {
+        *self
+            .feedback
+            .encoder_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+        error
+    }
 }
 
 #[derive(Default)]
@@ -148,7 +161,45 @@ impl EncodedH264Input {
 
     /// Advertise a single encoded-input format without requiring a bundled
     /// software encoder. Format parameters must agree with the compressed input.
-    pub fn new_for_format(mut format: VideoCodecFormat) -> Result<Self, CodecError> {
+    pub fn new_for_format(format: VideoCodecFormat) -> Result<Self, CodecError> {
+        Self::build(format, None)
+    }
+
+    /// Declare single-encoding H264 L1T3 input. Fractions are the producer's
+    /// cumulative temporal frame-rate capabilities, on native's 0..=255 scale.
+    /// They are passed unchanged, not used to build a GOP or calculate VLA.
+    /// Select L1T3 on the sender before submitting explicitly indexed units.
+    pub fn new_l1t3(fps: [u8; 3]) -> Result<Self, CodecError> {
+        Self::new_l1t3_for_format(format(), fps)
+    }
+
+    pub(crate) fn new_l1t3_for_format(
+        format: VideoCodecFormat,
+        fps: [u8; 3],
+    ) -> Result<Self, CodecError> {
+        if format.name != "H264" || format.parameters != self::format().parameters {
+            return Err(CodecError::UnsupportedFormat);
+        }
+        if format
+            .scalability_modes
+            .iter()
+            .any(|mode| !matches!(mode.as_str(), "L1T1" | "L1T3"))
+        {
+            return Err(CodecError::UnsupportedFormat);
+        }
+        if fps[0] == 0 || fps[0] > fps[1] || fps[1] > fps[2] || fps[2] != 255 {
+            return Err(CodecError::InvalidConfiguration);
+        }
+        let format = format
+            .with_scalability_mode(crate::VideoScalabilityMode::parse("L1T1")?)
+            .with_scalability_mode(crate::VideoScalabilityMode::parse("L1T3")?);
+        Self::build(format, Some(fps))
+    }
+
+    fn build(
+        mut format: VideoCodecFormat,
+        temporal_fps: Option<[u8; 3]>,
+    ) -> Result<Self, CodecError> {
         if format.name == "VP9" && !format.parameters.iter().any(|p| p.key == "profile-id") {
             format = format.with_parameter("profile-id", "0");
         }
@@ -166,12 +217,15 @@ impl EncodedH264Input {
         if !matches!(
             format.name.as_str(),
             "H264" | "VP8" | "VP9" | "AV1" | "H265"
-        ) || (format.name == "H264" && format != self::format())
+        ) || (format.name == "H264"
+            && (format.parameters != self::format().parameters
+                || (temporal_fps.is_none() && !format.scalability_modes.is_empty())))
         {
             return Err(CodecError::UnsupportedFormat);
         }
         use crate::video::DirectEncodedVideo;
         let codec = match format.name.as_str() {
+            "H264" if temporal_fps.is_some() => DirectEncodedVideo::H264L1T3,
             "H264" => DirectEncodedVideo::H264,
             "VP8" => DirectEncodedVideo::Vp8,
             "VP9" => DirectEncodedVideo::Vp9,
@@ -184,6 +238,7 @@ impl EncodedH264Input {
             InputFactory {
                 broker: broker.clone(),
                 format: format.clone(),
+                temporal_fps,
             },
             codec,
         )?;
@@ -324,7 +379,12 @@ impl EncodedH264Source {
             || !matching_codec
             || frame.metadata.simulcast_index.is_some()
             || frame.metadata.spatial_index.is_some()
-            || frame.metadata.temporal_index.is_some()
+            || if self.codec == crate::video::DirectEncodedVideo::H264L1T3 {
+                !matches!(frame.metadata.temporal_index, Some(0..=2))
+                    || (frame.key_frame && frame.metadata.temporal_index != Some(0))
+            } else {
+                frame.metadata.temporal_index.is_some()
+            }
             || !frame.metadata.end_of_picture
             || frame.data.is_empty()
             || frame.data.len() > MAX_PENDING_BYTES
@@ -368,13 +428,26 @@ impl EncodedH264Source {
             .swap(false, Ordering::AcqRel)
     }
 
-    /// Most recent rate control observed while processing this stream, if any.
+    /// Most recent native rate control for the encoder associated with this
+    /// stream's presentation token. After that association, later native rate
+    /// callbacks update this snapshot without another submitted access unit.
     pub fn latest_rate_control(&self) -> Option<VideoRateControl> {
         *self
             .feedback
             .rates
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Take the most recent asynchronous encoder rejection for this source.
+    /// L1T3 native configuration fallback rejects publication here instead of
+    /// emitting unlayered media. Rejections increment dropped_frames.
+    pub fn take_encoder_error(&self) -> Option<CodecError> {
+        self.feedback
+            .encoder_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     pub fn pending_frames(&self) -> usize {
@@ -486,6 +559,7 @@ fn format() -> VideoCodecFormat {
 struct InputFactory {
     broker: Arc<Mutex<Broker>>,
     format: VideoCodecFormat,
+    temporal_fps: Option<[u8; 3]>,
 }
 impl VideoEncoderFactory for InputFactory {
     fn supported_formats(&self) -> Vec<VideoCodecFormat> {
@@ -498,29 +572,44 @@ impl VideoEncoderFactory for InputFactory {
         _: Option<VideoResolution>,
     ) -> CodecSupport {
         CodecSupport {
-            supported: format == &self.format && (mode.is_none() || mode == Some("L1T1")),
+            supported: same_codec_format(format, &self.format)
+                && (mode.is_none()
+                    || mode == Some("L1T1")
+                    || (self.temporal_fps.is_some() && mode == Some("L1T3"))),
             power_efficient: false,
         }
     }
     fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoEncoder>, CodecError> {
-        if format != &self.format {
+        if !same_codec_format(format, &self.format) {
             return Err(CodecError::UnsupportedFormat);
         }
         Ok(Box::new(InputEncoder {
             broker: self.broker.clone(),
             released: false,
             rates: None,
+            temporal_fps: self.temporal_fps,
+            configuration: None,
+            active_feedback: Weak::new(),
         }))
     }
+}
+
+fn same_codec_format(a: &VideoCodecFormat, b: &VideoCodecFormat) -> bool {
+    // Negotiated SDP formats do not carry the factory's capability mode list.
+    a.name == b.name && a.parameters == b.parameters
 }
 
 struct InputEncoder {
     broker: Arc<Mutex<Broker>>,
     released: bool,
     rates: Option<VideoRateControl>,
+    temporal_fps: Option<[u8; 3]>,
+    configuration: Option<VideoEncoderSettings>,
+    active_feedback: Weak<SourceFeedback>,
 }
 impl VideoEncoder for InputEncoder {
-    fn initialize(&mut self, _: VideoEncoderSettings) -> Result<(), CodecError> {
+    fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
+        self.configuration = Some(settings);
         Ok(())
     }
     fn encode(
@@ -548,6 +637,20 @@ impl VideoEncoder for InputEncoder {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take(token)
             .ok_or(CodecError::InvalidFrame)?;
+        if self.temporal_fps.is_some()
+            && !self.configuration.as_ref().is_some_and(|settings| {
+                settings
+                    .scalability_mode
+                    .as_ref()
+                    .map(crate::VideoScalabilityMode::as_str)
+                    == Some("L1T3")
+                    && settings.simulcast_temporal_layers == [3]
+                    && matches!(settings.h264_temporal_layers, Some(1..=3))
+            })
+        {
+            return Err(pending.reject(CodecError::InvalidConfiguration));
+        }
+        self.active_feedback = Arc::downgrade(&pending.feedback);
         if let Some(rates) = self.rates {
             *pending
                 .feedback
@@ -555,7 +658,7 @@ impl VideoEncoder for InputEncoder {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
         }
-        let unit = pending.frame;
+        let unit = &pending.frame;
         if frame_types.contains(&VideoFrameType::Key) {
             // Preserve the request even when this supplied unit satisfies it.
             // Feedback belongs to the source identified by the trigger token,
@@ -565,30 +668,50 @@ impl VideoEncoder for InputEncoder {
                 .keyframe_requested
                 .store(true, Ordering::Release);
             if !unit.key_frame {
-                return Err(CodecError::InvalidFrame);
+                return Err(pending.reject(CodecError::InvalidFrame));
             }
         }
         if (unit.width, unit.height) != (frame.width, frame.height) {
-            return Err(CodecError::InvalidFrame);
+            return Err(pending.reject(CodecError::InvalidFrame));
         }
-        callback.emit_with_metadata(
-            &EncodedVideoFrame {
-                data: unit.data,
-                width: unit.width,
-                height: unit.height,
-                rtp_timestamp: frame.rtp_timestamp,
-                frame_type: if unit.key_frame {
-                    VideoFrameType::Key
-                } else {
-                    VideoFrameType::Delta
+        let unit = pending.frame;
+        callback
+            .emit_with_metadata(
+                &EncodedVideoFrame {
+                    data: unit.data,
+                    width: unit.width,
+                    height: unit.height,
+                    rtp_timestamp: frame.rtp_timestamp,
+                    frame_type: if unit.key_frame {
+                        VideoFrameType::Key
+                    } else {
+                        VideoFrameType::Delta
+                    },
+                    qp: unit.qp,
                 },
-                qp: unit.qp,
-            },
-            unit.metadata,
-        )
+                unit.metadata,
+            )
+            .map_err(|error| {
+                *pending
+                    .feedback
+                    .encoder_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+                pending.dropped.fetch_add(1, Ordering::Relaxed);
+                error
+            })
     }
     fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
         self.rates = Some(rates);
+        // The native encoder is associated with a source by its most recent
+        // presentation token. Later native rate callbacks update that source
+        // directly, without requiring another access unit or retaining it.
+        if let Some(feedback) = self.active_feedback.upgrade() {
+            *feedback
+                .rates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
+        }
         Ok(())
     }
     fn release(&mut self) -> Result<(), CodecError> {
@@ -601,7 +724,9 @@ impl VideoEncoder for InputEncoder {
             hardware_accelerated: false,
             supports_native_handle: false,
             supports_simulcast: false,
-            fps_allocation: None,
+            fps_allocation: self
+                .temporal_fps
+                .map(|fps| [fps.to_vec(), vec![], vec![], vec![], vec![]]),
         }
     }
 }
@@ -613,7 +738,42 @@ pub type EncodedVideoSource = EncodedH264Source;
 
 #[cfg(test)]
 mod tests {
-    use super::valid_annex_b;
+    use super::*;
+
+    #[test]
+    fn native_rate_updates_follow_the_active_source_without_another_frame() {
+        let first = Arc::new(SourceFeedback::default());
+        let replacement = Arc::new(SourceFeedback::default());
+        let mut encoder = InputEncoder {
+            broker: Arc::new(Mutex::new(Broker::default())),
+            released: false,
+            rates: None,
+            temporal_fps: None,
+            configuration: None,
+            active_feedback: Arc::downgrade(&first),
+        };
+        let rate = VideoRateControl {
+            bitrate_bps: 100_000,
+            framerate_fps: 30.0,
+            bandwidth_bps: 200_000,
+            layer_bitrates_bps: [[None; 4]; 5],
+        };
+        encoder.set_rates(rate).unwrap();
+        assert_eq!(*first.rates.lock().unwrap(), Some(rate));
+        assert_eq!(*replacement.rates.lock().unwrap(), None);
+        encoder.active_feedback = Arc::downgrade(&replacement);
+        let updated = VideoRateControl {
+            bitrate_bps: 50_000,
+            ..rate
+        };
+        encoder.set_rates(updated).unwrap();
+        assert_eq!(*first.rates.lock().unwrap(), Some(rate));
+        assert_eq!(*replacement.rates.lock().unwrap(), Some(updated));
+        drop(replacement);
+        encoder.set_rates(rate).unwrap();
+        assert!(encoder.active_feedback.upgrade().is_none());
+    }
+
     #[test]
     fn rejects_malformed_access_units() {
         assert!(!valid_annex_b(&[], true));

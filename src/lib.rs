@@ -82,9 +82,9 @@ pub use video::{
 };
 pub use video::{
     DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, ReceivedVideoFrame,
-    RtpReceiver, RtpSender, RtpSenderEncoding, RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, VideoCodecCapability, VideoSink, VideoSource, VideoSourceState,
-    VideoTrack, VideoTrackState,
+    RtpHeaderExtensionCapability, RtpHeaderExtensionDirection, RtpReceiver, RtpSender,
+    RtpSenderEncoding, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
+    VideoCodecCapability, VideoSink, VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -119,6 +119,13 @@ mod ffi {
         power_efficient: bool,
     }
 
+    struct FfiRtpHeaderExtension {
+        uri: String,
+        preferred_id: i32,
+        preferred_encrypt: bool,
+        direction: u8,
+    }
+
     struct FfiEncoderSettings {
         width: u32,
         height: u32,
@@ -145,6 +152,8 @@ mod ffi {
         bitrate_bps: u32,
         framerate_fps: f64,
         bandwidth_bps: u64,
+        layer_bitrates_bps: [[u32; 4]; 5],
+        has_layer_bitrate: [[bool; 4]; 5],
     }
 
     struct FfiTemporalFrameRates {
@@ -1016,6 +1025,16 @@ mod ffi {
         ) -> UniquePtr<NativeRtpReceiver>;
         fn rtp_transceiver_direction(transceiver: &NativeRtpTransceiver) -> u8;
         fn rtp_transceiver_current_direction(transceiver: &NativeRtpTransceiver) -> i8;
+        fn rtp_transceiver_header_extensions(
+            transceiver: &NativeRtpTransceiver,
+            negotiated: bool,
+        ) -> Vec<FfiRtpHeaderExtension>;
+        fn rtp_transceiver_set_header_extensions(
+            transceiver: &NativeRtpTransceiver,
+            extensions: &[FfiRtpHeaderExtension],
+            error_type: &mut u8,
+            error: &mut String,
+        ) -> bool;
         fn rtp_transceiver_stopped(transceiver: &NativeRtpTransceiver) -> bool;
         fn rtp_transceiver_mid(transceiver: &NativeRtpTransceiver, mid: &mut String) -> bool;
         fn rtp_transceiver_set_video_codec_preferences(

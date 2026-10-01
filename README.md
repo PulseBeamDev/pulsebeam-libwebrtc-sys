@@ -575,7 +575,7 @@ declarations or submitted frames; an absent mode is preserved. The H.264 count
 is absent for other codecs and may differ from the per-stream counts, which
 also affect native H.264 initialization. An empty stream list preserves native
 zero-stream configuration. Settings are `Clone`, not `Copy`.
-Exposing these facts does not yet enable direct temporal input.
+Exposing these initialization facts alone does not select a temporal mode.
 
 `RtpReceiver::attach_encoded_sink()` exclusively intercepts depacketized
 encoded video access units before decoding. Its bounded four-frame/4 MiB queue
@@ -586,6 +586,18 @@ access unit with start-code-delimited NAL units, not RTP payload fragments.
 Closing the sink clears queued frames and resumes normal WebRTC decoding; this
 pinned upstream receiver cannot safely be attached a second time, even after
 close. This is not a raw RTP payload API.
+
+`RtpTransceiver::header_extensions_to_negotiate()` returns the native complete
+ordered extension snapshot. Change only each entry's `direction`, then apply
+that full vector with `set_header_extensions_to_negotiate()` before the next
+SDP negotiation. The engine validates the list and mandatory MID extension;
+IDs and encryption remain native-owned. DD and VLA are disabled by default in
+this pinned revision. `negotiated_header_extensions()` reports native negotiated
+IDs and directions; stopped entries are not negotiated, including stopped
+snapshots returned before negotiation. Negotiation does not prove that a frame
+carried an extension. Libwebrtc computes and transmits VLA, but its pinned public
+receiver, transformer and stats APIs do not expose received VLA allocations.
+The encoded sink therefore makes no received-VLA claim.
 
 For direct encoded sending, create `EncodedVideoInput::new_for_format()` with
 an actual VP8, VP9, AV1 or H265 format (or `EncodedH264Input::new()` for the
@@ -609,22 +621,46 @@ raw trigger solely to drive WebRTC's video stream scheduling. Caller-supplied
 access-unit bytes bypass encoding, and WebRTC derives the RTP timestamp from
 its capture clock. Each source has a stable `stream_id`; a bounded shared
 16-frame/8 MiB pending queue evicts oldest frames under pressure, with
-per-source `dropped_frames()` and `pending_frames()` observability. This adapter
+per-source `dropped_frames()` and `pending_frames()` observability.
+`take_encoder_error()` retrieves and clears the latest source-keyed adapter
+rejection or encoded callback failure; repeated errors coalesce and rejected
+queued units also increment that source's drop count. This adapter
 does not supply a decoder. The direct input source does not support encoded
-simulcast/SVC or H.264 packetization mode 0. `take_keyframe_request()` reports
+simulcast, spatial SVC or H.264 packetization mode 0.
+
+`EncodedH264Input::new_l1t3([64, 128, 255])` opts into single-encoding H.264
+three-temporal-layer input. The supplied nonzero, nondecreasing cumulative
+fractions must end at 255 and are passed to native encoder capabilities, not
+used to construct a GOP or VLA. Negotiate native DD on both peers, then select
+`L1T3` on the retained sender's parameters. Selection without negotiated DD
+fails before native parameter mutation. Submit explicit temporal indices 0..=2
+and H.264 `base_layer_sync` metadata; keyframes use index 0. Native initialization
+must actually select L1T3 with one three-temporal-layer stream, or queued input
+is rejected observably rather than emitted unlayered. Libwebrtc infers frame
+dependencies from the supplied codec metadata. Its pinned H.264 fallback DD
+structure has four decode targets, which are preserved, not rewritten to three.
+Producers remain responsible for truthful compressed references and signaling.
+`ProductionSession::new_l1t3(config, fps)` exposes the same profile in the movable
+actor with owned extension snapshots and source-keyed encoder errors. `take_keyframe_request()` reports
 and clears sender feedback after
 WebRTC asks the adapter to encode a frame; a delta frame submitted during a
 keyframe request is rejected. Idle sources have no keyframe-notification
 promise: polling does not schedule `Encode`, synthesize frames or substitute
 observed RTCP for native encoder feedback. `latest_rate_control()` exposes the last
-per-stream rate update observed during encoding. The generic
+native rate update for the encoder associated with the source's presentation
+token. Later native rate callbacks update it without another submitted unit.
+`VideoRateControl::layer_bitrates_bps` preserves the native five-by-four
+spatial/simulcast and temporal allocation matrix: `None` is unset and `Some(0)`
+is explicit zero; cells are per-layer, not cumulative. This is rate guidance,
+not a received or independently declared VLA. The generic
 `EncodedImageCallback::emit_with_metadata()` path also accepts codec-specific
 VP8/VP9 packetization fields, native H.264 `base_layer_sync`, and explicit
 simulcast, spatial and temporal indices for caller-provided encoders. These
 fields are passed to libwebrtc, not used for binding-generated dependencies or
 VLA; `emit()` retains the ordinary
-single-layer behavior. The direct input source still rejects layered units:
-multiple RIDs, SVC modes and resolution scaling on that source are rejected
+single-layer behavior. Ordinary direct inputs reject layered units; the explicit
+H.264 L1T3 profile allows its three temporal indices. Multiple RIDs, other SVC
+modes and resolution scaling on a direct input source are rejected
 explicitly before changing a sender.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live

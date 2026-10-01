@@ -15,6 +15,40 @@ pub enum RtpTransceiverDirection {
     Inactive = 3,
 }
 
+/// Native direction of a negotiable RTP header extension.
+/// `Stopped` disables advertisement without stopping the transceiver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum RtpHeaderExtensionDirection {
+    SendReceive = 0,
+    SendOnly = 1,
+    ReceiveOnly = 2,
+    Inactive = 3,
+    Stopped = 4,
+}
+
+/// Native extension capability snapshot. Only its direction is configurable.
+/// Preserve the complete ordered vector when applying negotiation preferences.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RtpHeaderExtensionCapability {
+    uri: String,
+    preferred_id: Option<i32>,
+    preferred_encrypt: bool,
+    pub direction: RtpHeaderExtensionDirection,
+}
+
+impl RtpHeaderExtensionCapability {
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+    pub fn preferred_id(&self) -> Option<i32> {
+        self.preferred_id
+    }
+    pub fn preferred_encrypt(&self) -> bool {
+        self.preferred_encrypt
+    }
+}
+
 /// An actual video RTP capability reported by the pinned peer engine.
 /// Resiliency codecs (such as RTX) may also appear in the list.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -468,6 +502,7 @@ pub struct VideoTrack {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DirectEncodedVideo {
     H264,
+    H264L1T3,
     Vp8,
     Vp9,
     Av1,
@@ -549,6 +584,10 @@ impl VideoTrack {
 
     pub(crate) fn is_direct_encoded(&self) -> bool {
         self.inner.encoded_codec.get().is_some()
+    }
+
+    pub(crate) fn is_direct_l1t3(&self) -> bool {
+        self.inner.encoded_codec.get() == Some(DirectEncodedVideo::H264L1T3)
     }
 
     pub(crate) fn is_direct_vp8(&self) -> bool {
@@ -800,6 +839,37 @@ impl RtpSender {
         })
     }
 
+    fn has_negotiated_dependency_descriptor(&self) -> bool {
+        const URI: &str = "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
+        let list = ffi::peer_video_transceivers(self.peer.native());
+        let Some(list) = list.as_ref() else {
+            return false;
+        };
+        let sender_id = self.id();
+        for index in 0..ffi::transceiver_list_len(list) {
+            let transceiver = ffi::transceiver_list_at(list, index);
+            let Some(transceiver) = transceiver.as_ref() else {
+                continue;
+            };
+            let sender = ffi::rtp_transceiver_sender(transceiver);
+            if sender
+                .as_ref()
+                .is_some_and(|sender| ffi::rtp_sender_id(sender) == sender_id)
+            {
+                return ffi::rtp_transceiver_header_extensions(transceiver, true)
+                    .into_iter()
+                    .any(|extension| {
+                        extension.uri == URI
+                            && (extension.direction
+                                == RtpHeaderExtensionDirection::SendReceive as u8
+                                || extension.direction
+                                    == RtpHeaderExtensionDirection::SendOnly as u8)
+                    });
+            }
+        }
+        false
+    }
+
     pub fn parameters(&self) -> Result<RtpSenderParameters, PeerError> {
         let mut snapshot = ffi::FfiSenderParameters {
             transaction_id: String::new(),
@@ -844,7 +914,9 @@ impl RtpSender {
         if self.track().is_some_and(|track| track.is_direct_encoded())
             && (parameters.encodings.len() > 1
                 || parameters.encodings.iter().any(|encoding| {
-                    encoding.scalability_mode.is_some()
+                    (encoding.scalability_mode.is_some()
+                        && !(self.track().is_some_and(|track| track.is_direct_l1t3())
+                            && encoding.scalability_mode.as_deref() == Some("L1T3")))
                         || encoding.scale_resolution_down_to.is_some()
                         || encoding
                             .scale_resolution_down_by
@@ -853,7 +925,20 @@ impl RtpSender {
         {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedParameter,
-                message: "encoded H264 input does not support scaling, simulcast, or SVC".into(),
+                message: "direct encoded input does not support scaling, simulcast, or this scalability mode".into(),
+            });
+        }
+        if self.track().is_some_and(|track| track.is_direct_l1t3())
+            && parameters
+                .encodings
+                .iter()
+                .any(|encoding| encoding.scalability_mode.as_deref() == Some("L1T3"))
+            && !self.has_negotiated_dependency_descriptor()
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedParameter,
+                message: "direct H264 L1T3 requires a negotiated native dependency descriptor"
+                    .into(),
             });
         }
         let invalid = |message: &str| PeerError {
@@ -1211,6 +1296,98 @@ impl RtpTransceiver {
 
     pub fn stopped(&self) -> bool {
         ffi::rtp_transceiver_stopped(self.native())
+    }
+
+    /// Native configured extension list for the next SDP negotiation.
+    pub fn header_extensions_to_negotiate(
+        &self,
+    ) -> Result<Vec<RtpHeaderExtensionCapability>, PeerError> {
+        self.header_extensions(false)
+    }
+
+    /// Native negotiated extension snapshot. Entries marked `Stopped` are not
+    /// negotiated. Before negotiation the native snapshot may contain stopped
+    /// entries rather than an empty vector.
+    pub fn negotiated_header_extensions(
+        &self,
+    ) -> Result<Vec<RtpHeaderExtensionCapability>, PeerError> {
+        self.header_extensions(true)
+    }
+
+    fn header_extensions(
+        &self,
+        negotiated: bool,
+    ) -> Result<Vec<RtpHeaderExtensionCapability>, PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        ffi::rtp_transceiver_header_extensions(self.native(), negotiated)
+            .into_iter()
+            .map(|value| {
+                let direction = match value.direction {
+                    0 => RtpHeaderExtensionDirection::SendReceive,
+                    1 => RtpHeaderExtensionDirection::SendOnly,
+                    2 => RtpHeaderExtensionDirection::ReceiveOnly,
+                    3 => RtpHeaderExtensionDirection::Inactive,
+                    4 => RtpHeaderExtensionDirection::Stopped,
+                    _ => {
+                        return Err(PeerError {
+                            kind: PeerErrorKind::Internal,
+                            message: "unknown native extension direction".into(),
+                        });
+                    }
+                };
+                Ok(RtpHeaderExtensionCapability {
+                    uri: value.uri,
+                    preferred_id: (value.preferred_id >= 0).then_some(value.preferred_id),
+                    preferred_encrypt: value.preferred_encrypt,
+                    direction,
+                })
+            })
+            .collect()
+    }
+
+    /// Apply directions to the full ordered snapshot returned by
+    /// [`Self::header_extensions_to_negotiate`]. Native validation checks the
+    /// list and mandatory extensions. IDs and encryption remain native-owned.
+    /// This changes the next negotiation, not already negotiated transport.
+    pub fn set_header_extensions_to_negotiate(
+        &self,
+        extensions: &[RtpHeaderExtensionCapability],
+    ) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        let extensions: Vec<_> = extensions
+            .iter()
+            .map(|value| ffi::FfiRtpHeaderExtension {
+                uri: value.uri.clone(),
+                preferred_id: value.preferred_id.unwrap_or(-1),
+                preferred_encrypt: value.preferred_encrypt,
+                direction: value.direction as u8,
+            })
+            .collect();
+        let mut kind = 0;
+        let mut error = String::new();
+        if ffi::rtp_transceiver_set_header_extensions(
+            self.native(),
+            &extensions,
+            &mut kind,
+            &mut error,
+        ) {
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: error_kind(kind),
+                message: error,
+            })
+        }
     }
 
     /// The negotiated media ID, absent before negotiation or after rollback.

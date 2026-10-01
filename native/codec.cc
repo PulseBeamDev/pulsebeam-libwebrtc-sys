@@ -500,12 +500,19 @@ public:
   void SetRates(const RateControlParameters &parameters) override {
     std::lock_guard lock(mutex_);
     if (!released_ && !failed_) {
-      encoder_set_rates(
-          *encoder_,
-          FfiRateControl{parameters.bitrate.get_sum_bps(),
-                         parameters.framerate_fps,
-                         static_cast<std::uint64_t>(
-                             parameters.bandwidth_allocation.bps())});
+      static_assert(webrtc::kMaxSpatialLayers == 5 && webrtc::kMaxTemporalStreams == 4,
+                    "update the rate-control bridge for native allocation dimensions");
+      FfiRateControl rates{};
+      rates.bitrate_bps = parameters.bitrate.get_sum_bps();
+      rates.framerate_fps = parameters.framerate_fps;
+      rates.bandwidth_bps = static_cast<std::uint64_t>(parameters.bandwidth_allocation.bps());
+      for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
+        for (std::size_t temporal = 0; temporal < webrtc::kMaxTemporalStreams; ++temporal) {
+          rates.has_layer_bitrate[spatial][temporal] = parameters.bitrate.HasBitrate(spatial, temporal);
+          rates.layer_bitrates_bps[spatial][temporal] = parameters.bitrate.GetBitrate(spatial, temporal);
+        }
+      }
+      encoder_set_rates(*encoder_, rates);
     }
   }
 

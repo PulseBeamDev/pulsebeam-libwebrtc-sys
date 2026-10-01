@@ -1192,6 +1192,44 @@ std::int8_t rtp_transceiver_current_direction(
   return direction ? static_cast<std::int8_t>(*direction) : -1;
 }
 
+rust::Vec<FfiRtpHeaderExtension> rtp_transceiver_header_extensions(
+    const NativeRtpTransceiver& transceiver, bool negotiated) noexcept {
+  const auto extensions = negotiated
+      ? transceiver.state()->transceiver->GetNegotiatedHeaderExtensions()
+      : transceiver.state()->transceiver->GetHeaderExtensionsToNegotiate();
+  rust::Vec<FfiRtpHeaderExtension> result;
+  for (const auto& extension : extensions) {
+    result.push_back(FfiRtpHeaderExtension{
+        extension.uri, extension.preferred_id.value_or(-1),
+        extension.preferred_encrypt, static_cast<std::uint8_t>(extension.direction)});
+  }
+  return result;
+}
+
+bool rtp_transceiver_set_header_extensions(
+    const NativeRtpTransceiver& transceiver,
+    rust::Slice<const FfiRtpHeaderExtension> extensions,
+    std::uint8_t& error_type, rust::String& error) noexcept {
+  std::vector<webrtc::RtpHeaderExtensionCapability> requested;
+  for (const auto& extension : extensions) {
+    if (extension.direction > static_cast<std::uint8_t>(webrtc::RtpTransceiverDirection::kStopped)) {
+      error_type = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
+      error = "invalid RTP header extension direction";
+      return false;
+    }
+    webrtc::RtpHeaderExtensionCapability value;
+    value.uri = std::string(extension.uri);
+    value.direction = static_cast<webrtc::RtpTransceiverDirection>(extension.direction);
+    requested.push_back(std::move(value));
+  }
+  const auto result = transceiver.state()->transceiver->SetHeaderExtensionsToNegotiate(requested);
+  if (!result.ok()) {
+    SetError(result, error_type, error);
+    return false;
+  }
+  return true;
+}
+
 bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept {
   return transceiver.state()->transceiver->stopped();

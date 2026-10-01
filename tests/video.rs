@@ -291,6 +291,19 @@ impl Pair {
     }
 
     fn negotiate_with_receive_rids(&self, receive_rids: bool) -> Vec<PeerConnectionEvent> {
+        self.negotiate_with_extensions_and_rids(receive_rids, false)
+    }
+
+    fn negotiate_with_extensions_and_rids(
+        &self,
+        receive_rids: bool,
+        layered: bool,
+    ) -> Vec<PeerConnectionEvent> {
+        if layered {
+            for transceiver in self.alice.video_transceivers().unwrap() {
+                enable_layered_extensions(&transceiver);
+            }
+        }
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
         let offer =
@@ -312,6 +325,11 @@ impl Pair {
             self.bob.set_remote_description(gathered),
             &mut bob_events,
         );
+        if layered {
+            for transceiver in self.bob.video_transceivers().unwrap() {
+                enable_layered_extensions(&transceiver);
+            }
+        }
         let answer = completion_description(&self.bob, self.bob.create_answer(), &mut bob_events);
         completion(
             &self.bob,
@@ -338,6 +356,25 @@ impl Pair {
         );
         bob_events
     }
+}
+
+const DD_URI: &str =
+    "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
+const VLA_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/video-layers-allocation00";
+
+fn enable_layered_extensions(transceiver: &pulsebeam_webrtc_sys::RtpTransceiver) {
+    use pulsebeam_webrtc_sys::RtpHeaderExtensionDirection;
+    let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
+    for uri in [DD_URI, VLA_URI] {
+        let extension = extensions
+            .iter_mut()
+            .find(|extension| extension.uri() == uri)
+            .expect("native layered extension");
+        extension.direction = RtpHeaderExtensionDirection::SendReceive;
+    }
+    transceiver
+        .set_header_extensions_to_negotiate(&extensions)
+        .unwrap();
 }
 
 fn factory(
@@ -554,6 +591,12 @@ fn video_sink_bounds_retention_and_reports_loss() {
     pair.bob.close().unwrap();
 }
 
+const DIRECT_H264_KEY: &[u8] = &[
+    0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0, 0x3c,
+    0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0xf1,
+    0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
+];
+
 #[test]
 fn direct_encoded_h264_input_reaches_remote_without_decode() {
     let counters = Arc::new(Counters::default());
@@ -629,13 +672,8 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
         }
     }
     // Access unit bytes, not a generated encoding of a placeholder raw frame.
-    const UNIT: &[u8] = &[
-        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
-        0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
-        0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
-    ];
     let frame = H264AccessUnit {
-        data: UNIT.to_vec(),
+        data: DIRECT_H264_KEY.to_vec(),
         width: 16,
         height: 16,
         timestamp_us: 2_000_000,
@@ -709,6 +747,298 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
     sink.close();
     pair.alice.close().unwrap();
     pair.bob.close().unwrap();
+}
+
+#[test]
+fn direct_h264_l1t3_preserves_input_and_rejects_native_fallback() {
+    for (select_mode, layered) in [(false, true), (true, false), (true, true)] {
+        let counters = Arc::new(Counters::default());
+        let input = EncodedH264Input::new_l1t3([64, 128, 255]).unwrap();
+        let mut pair =
+            Pair::new_with_encoder(counters.clone(), false, Some(input.encoder_factory()));
+        let mut source = input.create_source(&pair.alice_factory).unwrap();
+        let track = source
+            .create_track(&pair.alice_factory, "temporal-h264")
+            .unwrap();
+        let transceiver = pair
+            .alice
+            .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+            .unwrap();
+        let codecs: Vec<_> = pair
+            .alice
+            .video_sender_capabilities()
+            .unwrap()
+            .into_iter()
+            .filter(|codec| codec.format().name == "H264")
+            .collect();
+        transceiver.set_codec_preferences(&codecs).unwrap();
+        let defaults = transceiver.header_extensions_to_negotiate().unwrap();
+        for uri in [DD_URI, VLA_URI] {
+            assert_eq!(
+                defaults
+                    .iter()
+                    .find(|extension| extension.uri() == uri)
+                    .unwrap()
+                    .direction,
+                pulsebeam_webrtc_sys::RtpHeaderExtensionDirection::Stopped
+            );
+        }
+        assert!(transceiver.set_header_extensions_to_negotiate(&[]).is_err());
+        let mut invalid = defaults.clone();
+        invalid
+            .iter_mut()
+            .find(|extension| extension.uri() == "urn:ietf:params:rtp-hdrext:sdes:mid")
+            .unwrap()
+            .direction = pulsebeam_webrtc_sys::RtpHeaderExtensionDirection::Stopped;
+        assert!(
+            transceiver
+                .set_header_extensions_to_negotiate(&invalid)
+                .is_err()
+        );
+        assert_eq!(
+            transceiver.header_extensions_to_negotiate().unwrap(),
+            defaults
+        );
+        let mut events = pair.negotiate_with_extensions_and_rids(false, layered);
+        for uri in [DD_URI, VLA_URI] {
+            let extensions = transceiver.negotiated_header_extensions().unwrap();
+            let extension = extensions
+                .iter()
+                .find(|extension| extension.uri() == uri)
+                .unwrap();
+            assert_eq!(
+                extension.direction,
+                if layered {
+                    pulsebeam_webrtc_sys::RtpHeaderExtensionDirection::SendReceive
+                } else {
+                    pulsebeam_webrtc_sys::RtpHeaderExtensionDirection::Stopped
+                }
+            );
+            if layered {
+                assert!(extension.preferred_id().is_some());
+            }
+        }
+        let remote = (0..2_000_000)
+            .find_map(|_| {
+                if let Some(remote) = take_remote_transceiver(&mut events) {
+                    return Some(remote);
+                }
+                events.extend(pair.progress().1);
+                None
+            })
+            .unwrap();
+        let mut sink = remote.receiver().attach_encoded_sink().unwrap();
+        if select_mode {
+            let sender = transceiver.sender();
+            let mut parameters = sender.parameters().unwrap();
+            parameters.encodings[0].scalability_mode = Some("L1T3".into());
+            let result = sender.set_parameters(parameters);
+            if !layered {
+                assert_eq!(
+                    result.unwrap_err().kind,
+                    PeerErrorKind::UnsupportedParameter
+                );
+                assert_eq!(source.pending_frames(), 0);
+                assert_eq!(source.dropped_frames(), 0);
+                source.close().unwrap();
+                sink.close();
+                pair.alice.close().unwrap();
+                assert_eq!(
+                    transceiver
+                        .header_extensions_to_negotiate()
+                        .unwrap_err()
+                        .kind,
+                    PeerErrorKind::Closed
+                );
+                pair.bob.close().unwrap();
+                continue;
+            }
+            result.unwrap();
+        }
+        // Give threaded role queues time to run without racing simulated
+        // receiver timeout/PLI timers by milliseconds on every spin.
+        let progress = || {
+            drain(&pair.alice);
+            drain(&pair.bob);
+            while let Some(packet) = pair.network.next_packet() {
+                pair.network.deliver(packet.id).unwrap();
+            }
+            pair.clock.advance(Duration::from_micros(1)).unwrap();
+            thread::yield_now();
+        };
+        let mut unit = EncodedVideoAccessUnit {
+            data: DIRECT_H264_KEY.to_vec(),
+            width: 16,
+            height: 16,
+            timestamp_us: 2_000_000,
+            key_frame: true,
+            qp: Some(20),
+            metadata: EncodedVideoMetadata {
+                codec: EncodedVideoCodec::H264 {
+                    base_layer_sync: false,
+                },
+                simulcast_index: None,
+                spatial_index: None,
+                temporal_index: Some(0),
+                end_of_picture: true,
+            },
+        };
+        let mut invalid = unit.clone();
+        invalid.metadata.temporal_index = Some(3);
+        assert_eq!(source.push_encoded(invalid), Err(CodecError::InvalidFrame));
+        assert_eq!(source.pending_frames(), 0);
+        source.push_encoded(unit.clone()).unwrap();
+        if !select_mode {
+            let error = (0..2_000_000)
+                .find_map(|_| {
+                    progress();
+                    source.take_encoder_error()
+                })
+                .unwrap();
+            assert_eq!(error, CodecError::InvalidConfiguration);
+            assert_eq!(source.dropped_frames(), 1);
+            assert!(sink.try_next_frame().is_none());
+        } else {
+            let received = (0..2_000_000)
+                .find_map(|_| {
+                    progress();
+                    sink.try_next_frame()
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "L1T3 key missing: error={:?}, pending={}",
+                        source.take_encoder_error(),
+                        source.pending_frames()
+                    )
+                });
+            assert_eq!(received.data, unit.data);
+            assert_eq!(source.take_encoder_error(), None, "key callback completion");
+            let rates = source.latest_rate_control().expect("native rate guidance");
+            assert_eq!(
+                rates
+                    .layer_bitrates_bps
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .copied()
+                    .map(u64::from)
+                    .sum::<u64>(),
+                u64::from(rates.bitrate_bps)
+            );
+            assert!(rates.layer_bitrates_bps[0][0].is_some());
+            assert!(rates.layer_bitrates_bps[0][1].is_some());
+            assert!(rates.layer_bitrates_bps[0][2].is_some());
+            assert!(rates.layer_bitrates_bps[0][3].is_none());
+            assert!(
+                rates.layer_bitrates_bps[1..]
+                    .iter()
+                    .flatten()
+                    .all(Option::is_none)
+            );
+            let mut base_id = received.frame_id.expect("negotiated native DD frame id");
+            let mut last_id = base_id;
+            assert_eq!(received.spatial_index, Some(0));
+            assert_eq!(received.temporal_index, Some(0));
+            assert!(received.dependencies.is_empty());
+            assert_eq!(
+                received.decode_target_indications,
+                vec![pulsebeam_webrtc_sys::DecodeTargetIndication::Switch; 4]
+            );
+            let ssrc = received.ssrc;
+            let payload_type = received.payload_type;
+            let mut rejected = 0;
+            source.take_keyframe_request();
+            for (number, temporal) in [2, 1, 2, 0].into_iter().enumerate() {
+                unit.data = vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1, number as u8];
+                unit.timestamp_us += 33_333;
+                unit.key_frame = false;
+                unit.metadata.temporal_index = Some(temporal);
+                unit.metadata.codec = EncodedVideoCodec::H264 {
+                    base_layer_sync: temporal != 0,
+                };
+                let mut delivered = None;
+                for _ in 0..4 {
+                    source.push_encoded(unit.clone()).unwrap();
+                    let outcome = (0..2_000_000)
+                        .find_map(|_| {
+                            progress();
+                            if let Some(error) = source.take_encoder_error() {
+                                return Some(Err(error));
+                            }
+                            sink.try_next_frame().map(Ok)
+                        })
+                        .expect("delta or observable encoder rejection");
+                    match outcome {
+                        Ok(frame) => {
+                            delivered = Some(frame);
+                            break;
+                        }
+                        Err(error) => {
+                            assert_eq!(error, CodecError::InvalidFrame);
+                            assert!(source.take_keyframe_request());
+                            rejected += 1;
+                            // The test producer, not the binding, supplies a
+                            // compressed keyframe in response to native feedback.
+                            let mut key = unit.clone();
+                            key.timestamp_us += 33_333;
+                            key.data = DIRECT_H264_KEY.to_vec();
+                            key.key_frame = true;
+                            key.metadata.temporal_index = Some(0);
+                            key.metadata.codec = EncodedVideoCodec::H264 {
+                                base_layer_sync: false,
+                            };
+                            source.push_encoded(key.clone()).unwrap();
+                            let frame = (0..2_000_000)
+                                .find_map(|_| {
+                                    progress();
+                                    sink.try_next_frame()
+                                })
+                                .expect("requested keyframe delivered");
+                            assert_eq!(frame.data, key.data);
+                            assert!(frame.key_frame);
+                            assert!(frame.dependencies.is_empty());
+                            base_id = frame.frame_id.expect("requested key native DD id");
+                            assert!(base_id > last_id);
+                            last_id = base_id;
+                            assert_eq!(source.take_encoder_error(), None);
+                            source.take_keyframe_request();
+                            unit.timestamp_us = key.timestamp_us + 33_333;
+                        }
+                    }
+                }
+                let received = delivered.expect("delta after honoring native keyframe feedback");
+                assert_eq!(received.data, unit.data);
+                assert!(!received.key_frame);
+                assert_eq!(received.ssrc, ssrc);
+                assert_eq!(received.payload_type, payload_type);
+                assert_eq!(received.spatial_index, Some(0));
+                assert_eq!(received.temporal_index, Some(i32::from(temporal)));
+                let id = received.frame_id.expect("delta native DD frame id");
+                assert!(id > last_id);
+                last_id = id;
+                assert_eq!(received.dependencies, vec![base_id]);
+                assert_eq!(received.decode_target_indications.len(), 4);
+                for (target, indication) in received.decode_target_indications.iter().enumerate() {
+                    assert_eq!(
+                        *indication,
+                        if target < usize::from(temporal) {
+                            pulsebeam_webrtc_sys::DecodeTargetIndication::NotPresent
+                        } else {
+                            pulsebeam_webrtc_sys::DecodeTargetIndication::Switch
+                        }
+                    );
+                }
+            }
+            assert_eq!(source.dropped_frames(), rejected);
+            assert_eq!(source.take_encoder_error(), None);
+        }
+        assert_eq!(counters.encode.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.decode.load(Ordering::SeqCst), 0);
+        source.close().unwrap();
+        sink.close();
+        pair.alice.close().unwrap();
+        pair.bob.close().unwrap();
+    }
 }
 
 fn verify_direct_encoded_codec(
