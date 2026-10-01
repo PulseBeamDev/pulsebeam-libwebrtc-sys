@@ -416,6 +416,17 @@ impl EncodedVideoMetadata {
     }
 }
 
+/// One native simulcast stream at encoder initialization, in native order.
+/// These are engine configuration facts, not a producer allocation or a claim
+/// that a particular encoding is currently transmitting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoSimulcastStream {
+    pub width: u32,
+    pub height: u32,
+    pub active: bool,
+    pub temporal_layers: u8,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoEncoderSettings {
     pub width: u32,
@@ -436,6 +447,10 @@ pub struct VideoEncoderSettings {
     /// Empty when native numberOfSimulcastStreams is zero. Do not infer an
     /// effective H264 count from only its codec-specific field.
     pub simulcast_temporal_layers: Vec<u8>,
+    /// Exact native stream geometry and activation at initialization. Empty
+    /// when native numberOfSimulcastStreams is zero; do not guess a stream from
+    /// the outer dimensions. Current bitrate guidance is reported separately.
+    pub simulcast_streams: Vec<VideoSimulcastStream>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1323,6 +1338,16 @@ fn encoder_settings_from_ffi(s: ffi::FfiEncoderSettings) -> VideoEncoderSettings
             .then(|| VideoScalabilityMode::from_native(s.scalability_mode)),
         h264_temporal_layers: s.has_h264_temporal_layers.then_some(s.h264_temporal_layers),
         simulcast_temporal_layers: s.simulcast_temporal_layers,
+        simulcast_streams: s
+            .simulcast_streams
+            .into_iter()
+            .map(|stream| VideoSimulcastStream {
+                width: stream.width,
+                height: stream.height,
+                active: stream.active,
+                temporal_layers: stream.temporal_layers,
+            })
+            .collect(),
     }
 }
 pub(crate) fn encoder_init(encoder: &mut RustVideoEncoder, s: ffi::FfiEncoderSettings) -> i32 {
@@ -1779,6 +1804,12 @@ mod tests {
             has_h264_temporal_layers: count_present,
             h264_temporal_layers: 1,
             simulcast_temporal_layers: vec![3],
+            simulcast_streams: vec![ffi::FfiSimulcastStream {
+                width: 16,
+                height: 16,
+                active: false,
+                temporal_layers: 3,
+            }],
         };
         let observed = encoder_settings_from_ffi(settings(true, true));
         assert_eq!(
@@ -1796,6 +1827,76 @@ mod tests {
         assert_eq!(missing.simulcast_temporal_layers, [3]);
         assert_eq!(missing.width, observed.width);
         assert_eq!(missing.max_payload_size, 1200);
+        assert_eq!(
+            observed.simulcast_streams,
+            [VideoSimulcastStream {
+                width: 16,
+                height: 16,
+                active: false,
+                temporal_layers: 3,
+            }]
+        );
+        assert_eq!(missing.simulcast_streams, observed.simulcast_streams);
+        let mut empty = settings(false, false);
+        empty.simulcast_temporal_layers.clear();
+        empty.simulcast_streams.clear();
+        assert!(
+            encoder_settings_from_ffi(empty)
+                .simulcast_streams
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_simulcast_configuration_preserves_order_and_inactive_geometry() {
+        let settings = ffi::FfiEncoderSettings {
+            simulcast_temporal_layers: vec![1, 2, 3],
+            simulcast_streams: vec![
+                ffi::FfiSimulcastStream {
+                    width: 320,
+                    height: 180,
+                    active: true,
+                    temporal_layers: 1,
+                },
+                ffi::FfiSimulcastStream {
+                    width: 640,
+                    height: 360,
+                    active: false,
+                    temporal_layers: 2,
+                },
+                ffi::FfiSimulcastStream {
+                    width: 1280,
+                    height: 720,
+                    active: true,
+                    temporal_layers: 3,
+                },
+            ],
+            ..Default::default()
+        };
+        let observed = encoder_settings_from_ffi(settings);
+        assert_eq!(
+            observed.simulcast_streams,
+            [
+                VideoSimulcastStream {
+                    width: 320,
+                    height: 180,
+                    active: true,
+                    temporal_layers: 1
+                },
+                VideoSimulcastStream {
+                    width: 640,
+                    height: 360,
+                    active: false,
+                    temporal_layers: 2
+                },
+                VideoSimulcastStream {
+                    width: 1280,
+                    height: 720,
+                    active: true,
+                    temporal_layers: 3
+                },
+            ]
+        );
     }
 
     #[test]

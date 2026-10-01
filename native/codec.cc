@@ -461,8 +461,14 @@ public:
       observed.h264_temporal_layers = codec->H264().numberOfTemporalLayers;
     }
     for (std::size_t i = 0; i < codec->numberOfSimulcastStreams; ++i) {
-      observed.simulcast_temporal_layers.push_back(
-          codec->simulcastStream[i].numberOfTemporalLayers);
+      const auto& stream = codec->simulcastStream[i];
+      observed.simulcast_temporal_layers.push_back(stream.numberOfTemporalLayers);
+      FfiSimulcastStream projected{};
+      projected.width = stream.width;
+      projected.height = stream.height;
+      projected.active = stream.active;
+      projected.temporal_layers = stream.numberOfTemporalLayers;
+      observed.simulcast_streams.push_back(projected);
     }
     return encoder_init(*encoder_, std::move(observed));
   }

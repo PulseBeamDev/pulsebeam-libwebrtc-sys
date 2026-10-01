@@ -21,7 +21,7 @@ use pulsebeam_webrtc_sys::{
     VideoDecoderInfo, VideoDecoderSettings, VideoEncoder, VideoEncoderFactory,
     VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame,
     VideoFrameBuffer, VideoFrameType, VideoPlane, VideoRateControl, VideoResolution, VideoRotation,
-    VideoTrackState,
+    VideoSimulcastStream, VideoTrackState,
 };
 
 #[derive(Default)]
@@ -1474,6 +1474,17 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
             .all(|settings| settings.h264_temporal_layers == Some(1)
                 && settings.simulcast_temporal_layers == [1])
     );
+    for settings in initialized.iter() {
+        assert_eq!(
+            settings.simulcast_streams,
+            [VideoSimulcastStream {
+                width: 16,
+                height: 16,
+                active: true,
+                temporal_layers: 1,
+            }]
+        );
+    }
     drop(initialized);
     assert_eq!(counters.encoder_rotation.load(Ordering::SeqCst), 90);
     assert_eq!(counters.decode.load(Ordering::SeqCst), 1);

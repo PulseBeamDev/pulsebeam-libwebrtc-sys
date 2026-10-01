@@ -41,7 +41,7 @@ pub use codec::{
     VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
-    VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode,
+    VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode, VideoSimulcastStream,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelError, DataChannelErrorDetail,
@@ -126,6 +126,15 @@ mod ffi {
         direction: u8,
     }
 
+    #[derive(Default)]
+    struct FfiSimulcastStream {
+        width: u32,
+        height: u32,
+        active: bool,
+        temporal_layers: u8,
+    }
+
+    #[derive(Default)]
     struct FfiEncoderSettings {
         width: u32,
         height: u32,
@@ -140,6 +149,7 @@ mod ffi {
         has_h264_temporal_layers: bool,
         h264_temporal_layers: u8,
         simulcast_temporal_layers: Vec<u8>,
+        simulcast_streams: Vec<FfiSimulcastStream>,
     }
 
     struct FfiDecoderSettings {
