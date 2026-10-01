@@ -411,6 +411,8 @@ _export-predicate-failed flavor target invariant expected actual:
 _export-static-closure flavor target src out src_native out_native archives objects:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Both sort and comm must use the same ordering on non-C locale hosts.
+    export LC_ALL=C
     gn=$(just --justfile "{{ root }}/Justfile" _gn)
     base=$(mktemp); extra=$(mktemp); trap 'rm -f "$base" "$extra"' EXIT
     { printf '%s\n' //:webrtc; "$gn" desc --root="{{ src_native }}" "{{ out_native }}" //:webrtc deps --all; } | LC_ALL=C sort -u > "$base"
