@@ -416,7 +416,7 @@ impl EncodedVideoMetadata {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoEncoderSettings {
     pub width: u32,
     pub height: u32,
@@ -426,6 +426,16 @@ pub struct VideoEncoderSettings {
     pub max_framerate: u32,
     pub cores: u32,
     pub max_payload_size: u32,
+    /// Selected mode observed through native VideoCodec::GetScalabilityMode.
+    /// Missing means native configuration has not supplied a mode.
+    pub scalability_mode: Option<VideoScalabilityMode>,
+    /// Raw native H264-specific configuration, not inferred from the mode.
+    /// Absent for other codecs. This may differ from per-stream counts.
+    pub h264_temporal_layers: Option<u8>,
+    /// Raw native SimulcastStream counts, in configured stream order.
+    /// Empty when native numberOfSimulcastStreams is zero. Do not infer an
+    /// effective H264 count from only its codec-specific field.
+    pub simulcast_temporal_layers: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1224,19 +1234,25 @@ fn with_encoder(
         }
     }
 }
+fn encoder_settings_from_ffi(s: ffi::FfiEncoderSettings) -> VideoEncoderSettings {
+    VideoEncoderSettings {
+        width: s.width,
+        height: s.height,
+        start_bitrate_bps: s.start_bitrate_bps,
+        max_bitrate_bps: s.max_bitrate_bps,
+        min_bitrate_bps: s.min_bitrate_bps,
+        max_framerate: s.max_framerate,
+        cores: s.cores,
+        max_payload_size: s.max_payload_size,
+        scalability_mode: s
+            .has_scalability_mode
+            .then(|| VideoScalabilityMode::from_native(s.scalability_mode)),
+        h264_temporal_layers: s.has_h264_temporal_layers.then_some(s.h264_temporal_layers),
+        simulcast_temporal_layers: s.simulcast_temporal_layers,
+    }
+}
 pub(crate) fn encoder_init(encoder: &mut RustVideoEncoder, s: ffi::FfiEncoderSettings) -> i32 {
-    with_encoder(encoder, |c| {
-        c.initialize(VideoEncoderSettings {
-            width: s.width,
-            height: s.height,
-            start_bitrate_bps: s.start_bitrate_bps,
-            max_bitrate_bps: s.max_bitrate_bps,
-            min_bitrate_bps: s.min_bitrate_bps,
-            max_framerate: s.max_framerate,
-            cores: s.cores,
-            max_payload_size: s.max_payload_size,
-        })
-    })
+    with_encoder(encoder, |c| c.initialize(encoder_settings_from_ffi(s)))
 }
 pub(crate) fn encoder_register_callback(encoder: &mut RustVideoEncoder) -> i32 {
     with_encoder(encoder, |c| c.register_callback())
@@ -1651,6 +1667,41 @@ mod tests {
                 hardware_accelerated: false,
             }
         }
+    }
+
+    #[test]
+    fn native_encoder_configuration_preserves_mode_and_h264_count_independently() {
+        let settings = |mode_present, count_present| ffi::FfiEncoderSettings {
+            width: 16,
+            height: 16,
+            start_bitrate_bps: 64_000,
+            max_bitrate_bps: 256_000,
+            min_bitrate_bps: 16_000,
+            max_framerate: 30,
+            cores: 1,
+            max_payload_size: 1200,
+            has_scalability_mode: mode_present,
+            scalability_mode: "L1T3".into(),
+            has_h264_temporal_layers: count_present,
+            h264_temporal_layers: 1,
+            simulcast_temporal_layers: vec![3],
+        };
+        let observed = encoder_settings_from_ffi(settings(true, true));
+        assert_eq!(
+            observed
+                .scalability_mode
+                .as_ref()
+                .map(VideoScalabilityMode::as_str),
+            Some("L1T3")
+        );
+        assert_eq!(observed.h264_temporal_layers, Some(1));
+        assert_eq!(observed.simulcast_temporal_layers, [3]);
+        let missing = encoder_settings_from_ffi(settings(false, false));
+        assert_eq!(missing.scalability_mode, None);
+        assert_eq!(missing.h264_temporal_layers, None);
+        assert_eq!(missing.simulcast_temporal_layers, [3]);
+        assert_eq!(missing.width, observed.width);
+        assert_eq!(missing.max_payload_size, 1200);
     }
 
     #[test]

@@ -442,14 +442,29 @@ public:
     // which hits a DCHECK in this pinned revision. Encode can fail safely.
     if (failed_)
       return WEBRTC_VIDEO_CODEC_OK;
-    return encoder_init(
-        *encoder_, FfiEncoderSettings{
-                       static_cast<std::uint32_t>(codec->width),
-                       static_cast<std::uint32_t>(codec->height),
-                       codec->startBitrate * 1000, codec->maxBitrate * 1000,
-                       codec->minBitrate * 1000, codec->maxFramerate,
-                       static_cast<std::uint32_t>(settings.number_of_cores),
-                       static_cast<std::uint32_t>(settings.max_payload_size)});
+    FfiEncoderSettings observed{};
+    observed.width = codec->width;
+    observed.height = codec->height;
+    observed.start_bitrate_bps = codec->startBitrate * 1000;
+    observed.max_bitrate_bps = codec->maxBitrate * 1000;
+    observed.min_bitrate_bps = codec->minBitrate * 1000;
+    observed.max_framerate = codec->maxFramerate;
+    observed.cores = settings.number_of_cores;
+    observed.max_payload_size = settings.max_payload_size;
+    if (const auto mode = codec->GetScalabilityMode()) {
+      observed.has_scalability_mode = true;
+      observed.scalability_mode =
+          std::string(webrtc::ScalabilityModeToString(*mode));
+    }
+    if (codec->codecType == webrtc::kVideoCodecH264) {
+      observed.has_h264_temporal_layers = true;
+      observed.h264_temporal_layers = codec->H264().numberOfTemporalLayers;
+    }
+    for (std::size_t i = 0; i < codec->numberOfSimulcastStreams; ++i) {
+      observed.simulcast_temporal_layers.push_back(
+          codec->simulcastStream[i].numberOfTemporalLayers);
+    }
+    return encoder_init(*encoder_, std::move(observed));
   }
 
   int32_t RegisterEncodeCompleteCallback(

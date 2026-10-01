@@ -568,6 +568,15 @@ Native `SetParameters` validates the capability list, so answering true in a
 factory's support query alone does not enable a temporal profile. This format
 API does not generate a GOP, dependency metadata or VLA.
 
+`VideoEncoderSettings` reports the selected native `scalability_mode` and the
+raw native `h264_temporal_layers` and per-stream `simulcast_temporal_layers`
+counts independently at initialization. None is inferred from capability
+declarations or submitted frames; an absent mode is preserved. The H.264 count
+is absent for other codecs and may differ from the per-stream counts, which
+also affect native H.264 initialization. An empty stream list preserves native
+zero-stream configuration. Settings are `Clone`, not `Copy`.
+Exposing these facts does not yet enable direct temporal input.
+
 `RtpReceiver::attach_encoded_sink()` exclusively intercepts depacketized
 encoded video access units before decoding. Its bounded four-frame/4 MiB queue
 reports drops. Access units include optional RID, capture/receive timing, and

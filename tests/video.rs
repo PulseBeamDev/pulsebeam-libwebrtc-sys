@@ -1,7 +1,7 @@
 use std::{
     net::Ipv4Addr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
     },
     thread,
@@ -31,6 +31,7 @@ struct Counters {
     encode: AtomicUsize,
     encoder_release: AtomicUsize,
     encoder_rotation: AtomicU32,
+    encoder_settings: Mutex<Vec<VideoEncoderSettings>>,
     decoder_factory: AtomicUsize,
     decoder_create: AtomicUsize,
     decode: AtomicUsize,
@@ -81,7 +82,8 @@ impl VideoEncoderFactory for EncoderFactory {
 struct TestEncoder(Arc<Counters>);
 
 impl VideoEncoder for TestEncoder {
-    fn initialize(&mut self, _: VideoEncoderSettings) -> Result<(), CodecError> {
+    fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
+        self.0.encoder_settings.lock().unwrap().push(settings);
         Ok(())
     }
 
@@ -1134,6 +1136,15 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert_eq!(counters.encoder_create.load(Ordering::SeqCst), 1);
     assert_eq!(counters.decoder_create.load(Ordering::SeqCst), 1);
     assert_eq!(counters.encode.load(Ordering::SeqCst), 1);
+    let initialized = counters.encoder_settings.lock().unwrap();
+    assert!(!initialized.is_empty());
+    assert!(
+        initialized
+            .iter()
+            .all(|settings| settings.h264_temporal_layers == Some(1)
+                && settings.simulcast_temporal_layers == [1])
+    );
+    drop(initialized);
     assert_eq!(counters.encoder_rotation.load(Ordering::SeqCst), 90);
     assert_eq!(counters.decode.load(Ordering::SeqCst), 1);
 

@@ -128,6 +128,11 @@ mod ffi {
         max_framerate: u32,
         cores: u32,
         max_payload_size: u32,
+        has_scalability_mode: bool,
+        scalability_mode: String,
+        has_h264_temporal_layers: bool,
+        h264_temporal_layers: u8,
+        simulcast_temporal_layers: Vec<u8>,
     }
 
     struct FfiDecoderSettings {
