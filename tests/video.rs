@@ -785,7 +785,9 @@ fn verify_direct_encoded_codec(
             key_frame: true,
             qp: None,
             metadata: EncodedVideoMetadata {
-                codec: EncodedVideoCodec::H264,
+                codec: EncodedVideoCodec::H264 {
+                    base_layer_sync: false,
+                },
                 ..metadata
             },
         }),

@@ -282,7 +282,9 @@ impl EncodedH264Source {
             key_frame: frame.key_frame,
             qp: frame.qp,
             metadata: EncodedVideoMetadata {
-                codec: EncodedVideoCodec::H264,
+                codec: EncodedVideoCodec::H264 {
+                    base_layer_sync: false,
+                },
                 simulcast_index: None,
                 spatial_index: None,
                 temporal_index: None,
@@ -297,7 +299,7 @@ impl EncodedH264Source {
         }
         let matching_codec = matches!(
             (self.format.name.as_str(), frame.metadata.codec),
-            ("H264", EncodedVideoCodec::H264)
+            ("H264", EncodedVideoCodec::H264 { .. })
                 | ("VP8", EncodedVideoCodec::Vp8 { .. })
                 | ("VP9", EncodedVideoCodec::Vp9 { .. })
                 | ("AV1", EncodedVideoCodec::Av1)

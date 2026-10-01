@@ -601,8 +601,10 @@ promise: polling does not schedule `Encode`, synthesize frames or substitute
 observed RTCP for native encoder feedback. `latest_rate_control()` exposes the last
 per-stream rate update observed during encoding. The generic
 `EncodedImageCallback::emit_with_metadata()` path also accepts codec-specific
-VP8/VP9 packetization fields and explicit simulcast, spatial and temporal
-indices for caller-provided encoders; `emit()` retains the ordinary
+VP8/VP9 packetization fields, native H.264 `base_layer_sync`, and explicit
+simulcast, spatial and temporal indices for caller-provided encoders. These
+fields are passed to libwebrtc, not used for binding-generated dependencies or
+VLA; `emit()` retains the ordinary
 single-layer behavior. The direct input source still rejects layered units:
 multiple RIDs, SVC modes and resolution scaling on that source are rejected
 explicitly before changing a sender.

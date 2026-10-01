@@ -138,7 +138,9 @@ fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
                     key_frame: true,
                     qp: None,
                     metadata: EncodedVideoMetadata {
-                        codec: EncodedVideoCodec::H264,
+                        codec: EncodedVideoCodec::H264 {
+                            base_layer_sync: false,
+                        },
                         simulcast_index: None,
                         spatial_index: None,
                         temporal_index: None,

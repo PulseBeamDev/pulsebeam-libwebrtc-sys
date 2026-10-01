@@ -293,7 +293,12 @@ pub enum EncodedVideoCodec {
         inter_layer_predicted: bool,
         temporal_up_switch: bool,
     },
-    H264,
+    H264 {
+        /// Native CodecSpecificInfoH264::base_layer_sync: whether this temporal
+        /// enhancement frame can synchronize with the base layer. Forwarded to
+        /// libwebrtc; this does not calculate dependencies or allocation.
+        base_layer_sync: bool,
+    },
     Av1,
     H265,
 }
@@ -347,7 +352,18 @@ impl EncodedVideoMetadata {
                 inter_layer_predicted,
                 temporal_up_switch,
             ),
-            EncodedVideoCodec::H264 => (3, false, false, -1, false, false, false, 1, false, false),
+            EncodedVideoCodec::H264 { base_layer_sync } => (
+                3,
+                false,
+                base_layer_sync,
+                -1,
+                false,
+                false,
+                false,
+                1,
+                false,
+                false,
+            ),
             EncodedVideoCodec::Av1 => (4, false, false, -1, false, false, false, 1, false, false),
             EncodedVideoCodec::H265 => (5, false, false, -1, false, false, false, 1, false, false),
         };
@@ -1588,6 +1604,26 @@ mod tests {
                 implementation_name: "test-only reversible H264-shaped decoder".into(),
                 hardware_accelerated: false,
             }
+        }
+    }
+
+    #[test]
+    fn h264_metadata_forwards_native_base_layer_sync() {
+        for base_layer_sync in [false, true] {
+            let converted = EncodedVideoMetadata {
+                codec: EncodedVideoCodec::H264 { base_layer_sync },
+                simulcast_index: Some(1),
+                spatial_index: None,
+                temporal_index: Some(2),
+                end_of_picture: true,
+            }
+            .ffi();
+            assert_eq!(converted.codec, 3);
+            assert_eq!(converted.layer_sync, base_layer_sync);
+            assert_eq!(converted.simulcast_index, 1);
+            assert_eq!(converted.spatial_index, -1);
+            assert_eq!(converted.temporal_index, 2);
+            assert!(converted.end_of_picture);
         }
     }
 
