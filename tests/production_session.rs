@@ -269,6 +269,263 @@ fn temporal_actor_keeps_native_extension_control_owned_across_migration() {
     .unwrap();
 }
 
+#[test]
+fn migrated_temporal_actor_receives_native_dd_and_wakes_for_rejection() {
+    const DD: &str =
+        "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
+    const KEY: &[u8] = &[
+        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
+        0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
+        0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
+    ];
+    fn outcome(
+        session: &mut ProductionSession,
+        peers: [SessionPeerId; 2],
+        source: SessionSourceId,
+        receiver: SessionReceiverId,
+    ) -> Result<EncodedReceivedVideoFrame, CodecError> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            for peer in peers {
+                while session.try_peer_event(peer).unwrap().is_some() {}
+            }
+            if let Some(error) = session.take_video_encoder_error(source).unwrap() {
+                return Err(error);
+            }
+            if let Some(frame) = session.try_video_frame(receiver).unwrap() {
+                return Ok(frame);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "temporal media or rejection did not arrive"
+            );
+            wait(session);
+        }
+    }
+
+    for selected in [false, true] {
+        let format = VideoCodecFormat::new("H264")
+            .with_parameter("level-asymmetry-allowed", "1")
+            .with_parameter("packetization-mode", "1")
+            .with_parameter("profile-level-id", "42e01f");
+        let mut session = ProductionSession::new_l1t3(
+            ProductionSessionConfig {
+                video_format: Some(format),
+            },
+            [64, 128, 255],
+        )
+        .unwrap();
+        let peers = [
+            session.create_peer(PeerConfiguration::default()).unwrap(),
+            session.create_peer(PeerConfiguration::default()).unwrap(),
+        ];
+        let source = session.create_video_source().unwrap();
+        let outgoing = session
+            .publish_video(
+                peers[0],
+                source,
+                "temporal",
+                RtpTransceiverDirection::SendOnly,
+                &[],
+            )
+            .unwrap();
+        for transceiver in [outgoing] {
+            let mut extensions = session.header_extensions_to_negotiate(transceiver).unwrap();
+            extensions
+                .iter_mut()
+                .find(|extension| extension.uri() == DD)
+                .unwrap()
+                .direction = RtpHeaderExtensionDirection::SendReceive;
+            session
+                .set_header_extensions_to_negotiate(transceiver, &extensions)
+                .unwrap();
+        }
+        let session = thread::spawn(move || {
+            let operation = session.create_offer(peers[0], false).unwrap();
+            let offer = finish(&mut session, peers[0], operation).unwrap();
+            let offer = set_local_and_gather(&mut session, peers[0], offer);
+            let operation = session.set_remote_description(peers[1], offer).unwrap();
+            let mut completed = false;
+            let mut arrival = None;
+            while !completed || arrival.is_none() {
+                while let Some(event) = session.try_peer_event(peers[1]).unwrap() {
+                    match event {
+                        SessionEvent::OperationComplete(done) if done.operation_id == operation => {
+                            done.result.unwrap();
+                            completed = true;
+                        }
+                        SessionEvent::Track {
+                            transceiver,
+                            receiver,
+                        } => {
+                            arrival = Some((transceiver, receiver));
+                        }
+                        _ => {}
+                    }
+                }
+                if !completed || arrival.is_none() {
+                    wait(&mut session);
+                }
+            }
+            let (incoming, receiver) = arrival.unwrap();
+            // Native JSEP creates the offered receiver instead of reusing a
+            // locally addTransceiver-created resource. Configure the actual
+            // owned arrival after the offer, before creating the answer.
+            let mut extensions = session.header_extensions_to_negotiate(incoming).unwrap();
+            extensions
+                .iter_mut()
+                .find(|extension| extension.uri() == DD)
+                .unwrap()
+                .direction = RtpHeaderExtensionDirection::SendReceive;
+            session
+                .set_header_extensions_to_negotiate(incoming, &extensions)
+                .unwrap();
+            let operation = session.create_answer(peers[1]).unwrap();
+            let answer = finish(&mut session, peers[1], operation).unwrap();
+            let answer = set_local_and_gather(&mut session, peers[1], answer);
+            let operation = session.set_remote_description(peers[0], answer).unwrap();
+            finish(&mut session, peers[0], operation);
+            for transceiver in [outgoing, incoming] {
+                assert_eq!(
+                    session
+                        .negotiated_header_extensions(transceiver)
+                        .unwrap()
+                        .iter()
+                        .find(|extension| extension.uri() == DD)
+                        .unwrap()
+                        .direction,
+                    RtpHeaderExtensionDirection::SendReceive
+                );
+            }
+            if selected {
+                let sender = session.sender(outgoing).unwrap();
+                let mut parameters = session.sender_parameters(sender).unwrap();
+                parameters.encodings[0].scalability_mode = Some("L1T3".into());
+                session.set_sender_parameters(sender, parameters).unwrap();
+            }
+            assert_eq!(session.receiver(incoming).unwrap(), receiver);
+            session.attach_encoded_video(receiver).unwrap();
+            (session, receiver)
+        })
+        .join()
+        .unwrap();
+        let (session, receiver) = session;
+        let (session, owned) = thread::spawn(move || {
+            let mut session = session;
+            let mut unit = EncodedVideoAccessUnit {
+                data: KEY.to_vec(),
+                width: 16,
+                height: 16,
+                timestamp_us: i64::try_from(SystemClock.now().as_micros()).unwrap(),
+                key_frame: true,
+                qp: None,
+                metadata: EncodedVideoMetadata {
+                    codec: EncodedVideoCodec::H264 {
+                        base_layer_sync: false,
+                    },
+                    simulcast_index: None,
+                    spatial_index: None,
+                    temporal_index: Some(0),
+                    end_of_picture: true,
+                },
+            };
+            session.push_video(source, unit.clone()).unwrap();
+            let first = outcome(&mut session, peers, source, receiver);
+            if !selected {
+                assert_eq!(first.unwrap_err(), CodecError::InvalidConfiguration);
+                assert!(session.try_video_frame(receiver).unwrap().is_none());
+                return (session, None);
+            }
+            let first = first.unwrap();
+            assert_eq!(first.data, KEY);
+            assert!(first.key_frame);
+            assert_eq!(first.temporal_index, Some(0));
+            assert!(first.dependencies.is_empty());
+            let mut base_id = first.frame_id.unwrap();
+            assert_eq!(
+                first.decode_target_indications,
+                vec![DecodeTargetIndication::Switch; 4]
+            );
+            assert!(
+                session
+                    .video_feedback(source)
+                    .unwrap()
+                    .1
+                    .unwrap()
+                    .layer_bitrates_bps[0][2]
+                    .is_some()
+            );
+            let mut delivered = None;
+            for _ in 0..4 {
+                unit.timestamp_us += 33_333;
+                unit.data = vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1, 7];
+                unit.key_frame = false;
+                unit.metadata.temporal_index = Some(2);
+                unit.metadata.codec = EncodedVideoCodec::H264 {
+                    base_layer_sync: true,
+                };
+                session.push_video(source, unit.clone()).unwrap();
+                match outcome(&mut session, peers, source, receiver) {
+                    Ok(frame) => {
+                        delivered = Some(frame);
+                        break;
+                    }
+                    Err(error) => {
+                        assert_eq!(error, CodecError::InvalidFrame);
+                        assert!(session.video_feedback(source).unwrap().0);
+                        let mut key = unit.clone();
+                        key.timestamp_us += 33_333;
+                        key.data = KEY.to_vec();
+                        key.key_frame = true;
+                        key.metadata.temporal_index = Some(0);
+                        key.metadata.codec = EncodedVideoCodec::H264 {
+                            base_layer_sync: false,
+                        };
+                        session.push_video(source, key.clone()).unwrap();
+                        let frame = outcome(&mut session, peers, source, receiver).unwrap();
+                        assert_eq!(frame.data, KEY);
+                        base_id = frame.frame_id.unwrap();
+                        session.video_feedback(source).unwrap();
+                        unit.timestamp_us = key.timestamp_us;
+                    }
+                }
+            }
+            let delivered = delivered.expect("producer delta after native keyframe feedback");
+            assert_eq!(delivered.data, unit.data);
+            assert_eq!(delivered.temporal_index, Some(2));
+            assert_eq!(delivered.ssrc, first.ssrc);
+            assert!(delivered.frame_id.unwrap() > base_id);
+            assert_eq!(delivered.dependencies, vec![base_id]);
+            assert_eq!(
+                delivered.decode_target_indications,
+                vec![
+                    DecodeTargetIndication::NotPresent,
+                    DecodeTargetIndication::NotPresent,
+                    DecodeTargetIndication::Switch,
+                    DecodeTargetIndication::Switch
+                ]
+            );
+            assert_eq!(session.dropped_frames(receiver).unwrap(), 0);
+            (session, Some(delivered))
+        })
+        .join()
+        .unwrap();
+        thread::spawn(move || {
+            let mut session = session;
+            session.shutdown().unwrap();
+            drop(session);
+            if let Some(frame) = owned {
+                assert_eq!(frame.data, vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1, 7]);
+            }
+            let world = ControlledWorld::acquire(741, Duration::from_secs(1)).unwrap();
+            assert_eq!(world.pump(0).dispatched, 0);
+            drop(world);
+        })
+        .join()
+        .unwrap();
+    }
+}
+
 fn set_local_and_gather(
     session: &mut ProductionSession,
     peer: SessionPeerId,

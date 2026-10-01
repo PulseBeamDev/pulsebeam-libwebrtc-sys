@@ -54,6 +54,43 @@ struct SourceFeedback {
     keyframe_requested: AtomicBool,
     rates: Mutex<Option<VideoRateControl>>,
     encoder_error: Mutex<Option<CodecError>>,
+    readiness: Option<Arc<crate::readiness::Readiness>>,
+}
+
+impl SourceFeedback {
+    fn notify(&self) {
+        if let Some(readiness) = &self.readiness {
+            // Executor notification never dispatches engine work. Do not let a
+            // custom waker unwind through a codec callback or fail the encoder.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| readiness.notify()));
+        }
+    }
+
+    fn set_rates(&self, rates: VideoRateControl) {
+        let changed = {
+            let mut previous = self.rates.lock().unwrap_or_else(|error| error.into_inner());
+            let changed = *previous != Some(rates);
+            *previous = Some(rates);
+            changed
+        };
+        if changed {
+            self.notify();
+        }
+    }
+
+    fn request_keyframe(&self) {
+        if !self.keyframe_requested.swap(true, Ordering::AcqRel) {
+            self.notify();
+        }
+    }
+
+    fn record_error(&self, error: CodecError) {
+        *self
+            .encoder_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(error);
+        self.notify();
+    }
 }
 
 struct Pending {
@@ -65,12 +102,8 @@ struct Pending {
 
 impl Pending {
     fn reject(&self, error: CodecError) -> CodecError {
-        *self
-            .feedback
-            .encoder_error
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
         self.dropped.fetch_add(1, Ordering::Relaxed);
+        self.feedback.record_error(error);
         error
     }
 }
@@ -258,6 +291,14 @@ impl EncodedH264Input {
         &self,
         factory: &PeerConnectionFactory,
     ) -> Result<EncodedH264Source, PeerError> {
+        self.create_source_with_readiness(factory, None)
+    }
+
+    pub(crate) fn create_source_with_readiness(
+        &self,
+        factory: &PeerConnectionFactory,
+        readiness: Option<Arc<crate::readiness::Readiness>>,
+    ) -> Result<EncodedH264Source, PeerError> {
         if !factory.uses_video_encoder(&self.encoder) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -286,7 +327,10 @@ impl EncodedH264Input {
             last_timestamp_us: Cell::new(None),
             seen_keyframe: Cell::new(false),
             dropped: Arc::new(AtomicU64::new(0)),
-            feedback: Arc::new(SourceFeedback::default()),
+            feedback: Arc::new(SourceFeedback {
+                readiness,
+                ..SourceFeedback::default()
+            }),
         })
     }
 }
@@ -652,21 +696,14 @@ impl VideoEncoder for InputEncoder {
         }
         self.active_feedback = Arc::downgrade(&pending.feedback);
         if let Some(rates) = self.rates {
-            *pending
-                .feedback
-                .rates
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
+            pending.feedback.set_rates(rates);
         }
         let unit = &pending.frame;
         if frame_types.contains(&VideoFrameType::Key) {
             // Preserve the request even when this supplied unit satisfies it.
             // Feedback belongs to the source identified by the trigger token,
             // so replacement on a stable sender cannot misroute the request.
-            pending
-                .feedback
-                .keyframe_requested
-                .store(true, Ordering::Release);
+            pending.feedback.request_keyframe();
             if !unit.key_frame {
                 return Err(pending.reject(CodecError::InvalidFrame));
             }
@@ -692,12 +729,8 @@ impl VideoEncoder for InputEncoder {
                 unit.metadata,
             )
             .map_err(|error| {
-                *pending
-                    .feedback
-                    .encoder_error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
                 pending.dropped.fetch_add(1, Ordering::Relaxed);
+                pending.feedback.record_error(error);
                 error
             })
     }
@@ -707,10 +740,7 @@ impl VideoEncoder for InputEncoder {
         // presentation token. Later native rate callbacks update that source
         // directly, without requiring another access unit or retaining it.
         if let Some(feedback) = self.active_feedback.upgrade() {
-            *feedback
-                .rates
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rates);
+            feedback.set_rates(rates);
         }
         Ok(())
     }
@@ -772,6 +802,55 @@ mod tests {
         drop(replacement);
         encoder.set_rates(rate).unwrap();
         assert!(encoder.active_feedback.upgrade().is_none());
+    }
+
+    #[test]
+    fn changed_source_feedback_wakes_the_actor_and_coalesces_snapshots() {
+        use std::task::{Context, Wake, Waker};
+
+        #[derive(Default)]
+        struct Counter(AtomicU64);
+        impl Wake for Counter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let readiness = Arc::new(crate::readiness::Readiness::default());
+        let feedback = SourceFeedback {
+            readiness: Some(readiness.clone()),
+            ..SourceFeedback::default()
+        };
+        let counter = Arc::new(Counter::default());
+        let waker = Waker::from(counter.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(readiness.poll(&mut cx).is_pending());
+        let rates = VideoRateControl {
+            bitrate_bps: 1,
+            framerate_fps: 30.0,
+            bandwidth_bps: 2,
+            layer_bitrates_bps: [[None; 4]; 5],
+        };
+        feedback.set_rates(rates);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert!(readiness.poll(&mut cx).is_ready());
+        assert!(readiness.poll(&mut cx).is_pending());
+        feedback.set_rates(rates);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert!(readiness.poll(&mut cx).is_pending());
+        feedback.request_keyframe();
+        feedback.request_keyframe();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 2);
+        assert!(readiness.poll(&mut cx).is_ready());
+        assert!(readiness.poll(&mut cx).is_pending());
+        feedback.record_error(CodecError::InvalidConfiguration);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 3);
+        assert!(readiness.poll(&mut cx).is_ready());
+        assert_eq!(
+            *feedback.encoder_error.lock().unwrap(),
+            Some(CodecError::InvalidConfiguration)
+        );
+        assert!(feedback.keyframe_requested.load(Ordering::Acquire));
+        assert_eq!(*feedback.rates.lock().unwrap(), Some(rates));
     }
 
     #[test]

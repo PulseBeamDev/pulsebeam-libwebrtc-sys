@@ -649,6 +649,10 @@ promise: polling does not schedule `Encode`, synthesize frames or substitute
 observed RTCP for native encoder feedback. `latest_rate_control()` exposes the last
 native rate update for the encoder associated with the source's presentation
 token. Later native rate callbacks update it without another submitted unit.
+For `ProductionSession`, newly recorded keyframe/rate feedback and asynchronous
+encoder errors notify actor readiness; unchanged rate and pending keyframe
+snapshots coalesce. Notification does not dispatch engine work or create an
+idle-source keyframe guarantee. Standalone sources retain polling access.
 `VideoRateControl::layer_bitrates_bps` preserves the native five-by-four
 spatial/simulcast and temporal allocation matrix: `None` is unset and `Some(0)`
 is explicit zero; cells are per-layer, not cumulative. This is rate guidance,

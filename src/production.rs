@@ -547,7 +547,7 @@ impl ProductionSession {
                     "session has no encoded video format",
                 )
             })?
-            .create_source(&self.factory)?;
+            .create_source_with_readiness(&self.factory, Some(self.readiness.clone()))?;
         self.sources.insert(id, Source::Video(source));
         Ok(id)
     }
