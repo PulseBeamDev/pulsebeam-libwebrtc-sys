@@ -1,5 +1,7 @@
 //! Fixture-backed production ICE tests. The Linux runtime image supplies coturn.
 //! Signaling transfers complete gathered SDP, never individual candidates.
+#[path = "support/turnserver.rs"]
+mod turnserver;
 
 use std::{
     fs,
@@ -43,11 +45,10 @@ impl TurnServer {
             .local_addr()
             .unwrap()
             .port();
-        let mut command = Command::new("turnserver");
+        let mut command = turnserver::without_dtls();
         command.args([
             "-n",
             "--no-cli",
-            "--no-dtls",
             "--no-multicast-peers",
             "--lt-cred-mech",
             "--realm=fixture.invalid",
@@ -98,7 +99,7 @@ impl TurnServer {
                 key.to_str().unwrap(),
             ]);
         } else {
-            command.args(["--no-tls", "--no-dtls"]);
+            command.arg("--no-tls");
         }
         if ip.is_ipv6() {
             // TURN defaults unqualified allocations to IPv4, even when the

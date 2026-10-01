@@ -1,4 +1,6 @@
 //! A real TLS server driven entirely by caller-delivered simulated TCP bytes.
+#[path = "support/turnserver.rs"]
+mod turnserver;
 use std::{
     collections::BTreeMap,
     fs,
@@ -269,11 +271,10 @@ fn caller_delivered_turn_tls_authenticates_and_gathers_relay_candidate() {
         .unwrap()
         .port();
     let mut server = TurnServer(
-        Command::new("turnserver")
+        turnserver::without_dtls()
             .args([
                 "-n",
                 "--no-cli",
-                "--no-dtls",
                 "--no-tcp",
                 "--no-udp",
                 "--no-multicast-peers",
@@ -568,11 +569,10 @@ fn two_caller_pumped_peers_connect_over_relay_only_turn_tls() {
         .unwrap()
         .port();
     let mut server = TurnServer(
-        Command::new("turnserver")
+        turnserver::without_dtls()
             .args([
                 "-n",
                 "--no-cli",
-                "--no-dtls",
                 "--no-tcp",
                 "--no-udp",
                 "--no-multicast-peers",
