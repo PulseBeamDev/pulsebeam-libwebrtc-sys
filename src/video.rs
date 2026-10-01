@@ -567,6 +567,18 @@ impl VideoTrack {
     }
 
     pub fn attach_sink(&self) -> Result<VideoSink, PeerError> {
+        if self
+            .inner
+            ._peer
+            .as_ref()
+            .is_some_and(|peer| peer._factory.encoded_video_receive_only())
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "factory only receives encoded video; decoded sinks are unavailable"
+                    .into(),
+            });
+        }
         let native = ffi::video_track_attach_sink(self.native());
         if native.is_null() {
             Err(native_error("failed to attach video sink"))
@@ -590,8 +602,11 @@ impl VideoTrack {
         self.inner.encoded_codec.get() == Some(DirectEncodedVideo::H264L1T3)
     }
 
-    pub(crate) fn is_direct_vp8(&self) -> bool {
-        self.inner.encoded_codec.get() == Some(DirectEncodedVideo::Vp8)
+    pub(crate) fn is_admitted_controlled_video(&self) -> bool {
+        matches!(
+            self.inner.encoded_codec.get(),
+            Some(DirectEncodedVideo::Vp8 | DirectEncodedVideo::H264 | DirectEncodedVideo::H264L1T3)
+        )
     }
 
     pub(crate) fn is_local_to(&self, factory: &Rc<FactoryInner>) -> bool {
@@ -764,10 +779,12 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
-            if self.peer._factory.controlled_media && !track.is_direct_vp8() {
+            if self.peer._factory.controlled_media && !track.is_admitted_controlled_video() {
                 return Err(PeerError {
                     kind: PeerErrorKind::UnsupportedOperation,
-                    message: "controlled sender replacement requires direct VP8 input".into(),
+                    message:
+                        "controlled sender replacement requires admitted direct VP8/H264 input"
+                            .into(),
                 });
             }
             if track.is_direct_encoded() && self.parameters()?.encodings.len() > 1 {

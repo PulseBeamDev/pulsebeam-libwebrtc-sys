@@ -334,9 +334,10 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    /// Opt into the controlled Opus/VP8 encoded-media profile. Requires a
-    /// seeded ControlledWorld, the crate's Opus carrier and direct VP8 input,
-    /// and explicitly selected builtin_opus/builtin_vp8 decoder factories.
+    /// Opt into controlled Opus and admitted direct encoded-video profiles.
+    /// Requires a seeded world, Opus carrier and builtin Opus decoding, plus
+    /// direct VP8 with builtin VP8 decoding or direct H264 with the input's
+    /// encoded-only receive factory. H264 decoding is not provided.
     /// Unsupported factories and processing/devices are rejected before work.
     pub fn controlled_media(mut self) -> Self {
         self.controlled_media = true;
@@ -459,16 +460,16 @@ impl PeerConnectionFactoryBuilder {
                 || !self
                     .video_encoder
                     .as_ref()
-                    .is_some_and(VideoEncoderFactoryHandle::is_direct_vp8)
-                || !self
-                    .video_decoder
-                    .as_ref()
-                    .is_some_and(VideoDecoderFactoryHandle::is_builtin_vp8)
+                    .zip(self.video_decoder.as_ref())
+                    .is_some_and(|(encoder, decoder)| {
+                        (encoder.is_direct_vp8() && decoder.is_builtin_vp8())
+                            || (encoder.is_direct_h264() && decoder.is_encoded_h264_receive())
+                    })
                 || self.audio_processing.is_some())
         {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
-                message: "controlled media requires a seeded world, direct VP8 and Opus-carrier input, builtin VP8/Opus decoders and no PCM processing".into(),
+                message: "controlled media requires a seeded world, Opus carrier/builtin Opus, direct VP8/builtin VP8 or direct H264/encoded-only reception, and no PCM processing".into(),
             });
         }
         let environment = match self.environment {
@@ -630,6 +631,12 @@ pub(crate) struct FactoryInner {
 }
 
 impl FactoryInner {
+    pub(crate) fn encoded_video_receive_only(&self) -> bool {
+        self._video_decoder
+            .as_ref()
+            .is_some_and(VideoDecoderFactoryHandle::is_encoded_receive_only)
+    }
+
     pub(crate) fn controlled_time(&self) -> Option<std::time::Duration> {
         self._controlled_driver
             .as_ref()
@@ -1301,11 +1308,12 @@ impl PeerConnection {
         rids: &[String],
     ) -> Result<RtpTransceiver, PeerError> {
         if self.inner._factory._controlled_driver.is_some()
-            && (!self.inner._factory.controlled_media || !track.is_direct_vp8())
+            && (!self.inner._factory.controlled_media || !track.is_admitted_controlled_video())
         {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled video requires the admitted direct VP8 media profile".into(),
+                message: "controlled video requires an admitted direct VP8/H264 media profile"
+                    .into(),
             });
         }
         if !track.is_local_to(&self.inner._factory) {

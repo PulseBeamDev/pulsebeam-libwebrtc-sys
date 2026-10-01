@@ -706,6 +706,7 @@ struct EncoderFactoryInner {
 struct DecoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeVideoDecoderFactory>,
     builtin_vp8: bool,
+    encoded_receive_only: Option<VideoCodecFormat>,
 }
 
 // SAFETY: the provider is Send + Sync and native factory methods only perform shared calls.
@@ -752,6 +753,15 @@ impl VideoEncoderFactoryHandle {
         self.0.direct_encoded == Some(crate::video::DirectEncodedVideo::Vp8)
     }
 
+    pub(crate) fn is_direct_h264(&self) -> bool {
+        matches!(
+            self.0.direct_encoded,
+            Some(
+                crate::video::DirectEncodedVideo::H264 | crate::video::DirectEncodedVideo::H264L1T3
+            )
+        )
+    }
+
     pub fn supported_formats(&self) -> Vec<VideoCodecFormat> {
         ffi::video_encoder_formats(self.native())
             .into_iter()
@@ -789,7 +799,49 @@ impl VideoEncoderFactoryHandle {
     }
 }
 
+// Wire-format registration is deliberately separate from decoder capability.
+// Encoded interception consumes access units before this rejecting factory.
+struct EncodedReceiveFactory(VideoCodecFormat);
+impl VideoDecoderFactory for EncodedReceiveFactory {
+    fn supported_formats(&self) -> Vec<VideoCodecFormat> {
+        vec![self.0.clone()]
+    }
+    fn query_support(
+        &self,
+        _: &VideoCodecFormat,
+        _: bool,
+        _: Option<VideoResolution>,
+    ) -> CodecSupport {
+        CodecSupport {
+            supported: false,
+            power_efficient: false,
+        }
+    }
+    fn create(&self, _: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        Err(CodecError::UnsupportedFormat)
+    }
+}
+
 impl VideoDecoderFactoryHandle {
+    pub(crate) fn encoded_receive(format: VideoCodecFormat) -> Result<Self, CodecError> {
+        let mut handle = Self::new(EncodedReceiveFactory(format.clone()))?;
+        Arc::get_mut(&mut handle.0)
+            .expect("new factory has one owner")
+            .encoded_receive_only = Some(format);
+        Ok(handle)
+    }
+
+    pub(crate) fn is_encoded_receive_only(&self) -> bool {
+        self.0.encoded_receive_only.is_some()
+    }
+
+    pub(crate) fn is_encoded_h264_receive(&self) -> bool {
+        self.0
+            .encoded_receive_only
+            .as_ref()
+            .is_some_and(|format| format.name == "H264")
+    }
+
     /// Select the pinned real libvpx VP8 software decoder, with no other codecs
     /// or hardware fallback. The pinned decoder uses one libvpx thread.
     pub fn builtin_vp8() -> Result<Self, CodecError> {
@@ -800,6 +852,7 @@ impl VideoDecoderFactoryHandle {
             Ok(Self(Arc::new(DecoderFactoryInner {
                 native,
                 builtin_vp8: true,
+                encoded_receive_only: None,
             })))
         }
     }
@@ -827,6 +880,7 @@ impl VideoDecoderFactoryHandle {
             Ok(Self(Arc::new(DecoderFactoryInner {
                 native,
                 builtin_vp8: false,
+                encoded_receive_only: None,
             })))
         }
     }

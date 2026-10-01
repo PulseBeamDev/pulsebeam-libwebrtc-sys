@@ -85,6 +85,7 @@ struct Trace {
     messages: Vec<(usize, DataChannelMessage)>,
     audio: Vec<ReceivedAudioFrame>,
     video: Vec<ReceivedVideoFrame>,
+    encoded_video: Vec<(usize, EncodedReceivedVideoFrame)>,
 }
 
 #[derive(Default)]
@@ -100,6 +101,9 @@ struct Observations {
     video_ids: Vec<(usize, String)>,
     audio: Vec<(usize, AudioSink)>,
     video: Vec<(usize, VideoSink)>,
+    encoded_video_only: bool,
+    encoded_video: Vec<(usize, EncodedVideoSink)>,
+    transceivers: Vec<(usize, RtpTransceiver)>,
     channels: Vec<(usize, DataChannel)>,
     trace: Trace,
 }
@@ -214,7 +218,17 @@ impl Observations {
                         let id = receiver.id();
                         if let Some(track) = receiver.track() {
                             self.video_ids.push((who, track.id()));
-                            self.video.push((who, track.attach_sink().unwrap()));
+                            if self.encoded_video_only {
+                                assert_eq!(
+                                    track.attach_sink().err().unwrap().kind,
+                                    PeerErrorKind::UnsupportedOperation
+                                );
+                                self.encoded_video
+                                    .push((who, receiver.attach_encoded_sink().unwrap()));
+                            } else {
+                                self.video.push((who, track.attach_sink().unwrap()));
+                            }
+                            self.transceivers.push((who, transceiver));
                         } else {
                             self.audio_ids.push((who, id.clone()));
                             self.audio
@@ -257,6 +271,11 @@ impl Observations {
             }
         }
         if media {
+            for (who, sink) in &self.encoded_video {
+                while let Some(frame) = sink.try_next_frame() {
+                    self.trace.encoded_video.push((*who, frame));
+                }
+            }
             for (_, sink) in &self.audio {
                 if let Some(frame) = sink.try_next_received_frame() {
                     self.trace.audio.push(frame);
@@ -333,6 +352,38 @@ impl Observations {
         peers: &[PeerConnection; 2],
         offerer: usize,
     ) {
+        self.negotiate_with_layers(world, network, peers, offerer, false);
+    }
+
+    fn negotiate_with_layers(
+        &mut self,
+        world: &ControlledWorld,
+        network: &ControlledSimulatedNetwork,
+        peers: &[PeerConnection; 2],
+        offerer: usize,
+        layered: bool,
+    ) {
+        fn enable(peer: &PeerConnection) {
+            for transceiver in peer.video_transceivers().unwrap() {
+                let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
+                for uri in [
+                    "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension",
+                    "http://www.webrtc.org/experiments/rtp-hdrext/video-layers-allocation00",
+                ] {
+                    extensions
+                        .iter_mut()
+                        .find(|extension| extension.uri() == uri)
+                        .unwrap()
+                        .direction = RtpHeaderExtensionDirection::SendReceive;
+                }
+                transceiver
+                    .set_header_extensions_to_negotiate(&extensions)
+                    .unwrap();
+            }
+        }
+        if layered {
+            enable(&peers[offerer]);
+        }
         let answerer = 1 - offerer;
         let offer = self
             .completed(
@@ -358,6 +409,9 @@ impl Observations {
             answerer,
             peers[answerer].set_remote_description(offer),
         );
+        if layered {
+            enable(&peers[answerer]);
+        }
         let answer = self
             .completed(
                 world,
@@ -1079,6 +1133,248 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
     // All native roots have gone away; only passive owned outputs survive.
     eprintln!("CONTROLLED_MEDIA_END");
     trace
+}
+
+fn run_h264(temporal: bool, impaired: bool) -> Trace {
+    const KEY: &[u8] = &[
+        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
+        0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
+        0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
+    ];
+    fn outcome(
+        world: &ControlledWorld,
+        network: &ControlledSimulatedNetwork,
+        peers: &[PeerConnection; 2],
+        source: &EncodedVideoSource,
+        observations: &mut Observations,
+        before: usize,
+    ) -> Result<EncodedReceivedVideoFrame, CodecError> {
+        for _ in 0..2_000 {
+            observations.step(world, network, peers, true);
+            if let Some(error) = source.take_encoder_error() {
+                return Err(error);
+            }
+            if observations.trace.encoded_video.len() > before {
+                return Ok(observations.trace.encoded_video.last().unwrap().1.clone());
+            }
+            world.advance(Duration::from_millis(1)).unwrap();
+        }
+        panic!(
+            "controlled H264 missing: temporal={}, pending={}, dropped={}, trace={:?}",
+            source.latest_rate_control().is_some(),
+            source.pending_frames(),
+            source.dropped_frames(),
+            observations.trace.events
+        );
+    }
+    eprintln!("CONTROLLED_MEDIA_BEGIN");
+    let trace = {
+        let world = ControlledWorld::acquire(731, Duration::from_secs(10)).unwrap();
+        let network = world.create_network().unwrap();
+        let input = if temporal {
+            EncodedVideoInput::new_l1t3([64, 128, 255]).unwrap()
+        } else {
+            EncodedVideoInput::new().unwrap()
+        };
+        let decoder = input.encoded_receive_factory().unwrap();
+        assert!(
+            !decoder
+                .query_support(&decoder.supported_formats()[0], false, None)
+                .supported
+        );
+        assert!(decoder.decoder_statistics().is_none());
+        let endpoints: Vec<_> = [Ipv4Addr::new(10, 79, 0, 1), Ipv4Addr::new(10, 79, 0, 2)]
+            .into_iter()
+            .map(|address| network.register_endpoint(address.into()).unwrap())
+            .collect();
+        let factories: Vec<_> = endpoints
+            .iter()
+            .map(|endpoint| {
+                world
+                    .peer_factory_builder()
+                    .unwrap()
+                    .network_manager(endpoint.network_manager().unwrap())
+                    .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+                    .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+                    .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
+                    .video_encoder_factory(input.encoder_factory())
+                    .video_decoder_factory(decoder.clone())
+                    .controlled_media()
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        let mut peers = [
+            factories[0]
+                .create_peer_connection(PeerConfiguration::default())
+                .unwrap(),
+            factories[1]
+                .create_peer_connection(PeerConfiguration::default())
+                .unwrap(),
+        ];
+        let mut source = input.create_source(&factories[0]).unwrap();
+        let track = source
+            .create_track(&factories[0], "controlled-h264")
+            .unwrap();
+        let transceiver = peers[0]
+            .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+            .unwrap();
+        let mut observations = Observations {
+            impaired,
+            encoded_video_only: true,
+            ..Observations::default()
+        };
+        observations.negotiate_with_layers(&world, &network, &peers, 0, temporal);
+        let sender = transceiver.sender();
+        if temporal {
+            let mut parameters = sender.parameters().unwrap();
+            parameters.encodings[0].scalability_mode = Some("L1T3".into());
+            sender.set_parameters(parameters).unwrap();
+        }
+        assert_eq!(observations.encoded_video.len(), 1);
+        let mut unit = EncodedVideoAccessUnit {
+            data: KEY.to_vec(),
+            width: 16,
+            height: 16,
+            timestamp_us: i64::try_from(world.now().as_micros()).unwrap(),
+            key_frame: true,
+            qp: None,
+            metadata: EncodedVideoMetadata {
+                codec: EncodedVideoCodec::H264 {
+                    base_layer_sync: false,
+                },
+                simulcast_index: None,
+                spatial_index: None,
+                temporal_index: temporal.then_some(0),
+                end_of_picture: true,
+            },
+        };
+        let before = observations.trace.encoded_video.len();
+        source.push_encoded(unit.clone()).unwrap();
+        let first = outcome(&world, &network, &peers, &source, &mut observations, before).unwrap();
+        assert_eq!(first.data, unit.data);
+        assert!(first.key_frame);
+        assert_eq!(first.temporal_index, temporal.then_some(0));
+        assert!(first.dependencies.is_empty());
+        assert_eq!(first.frame_id.is_some(), temporal);
+        let mut base_id = first.frame_id;
+        source.take_keyframe_request();
+        let mut rejected = 0;
+        for temporal_index in [2, 1, 2, 0] {
+            let mut delivered = None;
+            for _ in 0..4 {
+                world.advance(Duration::from_millis(34)).unwrap();
+                unit.timestamp_us = i64::try_from(world.now().as_micros()).unwrap();
+                unit.data = vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1, temporal_index];
+                unit.key_frame = false;
+                unit.metadata.temporal_index = temporal.then_some(temporal_index);
+                unit.metadata.codec = EncodedVideoCodec::H264 {
+                    base_layer_sync: temporal && temporal_index != 0,
+                };
+                let before = observations.trace.encoded_video.len();
+                source.push_encoded(unit.clone()).unwrap();
+                match outcome(&world, &network, &peers, &source, &mut observations, before) {
+                    Ok(frame) => {
+                        delivered = Some(frame);
+                        break;
+                    }
+                    Err(error) => {
+                        assert_eq!(error, CodecError::InvalidFrame);
+                        assert!(source.take_keyframe_request());
+                        rejected += 1;
+                        world.advance(Duration::from_millis(34)).unwrap();
+                        let mut key = unit.clone();
+                        key.timestamp_us = i64::try_from(world.now().as_micros()).unwrap();
+                        key.data = KEY.to_vec();
+                        key.key_frame = true;
+                        key.metadata.temporal_index = temporal.then_some(0);
+                        key.metadata.codec = EncodedVideoCodec::H264 {
+                            base_layer_sync: false,
+                        };
+                        let before = observations.trace.encoded_video.len();
+                        source.push_encoded(key.clone()).unwrap();
+                        let frame =
+                            outcome(&world, &network, &peers, &source, &mut observations, before)
+                                .unwrap();
+                        assert_eq!(frame.data, key.data);
+                        base_id = frame.frame_id;
+                        source.take_keyframe_request();
+                    }
+                }
+            }
+            let received =
+                delivered.expect("controlled producer responds to native keyframe feedback");
+            assert_eq!(received.data, unit.data);
+            assert_eq!(received.ssrc, first.ssrc);
+            assert_eq!(
+                received.temporal_index,
+                temporal.then_some(i32::from(temporal_index))
+            );
+            if temporal {
+                assert!(received.frame_id.unwrap() > base_id.unwrap());
+                assert_eq!(received.dependencies, vec![base_id.unwrap()]);
+                assert_eq!(received.decode_target_indications.len(), 4);
+                let rates = source.latest_rate_control().unwrap();
+                assert!(rates.layer_bitrates_bps[0][2].is_some());
+            } else {
+                assert!(received.frame_id.is_none());
+                assert!(received.decode_target_indications.is_empty());
+            }
+            if temporal_index == 0 {
+                base_id = received.frame_id;
+            }
+        }
+        assert_eq!(source.dropped_frames(), rejected);
+        assert_eq!(source.pending_frames(), 0);
+        source.close().unwrap();
+        for (_, sink) in &mut observations.encoded_video {
+            assert_eq!(sink.dropped_frames(), 0);
+            sink.close();
+            assert!(sink.try_next_frame().is_none());
+        }
+        let receiver = observations.transceivers[0].1.receiver();
+        assert!(
+            receiver.attach_encoded_sink().is_err(),
+            "native interception is terminal for this receiver"
+        );
+        assert!(
+            receiver.track().unwrap().attach_sink().is_err(),
+            "closing encoded interception must not advertise H264 decoding"
+        );
+        for peer in &mut peers {
+            peer.close().unwrap();
+        }
+        observations.trace
+    };
+    eprintln!("CONTROLLED_MEDIA_END");
+    trace
+}
+
+#[test]
+fn controlled_h264_encoded_temporal_media_preserves_native_dependencies_and_replay() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for temporal in [false, true] {
+        for impaired in [false, true] {
+            let first = run_h264(temporal, impaired);
+            let replay = run_h264(temporal, impaired);
+            assert_eq!(
+                first, replay,
+                "H264 temporal={temporal} impaired={impaired}"
+            );
+            assert!(first.video.is_empty(), "H264 was not decoded");
+            assert!(first.encoded_video.len() >= 5);
+            if impaired {
+                assert!(
+                    first
+                        .events
+                        .iter()
+                        .any(|event| event.contains(":schedule:"))
+                );
+            }
+        }
+    }
 }
 
 #[test]

@@ -311,6 +311,15 @@ task queues, and `ControlledSimulatedNetwork` to pump multiple peers with
 `run_ready` and `next_deadline`. Only one driver may own the process-global
 WebRTC clock at a time; drop all controlled peers, endpoints, and networks to
 release it. Native audio and independently threaded peer roles are rejected.
+A seeded world's builder can opt into `controlled_media()`: pair Opus carrier
+input with `builtin_opus()`, and either direct VP8 input with `builtin_vp8()` or
+direct H.264 input with `input.encoded_receive_factory()`. The latter registers
+the wire format only: decoder support queries return false, decoded receiver
+sinks fail explicitly, and `attach_encoded_sink()` is the receive path. Ordinary
+H.264 needs no DD; `new_l1t3()` requires native DD negotiation and sender L1T3
+selection. The caller alone delivers packets, advances time and pumps queues.
+Closing an encoded sink is terminal for that receiver; a new receiver is needed
+to intercept again. It does not make H.264 decoding available.
 The controlled network supports externally scheduled UDP delivery, client-side
 TCP connect/data decisions, and caller-provided DNS answers for STUN/TURN
 servers. Unknown names fail deterministically. A delivered TCP connect succeeds;
@@ -353,8 +362,10 @@ advertise and inject H.264 implementations.
 distribution, enablement, attribution, licensing, and version checks belong to
 that adapter and the consuming product. A consumer may instead provide a
 hardware-backed or separately licensed implementation. Absence of an external
-implementation must leave H.264 unavailable or produce an explicit error; it
-must not change these artifacts.
+implementation must leave raw-input H.264 encoding and decoded H.264 output
+unavailable or produce an explicit error; it must not change these artifacts.
+Direct encoded H.264 transport uses the native packetizer with caller-provided
+access units and does not require a compression or decoding implementation.
 
 ## Artifact and ABI contract
 

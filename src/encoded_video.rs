@@ -287,6 +287,14 @@ impl EncodedH264Input {
         self.encoder.clone()
     }
 
+    /// Register this wire format for encoded-only reception without a decoder.
+    /// Attach an encoded sink before media. Decode queries return unsupported;
+    /// decoded sinks are rejected and closing interception does not enable
+    /// decoding. A closed encoded sink cannot be reattached to that receiver.
+    pub fn encoded_receive_factory(&self) -> Result<crate::VideoDecoderFactoryHandle, CodecError> {
+        crate::VideoDecoderFactoryHandle::encoded_receive(self.format.clone())
+    }
+
     pub fn create_source(
         &self,
         factory: &PeerConnectionFactory,

@@ -13,16 +13,15 @@ use std::{
 };
 
 use crate::{
-    AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecSupport, DataChannel,
-    DataChannelConfiguration, DataChannelError, DataChannelEvent, DataChannelMessage,
-    DataChannelSendResult, EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource,
-    EncodedReceivedVideoFrame, EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink,
-    EncodedVideoSource, IceCandidate, OperationCompletion, OperationId, PeerConfiguration,
-    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerDescriptions, PeerError,
-    PeerErrorKind, PeerStatsSnapshot, RtpHeaderExtensionCapability, RtpReceiver, RtpSender,
-    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, SessionDescription,
-    VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
-    VideoRateControl, VideoResolution, readiness::Readiness,
+    AudioDecoderFactory, AudioEncoderFactory, CodecError, DataChannel, DataChannelConfiguration,
+    DataChannelError, DataChannelEvent, DataChannelMessage, DataChannelSendResult,
+    EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource, EncodedReceivedVideoFrame,
+    EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink, EncodedVideoSource, IceCandidate,
+    OperationCompletion, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, PeerDescriptions, PeerError, PeerErrorKind, PeerStatsSnapshot,
+    RtpHeaderExtensionCapability, RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver,
+    RtpTransceiverDirection, SessionDescription, VideoCodecFormat, VideoRateControl,
+    readiness::Readiness,
 };
 
 macro_rules! resource_id {
@@ -84,30 +83,6 @@ pub struct ProductionSessionConfig {
     /// Optional direct encoded-video format. H.264 and VP8 are accepted.
     /// Reception is encoded-only; this does not advertise decoded H.264 output.
     pub video_format: Option<VideoCodecFormat>,
-}
-
-// Advertise the wire codec for encoded-only reception without claiming that a
-// decoder exists. An attempted decode explicitly fails rather than fabricating
-// output. The receiver's pre-decode encoded sink is the supported receive path.
-struct EncodedReceiveFactory(VideoCodecFormat);
-impl VideoDecoderFactory for EncodedReceiveFactory {
-    fn supported_formats(&self) -> Vec<VideoCodecFormat> {
-        vec![self.0.clone()]
-    }
-    fn query_support(
-        &self,
-        _: &VideoCodecFormat,
-        _: bool,
-        _: Option<VideoResolution>,
-    ) -> CodecSupport {
-        CodecSupport {
-            supported: false,
-            power_efficient: false,
-        }
-    }
-    fn create(&self, _: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
-        Err(CodecError::UnsupportedFormat)
-    }
 }
 
 struct Peer {
@@ -249,8 +224,7 @@ impl ProductionSession {
                     None => EncodedVideoInput::new_for_format(format.clone()),
                 }
                 .map_err(codec_error)?;
-                let decoder = VideoDecoderFactoryHandle::new(EncodedReceiveFactory(format))
-                    .map_err(codec_error)?;
+                let decoder = input.encoded_receive_factory().map_err(codec_error)?;
                 Ok::<_, PeerError>((input, decoder))
             })
             .transpose()?;
