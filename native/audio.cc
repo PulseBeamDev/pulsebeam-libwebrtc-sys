@@ -140,6 +140,12 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     saved.ssrc = frame->GetSsrc();
     saved.payload_type = frame->GetPayloadType();
     saved.samples = static_cast<std::uint32_t>(samples);
+    // This transformer is installed on an audio receiver's declared native
+    // callback, whose frames implement the public audio-specific interface.
+    const auto* audio_frame =
+        static_cast<const webrtc::TransformableAudioFrameInterface*>(frame.get());
+    saved.sequence_number = audio_frame->SequenceNumber();
+    saved.audio_level_dbov = audio_frame->AudioLevel();
     if (auto time = frame->CaptureTime()) saved.capture_us = time->us();
     if (auto time = frame->ReceiveTime()) saved.receive_us = time->us();
     bytes_ += saved.data.size();
@@ -158,6 +164,10 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     out.ssrc = frame.ssrc;
     out.payload_type = frame.payload_type;
     out.samples_per_channel = frame.samples;
+    out.has_sequence_number = frame.sequence_number.has_value();
+    out.sequence_number = frame.sequence_number.value_or(0);
+    out.has_audio_level = frame.audio_level_dbov.has_value();
+    out.audio_level_dbov = frame.audio_level_dbov.value_or(0);
     out.has_capture_time = frame.capture_us.has_value();
     out.capture_time_us = frame.capture_us.value_or(0);
     out.has_receive_time = frame.receive_us.has_value();
@@ -185,6 +195,8 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     std::uint32_t ssrc = 0;
     std::uint8_t payload_type = 0;
     std::uint32_t samples = 0;
+    std::optional<std::uint16_t> sequence_number;
+    std::optional<std::uint8_t> audio_level_dbov;
     std::optional<std::int64_t> capture_us;
     std::optional<std::int64_t> receive_us;
   };

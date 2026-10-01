@@ -101,6 +101,8 @@ fn encoded_opus_receiver_gets_packets_without_decoded_sink() {
     assert!(received.samples_per_channel > 0);
     assert!(received.samples_per_channel <= 5760);
     assert_ne!(received.ssrc, 0);
+    assert!(received.sequence_number.is_some());
+    assert!(received.audio_level_dbov.is_some_and(|level| level <= 127));
     sink.close().unwrap();
     sink.close().unwrap();
     assert!(sink.try_next_frame().is_none());

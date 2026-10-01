@@ -256,6 +256,12 @@ pub struct EncodedAudioFrame {
     pub rtp_timestamp: u32,
     pub ssrc: u32,
     pub payload_type: u8,
+    /// Sequence number supplied by the native audio-frame callback, when known.
+    pub sequence_number: Option<u16>,
+    /// Native received RFC6464 level in -dBov, from 0 to 127. Missing means the
+    /// extension was not present. This level-only native hook exposes no V bit;
+    /// codec speech/CN classification must not be substituted for received VAD.
+    pub audio_level_dbov: Option<u8>,
     pub samples_per_channel: u32,
     pub capture_time_us: Option<i64>,
     pub receive_time_us: Option<i64>,
@@ -286,6 +292,8 @@ impl EncodedAudioSink {
             rtp_timestamp: frame.rtp_timestamp,
             ssrc: frame.ssrc,
             payload_type: frame.payload_type,
+            sequence_number: frame.has_sequence_number.then_some(frame.sequence_number),
+            audio_level_dbov: frame.has_audio_level.then_some(frame.audio_level_dbov),
             samples_per_channel: frame.samples_per_channel,
             capture_time_us: frame.has_capture_time.then_some(frame.capture_time_us),
             receive_time_us: frame.has_receive_time.then_some(frame.receive_time_us),
