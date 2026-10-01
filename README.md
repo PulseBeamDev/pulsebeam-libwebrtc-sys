@@ -559,6 +559,15 @@ preferences restore upstream defaults; unknown or repeated profiles fail.
 Discovery includes resiliency codecs such as RTX, and does not install missing
 H.264 encoder or decoder implementations.
 
+`VideoCodecFormat::scalability_modes` preserves the native SDP format's declared
+capabilities through custom encoder/decoder factories. Construct a recognized
+mode with `VideoScalabilityMode::parse()` and add it using
+`with_scalability_mode()`. Recognition is not codec support or selection: the
+encoder must truthfully advertise it, and sender parameters select the mode.
+Native `SetParameters` validates the capability list, so answering true in a
+factory's support query alone does not enable a temporal profile. This format
+API does not generate a GOP, dependency metadata or VLA.
+
 `RtpReceiver::attach_encoded_sink()` exclusively intercepts depacketized
 encoded video access units before decoding. Its bounded four-frame/4 MiB queue
 reports drops. Access units include optional RID, capture/receive timing, and

@@ -41,7 +41,7 @@ pub use codec::{
     VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
-    VideoRateControl, VideoResolution, VideoRotation,
+    VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode,
 };
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelError, DataChannelErrorDetail,
@@ -97,6 +97,7 @@ mod ffi {
     struct FfiCodecFormat {
         name: String,
         parameters: Vec<FfiCodecParameter>,
+        scalability_modes: Vec<String>,
     }
 
     struct FfiVideoCodecCapability {
@@ -654,6 +655,7 @@ mod ffi {
         fn video_decoder_statistics(factory: &NativeVideoDecoderFactory) -> FfiDecoderStatistics;
         fn audio_decoder_statistics(factory: &NativeAudioDecoderFactory) -> FfiDecoderStatistics;
         fn native_codec_thread_token() -> u64;
+        fn video_scalability_mode_valid(name: &str) -> bool;
         fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
         fn video_encoder_query(
             factory: &NativeVideoEncoderFactory,

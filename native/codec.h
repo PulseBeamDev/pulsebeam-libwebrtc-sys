@@ -138,6 +138,7 @@ FfiDecoderStatistics audio_decoder_statistics(
     const NativeAudioDecoderFactory &factory) noexcept;
 std::uint64_t native_codec_thread_token() noexcept;
 
+bool video_scalability_mode_valid(rust::Str name) noexcept;
 rust::Vec<FfiCodecFormat>
 video_encoder_formats(const NativeVideoEncoderFactory &factory) noexcept;
 FfiCodecSupport video_encoder_query(const NativeVideoEncoderFactory &factory,

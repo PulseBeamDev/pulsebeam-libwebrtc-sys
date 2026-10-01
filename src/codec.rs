@@ -20,10 +20,34 @@ pub struct CodecParameter {
     pub value: String,
 }
 
+/// A scalability mode recognized by the pinned native engine. Recognition is
+/// not a codec capability: an encoder must separately advertise support.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoScalabilityMode(String);
+
+impl VideoScalabilityMode {
+    pub fn parse(name: &str) -> Result<Self, CodecError> {
+        ffi::video_scalability_mode_valid(name)
+            .then(|| Self(name.into()))
+            .ok_or(CodecError::UnsupportedFormat)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn from_native(name: String) -> Self {
+        // Native serializers emit only names of their declared enum values.
+        Self(name)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoCodecFormat {
     pub name: String,
     pub parameters: Vec<CodecParameter>,
+    /// Native SdpVideoFormat capability declarations, not a selected mode.
+    pub scalability_modes: Vec<VideoScalabilityMode>,
 }
 
 impl VideoCodecFormat {
@@ -31,6 +55,7 @@ impl VideoCodecFormat {
         Self {
             name: name.into(),
             parameters: Vec::new(),
+            scalability_modes: Vec::new(),
         }
     }
 
@@ -39,6 +64,11 @@ impl VideoCodecFormat {
             key: key.into(),
             value: value.into(),
         });
+        self
+    }
+
+    pub fn with_scalability_mode(mut self, mode: VideoScalabilityMode) -> Self {
+        self.scalability_modes.push(mode);
         self
     }
 }
@@ -1031,6 +1061,11 @@ fn i420_len(width: u32, height: u32) -> Result<usize, CodecError> {
 fn to_ffi_format(format: &VideoCodecFormat) -> ffi::FfiCodecFormat {
     ffi::FfiCodecFormat {
         name: format.name.clone(),
+        scalability_modes: format
+            .scalability_modes
+            .iter()
+            .map(|mode| mode.as_str().into())
+            .collect(),
         parameters: format
             .parameters
             .iter()
@@ -1044,6 +1079,11 @@ fn to_ffi_format(format: &VideoCodecFormat) -> ffi::FfiCodecFormat {
 fn from_ffi_format(format: ffi::FfiCodecFormat) -> VideoCodecFormat {
     VideoCodecFormat {
         name: format.name,
+        scalability_modes: format
+            .scalability_modes
+            .into_iter()
+            .map(VideoScalabilityMode::from_native)
+            .collect(),
         parameters: format
             .parameters
             .into_iter()
@@ -1057,6 +1097,12 @@ fn from_ffi_format(format: ffi::FfiCodecFormat) -> VideoCodecFormat {
 fn from_ffi_format_ref(format: &ffi::FfiCodecFormat) -> VideoCodecFormat {
     VideoCodecFormat {
         name: format.name.clone(),
+        scalability_modes: format
+            .scalability_modes
+            .iter()
+            .cloned()
+            .map(VideoScalabilityMode::from_native)
+            .collect(),
         parameters: format
             .parameters
             .iter()
@@ -1605,6 +1651,52 @@ mod tests {
                 hardware_accelerated: false,
             }
         }
+    }
+
+    #[test]
+    fn native_scalability_modes_survive_factory_format_roundtrip() {
+        struct DeclaredModes(VideoCodecFormat);
+        impl VideoEncoderFactory for DeclaredModes {
+            fn supported_formats(&self) -> Vec<VideoCodecFormat> {
+                vec![self.0.clone()]
+            }
+            fn query_support(
+                &self,
+                format: &VideoCodecFormat,
+                mode: Option<&str>,
+                _: Option<VideoResolution>,
+            ) -> CodecSupport {
+                CodecSupport {
+                    supported: format == &self.0
+                        && mode.is_none_or(|name| {
+                            self.0
+                                .scalability_modes
+                                .iter()
+                                .any(|mode| mode.as_str() == name)
+                        }),
+                    power_efficient: false,
+                }
+            }
+            fn create(&self, _: &VideoCodecFormat) -> Result<Box<dyn VideoEncoder>, CodecError> {
+                Err(CodecError::ConstructionFailed)
+            }
+        }
+        assert_eq!(
+            VideoScalabilityMode::parse("invented-mode"),
+            Err(CodecError::UnsupportedFormat)
+        );
+        let mode = VideoScalabilityMode::parse("L1T3").unwrap();
+        assert_eq!(mode.as_str(), "L1T3");
+        let format = h264().with_scalability_mode(mode);
+        let dto = to_ffi_format(&format);
+        assert_eq!(from_ffi_format_ref(&dto), format);
+        assert_eq!(from_ffi_format(dto), format);
+        let factory = VideoEncoderFactoryHandle::new(DeclaredModes(format.clone())).unwrap();
+        assert_eq!(factory.supported_formats(), vec![format.clone()]);
+        assert!(factory.query_support(&format, Some("L1T3"), None).supported);
+        assert!(!factory.query_support(&format, Some("L1T2"), None).supported);
+        // These are advertised capabilities only; no encoder was created and
+        // this test does not qualify temporal output or native allocation.
     }
 
     #[test]

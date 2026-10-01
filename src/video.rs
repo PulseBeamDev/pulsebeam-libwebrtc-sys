@@ -47,6 +47,12 @@ impl VideoCodecCapability {
         Self {
             format: VideoCodecFormat {
                 name: value.format.name,
+                scalability_modes: value
+                    .scalability_modes
+                    .iter()
+                    .cloned()
+                    .map(crate::VideoScalabilityMode::from_native)
+                    .collect(),
                 parameters: value
                     .format
                     .parameters
@@ -67,6 +73,12 @@ impl VideoCodecCapability {
     fn ffi_format(&self) -> ffi::FfiCodecFormat {
         ffi::FfiCodecFormat {
             name: self.format.name.clone(),
+            scalability_modes: self
+                .format
+                .scalability_modes
+                .iter()
+                .map(|mode| mode.as_str().into())
+                .collect(),
             parameters: self
                 .format
                 .parameters

@@ -24,6 +24,8 @@
 #include "api/video/i420_buffer.h"
 #include "api/video/video_frame.h"
 #include "api/video/video_frame_type.h"
+#include "api/video_codecs/scalability_mode.h"
+#include "api/video_codecs/scalability_mode_helper.h"
 #include "api/video_codecs/sdp_video_format.h"
 #include "api/video_codecs/video_codec.h"
 #include "api/video_codecs/video_decoder.h"
@@ -343,13 +345,24 @@ webrtc::SdpVideoFormat ToNative(const FfiCodecFormat &format) {
     parameters.emplace(std::string(parameter.key),
                        std::string(parameter.value));
   }
-  return webrtc::SdpVideoFormat(std::string(format.name),
-                                std::move(parameters));
+  absl::InlinedVector<webrtc::ScalabilityMode, webrtc::kScalabilityModeCount> modes;
+  for (const auto& name : format.scalability_modes) {
+    const auto mode = webrtc::ScalabilityModeStringToEnum(std::string(name));
+    // Rust's public mode wrapper is constructed only through the native parser
+    // or from native enum serialization; invalid names cannot enter this path.
+    RTC_CHECK(mode.has_value());
+    modes.push_back(*mode);
+  }
+  return webrtc::SdpVideoFormat(std::string(format.name), parameters, modes);
 }
 
 FfiCodecFormat FromNative(const webrtc::SdpVideoFormat &format) {
   FfiCodecFormat result;
   result.name = format.name;
+  for (const auto mode : format.scalability_modes) {
+    result.scalability_modes.push_back(
+        std::string(webrtc::ScalabilityModeToString(mode)));
+  }
   result.parameters.reserve(format.parameters.size());
   for (const auto &[key, value] : format.parameters) {
     result.parameters.push_back(FfiCodecParameter{key, value});
@@ -1027,6 +1040,10 @@ FfiDecoderStatistics audio_decoder_statistics(
 }
 std::uint64_t native_codec_thread_token() noexcept {
   return static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+}
+
+bool video_scalability_mode_valid(rust::Str name) noexcept {
+  return webrtc::ScalabilityModeStringToEnum(std::string(name)).has_value();
 }
 
 rust::Vec<FfiCodecFormat>

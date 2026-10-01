@@ -53,6 +53,7 @@ impl AudioCodecCapability {
     pub(crate) fn ffi_format(&self) -> ffi::FfiCodecFormat {
         ffi::FfiCodecFormat {
             name: self.name.clone(),
+            scalability_modes: Vec::new(),
             parameters: self
                 .parameters
                 .iter()
