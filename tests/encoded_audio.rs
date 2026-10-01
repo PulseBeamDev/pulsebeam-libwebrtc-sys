@@ -5,8 +5,9 @@ mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
     AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment, ManualClock, OperationId,
-    OpusInputFrame, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
-    PeerErrorKind, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
+    OpusInputError, OpusInputFrame, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, PeerErrorKind, RtpTransceiverDirection, SessionDescription,
+    SimulatedNetwork,
 };
 
 fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> {
@@ -285,23 +286,32 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
     let packets = [vec![0xf8, 0xff, 0xfe], vec![0xfc, 0x12, 0x34, 0x56]];
     let mut seen = [false; 2];
     let mut sink_stream = [None; 2];
-    let mut last_push_timestamp = 0;
+    let mut last_push_timestamp = [0; 2];
+    let mut pending: [Option<OpusInputFrame>; 2] = [None, None];
     for tick in 0..100_000u32 {
-        if tick % 20 == 0 {
-            last_push_timestamp = tick * 48;
-            for (source, data) in [(&first, &packets[0]), (&second, &packets[1])] {
-                source
-                    .push_opus(&OpusInputFrame {
-                        data: data.clone(),
-                        rtp_timestamp: tick * 48,
-                        samples_per_channel: 960,
-                    })
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "Opus push failed at tick={tick} channels={} error={error:?}",
-                            source.channels()
-                        )
-                    });
+        for (index, source) in [&first, &second].into_iter().enumerate() {
+            if tick % 20 == 0 && pending[index].is_none() {
+                pending[index] = Some(OpusInputFrame {
+                    data: packets[index].clone(),
+                    rtp_timestamp: tick * 48,
+                    samples_per_channel: 960,
+                });
+            }
+            if let Some(frame) = &pending[index] {
+                match source.push_opus(frame) {
+                    Ok(()) => {
+                        last_push_timestamp[index] = frame.rtp_timestamp;
+                        pending[index] = None;
+                    }
+                    // A threaded encoder may lag virtual capture time. Retry
+                    // the same unadmitted packet after transport/clock progress,
+                    // without duplicating successful sends or expanding credits.
+                    Err(OpusInputError::Backpressure) => {}
+                    Err(error) => panic!(
+                        "Opus push failed at tick={tick} channels={} error={error:?}",
+                        source.channels()
+                    ),
+                }
             }
         }
         while let Some(packet) = network.next_packet() {
@@ -337,14 +347,32 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         (vec![0xf0, 0x11], 480),
         (vec![0xff, 3, 0x11, 0x12, 0x13], 2880),
     ];
-    for (source, (data, samples_per_channel)) in [(&first, &variants[0]), (&second, &variants[1])] {
-        source
-            .push_opus(&OpusInputFrame {
-                data: data.clone(),
-                rtp_timestamp: last_push_timestamp + 960,
-                samples_per_channel: *samples_per_channel,
-            })
-            .unwrap();
+    for (index, source) in [&first, &second].into_iter().enumerate() {
+        let (data, samples_per_channel) = &variants[index];
+        let frame = OpusInputFrame {
+            data: data.clone(),
+            rtp_timestamp: last_push_timestamp[index] + 960,
+            samples_per_channel: *samples_per_channel,
+        };
+        let mut admitted = false;
+        for _ in 0..100_000 {
+            match source.push_opus(&frame) {
+                Ok(()) => {
+                    admitted = true;
+                    break;
+                }
+                Err(OpusInputError::Backpressure) => {}
+                Err(error) => panic!("Opus variant admission failed: {error:?}"),
+            }
+            while let Some(packet) = network.next_packet() {
+                network.deliver(packet.id).unwrap();
+            }
+            while alice.try_next_event().is_some() {}
+            while bob.try_next_event().is_some() {}
+            clock.advance(Duration::from_millis(1)).unwrap();
+            thread::yield_now();
+        }
+        assert!(admitted, "Opus variant never admitted");
     }
     let mut variant_seen = [false; 2];
     for _ in 0..20_000 {
