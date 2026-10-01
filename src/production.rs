@@ -14,14 +14,15 @@ use std::{
 
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecSupport, DataChannel,
-    DataChannelConfiguration, DataChannelEvent, DataChannelMessage, DataChannelSendResult,
-    EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource, EncodedReceivedVideoFrame,
-    EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink, EncodedVideoSource, IceCandidate,
-    OperationCompletion, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerDescriptions, PeerError, PeerErrorKind, PeerStatsSnapshot,
-    RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
-    SessionDescription, VideoCodecFormat, VideoDecoder, VideoDecoderFactory,
-    VideoDecoderFactoryHandle, VideoRateControl, VideoResolution, readiness::Readiness,
+    DataChannelConfiguration, DataChannelError, DataChannelEvent, DataChannelMessage,
+    DataChannelSendResult, EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource,
+    EncodedReceivedVideoFrame, EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink,
+    EncodedVideoSource, IceCandidate, OperationCompletion, OperationId, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerDescriptions, PeerError,
+    PeerErrorKind, PeerStatsSnapshot, RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver,
+    RtpTransceiverDirection, SessionDescription, VideoCodecFormat, VideoDecoder,
+    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoRateControl, VideoResolution,
+    readiness::Readiness,
 };
 
 macro_rules! resource_id {
@@ -462,6 +463,39 @@ impl ProductionSession {
             .value
             .try_next_event())
     }
+    /// Copy the engine's current data-channel error without protocol progress.
+    pub fn channel_error(
+        &mut self,
+        channel: SessionChannelId,
+    ) -> Result<Option<DataChannelError>, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .error())
+    }
+
+    /// Register/unregister native callbacks, retaining already-owned events.
+    /// This does not pause transport or provide consumption-driven receive credit.
+    pub fn set_channel_event_observation(
+        &mut self,
+        channel: SessionChannelId,
+        enabled: bool,
+    ) -> Result<(), PeerError> {
+        self.channels
+            .get_mut(&channel)
+            .ok_or_else(missing)?
+            .value
+            .set_event_observation(enabled);
+        Ok(())
+    }
+
+    /// Engine send-queue capacity, not a negotiated message-size or receive limit.
+    pub fn channel_send_queue_capacity() -> u64 {
+        DataChannel::send_queue_capacity()
+    }
+
     pub fn close_channel(&mut self, channel: SessionChannelId) -> Result<(), PeerError> {
         self.channels
             .get_mut(&channel)

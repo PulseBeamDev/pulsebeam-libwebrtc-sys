@@ -178,6 +178,7 @@ struct NativeDataChannel::State {
   std::shared_ptr<EventState> events;
   std::unique_ptr<DataChannelObserver> observer;
   webrtc::Thread* signaling_thread = nullptr;
+  bool observing = true;
 };
 
 NativeDataChannel::NativeDataChannel(std::unique_ptr<State> state) noexcept
@@ -316,6 +317,36 @@ FfiDataChannelEvent data_channel_take_event(
 bool close_data_channel(const NativeDataChannel& channel) noexcept {
   channel.state()->channel->Close();
   return true;
+}
+FfiDataChannelError data_channel_error(const NativeDataChannel& channel) noexcept {
+  const auto error = channel.state()->channel->error();
+  FfiDataChannelError result{};
+  result.has_error = !error.ok();
+  result.error_type = static_cast<std::uint8_t>(error.type());
+  result.error_detail = static_cast<std::uint8_t>(error.error_detail());
+  result.sctp_cause_code = error.sctp_cause_code().has_value()
+      ? static_cast<std::int32_t>(*error.sctp_cause_code()) : -1;
+  result.message = error.message();
+  return result;
+}
+std::uint64_t data_channel_send_queue_capacity() noexcept {
+  return webrtc::DataChannelInterface::MaxSendQueueSize();
+}
+void data_channel_set_event_observation(const NativeDataChannel& channel,
+                                       bool enabled) noexcept {
+  auto& state = *channel.state();
+  if (enabled == state.observing) return;
+  state.signaling_thread->BlockingCall([&] {
+    if (enabled) {
+      state.channel->RegisterObserver(state.observer.get());
+      // Registration may deliver native queued messages. This is an explicit
+      // current-state sample at re-registration, not a historical transition.
+      state.events->PushState(state.channel->state());
+    } else {
+      state.channel->UnregisterObserver();
+    }
+  });
+  state.observing = enabled;
 }
 
 }  // namespace pulsebeam::webrtc_sys

@@ -7,7 +7,7 @@ use pulsebeam_webrtc_sys::{
     DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
     DataChannelMessageKind, DataChannelSendResult, DataChannelState, Environment, ManualClock,
     OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
-    RandomnessLease, SessionDescription, SimulatedNetwork,
+    PeerErrorKind, RandomnessLease, SessionDescription, SimulatedNetwork,
 };
 
 struct Pair {
@@ -99,12 +99,16 @@ impl Pair {
     fn progress(&self) -> (Vec<PeerConnectionEvent>, Vec<PeerConnectionEvent>) {
         let alice_events = drain_peer(&self.alice);
         let bob_events = drain_peer(&self.bob);
+        self.progress_transport_only();
+        (alice_events, bob_events)
+    }
+
+    fn progress_transport_only(&self) {
         while let Some(packet) = self.network.next_packet() {
             self.network.deliver(packet.id).unwrap();
         }
         self.clock.advance(Duration::from_millis(1)).unwrap();
         thread::yield_now();
-        (alice_events, bob_events)
     }
 }
 
@@ -351,6 +355,150 @@ fn advisory_notifications_coalesce_while_messages_remain_ordered() {
 }
 
 #[test]
+fn native_stream_ids_can_be_reused_after_reset() {
+    let pair = Pair::new(14);
+    let mut first = pair
+        .alice
+        .create_data_channel("first", Default::default())
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let first_remote = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &first, &first_remote);
+    let sid = first.configuration().id;
+    assert!(sid.is_some());
+    assert_eq!(first.error(), None);
+    first.close().unwrap();
+    first.close().unwrap();
+    for _ in 0..2_000_000 {
+        pair.progress();
+        if first.state() == DataChannelState::Closed
+            && first_remote.state() == DataChannelState::Closed
+        {
+            break;
+        }
+    }
+    assert_eq!(first.state(), DataChannelState::Closed);
+    assert_eq!(first_remote.state(), DataChannelState::Closed);
+    assert_eq!(first.error(), None);
+    assert_eq!(first_remote.error(), None);
+
+    let next = pair
+        .alice
+        .create_data_channel("next", Default::default())
+        .unwrap();
+    let next_remote = wait_for_remote_channel(&pair, Vec::new());
+    wait_for_open(&pair, &next, &next_remote);
+    assert_eq!(next.configuration().id, sid);
+    assert_eq!(next_remote.configuration().id, sid);
+    assert_eq!(next.label(), "next");
+    exchange_messages(&pair, &next, &next_remote);
+}
+
+#[test]
+fn native_observer_registration_preserves_ordered_delivery() {
+    let pair = Pair::new(16);
+    let alice = pair
+        .alice
+        .create_data_channel("observation", Default::default())
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let mut bob = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &alice, &bob);
+    bob.set_event_observation(false);
+    let expected: Vec<_> = (0..3)
+        .map(|index| DataChannelMessage::binary([index]))
+        .collect();
+    for message in &expected {
+        assert_eq!(alice.send(message.clone()), DataChannelSendResult::Sent);
+    }
+    for _ in 0..1_000 {
+        pair.progress_transport_only();
+    }
+    assert!(drain_channel(&bob).is_empty());
+    assert_eq!(bob.state(), DataChannelState::Open);
+    assert_eq!(bob.error(), None);
+    bob.set_event_observation(true);
+    bob.set_event_observation(true);
+    let mut received = Vec::new();
+    for _ in 0..2_000_000 {
+        pair.progress_transport_only();
+        for event in drain_channel(&bob) {
+            if let DataChannelEvent::Message(message) = event {
+                received.push(message);
+            }
+        }
+        if received.len() == expected.len() {
+            break;
+        }
+    }
+    assert_eq!(received, expected);
+}
+
+#[test]
+fn native_pre_observer_overflow_is_an_owned_resource_error() {
+    let pair = Pair::new(15);
+    let alice = pair
+        .alice
+        .create_data_channel("unobserved", Default::default())
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let mut bob = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &alice, &bob);
+    assert_eq!(alice.error(), None);
+    bob.set_event_observation(false);
+    bob.set_event_observation(false);
+
+    // Unregister Bob's native observer without creating another receive policy.
+    // Exercise the pinned engine's own 16 MiB pre-observer queue, not a Rust
+    // inbox cap or a consumer-credit implementation.
+    let payload = vec![0xa5; 64 * 1024];
+    let mut accepted = 0u64;
+    while accepted <= DataChannel::send_queue_capacity() + payload.len() as u64 {
+        if bob.state() == DataChannelState::Closed {
+            break;
+        }
+        assert_eq!(
+            alice.send(DataChannelMessage::binary(payload.clone())),
+            DataChannelSendResult::Sent
+        );
+        accepted += payload.len() as u64;
+        for _ in 0..2_000_000 {
+            pair.progress_transport_only();
+            if alice.buffered_amount() == 0 || alice.state() == DataChannelState::Closed {
+                break;
+            }
+        }
+        assert!(alice.buffered_amount() == 0 || alice.state() == DataChannelState::Closed);
+    }
+    assert!(accepted > DataChannel::send_queue_capacity());
+    for _ in 0..2_000_000 {
+        pair.progress_transport_only();
+        if bob.state() == DataChannelState::Closed {
+            break;
+        }
+    }
+    assert_eq!(bob.state(), DataChannelState::Closed);
+    let error = bob
+        .error()
+        .expect("native pre-observer overflow must report an error");
+    assert_eq!(error.kind, PeerErrorKind::ResourceExhausted);
+    assert_eq!(error.detail, None);
+    assert_eq!(error.sctp_cause_code, None);
+    assert!(!error.message.is_empty());
+    bob.set_event_observation(true);
+    assert_eq!(
+        drain_channel(&bob),
+        [DataChannelEvent::StateChanged(DataChannelState::Closed)]
+    );
+    assert_eq!(bob.error(), Some(error.clone()));
+    drop(bob);
+    drop(alice);
+    drop(pair);
+    assert_eq!(error.kind, PeerErrorKind::ResourceExhausted);
+    assert!(!error.to_string().is_empty());
+}
+
+#[test]
 fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
     let pair = Pair::new(12);
     let mut alice = pair
@@ -362,7 +510,12 @@ fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
     wait_for_open(&pair, &alice, &bob);
 
     assert_eq!(
-        alice.send(DataChannelMessage::binary(vec![0; 16 * 1024 * 1024 + 1])),
+        alice.send(DataChannelMessage::binary(vec![
+            0;
+            DataChannel::send_queue_capacity()
+                as usize
+                + 1
+        ])),
         DataChannelSendResult::Backpressure
     );
     assert_eq!(

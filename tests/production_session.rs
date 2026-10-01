@@ -244,6 +244,9 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
     .unwrap();
     thread::spawn(move || {
         let mut session = session;
+        assert!(ProductionSession::channel_send_queue_capacity() > 0);
+        assert_eq!(session.channel_error(outgoing).unwrap(), None);
+        assert_eq!(session.channel_error(incoming).unwrap(), None);
         let mut opened = HashSet::new();
         while opened.len() != 2 {
             for channel in [outgoing, incoming] {

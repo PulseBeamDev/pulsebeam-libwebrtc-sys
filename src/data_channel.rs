@@ -80,6 +80,36 @@ pub enum DataChannelSendResult {
     Failed,
 }
 
+/// An owned snapshot of the native data-channel error. `None` from
+/// [`DataChannel::error`] means the engine reports no error, including an
+/// ordinary explicit close. Diagnostic message text is not a stable API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataChannelError {
+    pub kind: PeerErrorKind,
+    pub message: String,
+    pub detail: Option<DataChannelErrorDetail>,
+    pub sctp_cause_code: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataChannelErrorDetail {
+    DataChannelFailure,
+    DtlsFailure,
+    FingerprintFailure,
+    SctpFailure,
+    SdpSyntaxError,
+    HardwareEncoderNotAvailable,
+    HardwareEncoderError,
+    Unknown(u8),
+}
+
+impl fmt::Display for DataChannelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+impl std::error::Error for DataChannelError {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataChannelEvent {
     /// Latest callback-time state snapshot. Intermediate states may coalesce;
@@ -202,6 +232,47 @@ impl DataChannel {
         ffi::data_channel_buffered_amount(self.native())
     }
 
+    /// Native per-channel send-queue limit, not a maximum negotiated message
+    /// size and not a receive budget. This value comes from the pinned engine.
+    pub fn send_queue_capacity() -> u64 {
+        ffi::data_channel_send_queue_capacity()
+    }
+
+    /// Current native error copied into an owned Rust value. This query does
+    /// not drive protocol progress or fabricate a failure for a slow consumer.
+    pub fn error(&self) -> Option<DataChannelError> {
+        let error = ffi::data_channel_error(self.native());
+        error.has_error.then(|| DataChannelError {
+            kind: crate::peer::error_kind(error.error_type),
+            message: error.message,
+            detail: match error.error_detail {
+                0 => None,
+                1 => Some(DataChannelErrorDetail::DataChannelFailure),
+                2 => Some(DataChannelErrorDetail::DtlsFailure),
+                3 => Some(DataChannelErrorDetail::FingerprintFailure),
+                4 => Some(DataChannelErrorDetail::SctpFailure),
+                5 => Some(DataChannelErrorDetail::SdpSyntaxError),
+                6 => Some(DataChannelErrorDetail::HardwareEncoderNotAvailable),
+                7 => Some(DataChannelErrorDetail::HardwareEncoderError),
+                value => Some(DataChannelErrorDetail::Unknown(value)),
+            },
+            sctp_cause_code: (error.sctp_cause_code >= 0).then_some(error.sctp_cause_code as u16),
+        })
+    }
+
+    /// Register or unregister the native observer. Observation starts enabled.
+    /// Disabling quiesces new channel callbacks but retains already-owned Rust
+    /// events. Native buffering and possible overflow remain engine behavior;
+    /// this is not a receive-window credit or transport pause operation.
+    ///
+    /// Re-enabling drains native queued messages when the channel is open and
+    /// publishes a current-state snapshot. While disabled, channel activity does
+    /// not notify readiness; `state` and `error` still query the native handle.
+    pub fn set_event_observation(&mut self, enabled: bool) {
+        ffi::data_channel_set_event_observation(self.native(), enabled);
+    }
+
+    /// `Sent` denotes native local admission, not remote application delivery.
     pub fn send(&self, message: DataChannelMessage) -> DataChannelSendResult {
         match ffi::data_channel_send(
             self.native(),
@@ -220,7 +291,10 @@ impl DataChannel {
     /// snapshot and one buffered-amount notification are retained, independently
     /// of message storage. Advisory notifications precede queued messages;
     /// messages retain their own FIFO order. A terminal closed snapshot clears
-    /// remaining deliveries and no later events are exposed.
+    /// remaining deliveries and no later events are exposed. Native reception
+    /// is push-based: this owned message inbox has no consumption-driven SCTP
+    /// receive credit or retained-message byte/count guarantee. Polling drains
+    /// Rust storage, not the engine's advertised receive window.
     pub fn try_next_event(&self) -> Option<DataChannelEvent> {
         let event = ffi::data_channel_take_event(self.native());
         match event.kind {

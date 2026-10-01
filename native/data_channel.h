@@ -15,6 +15,7 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiDataChannelEvent;
+struct FfiDataChannelError;
 class NativePeerConnection;
 class ReadinessSignal;
 
@@ -70,5 +71,9 @@ std::uint8_t data_channel_send(const NativeDataChannel& channel,
 FfiDataChannelEvent data_channel_take_event(
     const NativeDataChannel& channel) noexcept;
 bool close_data_channel(const NativeDataChannel& channel) noexcept;
+FfiDataChannelError data_channel_error(const NativeDataChannel& channel) noexcept;
+std::uint64_t data_channel_send_queue_capacity() noexcept;
+void data_channel_set_event_observation(const NativeDataChannel& channel,
+                                       bool enabled) noexcept;
 
 }  // namespace pulsebeam::webrtc_sys

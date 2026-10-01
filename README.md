@@ -136,9 +136,12 @@ terminal outcomes are consumed; excess admission fails synchronously with
 pending operations still produce one terminal outcome. Shutdown is idempotent;
 owned outputs already returned remain valid.
 
-Data-channel advisory snapshots are bounded, but receive-message storage and
-consumption-driven SCTP credit are not yet implemented. Do not interpret this
-ownership API as qualification of the entire agent-ready binding contract.
+Data channels expose native push delivery and send backpressure. Advisory
+snapshots are bounded, but the Rust message inbox is not byte/count bounded and
+consuming its events does not return SCTP receive-window credit. No binding-only
+SID-retirement or substitute receive-credit policy is imposed. Layered and
+opaque media remain unqualified; this ownership API alone is not the entire
+agent-ready binding contract.
 
 ## Artifact flavors
 
@@ -502,6 +505,30 @@ advisory events before messages, while messages retain FIFO ordering. Consuming
 the terminal closed snapshot discards queued deliveries and suppresses later
 events. These advisory bounds do not bound received-message storage or establish
 consumption-driven SCTP receive backpressure.
+
+`DataChannel::send_queue_capacity()` and
+`ProductionSession::channel_send_queue_capacity()` expose the native per-channel
+send-queue limit. It is not a negotiated maximum message size or receive budget.
+`Sent` denotes local admission only. `DataChannel::error()` and
+`ProductionSession::channel_error()` copy the current native error into an owned
+value, preserving its kind, diagnostic message, optional detail and optional
+SCTP cause code. No error on an ordinarily closed channel is not a failure.
+
+The pinned PeerConnection data-channel path is push-based. Native dcSCTP
+reassembly has its own receive window; native pre-observer/connecting delivery
+also has an engine-owned queue which can close a channel with `ResourceExhausted`
+on byte overflow. Neither is a Rust consumption-credit API. Once our observer
+receives a message, its owned copy waits in the Rust inbox until consumed or
+shutdown discards it. A paused Rust consumer can therefore accumulate message
+storage; application consumption policy remains outside the binding. The
+generic dcSCTP socket pull API is not exposed as a stock PeerConnection capability.
+Native allocation, reset and stream-ID reuse behavior are preserved.
+`DataChannel::set_event_observation` and the session counterpart expose native
+observer registration/unregistration. Disabling quiesces new channel callbacks,
+not transport; already-owned Rust events remain available. While disabled, the
+engine can buffer messages or fail on its own overflow limit, and channel
+activity does not notify readiness. Re-enabling drains native queued messages
+when open and samples current state. This is not a consumption-credit API.
 
 `PeerConnection::request_stats()` returns an operation ID, then a typed
 `PeerConnectionEvent::Stats` snapshot or a terminal operation error. The

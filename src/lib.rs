@@ -44,8 +44,9 @@ pub use codec::{
     VideoRateControl, VideoResolution, VideoRotation,
 };
 pub use data_channel::{
-    DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
-    DataChannelMessageKind, DataChannelPriority, DataChannelSendResult, DataChannelState,
+    DataChannel, DataChannelConfiguration, DataChannelError, DataChannelErrorDetail,
+    DataChannelEvent, DataChannelMessage, DataChannelMessageKind, DataChannelPriority,
+    DataChannelSendResult, DataChannelState,
 };
 pub use encoded_video::{
     EncodedH264Input, EncodedH264Source, EncodedVideoAccessUnit, EncodedVideoInput,
@@ -287,6 +288,14 @@ mod ffi {
         candidate: String,
         address: String,
         url: String,
+        message: String,
+    }
+
+    struct FfiDataChannelError {
+        has_error: bool,
+        error_type: u8,
+        error_detail: u8,
+        sctp_cause_code: i32,
         message: String,
     }
 
@@ -800,6 +809,9 @@ mod ffi {
         fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
+        fn data_channel_error(channel: &NativeDataChannel) -> FfiDataChannelError;
+        fn data_channel_send_queue_capacity() -> u64;
+        fn data_channel_set_event_observation(channel: &NativeDataChannel, enabled: bool);
 
         fn audio_source_push_opus(
             source: &NativeAudioSource,
