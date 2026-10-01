@@ -596,7 +596,9 @@ does not supply a decoder. The direct input source does not support encoded
 simulcast/SVC or H.264 packetization mode 0. `take_keyframe_request()` reports
 and clears sender feedback after
 WebRTC asks the adapter to encode a frame; a delta frame submitted during a
-keyframe request is rejected. `latest_rate_control()` exposes the last
+keyframe request is rejected. Idle sources have no keyframe-notification
+promise: polling does not schedule `Encode`, synthesize frames or substitute
+observed RTCP for native encoder feedback. `latest_rate_control()` exposes the last
 per-stream rate update observed during encoding. The generic
 `EncodedImageCallback::emit_with_metadata()` path also accepts codec-specific
 VP8/VP9 packetization fields and explicit simulcast, spatial and temporal

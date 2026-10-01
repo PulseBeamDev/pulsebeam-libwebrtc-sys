@@ -357,7 +357,9 @@ impl EncodedH264Source {
 
     /// Returns and clears keyframe feedback signaled by the sending encoder.
     /// Feedback becomes visible when WebRTC tries to encode the next frame;
-    /// an already-submitted delta frame can therefore be rejected.
+    /// an already-submitted delta frame can therefore be rejected. There is no
+    /// idle-source notification guarantee. Polling does not synthesize input or
+    /// infer encoder feedback from received RTCP.
     pub fn take_keyframe_request(&self) -> bool {
         self.feedback
             .keyframe_requested
