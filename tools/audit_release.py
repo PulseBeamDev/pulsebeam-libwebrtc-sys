@@ -11,6 +11,7 @@ import sys
 import tarfile
 
 from tools.write_artifact_lock import read_checksums
+from tools.native_provenance import adapter_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,7 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
     if found.keys() != expected.keys() or checksums.keys() != expected.keys():
         raise AuditError("release archive, checksum, and lock asset sets differ")
 
+    expected_adapter = adapter_digest(ROOT)
     common_bridge = None
     common_sources = None
     configurations: set[str] = set()
@@ -74,6 +76,8 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             raise AuditError(f"checksum mismatch: {name}")
         with tarfile.open(path, "r:gz") as archive:
             manifest = json.loads(read_member(archive, "manifest.json"))
+            if manifest.get("schema_version") != 3:
+                raise AuditError(f"artifact manifest is not schema 3: {name}")
             entry = expected[name]
             identity = manifest.get("artifact", {})
             for field in ("cargo_target", "artifact_target", "flavor"):
@@ -84,6 +88,8 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             sources = manifest.get("sources")
             if not isinstance(bridge, dict) or bridge.get("identity") != lock["bridge_identity"]:
                 raise AuditError(f"wrong bridge identity in {name}")
+            if bridge.get("native_adapter_sha256") != expected_adapter:
+                raise AuditError(f"stale native adapter/build input provenance in {name}")
             webrtc = sources.get("webrtc") if isinstance(sources, dict) else None
             depot_tools = sources.get("depot_tools") if isinstance(sources, dict) else None
             expected_state = "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine"

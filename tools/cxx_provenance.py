@@ -126,9 +126,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         manifest = json.loads((args.artifact / "manifest.json").read_text())
-        if manifest.get("schema_version") != 2:
-            raise ProvenanceError("artifact manifest is not schema 2")
-        validate_artifact_provenance(manifest.get("bridge", {}).get("cxx"), ROOT, args.artifact)
+        if manifest.get("schema_version") != 3:
+            raise ProvenanceError("artifact manifest is not schema 3")
+        from native_provenance import adapter_digest
+        bridge = manifest.get("bridge", {})
+        if bridge.get("native_adapter_sha256") != adapter_digest(ROOT):
+            raise ProvenanceError("stale native adapter/build input provenance")
+        validate_artifact_provenance(bridge.get("cxx"), ROOT, args.artifact)
     except (OSError, json.JSONDecodeError, ProvenanceError) as error:
         print(f"CXX artifact provenance: {error}", file=sys.stderr)
         return 1

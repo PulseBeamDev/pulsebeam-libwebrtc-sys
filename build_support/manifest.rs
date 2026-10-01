@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const SOURCE_REPOSITORY: &str = "https://github.com/webrtc-sdk/webrtc.git";
 const SOURCE_REVISION: &str = "ba469aa2093ba950066258ca0a59a6fbd1295582";
@@ -17,11 +18,60 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "989646c5ebae9e5ac3de0e88769a30b4b1b290ecac3779a5848e7e240a12a4bc";
+    "d8ee59249d774ef10da33ce7845ec12f816489badcfaa04381659e2e669ba6b5";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "72cdcbbaadb1ed30dc373d20bcd3896a9753d5f26ed71c2fc2c386072c977e04";
+    "db6a67182e83e231546a85cc6bdf0a104af5c479e08ccc59b564fa447259f2f9";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "e2d728a23345f10e64d70c16a1ae570370ca5328f561723ea1da3642880306dc";
+    "b4cda29242dbfcd0f622f302b2cf5f365a45e1d78d18439de6093f3273fca193";
+
+// Keep this inventory synchronized with tools/native_provenance.py. Embedding
+// bytes supports offline Rust-only consumers without running a native compiler.
+const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
+    ("Justfile", include_bytes!("../Justfile")),
+    ("native/audio.cc", include_bytes!("../native/audio.cc")),
+    ("native/audio.h", include_bytes!("../native/audio.h")),
+    ("native/codec.cc", include_bytes!("../native/codec.cc")),
+    ("native/codec.h", include_bytes!("../native/codec.h")),
+    (
+        "native/data_channel.cc",
+        include_bytes!("../native/data_channel.cc"),
+    ),
+    (
+        "native/data_channel.h",
+        include_bytes!("../native/data_channel.h"),
+    ),
+    (
+        "native/execution.cc",
+        include_bytes!("../native/execution.cc"),
+    ),
+    (
+        "native/execution.h",
+        include_bytes!("../native/execution.h"),
+    ),
+    ("native/network.cc", include_bytes!("../native/network.cc")),
+    ("native/network.h", include_bytes!("../native/network.h")),
+    (
+        "native/opus_carrier.h",
+        include_bytes!("../native/opus_carrier.h"),
+    ),
+    ("native/peer.cc", include_bytes!("../native/peer.cc")),
+    ("native/peer.h", include_bytes!("../native/peer.h")),
+    ("native/probe.cc", include_bytes!("../native/probe.cc")),
+    ("native/probe.h", include_bytes!("../native/probe.h")),
+    ("native/video.cc", include_bytes!("../native/video.cc")),
+    ("native/video.h", include_bytes!("../native/video.h")),
+];
+
+fn native_adapter_digest() -> String {
+    let inventory: Vec<_> = NATIVE_ADAPTER_INPUTS
+        .iter()
+        .map(|(path, bytes)| (*path, format!("{:x}", Sha256::digest(bytes))))
+        .collect();
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&inventory).unwrap())
+    )
+}
 
 pub(crate) const SUPPORTED_CARGO_TARGETS: [&str; 9] = [
     "x86_64-unknown-linux-gnu",
@@ -68,6 +118,7 @@ pub(crate) struct ArtifactManifest {
 #[serde(deny_unknown_fields)]
 struct Bridge {
     identity: String,
+    native_adapter_sha256: String,
     cxx: CxxProvenance,
 }
 
@@ -167,11 +218,14 @@ impl ArtifactManifest {
         expected_cargo_target: &str,
     ) -> Result<Self, String> {
         let manifest: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        if manifest.schema_version != 2 {
+        if manifest.schema_version != 3 {
             return Err(format!(
                 "unsupported manifest schema {}",
                 manifest.schema_version
             ));
+        }
+        if manifest.bridge.native_adapter_sha256 != native_adapter_digest() {
+            return Err("artifact was generated from stale native adapter/build inputs".to_owned());
         }
         for (name, actual, expected) in [
             (
@@ -353,7 +407,7 @@ impl ArtifactManifest {
 mod tests {
     use super::{
         ArtifactManifest, BRIDGE_SOURCE_SHA256, CXX_PACKAGE_SHA256, CXXBRIDGE_CMD_PACKAGE_SHA256,
-        SUPPORTED_CARGO_TARGETS, artifact_target,
+        NATIVE_ADAPTER_INPUTS, SUPPORTED_CARGO_TARGETS, artifact_target, native_adapter_digest,
     };
     use sha2::{Digest, Sha256};
 
@@ -378,6 +432,58 @@ mod tests {
     fn bridge_source_digest_matches_tracked_bridge_source() {
         let digest = Sha256::digest(include_bytes!("../src/lib.rs"));
         assert_eq!(format!("{digest:x}"), BRIDGE_SOURCE_SHA256);
+    }
+
+    #[test]
+    fn adapter_inventory_covers_all_native_sources_headers_and_build_recipe() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut expected = vec!["Justfile".to_owned()];
+        for entry in std::fs::read_dir(root.join("native")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file()
+                && matches!(path.extension().and_then(|e| e.to_str()), Some("cc" | "h"))
+            {
+                expected.push(format!(
+                    "native/{}",
+                    path.file_name().unwrap().to_str().unwrap()
+                ));
+            }
+        }
+        expected.sort();
+        assert_eq!(
+            expected,
+            NATIVE_ADAPTER_INPUTS
+                .iter()
+                .map(|(path, _)| path.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_stale_adapter_identity_and_legacy_manifest_schema() {
+        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        assert_eq!(
+            value["bridge"]["native_adapter_sha256"],
+            native_adapter_digest()
+        );
+        value["bridge"]["native_adapter_sha256"] = "0".repeat(64).into();
+        assert!(
+            validate(&serde_json::to_vec(&value).unwrap())
+                .unwrap_err()
+                .contains("stale native")
+        );
+        value["bridge"]
+            .as_object_mut()
+            .unwrap()
+            .remove("native_adapter_sha256");
+        assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
+        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        value["schema_version"] = 2.into();
+        assert!(
+            validate(&serde_json::to_vec(&value).unwrap())
+                .unwrap_err()
+                .contains("schema 2")
+        );
     }
 
     #[test]

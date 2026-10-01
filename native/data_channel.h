@@ -16,6 +16,7 @@ namespace pulsebeam::webrtc_sys {
 
 struct FfiDataChannelEvent;
 class NativePeerConnection;
+class ReadinessSignal;
 
 class NativeDataChannel final {
  public:
@@ -35,7 +36,8 @@ class NativeDataChannel final {
 std::unique_ptr<NativeDataChannel> wrap_data_channel(
     webrtc::scoped_refptr<webrtc::DataChannelInterface> channel,
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer,
-    webrtc::Thread* signaling_thread) noexcept;
+    webrtc::Thread* signaling_thread,
+    std::shared_ptr<ReadinessSignal> readiness) noexcept;
 
 std::unique_ptr<NativeDataChannel> create_data_channel(
     const NativePeerConnection& peer,

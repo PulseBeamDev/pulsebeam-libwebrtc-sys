@@ -20,6 +20,7 @@
 #include "api/peer_connection_interface.h"
 #include "api/scoped_refptr.h"
 #include "api/rtp_transceiver_interface.h"
+#include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
 #include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 #include "pulsebeam-webrtc-sys/native/video.h"
@@ -107,9 +108,13 @@ std::uint32_t OpusSamples(std::span<const std::uint8_t> data) {
 // Upstream retains the transformer after close until the receiver dies.
 class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
  public:
+  explicit EncodedAudioCollector(std::shared_ptr<ReadinessSignal> readiness)
+      : readiness_(std::move(readiness)) {}
   void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    ReadinessNotification notify{};
     std::lock_guard lock(mutex_);
     if (!active_) return;
+    notify.readiness = readiness_;
     const auto data = frame->GetData();
     if (frame->GetDirection() !=
             webrtc::TransformableFrameInterface::Direction::kReceiver ||
@@ -183,6 +188,7 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     std::optional<std::int64_t> capture_us;
     std::optional<std::int64_t> receive_us;
   };
+  const std::shared_ptr<ReadinessSignal> readiness_;
   mutable std::mutex mutex_;
   std::deque<Frame> frames_;
   std::size_t bytes_ = 0;
@@ -572,7 +578,7 @@ std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(
   }
   if (!opus || !peer.reserve_audio_receiver(remote->id())) return nullptr;
   auto state = std::make_unique<NativeEncodedAudioSink::State>();
-  state->collector = webrtc::make_ref_counted<EncodedAudioCollector>();
+  state->collector = webrtc::make_ref_counted<EncodedAudioCollector>(peer.readiness());
   peer.worker_thread()->BlockingCall([&] {
     remote->SetFrameTransformer(state->collector);
   });

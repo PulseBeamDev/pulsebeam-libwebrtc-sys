@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from cxx_provenance import artifact_provenance, validate_artifact_provenance
+from native_provenance import adapter_digest
 
 
 TARGETS = {
@@ -173,7 +174,9 @@ def main():
         args.generated_source,
     )
     validate_artifact_provenance(cxx, Path(__file__).resolve().parents[1])
+    native_adapter_sha256 = adapter_digest(Path(__file__).resolve().parents[1])
     native_configuration = {
+        "native_adapter_sha256": native_adapter_sha256,
         "bridge_identity": args.bridge_identity,
         "cxx": cxx,
         "source_revision": args.source_revision,
@@ -195,8 +198,9 @@ def main():
         })
 
     manifest = {
-        "schema_version": 2,
-        "bridge": {"identity": args.bridge_identity, "cxx": cxx},
+        "schema_version": 3,
+        "bridge": {"identity": args.bridge_identity, "cxx": cxx,
+                   "native_adapter_sha256": native_adapter_sha256},
         "sources": {
             "webrtc": {
                 "repository": args.source_repository,

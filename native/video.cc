@@ -41,6 +41,7 @@
 #endif
 #include "pc/video_track_source.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
+#include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/thread.h"
@@ -265,12 +266,16 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
 // does not reset the old callback registration in this pinned revision.
 class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
  public:
+  explicit EncodedFrameCollector(std::shared_ptr<ReadinessSignal> readiness)
+      : readiness_(std::move(readiness)) {}
   void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    ReadinessNotification notify{};
     webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
     {
       std::lock_guard lock(mutex_);
       if (active_ && frame->GetDirection() ==
                          webrtc::TransformableFrameInterface::Direction::kReceiver) {
+        notify.readiness = readiness_;
         auto* video = static_cast<webrtc::TransformableVideoFrameInterface*>(frame.get());
         const auto data = frame->GetData();
         if (data.size() > kMaxBytes) {
@@ -385,6 +390,7 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
     std::vector<std::int64_t> dependencies;
     std::vector<std::uint8_t> decode_target_indications;
   };
+  const std::shared_ptr<ReadinessSignal> readiness_;
   static constexpr std::size_t kMaxFrames = 4;
   static constexpr std::size_t kMaxBytes = 4 * 1024 * 1024;
   std::mutex mutex_;
@@ -883,12 +889,13 @@ bool video_source_push_encoded_trigger(
   auto buffer = webrtc::I420Buffer::Create(static_cast<int>(width),
                                            static_cast<int>(height));
   buffer->InitializeData();
-  source.state()->source->Push(
-      webrtc::VideoFrame::Builder()
-          .set_video_frame_buffer(std::move(buffer))
-          .set_timestamp_us(timestamp_us)
-          .set_presentation_timestamp(webrtc::Timestamp::Micros(token))
-          .build());
+  auto frame = webrtc::VideoFrame::Builder()
+                   .set_video_frame_buffer(std::move(buffer))
+                   .set_timestamp_us(timestamp_us)
+                   .set_presentation_timestamp(webrtc::Timestamp::Micros(token))
+                   .build();
+  source.state()->signaling_thread->BlockingCall(
+      [&] { source.state()->source->Push(frame); });
   return true;
 }
 
@@ -1095,7 +1102,7 @@ std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
       receivers.end()) return nullptr;
   if (!peer.reserve_encoded_receiver(receiver.state()->receiver->id())) return nullptr;
   auto state = std::make_unique<NativeEncodedVideoSink::State>();
-  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>();
+  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(peer.readiness());
   peer.worker_thread()->BlockingCall([&] {
     receiver.state()->receiver->SetFrameTransformer(state->collector);
   });

@@ -14,6 +14,49 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct RustTask;
+struct RustReadiness;
+
+// Contains only a thread-safe Rust notification state, never engine handles.
+class ReadinessSignal final {
+ public:
+  explicit ReadinessSignal(rust::Box<RustReadiness> readiness) noexcept;
+  ~ReadinessSignal();
+  void Signal() const noexcept;
+
+ private:
+  rust::Box<RustReadiness> readiness_;
+};
+
+class NativeReadiness final {
+ public:
+  explicit NativeReadiness(rust::Box<RustReadiness> readiness) noexcept;
+  ~NativeReadiness();
+  std::shared_ptr<ReadinessSignal> signal() const noexcept;
+
+ private:
+  std::shared_ptr<ReadinessSignal> signal_;
+};
+
+std::unique_ptr<NativeReadiness> new_readiness(
+    rust::Box<RustReadiness> readiness) noexcept;
+
+inline void SignalReadiness(const std::shared_ptr<ReadinessSignal>& signal) {
+  if (signal) signal->Signal();
+}
+
+struct ReadinessNotification {
+  std::shared_ptr<ReadinessSignal> readiness;
+  ~ReadinessNotification() { SignalReadiness(readiness); }
+};
+
+// Reserve production before starting any engine queues/threads. Controlled
+// acquisition checks the same reservation under the process-hook lock.
+class NativeProductionLease final {
+ public:
+  NativeProductionLease() noexcept = default;
+  ~NativeProductionLease();
+};
+std::unique_ptr<NativeProductionLease> new_production_lease() noexcept;
 
 class NativeManualClock final {
  public:

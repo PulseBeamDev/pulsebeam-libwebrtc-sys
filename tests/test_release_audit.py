@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseAuditTests(unittest.TestCase):
-    def build_release(self, root: Path, targets: set[str] | None = None) -> tuple[Path, Path]:
+    def build_release(self, root: Path, targets: set[str] | None = None, *,
+                      native_adapter: str | None = None, schema: int = 3) -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
         license_contents = b"license\n"
@@ -26,7 +27,9 @@ class ReleaseAuditTests(unittest.TestCase):
         ]
         for index, entry in enumerate(entries):
             manifest = {
-                "bridge": {"identity": lock["bridge_identity"], "cxx": {"version": "1"}},
+                "schema_version": schema,
+                "bridge": {"identity": lock["bridge_identity"], "cxx": {"version": "1"},
+                           "native_adapter_sha256": native_adapter or audit_release.adapter_digest(ROOT)},
                 "sources": {
                     "webrtc": {
                         "repository": "source-repository",
@@ -84,6 +87,15 @@ class ReleaseAuditTests(unittest.TestCase):
             self.assertEqual(
                 sum(asset["source_state"] == "applied" for asset in report["assets"]), 2
             )
+
+    def test_rejects_stale_adapters_and_legacy_schema_even_with_valid_checksums(self):
+        for kwargs, expected in [({"native_adapter": "0" * 64}, "stale native"),
+                                 ({"schema": 2}, "schema 3")]:
+            with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checksums, lock = self.build_release(root, {"linux-x86_64"}, **kwargs)
+                with self.assertRaisesRegex(audit_release.AuditError, expected):
+                    audit_release.audit(root, checksums, lock, "linux")
 
     def test_accepts_exact_linux_scope_only(self):
         with tempfile.TemporaryDirectory() as temporary:

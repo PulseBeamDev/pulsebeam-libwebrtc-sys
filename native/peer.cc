@@ -124,8 +124,17 @@ FfiPeerEvent ClosedOperation(std::uint64_t operation_id) {
   return event;
 }
 
+struct NotifyOnExit {
+  std::shared_ptr<ReadinessSignal> readiness;
+  ~NotifyOnExit() { SignalReadiness(readiness); }
+};
+
 struct EventState {
+  explicit EventState(std::shared_ptr<ReadinessSignal> signal)
+      : readiness(std::move(signal)) {}
+
   bool Begin(std::uint64_t operation_id) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
       events.push_back(ClosedOperation(operation_id));
@@ -145,6 +154,7 @@ struct EventState {
   }
 
   void Complete(FfiPeerEvent event) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (pending.erase(event.operation_id) != 0) {
       events.push_back(std::move(event));
@@ -152,6 +162,7 @@ struct EventState {
   }
 
   void Push(FfiPeerEvent event) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (!closed) {
       events.push_back(std::move(event));
@@ -173,6 +184,7 @@ struct EventState {
 
   void AddDataChannel(
       webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
       return;
@@ -199,6 +211,7 @@ struct EventState {
 
   void AddTransceiver(
       webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
       return;
@@ -225,6 +238,7 @@ struct EventState {
 
   void RemoveReceiver(
       webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
       return;
@@ -250,6 +264,7 @@ struct EventState {
   }
 
   void Close() {
+    NotifyOnExit notify{readiness};
     std::unordered_map<
         std::uint64_t,
         webrtc::scoped_refptr<webrtc::DataChannelInterface>> abandoned_channels;
@@ -279,6 +294,7 @@ struct EventState {
     }
   }
 
+  const std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::deque<FfiPeerEvent> events;
   std::set<std::uint64_t> pending;
@@ -649,6 +665,7 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
 }  // namespace
 
 struct NativePeerConnectionFactory::State {
+  std::shared_ptr<ReadinessSignal> readiness;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
@@ -697,6 +714,11 @@ NativePeerConnectionFactory::audio_device() const noexcept {
   return state_->audio_device;
 }
 
+std::shared_ptr<ReadinessSignal>
+NativePeerConnectionFactory::readiness() const noexcept {
+  return state_->readiness;
+}
+
 NativePeerConnection::NativePeerConnection(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
 NativePeerConnection::~NativePeerConnection() {
@@ -722,6 +744,10 @@ webrtc::Thread* NativePeerConnection::signaling_thread() const noexcept {
 webrtc::Thread* NativePeerConnection::worker_thread() const noexcept {
   return state_->worker_thread;
 }
+std::shared_ptr<ReadinessSignal>
+NativePeerConnection::readiness() const noexcept {
+  return state_->events->readiness;
+}
 bool NativePeerConnection::reserve_encoded_receiver(
     const std::string& id) const noexcept {
   return !state_->closed && state_->encoded_receiver_ids.insert(id).second;
@@ -743,6 +769,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
     bool native_audio,
+    const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept {
   webrtc::PeerConnectionFactoryDependencies dependencies;
@@ -863,6 +890,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     return nullptr;
   }
   auto state = std::make_unique<NativePeerConnectionFactory::State>();
+  state->readiness = readiness ? readiness->signal() : nullptr;
   state->headless_audio_device = std::move(headless_audio_device);
   state->audio_device = std::move(platform_audio_device);
   state->factory = std::move(factory);
@@ -1015,7 +1043,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     bool relay_only,
     rust::Str turn_tls_ca_pem,
     rust::String& error) noexcept {
-  auto events = std::make_shared<EventState>();
+  auto events = std::make_shared<EventState>(factory.readiness());
   auto observer = std::make_unique<PeerObserver>(events);
   webrtc::PeerConnectionDependencies dependencies(observer.get());
   if (!turn_tls_ca_pem.empty()) {
@@ -1163,9 +1191,13 @@ void peer_set_local_description(const NativePeerConnection& peer,
         parse_error.description));
     return;
   }
-  state->peer->SetLocalDescription(
-      std::move(description),
-      webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+  // This overload bypasses the upstream proxy. Keep initiation as well as
+  // completion on the retained signaling sequence after caller migration.
+  state->signaling_thread->BlockingCall([&] {
+    state->peer->SetLocalDescription(
+        std::move(description),
+        webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+  });
 }
 
 void peer_set_remote_description(const NativePeerConnection& peer,
@@ -1184,9 +1216,11 @@ void peer_set_remote_description(const NativePeerConnection& peer,
         parse_error.description));
     return;
   }
-  state->peer->SetRemoteDescription(
-      std::move(description),
-      webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
+  state->signaling_thread->BlockingCall([&] {
+    state->peer->SetRemoteDescription(
+        std::move(description),
+        webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
+  });
 }
 
 void peer_reject_controlled_media(const NativePeerConnection& peer,
@@ -1242,7 +1276,7 @@ std::unique_ptr<NativeDataChannel> peer_take_data_channel(
     std::uint64_t arrival_id) noexcept {
   auto channel = peer.state()->events->TakeDataChannel(arrival_id);
   return wrap_data_channel(std::move(channel), peer.peer(),
-                           peer.signaling_thread());
+                           peer.signaling_thread(), peer.readiness());
 }
 
 std::unique_ptr<NativeRtpTransceiver> peer_take_transceiver(

@@ -32,6 +32,9 @@ class NativeThread;
 class NativeVideoDecoderFactory;
 class NativeVideoEncoderFactory;
 
+class NativeReadiness;
+class ReadinessSignal;
+
 class NativePeerConnectionFactory final {
  public:
   struct State;
@@ -47,6 +50,7 @@ class NativePeerConnectionFactory final {
       const noexcept;
   webrtc::Thread* signaling_thread() const noexcept;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device() const noexcept;
+  std::shared_ptr<ReadinessSignal> readiness() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -65,6 +69,7 @@ class NativePeerConnection final {
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer() const noexcept;
   webrtc::Thread* signaling_thread() const noexcept;
   webrtc::Thread* worker_thread() const noexcept;
+  std::shared_ptr<ReadinessSignal> readiness() const noexcept;
   bool reserve_encoded_receiver(const std::string& id) const noexcept;
   bool reserve_audio_receiver(const std::string& id) const noexcept;
 
@@ -84,6 +89,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
     bool native_audio,
+    const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept;
 FfiAudioProcessingState factory_audio_processing_state(

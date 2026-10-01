@@ -107,6 +107,39 @@ selections; it is not used by normal Git consumers. Only Linux x86_64 core and
 native are currently released. Other targets require a matching extracted
 artifact through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`.
 
+## Actor-owned production execution
+
+`ProductionSession` is a move-only `Send`, non-`Sync` owner for a production
+resource graph. It constructs headless peers on system time and retains
+WebRTC's existing network, worker and signaling threads. There is no additional
+application owner executor. All mutations require `&mut self`; peers, channels,
+encoded sources, RTP handles and sinks stay private. Copyable session IDs and
+owned event/frame values are the application boundary, so an async actor may
+retain the session across awaits and migrate between executor threads.
+
+Use `ProductionSession::new(ProductionSessionConfig::default())` for encoded
+Opus and data channels. An optional `video_format` selects direct encoded H.264
+or VP8 input and encoded-only video reception, not a new H.264 decoder. Existing
+input limitations still apply: this API alone does not implement layered or
+opaque media. Low-level local handles and controlled execution remain non-Send
+and cannot be imported into a production session. Production factories and
+controlled worlds reject coexistence before starting production threads.
+
+Drain `try_peer_event`, `try_channel_event` and any attached encoded sinks, then
+await `ready()` (or call `poll_ready` from an executor). Readiness coalesces
+activity, may be spurious and never enters the engine or drives a clock. A
+single actor waiter is supported; its waker must schedule the actor, not run
+engine operations inside a native callback. Native event locks are released
+before waking. Each peer admits at most 64 asynchronous operations until their
+terminal outcomes are consumed; excess admission fails synchronously with
+`ResourceExhausted`. Closing retains peer observation identities so accepted
+pending operations still produce one terminal outcome. Shutdown is idempotent;
+owned outputs already returned remain valid.
+
+Data-channel advisory snapshots are bounded, but receive-message storage and
+consumption-driven SCTP credit are not yet implemented. Do not interpret this
+ownership API as qualification of the entire agent-ready binding contract.
+
 ## Artifact flavors
 
 Every supported target has two artifacts built from the same pinned source and
@@ -352,6 +385,13 @@ into the single native archive. The pinned CXX Rust runtime is vendored without
 its compiler-running Cargo build script; its matching C++ runtime is also part
 of the native archive. Cargo consumers therefore compile only Rust. CXX and STL
 types stay private; the public crate surface uses ordinary Rust values.
+
+Schema-3 manifests also require `bridge.native_adapter_sha256`, a path-aware
+SHA-256 of every `native/*.cc`/`native/*.h` input and `Justfile`. It participates
+in native configuration identity and is checked against the current source
+package by producer provenance, release audit and Rust-only consumers. Matching
+CXX declarations alone cannot qualify an archive containing stale adapters or
+build recipes; schema-2 manifests are deliberately rejected.
 
 This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 

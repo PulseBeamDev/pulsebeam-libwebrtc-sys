@@ -33,6 +33,7 @@ constexpr std::int64_t kNoDeadline = std::numeric_limits<std::int64_t>::min();
 std::atomic_bool driver_active{false};
 std::mutex hooks_mutex;
 bool randomness_active = false;
+std::size_t production_leases = 0;
 thread_local std::vector<webrtc::TaskQueueBase*> suspended_queues;
 // Stay within NTP era zero as well as the signed nanosecond clock. Native
 // NTP seconds otherwise wrap in 2036 even though the microsecond clock fits.
@@ -437,6 +438,32 @@ NativeRandomnessLease::~NativeRandomnessLease() {
   randomness_active = false;
 }
 
+NativeProductionLease::~NativeProductionLease() {
+  std::lock_guard lock(hooks_mutex);
+  --production_leases;
+}
+std::unique_ptr<NativeProductionLease> new_production_lease() noexcept {
+  std::lock_guard lock(hooks_mutex);
+  if (driver_active.load()) return nullptr;
+  ++production_leases;
+  return std::make_unique<NativeProductionLease>();
+}
+
+ReadinessSignal::ReadinessSignal(rust::Box<RustReadiness> readiness) noexcept
+    : readiness_(std::move(readiness)) {}
+ReadinessSignal::~ReadinessSignal() = default;
+void ReadinessSignal::Signal() const noexcept { notify_readiness(*readiness_); }
+NativeReadiness::NativeReadiness(rust::Box<RustReadiness> readiness) noexcept
+    : signal_(std::make_shared<ReadinessSignal>(std::move(readiness))) {}
+NativeReadiness::~NativeReadiness() = default;
+std::shared_ptr<ReadinessSignal> NativeReadiness::signal() const noexcept {
+  return signal_;
+}
+std::unique_ptr<NativeReadiness> new_readiness(
+    rust::Box<RustReadiness> readiness) noexcept {
+  return std::make_unique<NativeReadiness>(std::move(readiness));
+}
+
 NativeThread::NativeThread(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
 NativeDriverThread::NativeDriverThread(std::unique_ptr<State> state) noexcept
@@ -733,8 +760,8 @@ std::unique_ptr<NativeThread> new_thread(bool network) noexcept {
 std::unique_ptr<NativeDriverThread> new_driver_thread(
     const NativeManualClock& clock) noexcept {
   std::lock_guard lock(hooks_mutex);
-  if (driver_active.load() || webrtc::Thread::Current() ||
-      webrtc::GetClockForTesting()) return nullptr;
+  if (driver_active.load() || production_leases != 0 ||
+      webrtc::Thread::Current() || webrtc::GetClockForTesting()) return nullptr;
   auto queues = MakeCooperativeState(clock.state());
   if (!queues) return nullptr;
   auto thread = std::make_unique<ControlledThread>(std::move(queues));
@@ -754,7 +781,7 @@ std::unique_ptr<NativeThread> borrow_driver_thread(
 std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
     const NativeManualClock& clock, std::uint64_t seed) noexcept {
   std::lock_guard lock(hooks_mutex);
-  if (driver_active.load() || randomness_active || webrtc::Thread::Current() ||
+  if (driver_active.load() || production_leases != 0 || randomness_active || webrtc::Thread::Current() ||
       webrtc::GetClockForTesting()) return nullptr;
   auto queues = MakeCooperativeState(clock.state());
   if (!queues) return nullptr;

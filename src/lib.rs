@@ -8,6 +8,8 @@ mod encoded_video;
 mod execution;
 mod network;
 mod peer;
+mod production;
+mod readiness;
 mod video;
 
 pub(crate) use codec::{
@@ -19,6 +21,7 @@ pub(crate) use codec::{
     encoder_register_callback, encoder_release, encoder_set_rates,
 };
 pub(crate) use execution::{RustTask, run_task};
+pub(crate) use readiness::{RustReadiness, notify_readiness};
 
 #[cfg(feature = "native")]
 pub use audio::AudioDevice;
@@ -66,6 +69,10 @@ pub use peer::{
     PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions, PeerError,
     PeerErrorKind, PeerStatsRecord, PeerStatsSnapshot, SessionDescription, SessionDescriptionType,
     SignalingState, TransportStats,
+};
+pub use production::{
+    ProductionSession, ProductionSessionConfig, SessionChannelId, SessionEvent, SessionPeerId,
+    SessionReceiverId, SessionSenderId, SessionSourceId, SessionTransceiverId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -312,6 +319,8 @@ mod ffi {
     }
 
     extern "Rust" {
+        type RustReadiness;
+        fn notify_readiness(readiness: &RustReadiness);
         type RustTask;
         type RustVideoEncoderFactory;
         type RustVideoDecoderFactory;
@@ -489,6 +498,10 @@ mod ffi {
             name: &str,
             priority: u8,
         ) -> UniquePtr<NativeTaskQueue>;
+        type NativeProductionLease;
+        fn new_production_lease() -> UniquePtr<NativeProductionLease>;
+        type NativeReadiness;
+        fn new_readiness(readiness: Box<RustReadiness>) -> UniquePtr<NativeReadiness>;
         fn post_task(queue: &NativeTaskQueue, task: Box<RustTask>) -> bool;
         fn post_delayed_task(queue: &NativeTaskQueue, delay_us: i64, task: Box<RustTask>) -> bool;
         fn run_ready_tasks(factory: &NativeTaskQueueFactory) -> usize;
@@ -693,6 +706,7 @@ mod ffi {
             video_encoder: *const NativeVideoEncoderFactory,
             video_decoder: *const NativeVideoDecoderFactory,
             native_audio: bool,
+            readiness: *const NativeReadiness,
             processing: &FfiAudioProcessingConfig,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;

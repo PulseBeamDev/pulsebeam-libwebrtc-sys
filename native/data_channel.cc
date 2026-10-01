@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/copy_on_write_buffer.h"
@@ -30,8 +31,16 @@ enum SendResult : std::uint8_t {
   kSendFailed = 3,
 };
 
+struct NotifyOnExit {
+  std::shared_ptr<ReadinessSignal> readiness;
+  ~NotifyOnExit() { SignalReadiness(readiness); }
+};
+
 struct EventState {
+  explicit EventState(std::shared_ptr<ReadinessSignal> signal)
+      : readiness(std::move(signal)) {}
   void PushState(webrtc::DataChannelInterface::DataState state) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
       return;
@@ -42,6 +51,7 @@ struct EventState {
   }
 
   void PushInitialState(webrtc::DataChannelInterface::DataState state) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     // Register first, then sample. A callback racing with this sample wins.
     if (!closed && !pending_state) {
@@ -50,6 +60,7 @@ struct EventState {
   }
 
   void PushMessage(const webrtc::DataBuffer& buffer) {
+    NotifyOnExit notify{readiness};
     FfiDataChannelEvent event;
     event.kind = kMessage;
     event.binary = buffer.binary;
@@ -64,6 +75,7 @@ struct EventState {
   }
 
   void PushBufferedAmount(std::uint64_t sent_data_size) {
+    NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (!closed) {
       const auto previous = pending_sent_bytes.value_or(0);
@@ -96,6 +108,7 @@ struct EventState {
     return event;
   }
 
+  const std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::deque<FfiDataChannelEvent> events;
   std::optional<webrtc::DataChannelInterface::DataState> pending_state;
@@ -111,7 +124,7 @@ class DataChannelObserver final : public webrtc::DataChannelObserver {
 
   // Avoid upstream's signaling-thread observer adapter, which defers callbacks
   // and loses the state associated with each transition. These callbacks only
-  // copy/coalesce owned values; they never invoke application code.
+  // copy/coalesce owned values and wake readiness, never engine operations.
   bool IsOkToCallOnTheNetworkThread() override { return true; }
   void OnStateChange() override { events_->PushState(channel_->state()); }
   void OnMessage(const webrtc::DataBuffer& buffer) override {
@@ -191,14 +204,15 @@ const std::unique_ptr<NativeDataChannel::State>& NativeDataChannel::state()
 std::unique_ptr<NativeDataChannel> wrap_data_channel(
     webrtc::scoped_refptr<webrtc::DataChannelInterface> channel,
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer,
-    webrtc::Thread* signaling_thread) noexcept {
+    webrtc::Thread* signaling_thread,
+    std::shared_ptr<ReadinessSignal> readiness) noexcept {
   if (!channel || !peer || !signaling_thread) {
     return nullptr;
   }
   auto state = std::make_unique<NativeDataChannel::State>();
   state->channel = std::move(channel);
   state->peer = std::move(peer);
-  state->events = std::make_shared<EventState>();
+  state->events = std::make_shared<EventState>(std::move(readiness));
   state->observer = std::make_unique<DataChannelObserver>(state->events,
                                                          state->channel.get());
   state->signaling_thread = signaling_thread;
@@ -243,7 +257,7 @@ std::unique_ptr<NativeDataChannel> create_data_channel(
     return nullptr;
   }
   return wrap_data_channel(result.MoveValue(), peer.peer(),
-                           peer.signaling_thread());
+                           peer.signaling_thread(), peer.readiness());
 }
 
 rust::String data_channel_label(const NativeDataChannel& channel) noexcept {

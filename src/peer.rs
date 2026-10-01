@@ -310,9 +310,18 @@ pub struct PeerConnectionFactoryBuilder {
     video_decoder: Option<VideoDecoderFactoryHandle>,
     native_audio: bool,
     audio_processing: Option<crate::AudioProcessingConfig>,
+    readiness: Option<std::sync::Arc<crate::readiness::Readiness>>,
 }
 
 impl PeerConnectionFactoryBuilder {
+    pub(crate) fn readiness(
+        mut self,
+        readiness: std::sync::Arc<crate::readiness::Readiness>,
+    ) -> Self {
+        self.readiness = Some(readiness);
+        self
+    }
+
     pub fn environment(mut self, environment: Environment) -> Self {
         self.environment = Some(environment);
         self
@@ -398,6 +407,20 @@ impl PeerConnectionFactoryBuilder {
     }
 
     pub fn build(self) -> Result<PeerConnectionFactory, PeerError> {
+        // Reserve before constructing any production queues or threads. This
+        // also prevents a controlled world from being acquired concurrently.
+        let production_lease = if self.controlled_driver.is_none() {
+            let lease = ffi::new_production_lease();
+            if lease.is_null() {
+                return Err(PeerError {
+                    kind: PeerErrorKind::InvalidState,
+                    message: "production factories cannot coexist with controlled execution".into(),
+                });
+            }
+            Some(lease)
+        } else {
+            None
+        };
         if self.controlled_driver.is_some()
             && let (Some(manager), Some(sockets)) =
                 (&self.network_manager, &self.packet_socket_factory)
@@ -504,8 +527,12 @@ impl PeerConnectionFactoryBuilder {
             (None, Some(driver)) => SignalingThread::from_native(driver.borrow_thread()),
             (None, None) => SignalingThread::start().map_err(native_build_error)?,
         };
+        let readiness = self
+            .readiness
+            .map(|state| ffi::new_readiness(Box::new(crate::readiness::RustReadiness(state))));
         let mut message = String::new();
-        // SAFETY: every non-null pointer is retained in FactoryInner and its
+        // SAFETY: native construction copies the readiness shared owner. Every
+        // other non-null pointer is retained in FactoryInner and its
         // native factory is destroyed before those dependencies are dropped.
         let native = unsafe {
             ffi::new_peer_connection_factory(
@@ -524,6 +551,7 @@ impl PeerConnectionFactoryBuilder {
                 optional_ptr(self.video_encoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_decoder.as_ref().map(|value| value.native())),
                 self.native_audio,
+                optional_ptr(readiness.as_ref().and_then(|value| value.as_ref())),
                 &self.audio_processing.map_or(
                     ffi::FfiAudioProcessingConfig {
                         enabled: false,
@@ -556,6 +584,7 @@ impl PeerConnectionFactoryBuilder {
             _audio_decoder: self.audio_decoder,
             _video_encoder: self.video_encoder,
             _video_decoder: self.video_decoder,
+            _production_lease: production_lease,
         })))
     }
 }
@@ -577,6 +606,7 @@ impl Default for PeerConnectionFactoryBuilder {
             video_decoder: None,
             native_audio: false,
             audio_processing: None,
+            readiness: None,
         }
     }
 }
@@ -595,6 +625,8 @@ pub(crate) struct FactoryInner {
     _audio_decoder: Option<AudioDecoderFactory>,
     _video_encoder: Option<VideoEncoderFactoryHandle>,
     _video_decoder: Option<VideoDecoderFactoryHandle>,
+    // Last to drop, after native factory, role threads and retained providers.
+    _production_lease: Option<cxx::UniquePtr<ffi::NativeProductionLease>>,
 }
 
 impl FactoryInner {
