@@ -1,6 +1,8 @@
 #include "pulsebeam-webrtc-sys/native/data_channel.h"
 
+#include <algorithm>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -29,23 +31,22 @@ enum SendResult : std::uint8_t {
 };
 
 struct EventState {
-  void PushState() {
+  void PushState(webrtc::DataChannelInterface::DataState state) {
     std::lock_guard lock(mutex);
     if (closed) {
       return;
     }
-    FfiDataChannelEvent event;
-    event.kind = kStateChanged;
-    event.state = 255;
-    events.push_back(std::move(event));
+    // Advisory state is a callback-time snapshot, not a historical transition
+    // reconstructed from the state at polling time. Retain only the latest.
+    pending_state = state;
   }
 
   void PushInitialState(webrtc::DataChannelInterface::DataState state) {
     std::lock_guard lock(mutex);
-    FfiDataChannelEvent event;
-    event.kind = kStateChanged;
-    event.state = static_cast<std::uint8_t>(state);
-    events.push_back(std::move(event));
+    // Register first, then sample. A callback racing with this sample wins.
+    if (!closed && !pending_state) {
+      pending_state = state;
+    }
   }
 
   void PushMessage(const webrtc::DataBuffer& buffer) {
@@ -63,45 +64,56 @@ struct EventState {
   }
 
   void PushBufferedAmount(std::uint64_t sent_data_size) {
-    FfiDataChannelEvent event;
-    event.kind = kBufferedAmountChanged;
-    event.sent_data_size = sent_data_size;
     std::lock_guard lock(mutex);
     if (!closed) {
-      events.push_back(std::move(event));
+      const auto previous = pending_sent_bytes.value_or(0);
+      const auto remaining = std::numeric_limits<std::uint64_t>::max() - previous;
+      pending_sent_bytes = previous + std::min(remaining, sent_data_size);
     }
   }
 
-  FfiDataChannelEvent Take(webrtc::DataChannelInterface::DataState state) {
+  FfiDataChannelEvent Take() {
     std::lock_guard lock(mutex);
-    if (events.empty()) {
-      return FfiDataChannelEvent{};
-    }
-    FfiDataChannelEvent event = std::move(events.front());
-    events.pop_front();
-    if (event.kind == kStateChanged) {
-      if (event.state == 255) {
-        event.state = static_cast<std::uint8_t>(state);
-      }
-      if (event.state == webrtc::DataChannelInterface::kClosed) {
+    FfiDataChannelEvent event;
+    // Advisory snapshots have priority; message delivery remains FIFO.
+    if (pending_state) {
+      event.kind = kStateChanged;
+      event.state = static_cast<std::uint8_t>(*pending_state);
+      if (*pending_state == webrtc::DataChannelInterface::kClosed) {
         closed = true;
         events.clear();
+        pending_sent_bytes.reset();
       }
+      pending_state.reset();
+    } else if (pending_sent_bytes) {
+      event.kind = kBufferedAmountChanged;
+      event.sent_data_size = *pending_sent_bytes;
+      pending_sent_bytes.reset();
+    } else if (!events.empty()) {
+      event = std::move(events.front());
+      events.pop_front();
     }
     return event;
   }
 
   std::mutex mutex;
   std::deque<FfiDataChannelEvent> events;
+  std::optional<webrtc::DataChannelInterface::DataState> pending_state;
+  std::optional<std::uint64_t> pending_sent_bytes;
   bool closed = false;
 };
 
 class DataChannelObserver final : public webrtc::DataChannelObserver {
  public:
-  explicit DataChannelObserver(std::shared_ptr<EventState> events) noexcept
-      : events_(std::move(events)) {}
+  DataChannelObserver(std::shared_ptr<EventState> events,
+                      webrtc::DataChannelInterface* channel) noexcept
+      : events_(std::move(events)), channel_(channel) {}
 
-  void OnStateChange() override { events_->PushState(); }
+  // Avoid upstream's signaling-thread observer adapter, which defers callbacks
+  // and loses the state associated with each transition. These callbacks only
+  // copy/coalesce owned values; they never invoke application code.
+  bool IsOkToCallOnTheNetworkThread() override { return true; }
+  void OnStateChange() override { events_->PushState(channel_->state()); }
   void OnMessage(const webrtc::DataBuffer& buffer) override {
     events_->PushMessage(buffer);
   }
@@ -111,6 +123,8 @@ class DataChannelObserver final : public webrtc::DataChannelObserver {
 
  private:
   std::shared_ptr<EventState> events_;
+  // The State owns the channel until observer unregistration has quiesced.
+  webrtc::DataChannelInterface* const channel_;
 };
 
 std::optional<webrtc::Priority> Priority(std::int8_t value) {
@@ -185,11 +199,12 @@ std::unique_ptr<NativeDataChannel> wrap_data_channel(
   state->channel = std::move(channel);
   state->peer = std::move(peer);
   state->events = std::make_shared<EventState>();
-  state->observer = std::make_unique<DataChannelObserver>(state->events);
+  state->observer = std::make_unique<DataChannelObserver>(state->events,
+                                                         state->channel.get());
   state->signaling_thread = signaling_thread;
   state->signaling_thread->BlockingCall([&] {
-    state->events->PushInitialState(state->channel->state());
     state->channel->RegisterObserver(state->observer.get());
+    state->events->PushInitialState(state->channel->state());
   });
   return std::make_unique<NativeDataChannel>(std::move(state));
 }
@@ -282,7 +297,7 @@ std::uint8_t data_channel_send(const NativeDataChannel& channel,
 }
 FfiDataChannelEvent data_channel_take_event(
     const NativeDataChannel& channel) noexcept {
-  return channel.state()->events->Take(channel.state()->channel->state());
+  return channel.state()->events->Take();
 }
 bool close_data_channel(const NativeDataChannel& channel) noexcept {
   channel.state()->channel->Close();

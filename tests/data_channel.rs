@@ -278,6 +278,79 @@ fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
 }
 
 #[test]
+fn advisory_notifications_coalesce_while_messages_remain_ordered() {
+    let pair = Pair::new(13);
+    let configuration = DataChannelConfiguration {
+        negotiated: true,
+        id: Some(9),
+        ..Default::default()
+    };
+    let alice = pair
+        .alice
+        .create_data_channel("advisory", configuration.clone())
+        .unwrap();
+    let bob = pair
+        .bob
+        .create_data_channel("advisory", configuration)
+        .unwrap();
+    pair.negotiate();
+    // Do not consume channel events during connection establishment.
+    for _ in 0..2_000_000 {
+        pair.progress();
+        if alice.state() == DataChannelState::Open && bob.state() == DataChannelState::Open {
+            break;
+        }
+    }
+    assert_eq!(alice.state(), DataChannelState::Open);
+    assert_eq!(bob.state(), DataChannelState::Open);
+    assert_eq!(
+        drain_channel(&alice),
+        [DataChannelEvent::StateChanged(DataChannelState::Open)]
+    );
+    assert_eq!(
+        drain_channel(&bob),
+        [DataChannelEvent::StateChanged(DataChannelState::Open)]
+    );
+
+    let mut messages = Vec::new();
+    for sequence in 0..64u8 {
+        assert_eq!(
+            alice.send(DataChannelMessage::binary(vec![sequence; 128])),
+            DataChannelSendResult::Sent
+        );
+        // Await each receive and local queue drain, keeping native progress
+        // active without taking Alice's advisory events between sends.
+        for _ in 0..2_000_000 {
+            pair.progress();
+            for event in drain_channel(&bob) {
+                if let DataChannelEvent::Message(message) = event {
+                    messages.push(message);
+                }
+            }
+            if messages.len() == usize::from(sequence) + 1 && alice.buffered_amount() == 0 {
+                break;
+            }
+        }
+        assert_eq!(messages.len(), usize::from(sequence) + 1);
+        assert_eq!(alice.buffered_amount(), 0);
+    }
+    assert_eq!(messages.len(), 64);
+    for (sequence, message) in messages.iter().enumerate() {
+        assert_eq!(
+            message,
+            &DataChannelMessage::binary(vec![sequence as u8; 128])
+        );
+    }
+    assert_eq!(alice.buffered_amount(), 0);
+    assert_eq!(
+        drain_channel(&alice),
+        [DataChannelEvent::BufferedAmountChanged {
+            sent_data_size: 64 * 128
+        }]
+    );
+}
+
+#[test]
 fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
     let pair = Pair::new(12);
     let mut alice = pair

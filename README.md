@@ -453,6 +453,16 @@ local/remote SDP in one signaling-thread snapshot; an empty-SDP `Rollback`
 description restores
 stable negotiation state, while a nonempty rollback SDP is rejected.
 
+Data-channel advisory events have bounded retention: each channel retains at
+most one callback-time state snapshot and one buffered-amount notification.
+Intermediate states may coalesce. Buffered-amount notifications accumulate bytes
+removed from the local send queue since the preceding notification, saturating
+at `u64::MAX`; they do not establish remote application delivery. Polling returns
+advisory events before messages, while messages retain FIFO ordering. Consuming
+the terminal closed snapshot discards queued deliveries and suppresses later
+events. These advisory bounds do not bound received-message storage or establish
+consumption-driven SCTP receive backpressure.
+
 `PeerConnection::request_stats()` returns an operation ID, then a typed
 `PeerConnectionEvent::Stats` snapshot or a terminal operation error. The
 snapshot contains candidate-pair, transport, inbound/outbound RTP and data

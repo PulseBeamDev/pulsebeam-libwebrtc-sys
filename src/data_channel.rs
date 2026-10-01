@@ -82,9 +82,15 @@ pub enum DataChannelSendResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataChannelEvent {
+    /// Latest callback-time state snapshot. Intermediate states may coalesce;
+    /// this is not a historical transition sampled at polling time.
     StateChanged(DataChannelState),
     Message(DataChannelMessage),
-    BufferedAmountChanged { sent_data_size: u64 },
+    /// Coalesced bytes removed from the local send queue since the last such
+    /// event, saturating at `u64::MAX`. This is not remote delivery evidence.
+    BufferedAmountChanged {
+        sent_data_size: u64,
+    },
 }
 
 /// A sequence-bound data channel with a caller-polled owned event queue.
@@ -210,6 +216,11 @@ impl DataChannel {
         }
     }
 
+    /// Take an owned event without driving native progress. At most one state
+    /// snapshot and one buffered-amount notification are retained, independently
+    /// of message storage. Advisory notifications precede queued messages;
+    /// messages retain their own FIFO order. A terminal closed snapshot clears
+    /// remaining deliveries and no later events are exposed.
     pub fn try_next_event(&self) -> Option<DataChannelEvent> {
         let event = ffi::data_channel_take_event(self.native());
         match event.kind {
