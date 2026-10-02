@@ -168,7 +168,11 @@ microsecond value is validated but is not used as an RTP or absolute capture
 clock. A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. The encoded sink delivers complete Opus packets without
 passing them to NetEq's decoder, with RTP timestamp, payload type, SSRC and
-48 kHz sample duration. It does not expose RED or other non-Opus payloads;
+48 kHz sample duration, native sequence number, received audio level and optional
+RFC6464 voice-activity bit. The pinned native incoming frame's `Type()` projects
+the received V bit when `AudioLevel()` is present; absent extension means unknown,
+not silence. This is not inferred from carrier PCM or decoder speech decisions.
+It does not expose RED or other non-Opus payloads;
 its bounded queue records dropped packets. The decoded headless sink pulls
 10 ms of playout on demand when empty; it does not open a host speaker.
 Native artifacts additionally allow opt-in platform audio with

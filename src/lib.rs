@@ -463,6 +463,8 @@ mod ffi {
         sequence_number: u16,
         has_audio_level: bool,
         audio_level_dbov: u8,
+        has_voice_activity: bool,
+        voice_activity: bool,
         has_capture_time: bool,
         capture_time_us: i64,
         has_receive_time: bool,

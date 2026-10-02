@@ -6,8 +6,8 @@ mod non_trickle;
 use pulsebeam_webrtc_sys::{
     AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment, ManualClock, OperationId,
     OpusInputError, OpusInputFrame, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerErrorKind, RtpTransceiverDirection, SessionDescription,
-    SimulatedNetwork,
+    PeerConnectionFactory, PeerErrorKind, RtpHeaderExtensionDirection, RtpTransceiverDirection,
+    SessionDescription, SimulatedNetwork,
 };
 
 fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> {
@@ -26,6 +26,12 @@ fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> 
 
 #[test]
 fn encoded_opus_receiver_gets_packets_without_decoded_sink() {
+    for include_level in [false, true] {
+        received_audio_extension_profile(include_level);
+    }
+}
+
+fn received_audio_extension_profile(include_level: bool) {
     let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
     let environment = Environment::builder().clock(&clock).build().unwrap();
     let network = SimulatedNetwork::new(&clock).unwrap();
@@ -53,9 +59,20 @@ fn encoded_opus_receiver_gets_packets_without_decoded_sink() {
         .unwrap();
     let source = alice_factory.create_audio_source().unwrap();
     let track = alice_factory.create_audio_track("voice", &source).unwrap();
-    alice
+    let transceiver = alice
         .add_audio_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap();
+    if !include_level {
+        let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
+        let level = extensions
+            .iter_mut()
+            .find(|extension| extension.uri() == "urn:ietf:params:rtp-hdrext:ssrc-audio-level")
+            .expect("native audio-level extension capability");
+        level.direction = RtpHeaderExtensionDirection::Stopped;
+        transceiver
+            .set_header_extensions_to_negotiate(&extensions)
+            .unwrap();
+    }
 
     let offer = finish(&alice, alice.create_offer()).unwrap();
     finish(&alice, alice.set_local_description(offer));
@@ -102,7 +119,15 @@ fn encoded_opus_receiver_gets_packets_without_decoded_sink() {
     assert!(received.samples_per_channel <= 5760);
     assert_ne!(received.ssrc, 0);
     assert!(received.sequence_number.is_some());
-    assert!(received.audio_level_dbov.is_some_and(|level| level <= 127));
+    if include_level {
+        assert!(received.audio_level_dbov.is_some_and(|level| level <= 127));
+        assert_eq!(received.voice_activity, Some(true));
+    } else {
+        // Native Type is CN when the extension is absent. Do not report a
+        // false V bit from that default or infer activity from the PCM.
+        assert_eq!(received.audio_level_dbov, None);
+        assert_eq!(received.voice_activity, None);
+    }
     sink.close().unwrap();
     sink.close().unwrap();
     assert!(sink.try_next_frame().is_none());

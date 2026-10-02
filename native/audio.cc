@@ -146,6 +146,17 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
         static_cast<const webrtc::TransformableAudioFrameInterface*>(frame.get());
     saved.sequence_number = audio_frame->SequenceNumber();
     saved.audio_level_dbov = audio_frame->AudioLevel();
+    // Pinned TransformableIncomingAudioFrame::Type projects the received
+    // RFC6464 V bit, not decoder/PCM speech classification. It returns CN
+    // also when the extension is absent, so presence is required here.
+    // This collector only accepts the native receiver's unmodified frames.
+    if (saved.audio_level_dbov) {
+      using Type = webrtc::TransformableAudioFrameInterface::FrameType;
+      if (audio_frame->Type() == Type::kAudioFrameSpeech)
+        saved.voice_activity = true;
+      else if (audio_frame->Type() == Type::kAudioFrameCN)
+        saved.voice_activity = false;
+    }
     if (auto time = frame->CaptureTime()) saved.capture_us = time->us();
     if (auto time = frame->ReceiveTime()) saved.receive_us = time->us();
     bytes_ += saved.data.size();
@@ -168,6 +179,8 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     out.sequence_number = frame.sequence_number.value_or(0);
     out.has_audio_level = frame.audio_level_dbov.has_value();
     out.audio_level_dbov = frame.audio_level_dbov.value_or(0);
+    out.has_voice_activity = frame.voice_activity.has_value();
+    out.voice_activity = frame.voice_activity.value_or(false);
     out.has_capture_time = frame.capture_us.has_value();
     out.capture_time_us = frame.capture_us.value_or(0);
     out.has_receive_time = frame.receive_us.has_value();
@@ -197,6 +210,7 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     std::uint32_t samples = 0;
     std::optional<std::uint16_t> sequence_number;
     std::optional<std::uint8_t> audio_level_dbov;
+    std::optional<bool> voice_activity;
     std::optional<std::int64_t> capture_us;
     std::optional<std::int64_t> receive_us;
   };
