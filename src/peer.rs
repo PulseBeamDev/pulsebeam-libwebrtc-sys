@@ -219,6 +219,21 @@ pub struct DataChannelStats {
     pub bytes_received: Option<u64>,
 }
 
+/// Binding-owned observation backlog, not native transport buffering.
+/// Non-advisory control events retain at most 128 records/256 KiB of strings;
+/// four callback-time advisory snapshots can additionally be retained.
+/// Arrival-handle maps independently share a 128-handle cap. Overflow discards
+/// only a new observation, never an accepted operation outcome or native SCTP
+/// state; callers must account for missing arrivals/candidates when nonzero.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PeerEventObservation {
+    pub dropped_control_events: u64,
+    pub coalesced_advisories: u64,
+    pub retained_control_events: u32,
+    pub admitted_operations: u32,
+    pub pending_operations: u32,
+}
+
 #[derive(Debug)]
 pub enum PeerConnectionEvent {
     Stats(PeerStatsSnapshot),
@@ -1452,26 +1467,52 @@ impl PeerConnection {
         }
     }
 
-    pub fn create_offer(&self) -> OperationId {
+    /// Admit one operation, retaining its slot until the terminal event is
+    /// consumed. At most 64 operations/results are retained per peer. Closed
+    /// or exhausted submissions fail synchronously and produce no event.
+    /// Only one offer/answer/description setter may have a pending native
+    /// callback per peer, for safe shutdown of the pinned SDP operations chain.
+    pub fn create_offer(&self) -> Result<OperationId, PeerError> {
         self.create_offer_with_ice_restart(false)
     }
 
     /// Request new ICE credentials and candidate gathering in the next offer.
     /// The operation completes through `OperationComplete` like a normal offer.
-    pub fn create_ice_restart_offer(&self) -> OperationId {
+    pub fn create_ice_restart_offer(&self) -> Result<OperationId, PeerError> {
         self.create_offer_with_ice_restart(true)
     }
 
-    fn create_offer_with_ice_restart(&self, ice_restart: bool) -> OperationId {
+    fn create_offer_with_ice_restart(&self, ice_restart: bool) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        ffi::peer_create_offer(self.native(), id.0, ice_restart);
-        id
+        Self::operation_admission(id, ffi::peer_create_offer(self.native(), id.0, ice_restart))
     }
 
-    pub fn create_answer(&self) -> OperationId {
+    pub fn create_answer(&self) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        ffi::peer_create_answer(self.native(), id.0);
-        id
+        Self::operation_admission(id, ffi::peer_create_answer(self.native(), id.0))
+    }
+
+    fn operation_admission(id: OperationId, status: u8) -> Result<OperationId, PeerError> {
+        match status {
+            0 => Ok(id),
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }),
+            2 => Err(PeerError {
+                kind: PeerErrorKind::ResourceExhausted,
+                message: "consume operation outcomes before submitting more work (limit 64)".into(),
+            }),
+            3 => Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "previous stats result not yet consumed".into(),
+            }),
+            4 => Err(PeerError {
+                kind: PeerErrorKind::ResourceExhausted,
+                message: "await the pending native SDP operation before submitting another".into(),
+            }),
+            _ => unreachable!("invalid native operation admission status"),
+        }
     }
 
     pub fn descriptions(&self) -> Result<PeerDescriptions, PeerError> {
@@ -1505,46 +1546,54 @@ impl PeerConnection {
         }
     }
 
-    pub fn set_local_description(&self, description: SessionDescription) -> OperationId {
+    pub fn set_local_description(
+        &self,
+        description: SessionDescription,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        if self.controlled_media_sdp(&description) {
-            ffi::peer_reject_controlled_media(self.native(), id.0);
-            return id;
-        }
-        ffi::peer_set_local_description(
-            self.native(),
-            id.0,
-            description.kind as u8,
-            &description.sdp,
-        );
-        id
+        let status = if self.controlled_media_sdp(&description) {
+            ffi::peer_reject_controlled_media(self.native(), id.0)
+        } else {
+            ffi::peer_set_local_description(
+                self.native(),
+                id.0,
+                description.kind as u8,
+                &description.sdp,
+            )
+        };
+        Self::operation_admission(id, status)
     }
 
-    pub fn set_remote_description(&self, description: SessionDescription) -> OperationId {
+    pub fn set_remote_description(
+        &self,
+        description: SessionDescription,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        if self.controlled_media_sdp(&description) {
-            ffi::peer_reject_controlled_media(self.native(), id.0);
-            return id;
-        }
-        ffi::peer_set_remote_description(
-            self.native(),
-            id.0,
-            description.kind as u8,
-            &description.sdp,
-        );
-        id
+        let status = if self.controlled_media_sdp(&description) {
+            ffi::peer_reject_controlled_media(self.native(), id.0)
+        } else {
+            ffi::peer_set_remote_description(
+                self.native(),
+                id.0,
+                description.kind as u8,
+                &description.sdp,
+            )
+        };
+        Self::operation_admission(id, status)
     }
 
-    pub fn add_ice_candidate(&self, candidate: IceCandidate) -> OperationId {
+    pub fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        ffi::peer_add_ice_candidate(
-            self.native(),
-            id.0,
-            &candidate.sdp_mid,
-            candidate.sdp_mline_index,
-            &candidate.candidate,
-        );
-        id
+        Self::operation_admission(
+            id,
+            ffi::peer_add_ice_candidate(
+                self.native(),
+                id.0,
+                &candidate.sdp_mid,
+                candidate.sdp_mline_index,
+                &candidate.candidate,
+            ),
+        )
     }
 
     /// Request one typed stats snapshot. Only one request may be outstanding
@@ -1552,14 +1601,7 @@ impl PeerConnection {
     /// rejected here has no asynchronous completion.
     pub fn request_stats(&self) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        if ffi::peer_request_stats(self.native(), id.0) {
-            Ok(id)
-        } else {
-            Err(PeerError {
-                kind: PeerErrorKind::InvalidState,
-                message: "peer closed or previous stats result not yet consumed".into(),
-            })
-        }
+        Self::operation_admission(id, ffi::peer_request_stats(self.native(), id.0))
     }
 
     /// Apply libwebrtc's bandwidth-estimation constraints. Values are bits per
@@ -1606,8 +1648,22 @@ impl PeerConnection {
         })
     }
 
+    /// Take an owned observation. State notifications coalesce at callback
+    /// time; they are not a complete transition history. Accepted operation
+    /// outcomes remain available until consumed, including after close.
     pub fn try_next_event(&self) -> Option<PeerConnectionEvent> {
         event_from_ffi(ffi::peer_take_event(self.native()), &self.inner)
+    }
+
+    pub fn event_observation(&self) -> PeerEventObservation {
+        let value = ffi::peer_event_observation(self.native());
+        PeerEventObservation {
+            dropped_control_events: value.dropped_control_events,
+            coalesced_advisories: value.coalesced_advisories,
+            retained_control_events: value.retained_control_events,
+            admitted_operations: value.admitted_operations,
+            pending_operations: value.pending_operations,
+        }
     }
 
     /// Enable or disable WebRTC's native microphone recording or speaker
@@ -1899,6 +1955,48 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
             )))
         }
         _ => unreachable!("native adapter returned an invalid peer event"),
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    #[test]
+    fn observer_control_backlog_is_bounded_and_states_are_callback_snapshots() {
+        // These are binding observer-unit injections, not wire/transport proof.
+        for (bytes, arrivals) in [(32, false), (4096, false), (0, true)] {
+            let factory = PeerConnectionFactory::builder().build().unwrap();
+            let mut peer = factory
+                .create_peer_connection(PeerConfiguration::default())
+                .unwrap();
+            assert!(ffi::test_peer_control_observations(
+                peer.native(),
+                bytes,
+                arrivals
+            ));
+            let before = peer.event_observation();
+            assert!(before.retained_control_events <= 132);
+            assert!(before.coalesced_advisories >= 199);
+            assert!(before.dropped_control_events > 0);
+            if bytes == 4096 {
+                assert!(before.retained_control_events < 128);
+            }
+            // Engine signaling is still Stable: queued notification must retain
+            // the supplied callback-time HaveLocalOffer, not sample it later.
+            assert!(matches!(
+                peer.try_next_event(),
+                Some(PeerConnectionEvent::SignalingStateChanged(
+                    SignalingState::HaveLocalOffer
+                ))
+            ));
+            peer.close().unwrap();
+            assert_eq!(peer.event_observation().retained_control_events, 0);
+            assert!(matches!(
+                peer.try_next_event(),
+                Some(PeerConnectionEvent::Closed)
+            ));
+            assert!(peer.try_next_event().is_none());
+        }
     }
 }
 

@@ -85,15 +85,15 @@ fn received_audio_extension_profile(include_level: bool) {
             .unwrap();
     }
 
-    let offer = finish(&alice, alice.create_offer()).unwrap();
-    finish(&alice, alice.set_local_description(offer));
+    let offer = finish(&alice, alice.create_offer().unwrap()).unwrap();
+    finish(&alice, alice.set_local_description(offer).unwrap());
     let gathered =
         non_trickle::gathered_local_description(&alice, &clock, &network, &mut Vec::new());
-    finish(&bob, bob.set_remote_description(gathered));
-    let answer = finish(&bob, bob.create_answer()).unwrap();
-    finish(&bob, bob.set_local_description(answer));
+    finish(&bob, bob.set_remote_description(gathered).unwrap());
+    let answer = finish(&bob, bob.create_answer().unwrap()).unwrap();
+    finish(&bob, bob.set_local_description(answer).unwrap());
     let gathered = non_trickle::gathered_local_description(&bob, &clock, &network, &mut Vec::new());
-    finish(&alice, alice.set_remote_description(gathered));
+    finish(&alice, alice.set_remote_description(gathered).unwrap());
 
     let receivers = bob.audio_receivers().unwrap();
     let mut sink = receivers[0].attach_encoded_audio_sink().unwrap();
@@ -343,12 +343,12 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         .set_audio_codec_preferences(&[opus.clone()])
         .unwrap();
 
-    let offer = finish(&alice, alice.create_offer()).unwrap();
-    finish(&alice, alice.set_local_description(offer));
+    let offer = finish(&alice, alice.create_offer().unwrap()).unwrap();
+    finish(&alice, alice.set_local_description(offer).unwrap());
     let gathered =
         non_trickle::gathered_local_description(&alice, &clock, &network, &mut Vec::new());
-    finish(&bob, bob.set_remote_description(gathered));
-    let mut answer = finish(&bob, bob.create_answer()).unwrap();
+    finish(&bob, bob.set_remote_description(gathered).unwrap());
+    let mut answer = finish(&bob, bob.create_answer().unwrap()).unwrap();
     // The receiver explicitly requests stereo on the second m-line. An
     // ordinary built-in answer defaults to mono even when it can decode stereo.
     let sections: Vec<_> = answer.sdp.split("m=audio").collect();
@@ -359,9 +359,9 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         sections[1],
         sections[2].replacen("useinbandfec=1", "useinbandfec=1;stereo=1", 1)
     );
-    finish(&bob, bob.set_local_description(answer));
+    finish(&bob, bob.set_local_description(answer).unwrap());
     let gathered = non_trickle::gathered_local_description(&bob, &clock, &network, &mut Vec::new());
-    finish(&alice, alice.set_remote_description(gathered));
+    finish(&alice, alice.set_remote_description(gathered).unwrap());
 
     let receivers = bob.audio_receivers().unwrap();
     assert_eq!(receivers.len(), 2);

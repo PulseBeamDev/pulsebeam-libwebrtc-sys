@@ -170,7 +170,7 @@ fn turn_tls_exchanges_handshake_and_encrypted_turn_request_via_simulator() {
             ..PeerConfiguration::default()
         })
         .unwrap();
-    let operation = peer.create_offer();
+    let operation = peer.create_offer().unwrap();
     let mut offer = None;
     for _ in 0..1_000 {
         driver.run_ready();
@@ -187,7 +187,8 @@ fn turn_tls_exchanges_handshake_and_encrypted_turn_request_via_simulator() {
         }
         clock.advance(Duration::from_millis(1)).unwrap();
     }
-    peer.set_local_description(offer.expect("offer not created"));
+    peer.set_local_description(offer.expect("offer not created"))
+        .unwrap();
 
     let mut connected = false;
     let mut request = false;
@@ -344,7 +345,7 @@ fn caller_delivered_turn_tls_authenticates_and_gathers_relay_candidate() {
             ..PeerConfiguration::default()
         })
         .unwrap();
-    let offer_operation = peer.create_offer();
+    let offer_operation = peer.create_offer().unwrap();
     let mut offer = None;
     for _ in 0..1000 {
         driver.run_ready();
@@ -361,7 +362,8 @@ fn caller_delivered_turn_tls_authenticates_and_gathers_relay_candidate() {
         }
         clock.advance(Duration::from_millis(1)).unwrap();
     }
-    peer.set_local_description(offer.expect("offer not created"));
+    peer.set_local_description(offer.expect("offer not created"))
+        .unwrap();
 
     let mut streams: BTreeMap<NetworkAddress, TcpStream> = BTreeMap::new();
     let mut relayed = false;
@@ -666,31 +668,38 @@ fn two_caller_pumped_peers_connect_over_relay_only_turn_tls() {
     };
     let mut a_events = Vec::new();
     let mut b_events = Vec::new();
-    let offer = turn_complete(&alice, alice.create_offer(), &mut a_events, &mut pump).unwrap();
+    let offer = turn_complete(
+        &alice,
+        alice.create_offer().unwrap(),
+        &mut a_events,
+        &mut pump,
+    )
+    .unwrap();
     turn_complete(
         &alice,
-        alice.set_local_description(offer),
+        alice.set_local_description(offer).unwrap(),
         &mut a_events,
         &mut pump,
     );
     let offer = turn_gathered(&alice, &mut a_events, &mut pump);
     turn_complete(
         &bob,
-        bob.set_remote_description(offer),
+        bob.set_remote_description(offer).unwrap(),
         &mut b_events,
         &mut pump,
     );
-    let answer = turn_complete(&bob, bob.create_answer(), &mut b_events, &mut pump).unwrap();
+    let answer =
+        turn_complete(&bob, bob.create_answer().unwrap(), &mut b_events, &mut pump).unwrap();
     turn_complete(
         &bob,
-        bob.set_local_description(answer),
+        bob.set_local_description(answer).unwrap(),
         &mut b_events,
         &mut pump,
     );
     let answer = turn_gathered(&bob, &mut b_events, &mut pump);
     turn_complete(
         &alice,
-        alice.set_remote_description(answer),
+        alice.set_remote_description(answer).unwrap(),
         &mut a_events,
         &mut pump,
     );

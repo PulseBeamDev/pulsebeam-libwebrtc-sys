@@ -134,7 +134,9 @@ before waking. Each peer admits at most 64 asynchronous operations until their
 terminal outcomes are consumed; excess admission fails synchronously with
 `ResourceExhausted`. Closing retains peer observation identities so accepted
 pending operations still produce one terminal outcome. Shutdown is idempotent;
-owned outputs already returned remain valid.
+owned outputs already returned remain valid. `close_source(id)` idempotently
+retires an individual producer and removes its actor-owned entry; existing
+native track references can remain until the sender is detached/stopped.
 
 Data channels expose native push delivery and send backpressure. Advisory
 snapshots are bounded, but the Rust message inbox is not byte/count bounded and
@@ -522,8 +524,19 @@ and hostname verification. By default, the pinned WebRTC roots are trusted.
 TURN/TLS connections without disabling WebRTC's existing roots or hostname
 checks. This option widens trust for all TLS servers configured on that peer;
 it is not a per-server CA restriction. An invalid CA fails peer construction.
-`PeerConnection::create_ice_restart_offer()` returns an
-operation ID whose SDP arrives in `OperationComplete`. For non-trickle signaling,
+`PeerConnection::create_offer()`, `create_ice_restart_offer()`, `create_answer()`,
+description setters and `add_ice_candidate()` return
+`Result<OperationId, PeerError>`. Admission retains at most 64 pending operations
+plus unconsumed terminal outcomes per peer, also in the native adapter.
+Only one SDP operation (offer/answer/description setter) may be pending per peer.
+A second SDP operation fails with `ResourceExhausted` until the native callback
+completes, avoiding the pinned engine's queued-SDP shutdown callback hazard.
+Completed outcomes still share the 64-slot admission budget until consumed.
+Exhaustion fails synchronously with `ResourceExhausted`, and closed submission
+fails with `Closed`; neither creates another queued outcome. Native shutdown
+may report its own error before binding cancellation; accepted outcomes are not
+guaranteed to have the `Closed` error kind. An accepted
+offer's SDP arrives in `OperationComplete`. For non-trickle signaling,
 set each local description, wait for `IceGatheringState::Complete`, then copy
 its gathered SDP with `PeerConnection::descriptions()` and send that description
 to the other peer. Applications own signaling; forwarding per-candidate events
@@ -566,7 +579,20 @@ engine can buffer messages or fail on its own overflow limit, and channel
 activity does not notify readiness. Re-enabling drains native queued messages
 when open and samples current state. This is not a consumption-credit API.
 
-`PeerConnection::request_stats()` returns an operation ID, then a typed
+Peer state/negotiation advisories retain only their latest callback-time owned
+snapshot, not a complete transition history or a later sample of engine state.
+Non-advisory controls retain at most 128 records/256 KiB of string payloads,
+plus four scalar advisory slots. Arrival maps share a 128-handle cap.
+`PeerConnection::event_observation()` and
+`ProductionSession::peer_event_observation()` expose coalescing, overflow and
+current retention counters. Overflow drops a new candidate/error/arrival
+observation, never an accepted operation terminal or a native SCTP channel.
+This is binding observation capacity, not a transport window or a guarantee
+that every remote resource is delivered to the application. Explicit close
+discards queued controls/arrival handles, while preserving accepted terminals;
+previously returned owned outputs remain readable.
+
+`PeerConnection::request_stats()` returns `Result<OperationId, PeerError>`, then a typed
 `PeerConnectionEvent::Stats` snapshot or a terminal operation error. The
 snapshot contains candidate-pair, transport, inbound/outbound RTP and data
 channel records with object IDs and optional metrics; up to 256 records are

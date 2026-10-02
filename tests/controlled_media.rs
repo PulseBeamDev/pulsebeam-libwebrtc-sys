@@ -411,7 +411,7 @@ impl Observations {
                 network,
                 peers,
                 offerer,
-                peers[offerer].create_offer(),
+                peers[offerer].create_offer().unwrap(),
             )
             .unwrap();
         self.completed(
@@ -419,7 +419,7 @@ impl Observations {
             network,
             peers,
             offerer,
-            peers[offerer].set_local_description(offer),
+            peers[offerer].set_local_description(offer).unwrap(),
         );
         let offer = self.gather(world, network, peers, offerer);
         self.completed(
@@ -427,7 +427,7 @@ impl Observations {
             network,
             peers,
             answerer,
-            peers[answerer].set_remote_description(offer),
+            peers[answerer].set_remote_description(offer).unwrap(),
         );
         if layered {
             enable(&peers[answerer]);
@@ -438,7 +438,7 @@ impl Observations {
                 network,
                 peers,
                 answerer,
-                peers[answerer].create_answer(),
+                peers[answerer].create_answer().unwrap(),
             )
             .unwrap();
         self.completed(
@@ -446,7 +446,7 @@ impl Observations {
             network,
             peers,
             answerer,
-            peers[answerer].set_local_description(answer),
+            peers[answerer].set_local_description(answer).unwrap(),
         );
         let mut answer = self.gather(world, network, peers, answerer);
         if self.sender_only_simulcast_answer {
@@ -462,7 +462,7 @@ impl Observations {
             network,
             peers,
             offerer,
-            peers[offerer].set_remote_description(answer),
+            peers[offerer].set_remote_description(answer).unwrap(),
         );
     }
 }
@@ -620,14 +620,20 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             ..Observations::default()
         };
         let offer = observations
-            .completed(&world, &network, &peers, 0, peers[0].create_offer())
+            .completed(
+                &world,
+                &network,
+                &peers,
+                0,
+                peers[0].create_offer().unwrap(),
+            )
             .unwrap();
         observations.completed(
             &world,
             &network,
             &peers,
             0,
-            peers[0].set_local_description(offer),
+            peers[0].set_local_description(offer).unwrap(),
         );
         let offer = observations.gather(&world, &network, &peers, 0);
         observations.completed(
@@ -635,17 +641,23 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             &network,
             &peers,
             1,
-            peers[1].set_remote_description(offer),
+            peers[1].set_remote_description(offer).unwrap(),
         );
         let answer = observations
-            .completed(&world, &network, &peers, 1, peers[1].create_answer())
+            .completed(
+                &world,
+                &network,
+                &peers,
+                1,
+                peers[1].create_answer().unwrap(),
+            )
             .unwrap();
         observations.completed(
             &world,
             &network,
             &peers,
             1,
-            peers[1].set_local_description(answer),
+            peers[1].set_local_description(answer).unwrap(),
         );
         let answer = observations.gather(&world, &network, &peers, 1);
         observations.completed(
@@ -653,20 +665,26 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             &network,
             &peers,
             0,
-            peers[0].set_remote_description(answer),
+            peers[0].set_remote_description(answer).unwrap(),
         );
         // Explicit AddTransceiver entries on the answerer are not implicitly
         // reused for remote offer m-lines. Negotiate its two senders in a second
         // gathered-SDP exchange rather than feeding unnegotiated sources.
         let reverse_offer = observations
-            .completed(&world, &network, &peers, 1, peers[1].create_offer())
+            .completed(
+                &world,
+                &network,
+                &peers,
+                1,
+                peers[1].create_offer().unwrap(),
+            )
             .unwrap();
         observations.completed(
             &world,
             &network,
             &peers,
             1,
-            peers[1].set_local_description(reverse_offer),
+            peers[1].set_local_description(reverse_offer).unwrap(),
         );
         let reverse_offer = observations.gather(&world, &network, &peers, 1);
         observations.completed(
@@ -674,17 +692,23 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             &network,
             &peers,
             0,
-            peers[0].set_remote_description(reverse_offer),
+            peers[0].set_remote_description(reverse_offer).unwrap(),
         );
         let reverse_answer = observations
-            .completed(&world, &network, &peers, 0, peers[0].create_answer())
+            .completed(
+                &world,
+                &network,
+                &peers,
+                0,
+                peers[0].create_answer().unwrap(),
+            )
             .unwrap();
         observations.completed(
             &world,
             &network,
             &peers,
             0,
-            peers[0].set_local_description(reverse_answer),
+            peers[0].set_local_description(reverse_answer).unwrap(),
         );
         let reverse_answer = observations.gather(&world, &network, &peers, 0);
         observations.completed(
@@ -692,7 +716,7 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             &network,
             &peers,
             1,
-            peers[1].set_remote_description(reverse_answer),
+            peers[1].set_remote_description(reverse_answer).unwrap(),
         );
         for _ in 0..2_000 {
             observations.step(&world, &network, &peers, false);
@@ -792,7 +816,7 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
                 ),
                 Err(OpusInputError::Backpressure)
             );
-            abandoned.create_offer();
+            abandoned.create_offer().unwrap();
             buffered_audio.close().unwrap();
             drop(buffered_transceiver);
             drop(abandoned);
@@ -1292,14 +1316,16 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
         }
         reborn.push_encoded(vp8_frame(&world, VP8[0])).unwrap();
         let pending = [
-            (0, peers[0].create_offer()),
-            (
-                0,
-                peers[0]
-                    .set_local_description(peers[0].descriptions().unwrap().current_local.unwrap()),
-            ),
-            (1, peers[1].create_offer()),
+            (0, peers[0].create_offer().unwrap()),
+            (1, peers[1].create_offer().unwrap()),
         ];
+        assert_eq!(
+            peers[0]
+                .set_local_description(peers[0].descriptions().unwrap().current_local.unwrap())
+                .unwrap_err()
+                .kind,
+            PeerErrorKind::ResourceExhausted
+        );
         peers[0].close().unwrap();
         peers[0].close().unwrap();
         peers[1].close().unwrap();
@@ -2495,6 +2521,89 @@ fn builtin_opus_vp8_links_have_real_owned_output_and_replay() {
         // Serialization/file I/O is outside every controlled lifecycle marker.
         std::fs::write(path, serde_json::to_vec(&traces).unwrap()).unwrap();
     }
+}
+
+#[test]
+fn controlled_peer_admission_and_pending_close_preserve_exact_outcomes() {
+    let _guard = CONTROLLED_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    eprintln!("CONTROLLED_MEDIA_BEGIN");
+    {
+        let world = ControlledWorld::acquire(735, Duration::from_secs(10)).unwrap();
+        let network = world.create_network().unwrap();
+        let endpoint = network
+            .register_endpoint(Ipv4Addr::new(10, 79, 0, 1).into())
+            .unwrap();
+        let factory = world
+            .peer_factory_builder()
+            .unwrap()
+            .network_manager(endpoint.network_manager().unwrap())
+            .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+            .build()
+            .unwrap();
+        let mut peer = factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
+        let mut accepted = std::collections::HashSet::new();
+        accepted.insert(peer.create_offer().unwrap());
+        // Keep one real native SDP callback pending; queuing more behind it
+        // is rejected rather than creating upstream shutdown callback hazards.
+        assert_eq!(
+            peer.create_offer().unwrap_err().kind,
+            PeerErrorKind::ResourceExhausted
+        );
+        for _ in 0..63 {
+            accepted.insert(
+                peer.add_ice_candidate(IceCandidate {
+                    sdp_mid: "unit".into(),
+                    sdp_mline_index: 0,
+                    candidate: "not a candidate".into(),
+                })
+                .unwrap(),
+            );
+        }
+        let before = peer.event_observation();
+        assert_eq!(before.admitted_operations, 64);
+        assert!(
+            before.pending_operations > 0,
+            "no real pending native work exercised"
+        );
+        for _ in 0..128 {
+            assert_eq!(
+                peer.create_offer().unwrap_err().kind,
+                PeerErrorKind::ResourceExhausted
+            );
+        }
+        assert_eq!(peer.event_observation(), before);
+        assert_eq!(world.now(), Duration::from_secs(10));
+        peer.close().unwrap();
+        peer.close().unwrap();
+        let mut closed = 0;
+        while let Some(event) = peer.try_next_event() {
+            match event {
+                PeerConnectionEvent::OperationComplete(done) => {
+                    assert!(accepted.remove(&done.operation_id));
+                    assert!(
+                        done.result.is_err(),
+                        "unprogressed work unexpectedly succeeded"
+                    );
+                    // Native close can invoke an engine Internal error before
+                    // binding cancellation; keep that actual error, not Closed.
+                }
+                PeerConnectionEvent::Closed => closed += 1,
+                event => panic!("unexpected control after close: {event:?}"),
+            }
+        }
+        assert!(accepted.is_empty());
+        assert_eq!(closed, 1);
+        assert_eq!(peer.event_observation().admitted_operations, 0);
+        drop(peer);
+        drop(factory);
+        // No later pump of now-inaccessible peer resources is needed for drop.
+    }
+    {
+        let _next = ControlledWorld::acquire(736, Duration::from_secs(10)).unwrap();
+    }
+    eprintln!("CONTROLLED_MEDIA_END");
 }
 
 #[test]

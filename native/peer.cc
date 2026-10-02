@@ -134,40 +134,95 @@ struct EventState {
   explicit EventState(std::shared_ptr<ReadinessSignal> signal)
       : readiness(std::move(signal)) {}
 
-  bool Begin(std::uint64_t operation_id) {
-    NotifyOnExit notify{readiness};
+  // 0 accepted, 1 closed, 2 exhausted, 3 previous stats not consumed,
+  // 4 another native SDP callback pending.
+  // Queued terminal outcomes retain their admission until Take observes them.
+  std::uint8_t Begin(std::uint64_t operation_id, bool sdp = false) {
     std::lock_guard lock(mutex);
-    if (closed) {
-      events.push_back(ClosedOperation(operation_id));
-      return false;
-    }
-    return pending.insert(operation_id).second;
+    if (!closed && sdp && sdp_operation_id != 0) return 4;
+    const auto status = BeginLocked(operation_id);
+    if (status == 0 && sdp) sdp_operation_id = operation_id;
+    return status;
   }
 
-  bool BeginStats(std::uint64_t operation_id) {
+  std::uint8_t BeginStats(std::uint64_t operation_id) {
     std::lock_guard lock(mutex);
-    if (closed || stats_operation_id != 0) {
-      return false;
-    }
-    stats_operation_id = operation_id;
+    if (closed) return 1;
+    if (stats_operation_id != 0) return 3;
+    const auto status = BeginLocked(operation_id);
+    if (status == 0) stats_operation_id = operation_id;
+    return status;
+  }
+
+  std::uint8_t BeginLocked(std::uint64_t operation_id) {
+    if (closed) return 1;
+    if (admitted.size() >= 64 || !admitted.insert(operation_id).second) return 2;
     pending.insert(operation_id);
-    return true;
+    return 0;
   }
 
   void Complete(FfiPeerEvent event) {
     NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (pending.erase(event.operation_id) != 0) {
+      if (event.operation_id == sdp_operation_id) sdp_operation_id = 0;
       events.push_back(std::move(event));
     }
   }
 
+  static bool Advisory(std::uint8_t kind) {
+    return kind >= kConnectionState && kind <= kNegotiationNeeded;
+  }
+  static std::size_t ControlBytes(const FfiPeerEvent& event) {
+    return event.sdp.size() + event.sdp_mid.size() + event.candidate.size() +
+           event.address.size() + event.url.size() + event.message.size();
+  }
+  bool PushControlLocked(FfiPeerEvent event) {
+    if (Advisory(event.kind)) {
+      // Replace the callback-time value, and put that value at its actual
+      // observation position. Do not reinterpret an old queued notification.
+      auto it = std::find_if(events.begin(), events.end(), [&](const auto& old) {
+        return old.kind == event.kind;
+      });
+      if (it != events.end()) {
+        events.erase(it);
+        ++coalesced_advisories;
+      }
+    } else {
+      const auto bytes = ControlBytes(event);
+      if (retained_controls >= 128 || bytes > 256 * 1024 - retained_control_bytes) {
+        ++dropped_controls;
+        return false;
+      }
+      ++retained_controls;
+      retained_control_bytes += bytes;
+    }
+    events.push_back(std::move(event));
+    return true;
+  }
   void Push(FfiPeerEvent event) {
     NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
-    if (!closed) {
-      events.push_back(std::move(event));
+    if (!closed) PushControlLocked(std::move(event));
+  }
+  bool AdmitArrivalLocked(FfiPeerEvent event) {
+    if (data_channels.size() + transceivers.size() + receivers.size() >= 128) {
+      ++dropped_controls;
+      return false;
     }
+    return PushControlLocked(std::move(event));
+  }
+  FfiPeerEventObservation Observation() {
+    std::lock_guard lock(mutex);
+    FfiPeerEventObservation result;
+    result.dropped_control_events = dropped_controls;
+    result.coalesced_advisories = coalesced_advisories;
+    result.retained_control_events = retained_controls;
+    for (const auto& event : events)
+      if (Advisory(event.kind)) ++result.retained_control_events;
+    result.admitted_operations = admitted.size();
+    result.pending_operations = pending.size();
+    return result;
   }
 
   FfiPeerEvent Take() {
@@ -177,8 +232,14 @@ struct EventState {
     }
     FfiPeerEvent event = std::move(events.front());
     events.pop_front();
-    if (event.operation_id != 0 && event.operation_id == stats_operation_id) {
-      stats_operation_id = 0;
+    if (!Advisory(event.kind) && event.kind != kOperationComplete &&
+        event.kind != kStatsReport && event.kind != kClosed) {
+      --retained_controls;
+      retained_control_bytes -= ControlBytes(event);
+    }
+    if (event.kind == kOperationComplete || event.kind == kStatsReport) {
+      admitted.erase(event.operation_id);
+      if (event.operation_id == stats_operation_id) stats_operation_id = 0;
     }
     return event;
   }
@@ -191,11 +252,11 @@ struct EventState {
       return;
     }
     const std::uint64_t arrival_id = next_data_channel_id++;
-    data_channels.emplace(arrival_id, std::move(channel));
     FfiPeerEvent event;
     event.kind = kDataChannel;
     event.operation_id = arrival_id;
-    events.push_back(std::move(event));
+    if (AdmitArrivalLocked(std::move(event)))
+      data_channels.emplace(arrival_id, std::move(channel));
   }
 
   webrtc::scoped_refptr<webrtc::DataChannelInterface> TakeDataChannel(
@@ -218,11 +279,11 @@ struct EventState {
       return;
     }
     const std::uint64_t arrival_id = next_media_id++;
-    transceivers.emplace(arrival_id, std::move(transceiver));
     FfiPeerEvent event;
     event.kind = kTrack;
     event.operation_id = arrival_id;
-    events.push_back(std::move(event));
+    if (AdmitArrivalLocked(std::move(event)))
+      transceivers.emplace(arrival_id, std::move(transceiver));
   }
 
   webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> TakeTransceiver(
@@ -245,11 +306,11 @@ struct EventState {
       return;
     }
     const std::uint64_t arrival_id = next_media_id++;
-    receivers.emplace(arrival_id, std::move(receiver));
     FfiPeerEvent event;
     event.kind = kTrackRemoved;
     event.operation_id = arrival_id;
-    events.push_back(std::move(event));
+    if (AdmitArrivalLocked(std::move(event)))
+      receivers.emplace(arrival_id, std::move(receiver));
   }
 
   webrtc::scoped_refptr<webrtc::RtpReceiverInterface> TakeReceiver(
@@ -282,10 +343,18 @@ struct EventState {
         return;
       }
       closed = true;
+      // Arrival handles are discarded below. Do not leave events referring
+      // to those handles, or expose new control deliveries through closed peer.
+      std::erase_if(events, [](const auto& event) {
+        return event.kind != kOperationComplete && event.kind != kStatsReport;
+      });
+      retained_controls = 0;
+      retained_control_bytes = 0;
       for (std::uint64_t operation_id : pending) {
         events.push_back(ClosedOperation(operation_id));
       }
       pending.clear();
+      sdp_operation_id = 0;
       abandoned_channels.swap(data_channels);
       abandoned_transceivers.swap(transceivers);
       abandoned_receivers.swap(receivers);
@@ -298,8 +367,14 @@ struct EventState {
   const std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::deque<FfiPeerEvent> events;
+  std::size_t retained_controls = 0, retained_control_bytes = 0;
+  std::uint64_t dropped_controls = 0, coalesced_advisories = 0;
   std::set<std::uint64_t> pending;
+  std::set<std::uint64_t> admitted;
   std::uint64_t stats_operation_id = 0;
+  // Avoid queuing additional SDP callbacks behind an unfinished native create
+  // operation: native close can discard those callback wrappers before invocation.
+  std::uint64_t sdp_operation_id = 0;
   std::unordered_map<std::uint64_t,
                      webrtc::scoped_refptr<webrtc::DataChannelInterface>>
       data_channels;
@@ -1113,30 +1188,29 @@ bool pump_headless_audio(const NativePeerConnection& peer) noexcept {
          peer.state()->headless_audio_device->Pump();
 }
 
-void peer_create_offer(const NativePeerConnection& peer,
+std::uint8_t peer_create_offer(const NativePeerConnection& peer,
                        std::uint64_t operation_id,
                        bool ice_restart) noexcept {
   const auto& state = peer.state();
-  if (!state->events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = state->events->Begin(operation_id, true);
+  if (status != 0) return status;
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(state->events,
                                                           operation_id);
   webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
   options.ice_restart = ice_restart;
   state->peer->CreateOffer(observer.get(), options);
+  return 0;
 }
 
-bool peer_request_stats(const NativePeerConnection& peer,
+std::uint8_t peer_request_stats(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept {
   const auto& state = peer.state();
-  if (!state->events->BeginStats(operation_id)) {
-    return false;
-  }
+  const auto status = state->events->BeginStats(operation_id);
+  if (status != 0) return status;
   state->peer->GetStats(
       webrtc::make_ref_counted<StatsObserver>(state->events, operation_id).get());
-  return true;
+  return 0;
 }
 
 bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
@@ -1189,33 +1263,32 @@ std::uint8_t peer_descriptions(
   return status;
 }
 
-void peer_create_answer(const NativePeerConnection& peer,
+std::uint8_t peer_create_answer(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept {
   const auto& state = peer.state();
-  if (!state->events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = state->events->Begin(operation_id, true);
+  if (status != 0) return status;
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(state->events,
                                                           operation_id);
   state->peer->CreateAnswer(observer.get(), {});
+  return 0;
 }
 
-void peer_set_local_description(const NativePeerConnection& peer,
+std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
                                 std::uint64_t operation_id,
                                 std::uint8_t sdp_type,
                                 rust::Str sdp) noexcept {
   const auto& state = peer.state();
-  if (!state->events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = state->events->Begin(operation_id, true);
+  if (status != 0) return status;
   webrtc::SdpParseError parse_error;
   auto description = ParseDescription(sdp_type, sdp, parse_error);
   if (!description) {
     state->events->Complete(ErrorEvent(
         operation_id, webrtc::RTCErrorType::SYNTAX_ERROR,
         parse_error.description));
-    return;
+    return 0;
   }
   // This overload bypasses the upstream proxy. Keep initiation as well as
   // completion on the retained signaling sequence after caller migration.
@@ -1224,51 +1297,51 @@ void peer_set_local_description(const NativePeerConnection& peer,
         std::move(description),
         webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
   });
+  return 0;
 }
 
-void peer_set_remote_description(const NativePeerConnection& peer,
+std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
                                  std::uint64_t operation_id,
                                  std::uint8_t sdp_type,
                                  rust::Str sdp) noexcept {
   const auto& state = peer.state();
-  if (!state->events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = state->events->Begin(operation_id, true);
+  if (status != 0) return status;
   webrtc::SdpParseError parse_error;
   auto description = ParseDescription(sdp_type, sdp, parse_error);
   if (!description) {
     state->events->Complete(ErrorEvent(
         operation_id, webrtc::RTCErrorType::SYNTAX_ERROR,
         parse_error.description));
-    return;
+    return 0;
   }
   state->signaling_thread->BlockingCall([&] {
     state->peer->SetRemoteDescription(
         std::move(description),
         webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
   });
+  return 0;
 }
 
-void peer_reject_controlled_media(const NativePeerConnection& peer,
+std::uint8_t peer_reject_controlled_media(const NativePeerConnection& peer,
                                   std::uint64_t operation_id) noexcept {
   const auto& events = peer.state()->events;
-  if (!events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = events->Begin(operation_id);
+  if (status != 0) return status;
   events->Complete(ErrorEvent(
       operation_id, webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
       "controlled audio/video requires threaded codec queues"));
+  return 0;
 }
 
-void peer_add_ice_candidate(const NativePeerConnection& peer,
+std::uint8_t peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::uint64_t operation_id,
                             rust::Str sdp_mid,
                             std::int32_t sdp_mline_index,
                             rust::Str candidate_sdp) noexcept {
   const auto& state = peer.state();
-  if (!state->events->Begin(operation_id)) {
-    return;
-  }
+  const auto status = state->events->Begin(operation_id);
+  if (status != 0) return status;
   webrtc::SdpParseError parse_error;
   auto candidate = webrtc::IceCandidate::Create(
       std::string_view(sdp_mid.data(), sdp_mid.size()), sdp_mline_index,
@@ -1278,7 +1351,7 @@ void peer_add_ice_candidate(const NativePeerConnection& peer,
     state->events->Complete(ErrorEvent(
         operation_id, webrtc::RTCErrorType::SYNTAX_ERROR,
         parse_error.description));
-    return;
+    return 0;
   }
   state->peer->AddIceCandidate(
       std::move(candidate),
@@ -1291,10 +1364,36 @@ void peer_add_ice_candidate(const NativePeerConnection& peer,
         event.operation_id = operation_id;
         events->Complete(std::move(event));
       });
+  return 0;
 }
 
 FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept {
   return peer.state()->events->Take();
+}
+FfiPeerEventObservation peer_event_observation(const NativePeerConnection& peer) noexcept {
+  return peer.state()->events->Observation();
+}
+// Binding-only unit hook: exercise the provided observer callback methods,
+// not a transport/media claim or a simulated native protocol implementation.
+bool test_peer_control_observations(const NativePeerConnection& peer,
+                                   std::uint32_t message_bytes,
+                                   bool arrivals) noexcept {
+  PeerObserver observer(peer.state()->events);
+  for (int i = 0; i < 200; ++i) {
+    observer.OnSignalingChange(i % 2 ?
+        webrtc::PeerConnectionInterface::kHaveLocalOffer :
+        webrtc::PeerConnectionInterface::kStable);
+  }
+  if (arrivals) {
+    auto channel = peer.peer()->CreateDataChannelOrError("retention-unit", nullptr);
+    if (!channel.ok()) return false;
+    for (int i = 0; i < 200; ++i) observer.OnDataChannel(channel.value());
+  } else {
+    const std::string message(message_bytes, 'x');
+    for (int i = 0; i < 200; ++i)
+      observer.OnIceCandidateError("unit", i, "stun:unit", 701, message);
+  }
+  return true;
 }
 
 std::unique_ptr<NativeDataChannel> peer_take_data_channel(

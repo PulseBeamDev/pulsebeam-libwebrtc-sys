@@ -306,11 +306,14 @@ impl Pair {
         }
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
-        let offer =
-            completion_description(&self.alice, self.alice.create_offer(), &mut alice_events);
+        let offer = completion_description(
+            &self.alice,
+            self.alice.create_offer().unwrap(),
+            &mut alice_events,
+        );
         completion(
             &self.alice,
-            self.alice.set_local_description(offer.clone()),
+            self.alice.set_local_description(offer.clone()).unwrap(),
             &mut alice_events,
         );
         let gathered = non_trickle::gathered_local_description(
@@ -322,7 +325,7 @@ impl Pair {
         assert_eq!(gathered.kind, offer.kind);
         completion(
             &self.bob,
-            self.bob.set_remote_description(gathered),
+            self.bob.set_remote_description(gathered).unwrap(),
             &mut bob_events,
         );
         if layered {
@@ -330,10 +333,14 @@ impl Pair {
                 enable_layered_extensions(&transceiver);
             }
         }
-        let answer = completion_description(&self.bob, self.bob.create_answer(), &mut bob_events);
+        let answer = completion_description(
+            &self.bob,
+            self.bob.create_answer().unwrap(),
+            &mut bob_events,
+        );
         completion(
             &self.bob,
-            self.bob.set_local_description(answer.clone()),
+            self.bob.set_local_description(answer.clone()).unwrap(),
             &mut bob_events,
         );
         let mut gathered = non_trickle::gathered_local_description(
@@ -351,7 +358,7 @@ impl Pair {
         }
         completion(
             &self.alice,
-            self.alice.set_remote_description(gathered),
+            self.alice.set_remote_description(gathered).unwrap(),
             &mut alice_events,
         );
         bob_events
@@ -1638,30 +1645,38 @@ fn video_transceiver_snapshot_mid_and_stop_follow_negotiation() {
     // Exchange the resulting gathered SDP; no per-candidate forwarding occurs.
     let mut alice_events = Vec::new();
     let mut bob_events = Vec::new();
-    let offer = completion_description(&pair.alice, pair.alice.create_offer(), &mut alice_events);
+    let offer = completion_description(
+        &pair.alice,
+        pair.alice.create_offer().unwrap(),
+        &mut alice_events,
+    );
     completion(
         &pair.alice,
-        pair.alice.set_local_description(offer),
+        pair.alice.set_local_description(offer).unwrap(),
         &mut alice_events,
     );
     let gathered = pair.alice.descriptions().unwrap().pending_local.unwrap();
     assert!(gathered.sdp.contains("a=candidate:"));
     completion(
         &pair.bob,
-        pair.bob.set_remote_description(gathered),
+        pair.bob.set_remote_description(gathered).unwrap(),
         &mut bob_events,
     );
-    let answer = completion_description(&pair.bob, pair.bob.create_answer(), &mut bob_events);
+    let answer = completion_description(
+        &pair.bob,
+        pair.bob.create_answer().unwrap(),
+        &mut bob_events,
+    );
     completion(
         &pair.bob,
-        pair.bob.set_local_description(answer),
+        pair.bob.set_local_description(answer).unwrap(),
         &mut bob_events,
     );
     let gathered = pair.bob.descriptions().unwrap().current_local.unwrap();
     assert!(gathered.sdp.contains("a=candidate:"));
     completion(
         &pair.alice,
-        pair.alice.set_remote_description(gathered),
+        pair.alice.set_remote_description(gathered).unwrap(),
         &mut alice_events,
     );
     assert!(transceiver.stopped());

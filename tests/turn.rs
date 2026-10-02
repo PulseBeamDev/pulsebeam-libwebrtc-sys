@@ -350,10 +350,10 @@ fn relay_only_ipv6_udp_with_gathered_sdp() {
     let mut bob = factory.create_peer_connection(config).unwrap();
     let mut alice_events = Vec::new();
     let mut bob_events = Vec::new();
-    let offer = succeeded(&alice, alice.create_offer(), &mut alice_events).unwrap();
+    let offer = succeeded(&alice, alice.create_offer().unwrap(), &mut alice_events).unwrap();
     succeeded(
         &alice,
-        alice.set_local_description(offer),
+        alice.set_local_description(offer).unwrap(),
         &mut alice_events,
     );
     let gathered_offer = gathered(&alice, &mut alice_events);
@@ -364,11 +364,15 @@ fn relay_only_ipv6_udp_with_gathered_sdp() {
     assert!(gathered_offer.sdp.contains(&ip.to_string()));
     succeeded(
         &bob,
-        bob.set_remote_description(gathered_offer),
+        bob.set_remote_description(gathered_offer).unwrap(),
         &mut bob_events,
     );
-    let answer = succeeded(&bob, bob.create_answer(), &mut bob_events).unwrap();
-    succeeded(&bob, bob.set_local_description(answer), &mut bob_events);
+    let answer = succeeded(&bob, bob.create_answer().unwrap(), &mut bob_events).unwrap();
+    succeeded(
+        &bob,
+        bob.set_local_description(answer).unwrap(),
+        &mut bob_events,
+    );
     let gathered_answer = gathered(&bob, &mut bob_events);
     assert!(
         gathered_answer.sdp.contains("typ relay"),
@@ -377,7 +381,7 @@ fn relay_only_ipv6_udp_with_gathered_sdp() {
     );
     succeeded(
         &alice,
-        alice.set_remote_description(gathered_answer),
+        alice.set_remote_description(gathered_answer).unwrap(),
         &mut alice_events,
     );
     wait_for(
@@ -412,8 +416,12 @@ fn bad_turn_credentials_fail_without_relay_candidates() {
         })
         .unwrap();
     let mut events = Vec::new();
-    let offer = succeeded(&peer, peer.create_offer(), &mut events).unwrap();
-    succeeded(&peer, peer.set_local_description(offer), &mut events);
+    let offer = succeeded(&peer, peer.create_offer().unwrap(), &mut events).unwrap();
+    succeeded(
+        &peer,
+        peer.set_local_description(offer).unwrap(),
+        &mut events,
+    );
     let description = gathered(&peer, &mut events);
     assert!(!description.sdp.contains("typ relay"), "{description:?}");
     assert!(
@@ -448,10 +456,10 @@ fn turn_tls_requires_trusted_ca_and_matching_hostname() {
     let mut bob = factory.create_peer_connection(config).unwrap();
     let mut alice_events = Vec::new();
     let mut bob_events = Vec::new();
-    let offer = succeeded(&alice, alice.create_offer(), &mut alice_events).unwrap();
+    let offer = succeeded(&alice, alice.create_offer().unwrap(), &mut alice_events).unwrap();
     succeeded(
         &alice,
-        alice.set_local_description(offer),
+        alice.set_local_description(offer).unwrap(),
         &mut alice_events,
     );
     let gathered_offer = gathered(&alice, &mut alice_events);
@@ -462,11 +470,15 @@ fn turn_tls_requires_trusted_ca_and_matching_hostname() {
     );
     succeeded(
         &bob,
-        bob.set_remote_description(gathered_offer),
+        bob.set_remote_description(gathered_offer).unwrap(),
         &mut bob_events,
     );
-    let answer = succeeded(&bob, bob.create_answer(), &mut bob_events).unwrap();
-    succeeded(&bob, bob.set_local_description(answer), &mut bob_events);
+    let answer = succeeded(&bob, bob.create_answer().unwrap(), &mut bob_events).unwrap();
+    succeeded(
+        &bob,
+        bob.set_local_description(answer).unwrap(),
+        &mut bob_events,
+    );
     let gathered_answer = gathered(&bob, &mut bob_events);
     assert!(
         gathered_answer.sdp.contains("typ relay"),
@@ -475,7 +487,7 @@ fn turn_tls_requires_trusted_ca_and_matching_hostname() {
     );
     succeeded(
         &alice,
-        alice.set_remote_description(gathered_answer),
+        alice.set_remote_description(gathered_answer).unwrap(),
         &mut alice_events,
     );
     wait_for(
@@ -512,8 +524,12 @@ fn turn_tls_requires_trusted_ca_and_matching_hostname() {
             })
             .unwrap();
         let mut events = Vec::new();
-        let offer = succeeded(&peer, peer.create_offer(), &mut events).unwrap();
-        succeeded(&peer, peer.set_local_description(offer), &mut events);
+        let offer = succeeded(&peer, peer.create_offer().unwrap(), &mut events).unwrap();
+        succeeded(
+            &peer,
+            peer.set_local_description(offer).unwrap(),
+            &mut events,
+        );
         let description = gathered(&peer, &mut events);
         assert!(!description.sdp.contains("typ relay"), "{description:?}");
         assert!(
@@ -546,10 +562,10 @@ fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
         let mut bob = factory.create_peer_connection(config).unwrap();
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
-        let offer = succeeded(&alice, alice.create_offer(), &mut alice_events).unwrap();
+        let offer = succeeded(&alice, alice.create_offer().unwrap(), &mut alice_events).unwrap();
         succeeded(
             &alice,
-            alice.set_local_description(offer),
+            alice.set_local_description(offer).unwrap(),
             &mut alice_events,
         );
         let gathered_offer = gathered(&alice, &mut alice_events);
@@ -561,11 +577,15 @@ fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
         assert!(gathered_offer.sdp.contains(&ip.to_string()));
         succeeded(
             &bob,
-            bob.set_remote_description(gathered_offer),
+            bob.set_remote_description(gathered_offer).unwrap(),
             &mut bob_events,
         );
-        let answer = succeeded(&bob, bob.create_answer(), &mut bob_events).unwrap();
-        succeeded(&bob, bob.set_local_description(answer), &mut bob_events);
+        let answer = succeeded(&bob, bob.create_answer().unwrap(), &mut bob_events).unwrap();
+        succeeded(
+            &bob,
+            bob.set_local_description(answer).unwrap(),
+            &mut bob_events,
+        );
         let gathered_answer = gathered(&bob, &mut bob_events);
         assert!(
             gathered_answer.sdp.contains("typ relay"),
@@ -574,7 +594,7 @@ fn relay_only_udp_and_tcp_with_hostname_and_credentials() {
         );
         succeeded(
             &alice,
-            alice.set_remote_description(gathered_answer),
+            alice.set_remote_description(gathered_answer).unwrap(),
             &mut alice_events,
         );
         wait_for(&alice, "relay connection", &mut alice_events, |event| {

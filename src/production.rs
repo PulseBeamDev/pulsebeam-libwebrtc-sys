@@ -322,36 +322,36 @@ impl ProductionSession {
         ice_restart: bool,
     ) -> Result<OperationId, PeerError> {
         self.operation(peer, |p| {
-            Ok(if ice_restart {
+            if ice_restart {
                 p.create_ice_restart_offer()
             } else {
                 p.create_offer()
-            })
+            }
         })
     }
     pub fn create_answer(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
-        self.operation(peer, |p| Ok(p.create_answer()))
+        self.operation(peer, PeerConnection::create_answer)
     }
     pub fn set_local_description(
         &mut self,
         peer: SessionPeerId,
         description: SessionDescription,
     ) -> Result<OperationId, PeerError> {
-        self.operation(peer, |p| Ok(p.set_local_description(description)))
+        self.operation(peer, |p| p.set_local_description(description))
     }
     pub fn set_remote_description(
         &mut self,
         peer: SessionPeerId,
         description: SessionDescription,
     ) -> Result<OperationId, PeerError> {
-        self.operation(peer, |p| Ok(p.set_remote_description(description)))
+        self.operation(peer, |p| p.set_remote_description(description))
     }
     pub fn add_ice_candidate(
         &mut self,
         peer: SessionPeerId,
         candidate: IceCandidate,
     ) -> Result<OperationId, PeerError> {
-        self.operation(peer, |p| Ok(p.add_ice_candidate(candidate)))
+        self.operation(peer, |p| p.add_ice_candidate(candidate))
     }
     pub fn request_stats(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::request_stats)
@@ -535,6 +535,37 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .value
             .set_bitrate(minimum, start, maximum)
+    }
+
+    /// Current binding observation backlog, separate from native transport
+    /// buffering and already-returned owned outputs.
+    pub fn peer_event_observation(
+        &self,
+        peer: SessionPeerId,
+    ) -> Result<crate::PeerEventObservation, PeerError> {
+        Ok(self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .event_observation())
+    }
+
+    /// Idempotently retire one producer and release its actor-owned entry.
+    /// Existing native tracks can retain their source until their sender is
+    /// stopped/detached. Already transmitted input can reach an open receiver.
+    /// Previously returned owned output is unaffected.
+    pub fn close_source(&mut self, id: SessionSourceId) -> Result<(), PeerError> {
+        if let Some(source) = self.sources.get_mut(&id) {
+            match source {
+                Source::Opus(source) => source
+                    .close()
+                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
+                Source::Video(source) => source.close().map_err(codec_error)?,
+            }
+            self.sources.remove(&id);
+        }
+        Ok(())
     }
 
     pub fn create_opus_source(&mut self, channels: u8) -> Result<SessionSourceId, PeerError> {
@@ -962,6 +993,7 @@ impl ProductionSession {
                 Source::Video(source) => source.close().map_err(codec_error)?,
             }
         }
+        self.sources.clear();
         self.closed = true;
         self.readiness.notify();
         Ok(())

@@ -140,22 +140,30 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
     assert_eq!(alice.audio_transceivers().unwrap().len(), 1);
     let mut alice_events = Vec::new();
     let mut bob_events = Vec::new();
-    let offer = finish(&alice, alice.create_offer(), &mut alice_events).unwrap();
+    let offer = finish(&alice, alice.create_offer().unwrap(), &mut alice_events).unwrap();
     assert!(offer.sdp.contains("m=audio"));
     finish(
         &alice,
-        alice.set_local_description(offer),
+        alice.set_local_description(offer).unwrap(),
         &mut alice_events,
     );
     let gathered =
         non_trickle::gathered_local_description(&alice, &clock, &network, &mut alice_events);
-    finish(&bob, bob.set_remote_description(gathered), &mut bob_events);
-    let answer = finish(&bob, bob.create_answer(), &mut bob_events).unwrap();
-    finish(&bob, bob.set_local_description(answer), &mut bob_events);
+    finish(
+        &bob,
+        bob.set_remote_description(gathered).unwrap(),
+        &mut bob_events,
+    );
+    let answer = finish(&bob, bob.create_answer().unwrap(), &mut bob_events).unwrap();
+    finish(
+        &bob,
+        bob.set_local_description(answer).unwrap(),
+        &mut bob_events,
+    );
     let gathered = non_trickle::gathered_local_description(&bob, &clock, &network, &mut bob_events);
     finish(
         &alice,
-        alice.set_remote_description(gathered),
+        alice.set_remote_description(gathered).unwrap(),
         &mut alice_events,
     );
     let receivers = bob.audio_receivers().unwrap();

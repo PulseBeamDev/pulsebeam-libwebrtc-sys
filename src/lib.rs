@@ -68,8 +68,8 @@ pub use peer::{
     IceServer, IceTransportPolicy, InboundRtpStats, OperationCompletion, OperationId,
     OutboundRtpStats, PeerConfiguration, PeerConnection, PeerConnectionEvent,
     PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions, PeerError,
-    PeerErrorKind, PeerStatsRecord, PeerStatsSnapshot, SessionDescription, SessionDescriptionType,
-    SignalingState, TransportStats,
+    PeerErrorKind, PeerEventObservation, PeerStatsRecord, PeerStatsSnapshot, SessionDescription,
+    SessionDescriptionType, SignalingState, TransportStats,
 };
 pub use production::{
     ProductionSession, ProductionSessionConfig, SessionChannelId, SessionEvent, SessionPeerId,
@@ -298,6 +298,14 @@ mod ffi {
         kind: u8,
         timestamp_us: i64,
         fields: Vec<FfiStatsField>,
+    }
+
+    struct FfiPeerEventObservation {
+        dropped_control_events: u64,
+        coalesced_advisories: u64,
+        retained_control_events: u32,
+        admitted_operations: u32,
+        pending_operations: u32,
     }
 
     struct FfiPeerEvent {
@@ -781,9 +789,13 @@ mod ffi {
             turn_tls_ca_pem: &str,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnection>;
-        fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64, ice_restart: bool);
-        fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64);
-        fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> bool;
+        fn peer_create_offer(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            ice_restart: bool,
+        ) -> u8;
+        fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64) -> u8;
+        fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> u8;
         fn peer_set_bitrate(
             peer: &NativePeerConnection,
             minimum: i32,
@@ -801,22 +813,28 @@ mod ffi {
             operation_id: u64,
             sdp_type: u8,
             sdp: &str,
-        );
+        ) -> u8;
         fn peer_set_remote_description(
             peer: &NativePeerConnection,
             operation_id: u64,
             sdp_type: u8,
             sdp: &str,
-        );
-        fn peer_reject_controlled_media(peer: &NativePeerConnection, operation_id: u64);
+        ) -> u8;
+        fn peer_reject_controlled_media(peer: &NativePeerConnection, operation_id: u64) -> u8;
         fn peer_add_ice_candidate(
             peer: &NativePeerConnection,
             operation_id: u64,
             sdp_mid: &str,
             sdp_mline_index: i32,
             candidate: &str,
-        );
+        ) -> u8;
         fn peer_take_event(peer: &NativePeerConnection) -> FfiPeerEvent;
+        fn peer_event_observation(peer: &NativePeerConnection) -> FfiPeerEventObservation;
+        fn test_peer_control_observations(
+            peer: &NativePeerConnection,
+            message_bytes: u32,
+            arrivals: bool,
+        ) -> bool;
         fn peer_take_data_channel(
             peer: &NativePeerConnection,
             arrival_id: u64,

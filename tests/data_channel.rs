@@ -56,11 +56,14 @@ impl Pair {
     fn negotiate(&self) -> (Vec<PeerConnectionEvent>, Vec<PeerConnectionEvent>) {
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
-        let offer =
-            completion_description(&self.alice, self.alice.create_offer(), &mut alice_events);
+        let offer = completion_description(
+            &self.alice,
+            self.alice.create_offer().unwrap(),
+            &mut alice_events,
+        );
         completion(
             &self.alice,
-            self.alice.set_local_description(offer.clone()),
+            self.alice.set_local_description(offer.clone()).unwrap(),
             &mut alice_events,
         );
         let gathered = non_trickle::gathered_local_description(
@@ -72,13 +75,17 @@ impl Pair {
         assert_eq!(gathered.kind, offer.kind);
         completion(
             &self.bob,
-            self.bob.set_remote_description(gathered),
+            self.bob.set_remote_description(gathered).unwrap(),
             &mut bob_events,
         );
-        let answer = completion_description(&self.bob, self.bob.create_answer(), &mut bob_events);
+        let answer = completion_description(
+            &self.bob,
+            self.bob.create_answer().unwrap(),
+            &mut bob_events,
+        );
         completion(
             &self.bob,
-            self.bob.set_local_description(answer.clone()),
+            self.bob.set_local_description(answer.clone()).unwrap(),
             &mut bob_events,
         );
         let gathered = non_trickle::gathered_local_description(
@@ -90,7 +97,7 @@ impl Pair {
         assert_eq!(gathered.kind, answer.kind);
         completion(
             &self.alice,
-            self.alice.set_remote_description(gathered),
+            self.alice.set_remote_description(gathered).unwrap(),
             &mut alice_events,
         );
         (alice_events, bob_events)

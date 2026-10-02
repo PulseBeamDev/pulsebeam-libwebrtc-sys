@@ -126,7 +126,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         native_thread_ids().is_subset(&threads_before),
         "constructing a controlled peer started an OS thread"
     );
-    let operation = peer.create_offer();
+    let operation = peer.create_offer().unwrap();
     let mut offer_completed = false;
     for _ in 0..200 {
         driver.run_ready();
@@ -181,9 +181,9 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
                 sdp: format!("v=0\r\nm={media} 9 UDP/TLS/RTP/SAVPF 96\r\n"),
             };
             let rejected = if local {
-                peer.set_local_description(description)
+                peer.set_local_description(description).unwrap()
             } else {
-                peer.set_remote_description(description)
+                peer.set_remote_description(description).unwrap()
             };
             let PeerConnectionEvent::OperationComplete(result) = peer.try_next_event().unwrap()
             else {
@@ -216,7 +216,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     let mut events = Vec::new();
     let offer = completed(
         &dns_peer,
-        dns_peer.create_offer(),
+        dns_peer.create_offer().unwrap(),
         &mut events,
         &driver,
         &queues,
@@ -224,7 +224,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         &network,
     )
     .unwrap();
-    let _operation = dns_peer.set_local_description(offer);
+    let _operation = dns_peer.set_local_description(offer).unwrap();
     let mut resolved_stun = false;
     for _ in 0..10_000 {
         driver.run_ready();
@@ -259,7 +259,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         .unwrap();
     let offer = completed(
         &tcp_peer,
-        tcp_peer.create_offer(),
+        tcp_peer.create_offer().unwrap(),
         &mut events,
         &driver,
         &queues,
@@ -267,7 +267,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         &network,
     )
     .unwrap();
-    let _operation = tcp_peer.set_local_description(offer);
+    let _operation = tcp_peer.set_local_description(offer).unwrap();
     let mut connected = None;
     let mut sent_tcp_data = false;
     for _ in 0..10_000 {
@@ -322,7 +322,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         .unwrap();
     let offer = completed(
         &tls_peer,
-        tls_peer.create_offer(),
+        tls_peer.create_offer().unwrap(),
         &mut events,
         &driver,
         &queues,
@@ -330,7 +330,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         &network,
     )
     .unwrap();
-    let _operation = tls_peer.set_local_description(offer);
+    let _operation = tls_peer.set_local_description(offer).unwrap();
     let mut tls_connect = false;
     let mut client_hello = false;
     for _ in 0..10_000 {
@@ -369,7 +369,7 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     let mut pending = factory
         .create_peer_connection(PeerConfiguration::default())
         .unwrap();
-    let _operation = pending.create_offer();
+    let _operation = pending.create_offer().unwrap();
     pending.close().unwrap();
     drop(pending);
     driver.run_ready();
@@ -538,7 +538,7 @@ fn connect_with_seed() -> (
     let mut bob_events = Vec::new();
     let offer = completed(
         &alice,
-        alice.create_offer(),
+        alice.create_offer().unwrap(),
         &mut alice_events,
         &driver,
         &queues,
@@ -548,7 +548,7 @@ fn connect_with_seed() -> (
     .unwrap();
     completed(
         &alice,
-        alice.set_local_description(offer),
+        alice.set_local_description(offer).unwrap(),
         &mut alice_events,
         &driver,
         &queues,
@@ -565,7 +565,7 @@ fn connect_with_seed() -> (
     );
     completed(
         &bob,
-        bob.set_remote_description(offer),
+        bob.set_remote_description(offer).unwrap(),
         &mut bob_events,
         &driver,
         &queues,
@@ -574,7 +574,7 @@ fn connect_with_seed() -> (
     );
     let answer = completed(
         &bob,
-        bob.create_answer(),
+        bob.create_answer().unwrap(),
         &mut bob_events,
         &driver,
         &queues,
@@ -584,7 +584,7 @@ fn connect_with_seed() -> (
     .unwrap();
     completed(
         &bob,
-        bob.set_local_description(answer),
+        bob.set_local_description(answer).unwrap(),
         &mut bob_events,
         &driver,
         &queues,
@@ -594,7 +594,7 @@ fn connect_with_seed() -> (
     let answer = gathered(&bob, &mut bob_events, &driver, &queues, &clock, &network);
     completed(
         &alice,
-        alice.set_remote_description(answer),
+        alice.set_remote_description(answer).unwrap(),
         &mut alice_events,
         &driver,
         &queues,

@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .packet_socket_factory(sender.packet_socket_factory()?)
         .build()?;
     let mut peer = factory.create_peer_connection(PeerConfiguration::default())?;
-    let operation = peer.create_offer();
+    let operation = peer.create_offer().unwrap();
     let mut completed = false;
     for _ in 0..1000 {
         driver.run_ready();

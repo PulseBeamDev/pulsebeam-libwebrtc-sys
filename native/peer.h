@@ -23,6 +23,7 @@ struct FfiAudioProcessingConfig;
 struct FfiAudioProcessingState;
 struct FfiDescriptionSnapshot;
 struct FfiPeerEvent;
+struct FfiPeerEventObservation;
 class NativeAudioDecoderFactory;
 class NativeAudioEncoderFactory;
 class NativeDataChannel;
@@ -113,12 +114,12 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     rust::Str turn_tls_ca_pem,
     rust::String& error) noexcept;
 
-void peer_create_offer(const NativePeerConnection& peer,
+std::uint8_t peer_create_offer(const NativePeerConnection& peer,
                        std::uint64_t operation_id,
                        bool ice_restart) noexcept;
-void peer_create_answer(const NativePeerConnection& peer,
+std::uint8_t peer_create_answer(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
-bool peer_request_stats(const NativePeerConnection& peer,
+std::uint8_t peer_request_stats(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
 bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
                       std::int32_t start, std::int32_t maximum,
@@ -126,24 +127,28 @@ bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
 std::uint8_t peer_descriptions(
     const NativePeerConnection& peer,
     rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept;
-void peer_set_local_description(const NativePeerConnection& peer,
+std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
                                 std::uint64_t operation_id,
                                 std::uint8_t sdp_type,
                                 rust::Str sdp) noexcept;
-void peer_set_remote_description(const NativePeerConnection& peer,
+std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
                                  std::uint64_t operation_id,
                                  std::uint8_t sdp_type,
                                  rust::Str sdp) noexcept;
 // Complete a controlled-mode video operation without entering upstream's
 // synchronous receive-stream recreation (which waits on a cooperative queue).
-void peer_reject_controlled_media(const NativePeerConnection& peer,
+std::uint8_t peer_reject_controlled_media(const NativePeerConnection& peer,
                                   std::uint64_t operation_id) noexcept;
-void peer_add_ice_candidate(const NativePeerConnection& peer,
+std::uint8_t peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::uint64_t operation_id,
                             rust::Str sdp_mid,
                             std::int32_t sdp_mline_index,
                             rust::Str candidate) noexcept;
 FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept;
+FfiPeerEventObservation peer_event_observation(const NativePeerConnection& peer) noexcept;
+// Binding-only callback-retention unit hook, not transport evidence.
+bool test_peer_control_observations(const NativePeerConnection& peer,
+    std::uint32_t message_bytes, bool arrivals) noexcept;
 std::unique_ptr<NativeDataChannel> peer_take_data_channel(
     const NativePeerConnection& peer,
     std::uint64_t arrival_id) noexcept;
