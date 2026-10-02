@@ -63,6 +63,247 @@ fn finish(
 }
 
 #[test]
+fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
+    const CAPTURE: &str = "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time";
+    #[derive(Default)]
+    struct Observations {
+        connected: [bool; 2],
+        gathered: [bool; 2],
+        arrivals: Vec<(SessionTransceiverId, SessionReceiverId)>,
+        completed:
+            std::collections::HashMap<(SessionPeerId, OperationId), Option<SessionDescription>>,
+    }
+    impl Observations {
+        fn drain(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
+            for (index, peer) in peers.into_iter().enumerate() {
+                while let Some(event) = session.try_peer_event(peer).unwrap() {
+                    match event {
+                        SessionEvent::OperationComplete(done) => {
+                            self.completed
+                                .insert((peer, done.operation_id), done.result.unwrap());
+                        }
+                        SessionEvent::Track {
+                            transceiver,
+                            receiver,
+                        } if index == 1 => {
+                            self.arrivals.push((transceiver, receiver));
+                        }
+                        SessionEvent::ConnectionStateChanged(ConnectionState::Connected) => {
+                            self.connected[index] = true
+                        }
+                        SessionEvent::IceGatheringStateChanged(IceGatheringState::Complete) => {
+                            self.gathered[index] = true
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        fn finish(
+            &mut self,
+            session: &mut ProductionSession,
+            peers: [SessionPeerId; 2],
+            peer: SessionPeerId,
+            operation: OperationId,
+        ) -> Option<SessionDescription> {
+            loop {
+                self.drain(session, peers);
+                if let Some(result) = self.completed.remove(&(peer, operation)) {
+                    return result;
+                }
+                wait(session);
+            }
+        }
+        fn gather(
+            &mut self,
+            session: &mut ProductionSession,
+            peers: [SessionPeerId; 2],
+            index: usize,
+            description: SessionDescription,
+        ) -> SessionDescription {
+            let operation = session
+                .set_local_description(peers[index], description)
+                .unwrap();
+            self.finish(session, peers, peers[index], operation);
+            while !self.gathered[index] {
+                self.drain(session, peers);
+                if !self.gathered[index] {
+                    wait(session);
+                }
+            }
+            let descriptions = session.descriptions(peers[index]).unwrap();
+            descriptions
+                .current_local
+                .or(descriptions.pending_local)
+                .unwrap()
+        }
+    }
+    fn capture_extension(session: &mut ProductionSession, transceiver: SessionTransceiverId) {
+        let mut extensions = session.header_extensions_to_negotiate(transceiver).unwrap();
+        extensions
+            .iter_mut()
+            .find(|e| e.uri() == CAPTURE)
+            .expect("provided native capture extension")
+            .direction = RtpHeaderExtensionDirection::SendReceive;
+        session
+            .set_header_extensions_to_negotiate(transceiver, &extensions)
+            .unwrap();
+    }
+    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let peers = [
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+    ];
+    let sources = [
+        session.create_opus_source(1).unwrap(),
+        session.create_opus_source(1).unwrap(),
+    ];
+    let mut outgoing = Vec::new();
+    for (index, source) in sources.into_iter().enumerate() {
+        let transceiver = session
+            .publish_opus(
+                peers[0],
+                source,
+                &format!("capture-{index}"),
+                RtpTransceiverDirection::SendOnly,
+            )
+            .unwrap();
+        capture_extension(&mut session, transceiver);
+        outgoing.push(transceiver);
+    }
+    let (session, receivers) = thread::spawn(move || {
+        let mut session = session;
+        let mut observed = Observations::default();
+        let op = session.create_offer(peers[0], false).unwrap();
+        let offer = observed.finish(&mut session, peers, peers[0], op).unwrap();
+        let offer = observed.gather(&mut session, peers, 0, offer);
+        let op = session.set_remote_description(peers[1], offer).unwrap();
+        observed.finish(&mut session, peers, peers[1], op);
+        assert_eq!(observed.arrivals.len(), 2);
+        for (transceiver, _) in &observed.arrivals {
+            capture_extension(&mut session, *transceiver);
+        }
+        let op = session.create_answer(peers[1]).unwrap();
+        let answer = observed.finish(&mut session, peers, peers[1], op).unwrap();
+        let answer = observed.gather(&mut session, peers, 1, answer);
+        let op = session.set_remote_description(peers[0], answer).unwrap();
+        observed.finish(&mut session, peers, peers[0], op);
+        while observed.connected != [true; 2] {
+            observed.drain(&mut session, peers);
+            if observed.connected != [true; 2] {
+                wait(&mut session);
+            }
+        }
+        for (_, receiver) in &observed.arrivals {
+            session.attach_encoded_audio(*receiver).unwrap();
+        }
+        for transceiver in outgoing
+            .iter()
+            .copied()
+            .chain(observed.arrivals.iter().map(|v| v.0))
+        {
+            assert_eq!(
+                session
+                    .negotiated_header_extensions(transceiver)
+                    .unwrap()
+                    .iter()
+                    .find(|e| e.uri() == CAPTURE)
+                    .unwrap()
+                    .direction,
+                RtpHeaderExtensionDirection::SendReceive
+            );
+        }
+        (
+            session,
+            observed.arrivals.iter().map(|v| v.1).collect::<Vec<_>>(),
+        )
+    })
+    .join()
+    .unwrap();
+    let (session, frames) = thread::spawn(move || {
+        let mut session = session;
+        let capture_now = session.opus_capture_time_now(sources[0]).unwrap();
+        let wall_ntp_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as i64
+            + 2_208_988_800_000_000;
+        let packet = OpusInputFrame {
+            data: vec![0xf8, 0xff, 0xfe],
+            rtp_timestamp: 0,
+            samples_per_channel: 960,
+        };
+        assert!(
+            session
+                .push_opus_at(sources[0], &packet, capture_now + Duration::from_secs(60))
+                .is_err()
+        );
+        let levels = [
+            OpusAudioLevel::new(27, true).unwrap(),
+            OpusAudioLevel::new(83, false).unwrap(),
+        ];
+        let offsets = [Duration::from_millis(400), Duration::from_millis(200)];
+        for index in 0..2 {
+            session
+                .push_opus_at_with_audio_level(
+                    sources[index],
+                    &packet,
+                    capture_now - offsets[index],
+                    levels[index],
+                )
+                .unwrap();
+        }
+        let mut frames = Vec::new();
+        while frames.len() < 2 {
+            for receiver in &receivers {
+                while let Some(frame) = session.try_audio_frame(*receiver).unwrap() {
+                    frames.push(frame);
+                }
+            }
+            if frames.len() < 2 {
+                wait(&mut session);
+            }
+        }
+        assert_eq!(frames.len(), 2);
+        assert_ne!(frames[0].ssrc, frames[1].ssrc);
+        for frame in &frames {
+            assert_eq!(frame.data, packet.data);
+            let index = levels
+                .iter()
+                .position(|v| Some(v.level_dbov()) == frame.audio_level_dbov)
+                .unwrap();
+            assert_eq!(frame.voice_activity, Some(levels[index].voice_activity()));
+            let capture = frame
+                .capture_time_us
+                .expect("actual negotiated received capture metadata");
+            let expected = wall_ntp_us - offsets[index].as_micros() as i64;
+            assert!(
+                (capture - expected).abs() < 5_000,
+                "capture={capture}, expected={expected}"
+            );
+        }
+        // Retire actor ownership and preserve already-returned owned output.
+        for source in sources {
+            session.close_source(source).unwrap();
+        }
+        assert!(session.opus_capture_time_now(sources[0]).is_err());
+        (session, frames)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        session.shutdown().unwrap();
+        drop(session);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].data, vec![0xf8, 0xff, 0xfe]);
+        let _world = ControlledWorld::acquire(742, Duration::from_secs(1)).unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
     fn assert_send<T: Send>() {}
     assert_send::<ProductionSession>();

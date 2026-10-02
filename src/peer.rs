@@ -652,6 +652,18 @@ impl FactoryInner {
             .is_some_and(VideoDecoderFactoryHandle::is_encoded_receive_only)
     }
 
+    pub(crate) fn opus_capture_time(&self) -> Option<std::time::Duration> {
+        if self.controlled_media {
+            self.controlled_time()
+        } else if self._controlled_driver.is_none() && self._environment.uses_system_clock() {
+            Some(self._environment.now())
+        } else {
+            // A custom non-controlled clock does not establish the required
+            // mapping to WebRTC's process TimeMillis capture-clock domain.
+            None
+        }
+    }
+
     pub(crate) fn controlled_time(&self) -> Option<std::time::Duration> {
         self._controlled_driver
             .as_ref()

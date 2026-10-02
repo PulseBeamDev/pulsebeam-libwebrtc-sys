@@ -591,6 +591,55 @@ impl ProductionSession {
         self.sources.insert(id, Source::Video(source));
         Ok(id)
     }
+    /// Read one producer's native system-clock capture timeline. This does not
+    /// claim that the current enqueue instant was the actual capture instant.
+    pub fn opus_capture_time_now(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<std::time::Duration, PeerError> {
+        self.check_open()?;
+        let Some(Source::Opus(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .capture_time_now()
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
+    /// Submit actual capture timing mapped into opus_capture_time_now's domain.
+    /// Native packetization/negotiated extension serialization owns wire timing.
+    pub fn push_opus_at(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::OpusInputFrame,
+        capture_time: std::time::Duration,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Opus(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .push_opus_at(frame, capture_time)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
+    /// Submit mapped capture timing with independent producer RFC6464 metadata.
+    pub fn push_opus_at_with_audio_level(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::OpusInputFrame,
+        capture_time: std::time::Duration,
+        level: crate::OpusAudioLevel,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Opus(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .push_opus_at_with_audio_level(frame, capture_time, level)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
     pub fn push_opus(
         &mut self,
         source: SessionSourceId,

@@ -273,6 +273,23 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
     );
     let first = alice_factory.create_encoded_audio_source(1).unwrap();
     let second = alice_factory.create_encoded_audio_source(2).unwrap();
+    // This threaded fixture has a custom ManualClock but no process clock hook.
+    // Do not silently claim that its epoch maps to native TimeMillis capture.
+    assert_eq!(
+        first.capture_time_now(),
+        Err(OpusInputError::InvalidTimestamp)
+    );
+    assert_eq!(
+        first.push_opus_at(
+            &OpusInputFrame {
+                data: vec![0xf8, 0xff, 0xfe],
+                rtp_timestamp: 0,
+                samples_per_channel: 960,
+            },
+            clock.now()
+        ),
+        Err(OpusInputError::InvalidTimestamp)
+    );
     assert_eq!((first.channels(), second.channels()), (1, 2));
     assert_eq!(
         alice_factory

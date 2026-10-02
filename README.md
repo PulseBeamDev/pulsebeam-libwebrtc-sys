@@ -218,15 +218,25 @@ Retry without advancing the input timestamp. This factory is Opus-only and rejec
 separate peer factory for raw PCM tracks. The adapter does not validate that
 packet bodies can be decoded. For independent producer loudness and V metadata,
 construct `OpusAudioLevel::new(level_dbov, voice_activity)` and call
-`push_opus_with_audio_level()` (or the explicit controlled capture-time variant).
+`push_opus_with_audio_level()` (or the explicit mapped capture-time variant).
 Level is validated in 0..=127, independently of V, and is never inferred from
 Opus bytes or the adapter's private PCM carrier. Native encoder speech and the
 supported sender-frame level setter feed native RFC6464 serialization. If the
 extension is not negotiated, received level/V remain absent. The ordinary
 `push_opus()` API remains unchanged and does not declare a producer level.
 `ProductionSession::push_opus_with_audio_level()` exposes the same owned-value
-submission without leaking sequence-bound handles. Missing or unsupported native
-handoffs drop the frame and increment `AudioEncoderFactory::opus_frame_handoff_failures()`;
+submission without leaking sequence-bound handles. For explicit capture stamps,
+`EncodedAudioSource::capture_time_now()` reads the qualified native capture
+timeline: controlled world time or default system-clock production time.
+`push_opus_at()` and `push_opus_at_with_audio_level()` require the actual capture
+instant mapped into that timeline, not an unrelated clock epoch or an assumed
+enqueue time. Native forwarding has millisecond precision; received capture
+values use the negotiated native NTP domain. Custom non-controlled clock domains
+remain rejected, and future capture instants fail before admission in both profiles.
+The actor exposes `opus_capture_time_now(id)` and both explicit-time submission
+variants without exposing local handles. Legacy unstamped production submission
+is unchanged and does not invent a producer capture instant.
+Missing or unsupported native handoffs drop the frame and increment `AudioEncoderFactory::opus_frame_handoff_failures()`;
 that counter is an adapter failure observation, not a delivery receipt. The
 handoff keeps at most one emission per native encoder and uses the provided
 encoder queue, not RTP timestamps, SSRCs, or payload hashes, to consume it.

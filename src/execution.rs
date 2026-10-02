@@ -310,6 +310,10 @@ impl Environment {
         Duration::from_micros(ffi::environment_time_us(self.native()) as u64)
     }
 
+    pub(crate) fn uses_system_clock(&self) -> bool {
+        self._clock.is_none()
+    }
+
     pub fn close(&mut self) {
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
     }

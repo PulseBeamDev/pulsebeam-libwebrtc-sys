@@ -487,18 +487,35 @@ impl EncodedAudioSource {
         self.channels
     }
 
-    /// Supply a packet with capture timing on the controlled world's timeline.
-    /// Capture metadata is forwarded at millisecond precision; RTP timestamps
-    /// remain caller-supplied 48 kHz ticks. Ordinary production clocks do not
-    /// provide this mapping and are rejected by this explicit-timing API.
+    /// Read the supported capture timeline without pumping or changing time.
+    /// Controlled media uses its world clock; default system-clock production
+    /// uses the retained native environment's TimeMillis-compatible clock.
+    /// This is a clock read, not evidence of when a packet was captured. Map the
+    /// actual capture instant into this domain, not an unrelated clock's epoch.
+    /// Custom non-controlled clocks lack a qualified mapping and are rejected.
+    pub fn capture_time_now(&self) -> Result<std::time::Duration, OpusInputError> {
+        if self.source.inner.closed.get() {
+            return Err(OpusInputError::Released);
+        }
+        self.source
+            .inner
+            ._factory
+            .opus_capture_time()
+            .ok_or(OpusInputError::InvalidTimestamp)
+    }
+
+    /// Supply the capture instant in the timeline returned by capture_time_now.
+    /// Controlled media and default system-clock production are supported;
+    /// custom non-controlled clock domains remain rejected. This does not map
+    /// arbitrary source-clock values or substitute enqueue time for capture.
+    /// Native capture metadata is forwarded at millisecond precision; RTP
+    /// timestamps remain caller-supplied 48 kHz ticks.
     pub fn push_opus_at(
         &self,
         frame: &OpusInputFrame,
         capture_time: std::time::Duration,
     ) -> Result<(), OpusInputError> {
-        if !self.source.inner._factory.controlled_media {
-            return Err(OpusInputError::InvalidTimestamp);
-        }
+        self.capture_time_now()?;
         self.push_opus_with_time(frame, Some(capture_time), None)
     }
 
@@ -534,17 +551,15 @@ impl EncodedAudioSource {
         self.push_opus_with_time(frame, capture_time, Some(level))
     }
 
-    /// Combine explicit controlled capture timing with a declared level/V pair.
-    /// Ordinary production clock domains remain unsupported by this timing API.
+    /// Combine a supported explicit capture instant with independent level/V.
+    /// See capture_time_now and push_opus_at for clock-domain requirements.
     pub fn push_opus_at_with_audio_level(
         &self,
         frame: &OpusInputFrame,
         capture_time: std::time::Duration,
         level: OpusAudioLevel,
     ) -> Result<(), OpusInputError> {
-        if !self.source.inner._factory.controlled_media {
-            return Err(OpusInputError::InvalidTimestamp);
-        }
+        self.capture_time_now()?;
         self.push_opus_with_time(frame, Some(capture_time), Some(level))
     }
 
@@ -591,6 +606,9 @@ impl EncodedAudioSource {
             return Err(OpusInputError::InvalidTimestamp);
         }
         let capture_us = if let Some(time) = capture_time {
+            if time > self.capture_time_now()? {
+                return Err(OpusInputError::InvalidTimestamp);
+            }
             let duration = std::time::Duration::from_micros(
                 u64::from(frame.samples_per_channel) * 1_000_000 / 48_000,
             );

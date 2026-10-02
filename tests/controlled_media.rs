@@ -2127,6 +2127,18 @@ fn run_opus_fanout_metadata(include_level: bool) {
             rtp_timestamp: 6720 + index as u32 * 2880,
             samples_per_channel: 2880,
         };
+        assert_eq!(source.capture_time_now().unwrap(), world.now());
+        let future = world.now() + Duration::from_millis(1);
+        assert_eq!(
+            source.push_opus_at(&frame, future),
+            Err(OpusInputError::InvalidTimestamp)
+        );
+        assert_eq!(
+            source.push_opus_at_with_audio_level(&frame, future, level(index + 7, false)),
+            Err(OpusInputError::InvalidTimestamp)
+        );
+        // Failed timing validation neither reserves capacity nor advances RTP
+        // admission: the same frame remains valid at the current capture time.
         source
             .push_opus_at_with_audio_level(&frame, world.now(), level(index + 7, false))
             .unwrap();
