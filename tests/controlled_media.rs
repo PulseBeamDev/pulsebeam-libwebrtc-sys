@@ -1904,6 +1904,160 @@ fn native_vla_wire_uses_provided_offline_parser() {
 }
 
 #[test]
+fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let world = ControlledWorld::acquire(734, Duration::from_secs(10)).unwrap();
+    let network = world.create_network().unwrap();
+    let input = EncodedVideoInput::new_for_format(VideoCodecFormat::new("VP8")).unwrap();
+    let decoder = AudioDecoderFactory::builtin_opus().unwrap();
+    let video_decoder = VideoDecoderFactoryHandle::builtin_vp8().unwrap();
+    let endpoints: Vec<_> = [1, 2]
+        .into_iter()
+        .map(|host| {
+            network
+                .register_endpoint(Ipv4Addr::new(10, 80, 1, host).into())
+                .unwrap()
+        })
+        .collect();
+    let factories: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| {
+            world
+                .peer_factory_builder()
+                .unwrap()
+                .network_manager(endpoint.network_manager().unwrap())
+                .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+                .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+                .audio_decoder_factory(decoder.clone())
+                .video_encoder_factory(input.encoder_factory())
+                .video_decoder_factory(video_decoder.clone())
+                .controlled_media()
+                .build()
+                .unwrap()
+        })
+        .collect();
+    let mut peers = [
+        factories[0]
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap(),
+        factories[1]
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap(),
+    ];
+    let mut source = factories[0].create_encoded_audio_source(1).unwrap();
+    for id in ["fanout-one", "fanout-two"] {
+        let track = factories[0]
+            .create_encoded_audio_track(id, &source)
+            .unwrap();
+        peers[0]
+            .add_audio_transceiver(&track, RtpTransceiverDirection::SendOnly)
+            .unwrap();
+    }
+    let mut observations = Observations::default();
+    observations.negotiate(&world, &network, &peers, 0);
+    for _ in 0..2_000 {
+        observations.step(&world, &network, &peers, false);
+        if [0, 1].into_iter().all(|who| {
+            observations
+                .trace
+                .events
+                .iter()
+                .any(|event| event.contains(&format!(":{who}:connection:Connected")))
+        }) {
+            break;
+        }
+        world.advance(Duration::from_millis(1)).unwrap();
+    }
+    for who in [0, 1] {
+        assert!(
+            observations
+                .trace
+                .events
+                .iter()
+                .any(|event| { event.contains(&format!(":{who}:connection:Connected")) })
+        );
+    }
+    for (_, sink) in &mut observations.audio {
+        sink.close().unwrap();
+    }
+    observations.audio.clear();
+    let receivers = peers[1].audio_receivers().unwrap();
+    assert_eq!(receivers.len(), 2);
+    let sinks: Vec<_> = receivers
+        .iter()
+        .map(|receiver| receiver.attach_encoded_audio_sink().unwrap())
+        .collect();
+    let before = decoder.decoder_statistics().unwrap().input_packets;
+    let frame = |index: u32| OpusInputFrame {
+        data: OPUS[0].to_vec(),
+        rtp_timestamp: index * 960,
+        samples_per_channel: 960,
+    };
+    // No pumping occurs during admission: 6 packets * 2 slots * 2 native
+    // recipients exhaust the 24-copy source budget, not 12 source packets.
+    for index in 0..6 {
+        source.push_opus(&frame(index)).unwrap();
+    }
+    let retry = frame(6);
+    assert_eq!(source.push_opus(&retry), Err(OpusInputError::Backpressure));
+    world.pump(512);
+    source.push_opus(&retry).unwrap();
+    // All three SILK bandwidth groups' final TOC configuration means 60 ms,
+    // not 80 ms. Opaque packet bodies are deliberately never decoded.
+    for (index, config) in [3, 7, 11].into_iter().enumerate() {
+        world.pump(512);
+        source
+            .push_opus(&OpusInputFrame {
+                data: vec![config << 3, 0xff, 0xfe],
+                rtp_timestamp: 6720 + index as u32 * 2880,
+                samples_per_channel: 2880,
+            })
+            .unwrap();
+    }
+    let mut received = [Vec::new(), Vec::new()];
+    for _ in 0..2_000 {
+        observations.step(&world, &network, &peers, false);
+        for (index, sink) in sinks.iter().enumerate() {
+            while let Some(frame) = sink.try_next_frame() {
+                received[index].push(frame);
+            }
+        }
+        if received.iter().all(|frames| frames.len() == 10) {
+            break;
+        }
+        world.advance(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(received.each_ref().map(Vec::len), [10, 10]);
+    assert_ne!(received[0][0].ssrc, received[1][0].ssrc);
+    for frames in &received {
+        for (index, frame) in frames.iter().enumerate() {
+            if index < 7 {
+                assert_eq!(frame.data, OPUS[0]);
+                assert_eq!(frame.samples_per_channel, 960);
+            } else {
+                assert_eq!(frame.data, vec![[3, 7, 11][index - 7] << 3, 0xff, 0xfe]);
+                assert_eq!(frame.samples_per_channel, 2880);
+            }
+        }
+        for (index, pair) in frames.windows(2).enumerate() {
+            assert_eq!(
+                pair[1].rtp_timestamp.wrapping_sub(pair[0].rtp_timestamp),
+                if index < 7 { 960 } else { 2880 }
+            );
+        }
+    }
+    assert_eq!(decoder.decoder_statistics().unwrap().input_packets, before);
+    let owned = received[0][0].clone();
+    source.close().unwrap();
+    for peer in &mut peers {
+        peer.close().unwrap();
+    }
+    assert_eq!(owned.data, OPUS[0]);
+}
+
+#[test]
 fn controlled_simulcast_admission_is_atomic_and_bitrate_errors_are_native() {
     let _guard = CONTROLLED_TEST
         .lock()

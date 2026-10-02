@@ -50,11 +50,18 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
 
   void AddSink(webrtc::AudioTrackSinkInterface* sink) override {
     std::lock_guard lock(mutex_);
-    if (!closed_ && sink) sinks_.push_back(sink);
+    if (closed_ || !sink ||
+        next_recipient_ == std::numeric_limits<std::uint32_t>::max() ||
+        std::any_of(sinks_.begin(), sinks_.end(),
+                    [sink](const auto& entry) { return entry.sink == sink; }))
+      return;
+    sinks_.push_back({sink, ++next_recipient_});
   }
   void RemoveSink(webrtc::AudioTrackSinkInterface* sink) override {
     std::lock_guard lock(mutex_);
-    sinks_.remove(sink);
+    // Queued native input can outlive detachment. Keep its reservation until
+    // consumption, or source close; removal alone is not a consumption receipt.
+    sinks_.remove_if([sink](const auto& entry) { return entry.sink == sink; });
   }
   bool HasSinks() {
     std::lock_guard lock(mutex_);
@@ -65,10 +72,52 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
             std::optional<std::int64_t> capture_time_ms = std::nullopt) {
     std::lock_guard lock(mutex_);
     if (closed_) return false;
-    for (auto* sink : sinks_) {
+    for (const auto& entry : sinks_) {
       // Only explicitly mapped controlled timing is forwarded. Ordinary raw
       // caller timestamps are not automatically a TimeMillis capture clock.
-      sink->OnData(samples, 16, sample_rate, channels, frames, capture_time_ms);
+      entry.sink->OnData(samples, 16, sample_rate, channels, frames, capture_time_ms);
+    }
+    return true;
+  }
+  bool PushOpus(std::span<const std::uint8_t> payload,
+                std::uint32_t rtp_timestamp, std::uint32_t samples_per_channel,
+                std::uint8_t channels, std::int64_t capture_time_us,
+                const std::shared_ptr<opus_carrier::Budget>& budget,
+                std::uint32_t source_id) {
+    using namespace opus_carrier;
+    // Snapshot and deliver the complete packet under the same sink lock.
+    // No recipient can join/leave between its individual carrier blocks.
+    std::lock_guard lock(mutex_);
+    if (closed_ || sinks_.empty() || !source_id) return false;
+    std::vector<std::uint32_t> recipients;
+    for (const auto& entry : sinks_) recipients.push_back(entry.recipient);
+    const auto slots = samples_per_channel / 480;
+    const auto packet = Reserve(*budget, slots, recipients);
+    if (!packet) return false;
+    const auto block_bytes = kBytesPerChannelBlock * channels;
+    const auto capacity = block_bytes - kHeaderBytes;
+    const auto checksum = Checksum(payload);
+    for (const auto& entry : sinks_) {
+      for (std::uint32_t slot = 0; slot < slots; ++slot) {
+        std::array<std::int16_t, 960> samples{};
+        auto* bytes = reinterpret_cast<std::uint8_t*>(samples.data());
+        std::memcpy(bytes, kMagic.data(), kMagic.size());
+        Store16(bytes + 8, static_cast<std::uint16_t>(payload.size()));
+        Store16(bytes + 10, static_cast<std::uint16_t>(samples_per_channel));
+        Store32(bytes + 12, rtp_timestamp);
+        Store32(bytes + 16, checksum);
+        Store32(bytes + 20, source_id);
+        Store32(bytes + 24, *packet);
+        Store32(bytes + 28, entry.recipient);
+        bytes[32] = static_cast<std::uint8_t>(slot);
+        const auto offset = slot * capacity;
+        if (offset < payload.size())
+          std::memcpy(bytes + kHeaderBytes, payload.data() + offset,
+                      std::min(capacity, payload.size() - offset));
+        const auto capture_ms = capture_time_us < 0 ? std::nullopt :
+            std::optional<std::int64_t>(capture_time_us / 1000 + slot * 10);
+        entry.sink->OnData(samples.data(), 16, 48000, channels, 480, capture_ms);
+      }
     }
     return true;
   }
@@ -82,7 +131,12 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
 
  private:
   mutable std::mutex mutex_;
-  std::list<webrtc::AudioTrackSinkInterface*> sinks_;
+  struct Sink {
+    webrtc::AudioTrackSinkInterface* sink;
+    std::uint32_t recipient;
+  };
+  std::list<Sink> sinks_;
+  std::uint32_t next_recipient_ = 0;
   webrtc::AudioOptions options_;
   std::atomic<bool> closed_{false};
 };
@@ -97,7 +151,8 @@ std::uint32_t OpusSamples(std::span<const std::uint8_t> data) {
   const unsigned count = code == 0 ? 1 : code == 3
       ? (data.size() > 1 ? data[1] & 63 : 0) : 2;
   if (count == 0 || count > 48) return 0;
-  const unsigned per_frame = config < 12 ? (480u << (config & 3))
+  const unsigned per_frame = config < 12
+      ? ((config & 3) == 3 ? 2880u : (480u << (config & 3)))
       : config < 16 ? (480u << (config & 1))
       : (120u << (config & 3));
   const unsigned samples = count * per_frame;
@@ -455,46 +510,17 @@ bool audio_source_push_opus_at(const NativeAudioSource& source,
       payload.size() > kMaxPayloadBytes ||
       ((payload[0] & 4) != 0) != (channels == 2) ||
       OpusSamples({payload.data(), payload.size()}) != samples_per_channel ||
-      payload.size() + kHeaderBytes >
-          (samples_per_channel / 480) * block_bytes) return false;
+      payload.size() >
+          (samples_per_channel / 480) * (block_bytes - kHeaderBytes)) return false;
   auto& state = *source.state();
   std::lock_guard lock(state.frame_mutex);
-  if (!state.source->HasSinks()) return false;
   if (!state.budget) {
     state.budget = std::make_shared<Budget>();
     state.budget_id = Register(state.budget);
   }
-  const auto slots = samples_per_channel / 480;
-  const auto packet = Reserve(*state.budget, slots);
-  if (!packet) return false;
-  for (std::uint32_t slot = 0; slot < slots; ++slot) {
-    std::array<std::int16_t, 960> samples{};
-    auto* bytes = reinterpret_cast<std::uint8_t*>(samples.data());
-    if (slot == 0) {
-      std::memcpy(bytes, kMagic.data(), kMagic.size());
-      Store16(bytes + 8, static_cast<std::uint16_t>(payload.size()));
-      Store16(bytes + 10, static_cast<std::uint16_t>(samples_per_channel));
-      Store32(bytes + 12, rtp_timestamp);
-      Store32(bytes + 16, Checksum({payload.data(), payload.size()}));
-      Store32(bytes + 20, state.budget_id);
-      Store32(bytes + 24, *packet);
-    }
-    const auto available = slot == 0 ? block_bytes - kHeaderBytes : block_bytes;
-    const auto payload_offset = slot == 0 ? 0 :
-        (block_bytes - kHeaderBytes) + (slot - 1) * block_bytes;
-    if (payload_offset < payload.size()) {
-      std::memcpy(bytes + (slot == 0 ? kHeaderBytes : 0),
-                  payload.data() + payload_offset,
-                  std::min(available, payload.size() - payload_offset));
-    }
-    const auto capture_ms = capture_time_us < 0 ? std::nullopt :
-        std::optional<std::int64_t>(capture_time_us / 1000 + slot * 10);
-    if (!state.source->Push(samples.data(), 48000, channels, 480, capture_ms)) {
-      Acknowledge(state.budget_id, *packet);
-      return false;
-    }
-  }
-  return true;
+  return state.source->PushOpus({payload.data(), payload.size()}, rtp_timestamp,
+                                samples_per_channel, channels, capture_time_us,
+                                state.budget, state.budget_id);
 }
 std::unique_ptr<NativeAudioTrack> create_microphone_track(
     const NativePeerConnectionFactory& factory, rust::Str id) noexcept {

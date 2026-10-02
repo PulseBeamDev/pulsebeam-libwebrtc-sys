@@ -203,13 +203,16 @@ a mono sender cannot consume a stereo carrier. Push complete Opus packets (witho
 headers) with a matching mono/stereo TOC as `OpusInputFrame`, supplying the
 48 kHz RTP timestamp and matching 10 to 60 ms duration. Input is limited to
 1200 bytes per packet and must fit within 960 bytes per channel per 10 ms
-block, minus 28 bytes for the first block's internal header. The adapter carries those
+block, minus 36 bytes per block for the internal envelope. The adapter carries those
 bytes to an Opus pass-through encoder without calling the Opus encoder;
 WebRTC creates the RTP headers,
 RTCP and encrypted transport. Each source is independent. The source admits at
-most 24 outstanding 10 ms blocks and returns `Backpressure` before admitting
-more, including when no track is attached. Retry without advancing the input
-timestamp. This factory is Opus-only and rejects raw PCM sources; use a
+most 24 outstanding 10 ms input copies across all attached senders and returns
+`Backpressure` before admitting more, including when no sender is attached.
+Each native encoder consumption releases only its own input slot. Detaching a
+sender does not release its still-queued copies; if native input is discarded
+before encoding, capacity is conservatively retained until source close.
+Retry without advancing the input timestamp. This factory is Opus-only and rejects raw PCM sources; use a
 separate peer factory for raw PCM tracks. The adapter does not validate that
 packet bodies can be decoded. WebRTC cannot
 re-encode these packets to match a changing bitrate; the caller controls

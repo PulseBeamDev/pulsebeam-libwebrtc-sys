@@ -2,7 +2,7 @@
   "schema_version": 3,
   "bridge": {
     "identity": "pulsebeam-webrtc-sys-bridge-v2",
-    "native_adapter_sha256": "4143df3d1a08d351304fb2abc57172555ba61da82ea67264a621d0b18ad786b6",
+    "native_adapter_sha256": "bdc6a4a251970846f5a0fbfd0827c5ac07bd894caf58a4026b0a0070c65353e8",
     "cxx": {
       "version": "1.0.200",
       "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",

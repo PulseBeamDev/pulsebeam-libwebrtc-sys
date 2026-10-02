@@ -431,8 +431,10 @@ impl std::error::Error for OpusInputError {}
 /// encoding; each source carries its own bytes through a 48 kHz bridge
 /// matching its configured mono or stereo format.
 /// The factory accepts Opus-only tracks, not raw PCM tracks. At most 24
-/// in-flight 10 ms slots are admitted per source; retry on `Backpressure`.
-/// No frame is queued if the source has no attached track.
+/// in-flight 10 ms input copies are admitted per source, counting every attached
+/// sender. Retry on `Backpressure`. Detachment does not count as consumption;
+/// if native input is discarded before encoding, capacity is conservatively
+/// retained until source close. No frame is queued without an attached sender.
 /// ```compile_fail
 /// fn assert_send<T: Send>() {}
 /// assert_send::<pulsebeam_webrtc_sys::EncodedAudioSource>();
@@ -502,7 +504,11 @@ impl EncodedAudioSource {
             _ => 2,
         };
         let samples = (if config < 12 {
-            480u32 << (config & 3)
+            if config & 3 == 3 {
+                2880
+            } else {
+                480u32 << (config & 3)
+            }
         } else if config < 16 {
             480u32 << (config & 1)
         } else {
@@ -510,7 +516,7 @@ impl EncodedAudioSource {
         }) * count;
         if samples != frame.samples_per_channel
             || !matches!(samples, 480 | 960 | 1440 | 1920 | 2400 | 2880)
-            || bytes.len() + 28 > (samples as usize / 480) * 960 * self.channels as usize
+            || bytes.len() > (samples as usize / 480) * (960 * self.channels as usize - 36)
         {
             return Err(OpusInputError::InvalidDuration);
         }

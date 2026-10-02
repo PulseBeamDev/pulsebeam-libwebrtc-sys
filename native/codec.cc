@@ -906,30 +906,53 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
     auto block = std::span(reinterpret_cast<const std::uint8_t*>(audio.data()),
                            audio.size_bytes());
     const auto block_bytes = kBytesPerChannelBlock * channels_;
-    if (block.size() != block_bytes) return info;
-    if (remaining_ == 0) {
-      if (!HasMagic(block)) return info;
-      expected_bytes_ = Load16(block.data() + 8);
-      const auto duration = Load16(block.data() + 10);
-      if (duration < 480 || duration > 2880 || duration % 480 != 0 ||
-          expected_bytes_ == 0 ||
-          expected_bytes_ + kHeaderBytes > (duration / 480) * block_bytes) {
-        return info;
-      }
+    if (block.size() != block_bytes || !HasMagic(block)) {
+      Reset();
+      return info;
+    }
+    const auto length = Load16(block.data() + 8);
+    const auto duration = Load16(block.data() + 10);
+    const auto packet_timestamp = Load32(block.data() + 12);
+    const auto checksum = Load32(block.data() + 16);
+    const auto source = Load32(block.data() + 20);
+    const auto packet = Load32(block.data() + 24);
+    const auto recipient = Load32(block.data() + 28);
+    const auto slot = block[32];
+    if (duration < 480 || duration > 2880 || duration % 480 != 0 ||
+        !length || length > kMaxPayloadBytes ||
+        length > (duration / 480) * (block_bytes - kHeaderBytes) ||
+        slot >= duration / 480 || !source || !packet || !recipient) {
+      Reset();
+      return info;
+    }
+    // This native input copy has been consumed, even if reset or replacement
+    // means it no longer belongs to a complete packet assembly. Never release
+    // still-queued copies from another recipient or later slots on Reset.
+    Acknowledge(source, packet, recipient, slot);
+    if (slot == 0) {
+      expected_bytes_ = length;
       next_slots_ = duration / 480;
       remaining_ = next_slots_;
-      packet_timestamp_ = Load32(block.data() + 12);
-      checksum_ = Load32(block.data() + 16);
-      source_id_ = Load32(block.data() + 20);
-      packet_id_ = Load32(block.data() + 24);
+      packet_timestamp_ = packet_timestamp;
+      checksum_ = checksum;
+      source_id_ = source;
+      packet_id_ = packet;
+      recipient_id_ = recipient;
       if (!first_timestamp_) {
         first_timestamp_ = packet_timestamp_;
         first_encoder_timestamp_ = timestamp;
       }
       bytes_.clear();
       bytes_.reserve(expected_bytes_);
-      block = block.subspan(kHeaderBytes);
+    } else if (!remaining_ || source != source_id_ || packet != packet_id_ ||
+               recipient != recipient_id_ || length != expected_bytes_ ||
+               duration / 480 != next_slots_ ||
+               slot != next_slots_ - remaining_ ||
+               packet_timestamp != packet_timestamp_ || checksum != checksum_) {
+      Reset();
+      return info;
     }
+    block = block.subspan(kHeaderBytes);
     const auto needed = expected_bytes_ - bytes_.size();
     bytes_.insert(bytes_.end(), block.begin(),
                   block.begin() + std::min(needed, block.size()));
@@ -951,9 +974,9 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
   }
 
   void ReleasePacket() {
-    if (source_id_) opus_carrier::Acknowledge(source_id_, packet_id_);
     source_id_ = 0;
     packet_id_ = 0;
+    recipient_id_ = 0;
   }
 
   const webrtc::AudioEncoderFactory::Options options_;
@@ -965,6 +988,7 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
   std::uint32_t checksum_ = 0;
   std::uint32_t source_id_ = 0;
   std::uint32_t packet_id_ = 0;
+  std::uint32_t recipient_id_ = 0;
   size_t expected_bytes_ = 0;
   size_t next_slots_ = 2;
   size_t remaining_ = 0;
