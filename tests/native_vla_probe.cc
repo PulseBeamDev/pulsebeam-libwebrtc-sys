@@ -77,7 +77,8 @@ int main() {
       published.insert(packet.Ssrc());
       maximum_packet = std::max(maximum_packet, bytes.size());
       // Includes SRTP payload and authentication trailer, not just RTP headers.
-      if (bytes.size() > 1500)
+      // These fixtures use IPv4 UDP; leave 28 bytes for IP/UDP within 1500.
+      if (bytes.size() > 1472)
         return fail("captured primary media exceeded packet-size bound");
       std::string rid;
       if (packet.GetExtension<webrtc::RtpStreamId>(&rid) && rid != stream->second)

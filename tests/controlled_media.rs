@@ -1163,7 +1163,7 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
 }
 
 fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace {
-    run_h264_profile_with_wire(temporal, impaired, simulcast_mode, None)
+    run_h264_profile_with_wire(temporal, impaired, simulcast_mode, None, false)
 }
 
 fn run_h264_profile_with_wire(
@@ -1171,6 +1171,7 @@ fn run_h264_profile_with_wire(
     impaired: bool,
     simulcast_mode: u8,
     mut capture: Option<&mut WireCapture>,
+    opaque: bool,
 ) -> Trace {
     let simulcast = simulcast_mode != 0;
     const KEY: &[u8] = &[
@@ -1178,6 +1179,31 @@ fn run_h264_profile_with_wire(
         0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
         0x84, 0xf1, 0x18, 0xa0, 0, 0x20, 0x5b, 0x1c, 0, 4, 7, 0xe3, 0x80, 0, 0x80, 0xfe,
     ];
+    // Pinned PpsParser consumes the first three Exp-Golomb slice fields.
+    // This fixture encodes them in 88 84 after the NAL header. Keep SPS/PPS
+    // and that clear prefix; replace the remainder, not a complete RBSP.
+    // Nonzero synthetic bytes avoid Annex-B start codes. No crypto or valid
+    // decodable-slice claim is made, and native decode is unavailable here.
+    let key_data = if opaque {
+        let mut data = KEY[..41].to_vec();
+        data.resize(41 + 4096, 0x55);
+        data
+    } else {
+        KEY.to_vec()
+    };
+    fn fidelity(received: &[u8], expected: &[u8], opaque: bool) {
+        if opaque {
+            // Clear SPS/VUI and Annex-B framing may be normalized by native
+            // receive. Protect only the tail, plus check its clear VCL prefix.
+            assert!(received.len() >= 4099);
+            assert_eq!(
+                &received[received.len() - 4099..],
+                &expected[expected.len() - 4099..]
+            );
+        } else {
+            assert_eq!(received, expected);
+        }
+    }
     fn outcome(
         world: &ControlledWorld,
         network: &ControlledSimulatedNetwork,
@@ -1302,7 +1328,9 @@ fn run_h264_profile_with_wire(
                 })
                 .collect();
         }
-        if simulcast_mode >= 2 {
+        if simulcast_mode >= 2 || opaque {
+            // Fund >MTU opaque fixtures through native allocation/pacing;
+            // 4 KiB at 30 fps cannot fit the initial 300 kbps budget.
             peers[0]
                 .set_bitrate(Some(3_000_000), Some(3_000_000), Some(4_000_000))
                 .unwrap();
@@ -1322,7 +1350,7 @@ fn run_h264_profile_with_wire(
         }
         assert_eq!(observations.encoded_video.len(), 1);
         let mut unit = EncodedVideoAccessUnit {
-            data: KEY.to_vec(),
+            data: key_data.clone(),
             width: if simulcast { 320 } else { 16 },
             height: if simulcast { 180 } else { 16 },
             timestamp_us: i64::try_from(world.now().as_micros()).unwrap(),
@@ -1358,7 +1386,7 @@ fn run_h264_profile_with_wire(
             break 'lifecycle observations.trace;
         }
         let first = result.unwrap();
-        assert_eq!(first.data, unit.data);
+        fidelity(&first.data, &unit.data, opaque);
         assert!(first.key_frame);
         assert_eq!(first.temporal_index, (temporal || simulcast).then_some(0));
         assert!(first.dependencies.is_empty());
@@ -1417,6 +1445,10 @@ fn run_h264_profile_with_wire(
                 world.advance(Duration::from_millis(34)).unwrap();
                 unit.timestamp_us = i64::try_from(world.now().as_micros()).unwrap();
                 unit.data = vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1, temporal_index];
+                if opaque {
+                    unit.data.truncate(7);
+                    unit.data.resize(7 + 4096, 0x60 + temporal_index);
+                }
                 unit.key_frame = false;
                 unit.metadata.temporal_index = temporal.then_some(temporal_index);
                 unit.metadata.codec = EncodedVideoCodec::H264 {
@@ -1436,7 +1468,7 @@ fn run_h264_profile_with_wire(
                         world.advance(Duration::from_millis(34)).unwrap();
                         let mut key = unit.clone();
                         key.timestamp_us = i64::try_from(world.now().as_micros()).unwrap();
-                        key.data = KEY.to_vec();
+                        key.data = key_data.clone();
                         key.key_frame = true;
                         key.metadata.temporal_index = temporal.then_some(0);
                         key.metadata.codec = EncodedVideoCodec::H264 {
@@ -1447,7 +1479,7 @@ fn run_h264_profile_with_wire(
                         let frame =
                             outcome(&world, &network, &peers, &source, &mut observations, before)
                                 .unwrap();
-                        assert_eq!(frame.data, key.data);
+                        fidelity(&frame.data, &key.data, opaque);
                         base_id = frame.frame_id;
                         source.take_keyframe_request();
                     }
@@ -1455,7 +1487,7 @@ fn run_h264_profile_with_wire(
             }
             let received =
                 delivered.expect("controlled producer responds to native keyframe feedback");
-            assert_eq!(received.data, unit.data);
+            fidelity(&received.data, &unit.data, opaque);
             assert_eq!(received.ssrc, first.ssrc);
             assert_eq!(
                 received.temporal_index,
@@ -1645,6 +1677,34 @@ fn controlled_h264_simulcast_native_sender_rejects_ambiguous_fallback() {
 }
 
 #[test]
+fn controlled_h264_opaque_tail_survives_fragmentation_without_decode() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for temporal in [false, true] {
+        for impaired in [false, true] {
+            let mut wire = WireCapture::default();
+            let first = run_h264_profile_with_wire(temporal, impaired, 0, Some(&mut wire), true);
+            let replay = run_h264_profile_with_wire(temporal, impaired, 0, None, true);
+            assert_eq!(first, replay);
+            assert!(first.video.is_empty());
+            assert!(first.encoded_video.len() >= 5);
+            assert!(
+                first
+                    .encoded_video
+                    .iter()
+                    .all(|(_, frame)| frame.data.len() >= 4099)
+            );
+            // Captured full UDP payloads, not a guessed RTP header/payload
+            // accounting model. Reassembled protected tails exceed this bound.
+            assert!(!wire.packets.is_empty());
+            // IPv4 fixture: include the 28-byte IP/UDP transport overhead.
+            assert!(wire.packets.iter().all(|packet| packet.len() + 28 <= 1500));
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires PULSEBEAM_NATIVE_VLA_PROBE compiled against the matching exported SDK"]
 fn native_vla_wire_uses_provided_offline_parser() {
     use std::io::Write;
@@ -1653,9 +1713,9 @@ fn native_vla_wire_uses_provided_offline_parser() {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let probe = std::env::var_os("PULSEBEAM_NATIVE_VLA_PROBE").expect("native parser probe path");
-    for impaired in [false, true] {
+    for (impaired, opaque) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut wire = WireCapture::default();
-        let _trace = run_h264_profile_with_wire(false, impaired, 2, Some(&mut wire));
+        let _trace = run_h264_profile_with_wire(false, impaired, 2, Some(&mut wire), opaque);
         // All native roots and controlled hooks are gone. Only the external
         // test process invokes this offline parser, never an engine helper.
         let mut child = Command::new(&probe)
@@ -1682,10 +1742,13 @@ fn native_vla_wire_uses_provided_offline_parser() {
         let output = child.wait_with_output().unwrap();
         assert!(
             output.status.success(),
-            "native wire probe impaired={impaired}: {}",
+            "native wire probe impaired={impaired} opaque={opaque}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+        eprintln!(
+            "impaired={impaired} opaque={opaque}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 }
 

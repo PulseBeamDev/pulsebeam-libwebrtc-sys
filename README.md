@@ -629,8 +629,24 @@ cargo test --offline --test controlled_media native_vla_wire_uses_provided_offli
 The probe-dependent test is explicitly ignored in the default Rust suite; run
 it separately for wire qualification. It checks native full three-rung
 allocations, RID/index association, actual primary SSRC publication and the
-full captured packet-size bound. This does not establish simultaneous stock
-simulcast receipt or exhaustive MTU/retransmission behavior.
+full captured UDP payload-size bound (leaving IPv4/UDP overhead within 1500
+bytes). Sender-only three-rung runs also exercise fragmented synthetic opaque
+tails: the largest primary UDP payload observed was 1077 bytes, with full native
+VLA present on all three primary SSRCs. This does not establish simultaneous
+stock simulcast receipt or exhaustive MTU/retransmission behavior.
+
+`controlled_h264_opaque_tail_survives_fragmentation_without_decode` separately
+qualifies exact 4 KiB synthetic protected-tail reassembly for H264 without DD
+and L1T3 with DD, on ordinary and loss/duplication/reordering links with exact
+normalized replay. It retains clear Annex-B/NAL framing, valid SPS/PPS and the
+slice fields consumed by the pinned native parser. Native may normalize the
+unprotected SPS/VUI and framing, so only the protected VCL tail and its clear
+slice prefix are compared. The SDK remains responsible for encryption,
+authentication and syntax-safe protected framing; the fixture provides neither
+cryptography nor a valid decodable-slice claim. Received keyframe, temporal,
+dependency and SSRC metadata are checked independently. Native bitrate control
+funds these large frames rather than overriding native allocation or pacing;
+builtin H264 decode remains unavailable and encoded interception terminal.
 
 For direct encoded sending, create `EncodedVideoInput::new_for_format()` with
 an actual VP8, VP9, AV1 or H265 format (or `EncodedH264Input::new()` for the
