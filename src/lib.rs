@@ -28,7 +28,7 @@ pub use audio::AudioDevice;
 pub use audio::{
     AudioCodecCapability, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink,
     AudioSource, AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
-    EncodedAudioSource, OpusInputError, OpusInputFrame, ReceivedAudioFrame,
+    EncodedAudioSource, OpusAudioLevel, OpusInputError, OpusInputFrame, ReceivedAudioFrame,
 };
 pub use audio_processing::{
     AudioProcessingConfig, AudioProcessingOptions, AudioProcessingState, GainControl,
@@ -675,6 +675,7 @@ mod ffi {
         ) -> UniquePtr<NativeVideoDecoderFactory>;
         fn new_builtin_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
         fn new_opus_carrier_audio_encoder_factory() -> UniquePtr<NativeAudioEncoderFactory>;
+        fn audio_encoder_opus_handoff_failures(factory: &NativeAudioEncoderFactory) -> u64;
         fn new_builtin_audio_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
         fn new_builtin_vp8_decoder_factory() -> UniquePtr<NativeVideoDecoderFactory>;
         fn new_builtin_opus_decoder_factory() -> UniquePtr<NativeAudioDecoderFactory>;
@@ -870,6 +871,16 @@ mod ffi {
             rtp_timestamp: u32,
             samples_per_channel: u32,
             capture_time_us: i64,
+        ) -> bool;
+        fn audio_source_push_opus_with_level_at(
+            source: &NativeAudioSource,
+            payload: &[u8],
+            rtp_timestamp: u32,
+            samples_per_channel: u32,
+            capture_time_us: i64,
+            has_level: bool,
+            level_dbov: u8,
+            voice_activity: bool,
         ) -> bool;
         fn create_audio_source(
             factory: &NativePeerConnectionFactory,

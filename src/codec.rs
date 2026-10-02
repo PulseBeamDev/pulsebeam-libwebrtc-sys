@@ -992,6 +992,14 @@ impl AudioEncoderFactory {
     pub fn is_available(&self) -> bool {
         !self.0.native.is_null()
     }
+    /// Frames dropped at the Opus carrier's native sender handoff because
+    /// callback/queue identity or a supported metadata setter was unavailable.
+    /// This is observed adapter failure, not a submitted-frame echo or delivery
+    /// receipt. Builtin (non-carrier) factories return zero.
+    pub fn opus_frame_handoff_failures(&self) -> u64 {
+        ffi::audio_encoder_opus_handoff_failures(self.native())
+    }
+
     pub(crate) fn native(&self) -> &ffi::NativeAudioEncoderFactory {
         self.0
             .native

@@ -495,6 +495,25 @@ fn input_hash(bytes: &[u8]) -> u64 {
     })
 }
 
+// Fixture-only producer wrapper: every normal lifecycle submission explicitly
+// declares metadata. Assertions inspect actual native receive output below.
+struct DeclaredOpusSource {
+    source: EncodedAudioSource,
+    level: OpusAudioLevel,
+}
+impl std::ops::Deref for DeclaredOpusSource {
+    type Target = EncodedAudioSource;
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
+}
+impl DeclaredOpusSource {
+    fn push_opus_at(&self, frame: &OpusInputFrame, time: Duration) -> Result<(), OpusInputError> {
+        self.source
+            .push_opus_at_with_audio_level(frame, time, self.level)
+    }
+}
+
 fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let trace = {
@@ -504,6 +523,10 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
         let audio_decoders = [
             AudioDecoderFactory::builtin_opus().unwrap(),
             AudioDecoderFactory::builtin_opus().unwrap(),
+        ];
+        let audio_encoders = [
+            AudioEncoderFactory::with_opus_frames().unwrap(),
+            AudioEncoderFactory::with_opus_frames().unwrap(),
         ];
         let video_decoders = [
             VideoDecoderFactoryHandle::builtin_vp8().unwrap(),
@@ -523,7 +546,7 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
                     .unwrap()
                     .network_manager(endpoint.network_manager().unwrap())
                     .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
-                    .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+                    .audio_encoder_factory(audio_encoders[who].clone())
                     .audio_decoder_factory(audio_decoders[who].clone())
                     .video_encoder_factory(input.encoder_factory())
                     .video_decoder_factory(video_decoders[who].clone())
@@ -542,7 +565,11 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
         ];
         let audio_sources: Vec<_> = factories
             .iter()
-            .map(|factory| factory.create_encoded_audio_source(1).unwrap())
+            .enumerate()
+            .map(|(who, factory)| DeclaredOpusSource {
+                source: factory.create_encoded_audio_source(1).unwrap(),
+                level: OpusAudioLevel::new(if who == 0 { 127 } else { 0 }, who == 1).unwrap(),
+            })
             .collect();
         let mut video_sources: Vec<_> = factories
             .iter()
@@ -1160,6 +1187,8 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             while let Some(frame) = encoded.try_next_frame() {
                 assert_eq!(frame.data, OPUS[0]);
                 assert!(frame.sequence_number.is_some());
+                assert_eq!(frame.audio_level_dbov, Some(127));
+                assert_eq!(frame.voice_activity, Some(false));
                 observations.trace.encoded_audio.push((1, frame));
             }
             world.advance(Duration::from_millis(10)).unwrap();
@@ -1249,6 +1278,18 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
         // Close with accepted signaling, encoded input and network work still
         // queued. Every observed operation must terminate exactly once, without
         // decoding or emitting media after close.
+        for who in 0..2 {
+            audio_sources[who]
+                .push_opus_at(
+                    &OpusInputFrame {
+                        data: vec![3 << 3, 0xff, 0xfe],
+                        rtp_timestamp: (world.now().as_micros() * 48 / 1000) as u32,
+                        samples_per_channel: 2880,
+                    },
+                    world.now(),
+                )
+                .unwrap();
+        }
         reborn.push_encoded(vp8_frame(&world, VP8[0])).unwrap();
         let pending = [
             (0, peers[0].create_offer()),
@@ -1305,6 +1346,11 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
                 .video
                 .iter()
                 .all(|(_, sink)| sink.try_next_received_frame().is_none())
+        );
+        assert!(
+            audio_encoders
+                .iter()
+                .all(|encoder| encoder.opus_frame_handoff_failures() == 0)
         );
         observations.trace
     };
@@ -1908,11 +1954,22 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
     let _guard = CONTROLLED_TEST
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    for include_level in [true, false] {
+        run_opus_fanout_metadata(include_level);
+    }
+}
+
+fn run_opus_fanout_metadata(include_level: bool) {
     let world = ControlledWorld::acquire(734, Duration::from_secs(10)).unwrap();
     let network = world.create_network().unwrap();
     let input = EncodedVideoInput::new_for_format(VideoCodecFormat::new("VP8")).unwrap();
     let decoder = AudioDecoderFactory::builtin_opus().unwrap();
     let video_decoder = VideoDecoderFactoryHandle::builtin_vp8().unwrap();
+    let audio_encoder = AudioEncoderFactory::with_opus_frames().unwrap();
+    assert_eq!(
+        OpusAudioLevel::new(128, false),
+        Err(OpusInputError::InvalidAudioLevel)
+    );
     let endpoints: Vec<_> = [1, 2]
         .into_iter()
         .map(|host| {
@@ -1929,7 +1986,7 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
                 .unwrap()
                 .network_manager(endpoint.network_manager().unwrap())
                 .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
-                .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+                .audio_encoder_factory(audio_encoder.clone())
                 .audio_decoder_factory(decoder.clone())
                 .video_encoder_factory(input.encoder_factory())
                 .video_decoder_factory(video_decoder.clone())
@@ -1947,13 +2004,29 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
             .unwrap(),
     ];
     let mut source = factories[0].create_encoded_audio_source(1).unwrap();
-    for id in ["fanout-one", "fanout-two"] {
-        let track = factories[0]
-            .create_encoded_audio_track(id, &source)
-            .unwrap();
-        peers[0]
+    let mut independent = factories[0].create_encoded_audio_source(1).unwrap();
+    let mut transceivers = Vec::new();
+    for (id, source) in [
+        ("fanout-one", &source),
+        ("fanout-two", &source),
+        ("independent-three", &independent),
+    ] {
+        let track = factories[0].create_encoded_audio_track(id, source).unwrap();
+        let transceiver = peers[0]
             .add_audio_transceiver(&track, RtpTransceiverDirection::SendOnly)
             .unwrap();
+        if !include_level {
+            let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
+            extensions
+                .iter_mut()
+                .find(|extension| extension.uri() == "urn:ietf:params:rtp-hdrext:ssrc-audio-level")
+                .unwrap()
+                .direction = RtpHeaderExtensionDirection::Stopped;
+            transceiver
+                .set_header_extensions_to_negotiate(&extensions)
+                .unwrap();
+        }
+        transceivers.push(transceiver);
     }
     let mut observations = Observations::default();
     observations.negotiate(&world, &network, &peers, 0);
@@ -1984,7 +2057,7 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
     }
     observations.audio.clear();
     let receivers = peers[1].audio_receivers().unwrap();
-    assert_eq!(receivers.len(), 2);
+    assert_eq!(receivers.len(), 3);
     let sinks: Vec<_> = receivers
         .iter()
         .map(|receiver| receiver.attach_encoded_audio_sink().unwrap())
@@ -1997,26 +2070,45 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
     };
     // No pumping occurs during admission: 6 packets * 2 slots * 2 native
     // recipients exhaust the 24-copy source budget, not 12 source packets.
+    let level = |index: usize, opposite: bool| {
+        let dbov = [0, 127, 73, 2, 111, 127, 42, 88, 7, 120][index];
+        let voice = index % 2 == 1;
+        OpusAudioLevel::new(if opposite { 127 - dbov } else { dbov }, voice != opposite).unwrap()
+    };
     for index in 0..6 {
-        source.push_opus(&frame(index)).unwrap();
+        source
+            .push_opus_with_audio_level(&frame(index), level(index as usize, false))
+            .unwrap();
+        independent
+            .push_opus_with_audio_level(&frame(index), level(index as usize, true))
+            .unwrap();
     }
     let retry = frame(6);
     assert_eq!(source.push_opus(&retry), Err(OpusInputError::Backpressure));
     world.pump(512);
+    // A legacy submission immediately after declared metadata must not inherit
+    // its predecessor's declared digital-silence level.
     source.push_opus(&retry).unwrap();
+    independent
+        .push_opus_with_audio_level(&retry, level(6, true))
+        .unwrap();
     // All three SILK bandwidth groups' final TOC configuration means 60 ms,
     // not 80 ms. Opaque packet bodies are deliberately never decoded.
     for (index, config) in [3, 7, 11].into_iter().enumerate() {
         world.pump(512);
+        let frame = OpusInputFrame {
+            data: vec![config << 3, 0xff, 0xfe],
+            rtp_timestamp: 6720 + index as u32 * 2880,
+            samples_per_channel: 2880,
+        };
         source
-            .push_opus(&OpusInputFrame {
-                data: vec![config << 3, 0xff, 0xfe],
-                rtp_timestamp: 6720 + index as u32 * 2880,
-                samples_per_channel: 2880,
-            })
+            .push_opus_at_with_audio_level(&frame, world.now(), level(index + 7, false))
+            .unwrap();
+        independent
+            .push_opus_with_audio_level(&frame, level(index + 7, true))
             .unwrap();
     }
-    let mut received = [Vec::new(), Vec::new()];
+    let mut received = [Vec::new(), Vec::new(), Vec::new()];
     for _ in 0..2_000 {
         observations.step(&world, &network, &peers, false);
         for (index, sink) in sinks.iter().enumerate() {
@@ -2029,10 +2121,23 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
         }
         world.advance(Duration::from_millis(1)).unwrap();
     }
-    assert_eq!(received.each_ref().map(Vec::len), [10, 10]);
+    assert_eq!(received.each_ref().map(Vec::len), [10, 10, 10]);
     assert_ne!(received[0][0].ssrc, received[1][0].ssrc);
-    for frames in &received {
+    assert_ne!(received[0][0].ssrc, received[2][0].ssrc);
+    assert_ne!(received[1][0].ssrc, received[2][0].ssrc);
+    for (who, frames) in received.iter().enumerate() {
         for (index, frame) in frames.iter().enumerate() {
+            if !include_level {
+                assert_eq!(frame.audio_level_dbov, None);
+                assert_eq!(frame.voice_activity, None);
+            } else if index == 6 && who < 2 {
+                assert_ne!(frame.audio_level_dbov, Some(127));
+                assert_eq!(frame.voice_activity, Some(true));
+            } else {
+                let expected = level(index, who == 2);
+                assert_eq!(frame.audio_level_dbov, Some(expected.level_dbov()));
+                assert_eq!(frame.voice_activity, Some(expected.voice_activity()));
+            }
             if index < 7 {
                 assert_eq!(frame.data, OPUS[0]);
                 assert_eq!(frame.samples_per_channel, 960);
@@ -2049,11 +2154,120 @@ fn controlled_opus_source_fanout_bounds_copies_and_preserves_packets() {
         }
     }
     assert_eq!(decoder.decoder_statistics().unwrap().input_packets, before);
+    assert_eq!(audio_encoder.opus_frame_handoff_failures(), 0);
     let owned = received[0][0].clone();
+    // Accept six 10 ms inputs, give bounded queued/no-output work one turn,
+    // then retire both old senders. Their generations cannot supply metadata
+    // to a later encoder even if the native queue allocator reuses an address.
+    source
+        .push_opus_with_audio_level(
+            &OpusInputFrame {
+                data: vec![3 << 3, 0xff, 0xfe],
+                rtp_timestamp: 15360,
+                samples_per_channel: 2880,
+            },
+            OpusAudioLevel::new(126, false).unwrap(),
+        )
+        .unwrap();
+    world.pump(1);
+    for transceiver in &transceivers[..2] {
+        transceiver.stop().unwrap();
+    }
     source.close().unwrap();
+    let previous_ids: Vec<_> = receivers.iter().map(|receiver| receiver.id()).collect();
+    let mut replacement = factories[0].create_encoded_audio_source(1).unwrap();
+    let track = factories[0]
+        .create_encoded_audio_track("fanout-reborn", &replacement)
+        .unwrap();
+    let transceiver = peers[0]
+        .add_audio_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    if !include_level {
+        let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
+        extensions
+            .iter_mut()
+            .find(|extension| extension.uri() == "urn:ietf:params:rtp-hdrext:ssrc-audio-level")
+            .unwrap()
+            .direction = RtpHeaderExtensionDirection::Stopped;
+        transceiver
+            .set_header_extensions_to_negotiate(&extensions)
+            .unwrap();
+    }
+    observations.negotiate(&world, &network, &peers, 0);
+    for (_, sink) in &mut observations.audio {
+        sink.close().unwrap();
+    }
+    observations.audio.clear();
+    let receiver = peers[1]
+        .audio_receivers()
+        .unwrap()
+        .into_iter()
+        .find(|receiver| !previous_ids.contains(&receiver.id()))
+        .expect("fresh audio receiver");
+    let new_sink = receiver.attach_encoded_audio_sink().unwrap();
+    let new_payload = vec![0xf8, 0xfe, 0xff];
+    replacement
+        .push_opus_with_audio_level(
+            &OpusInputFrame {
+                data: new_payload.clone(),
+                rtp_timestamp: 0,
+                samples_per_channel: 960,
+            },
+            OpusAudioLevel::new(76, true).unwrap(),
+        )
+        .unwrap();
+    independent
+        .push_opus_with_audio_level(
+            &OpusInputFrame {
+                data: OPUS[0].to_vec(),
+                rtp_timestamp: 15360,
+                samples_per_channel: 960,
+            },
+            OpusAudioLevel::new(3, false).unwrap(),
+        )
+        .unwrap();
+    let mut reborn = None;
+    let mut continuous = None;
+    for _ in 0..2_000 {
+        observations.step(&world, &network, &peers, false);
+        if let Some(frame) = new_sink.try_next_frame() {
+            reborn = Some(frame);
+        }
+        if let Some(frame) = sinks[2].try_next_frame() {
+            continuous = Some(frame);
+        }
+        if reborn.is_some() && continuous.is_some() {
+            break;
+        }
+        world.advance(Duration::from_millis(1)).unwrap();
+    }
+    let reborn = reborn.expect("replacement packet");
+    let continuous = continuous.expect("unrelated sender continuity");
+    assert_eq!(reborn.data, new_payload);
+    assert_eq!(reborn.samples_per_channel, 960);
+    assert_eq!(continuous.data, OPUS[0]);
+    assert_eq!(reborn.audio_level_dbov, include_level.then_some(76));
+    assert_eq!(reborn.voice_activity, include_level.then_some(true));
+    assert_eq!(continuous.audio_level_dbov, include_level.then_some(3));
+    assert_eq!(continuous.voice_activity, include_level.then_some(false));
+    assert_eq!(decoder.decoder_statistics().unwrap().input_packets, before);
+    // Shutdown with freshly accepted metadata still queued.
+    replacement
+        .push_opus_with_audio_level(
+            &OpusInputFrame {
+                data: new_payload,
+                rtp_timestamp: 960,
+                samples_per_channel: 960,
+            },
+            OpusAudioLevel::new(91, false).unwrap(),
+        )
+        .unwrap();
+    replacement.close().unwrap();
+    independent.close().unwrap();
     for peer in &mut peers {
         peer.close().unwrap();
     }
+    assert_eq!(audio_encoder.opus_frame_handoff_failures(), 0);
     assert_eq!(owned.data, OPUS[0]);
 }
 

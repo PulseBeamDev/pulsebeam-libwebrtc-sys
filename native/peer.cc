@@ -26,6 +26,7 @@
 #include "api/audio/builtin_audio_processing_builder.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
+#include "api/frame_transformer_interface.h"
 #include "api/enable_media.h"
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
@@ -665,6 +666,7 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
 }  // namespace
 
 struct NativePeerConnectionFactory::State {
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   std::shared_ptr<ReadinessSignal> readiness;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
@@ -674,6 +676,7 @@ struct NativePeerConnectionFactory::State {
 };
 
 struct NativePeerConnection::State {
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   bool native_audio_enabled = false;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer;
@@ -743,6 +746,10 @@ webrtc::Thread* NativePeerConnection::signaling_thread() const noexcept {
 }
 webrtc::Thread* NativePeerConnection::worker_thread() const noexcept {
   return state_->worker_thread;
+}
+webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
+NativePeerConnection::opus_transformer() const noexcept {
+  return state_->opus_transformer;
 }
 std::shared_ptr<ReadinessSignal>
 NativePeerConnection::readiness() const noexcept {
@@ -897,6 +904,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   state->readiness = readiness ? readiness->signal() : nullptr;
   state->headless_audio_device = std::move(headless_audio_device);
   state->audio_device = std::move(platform_audio_device);
+  state->opus_transformer = audio_encoder ? audio_encoder->opus_transformer() : nullptr;
   state->factory = std::move(factory);
   state->signaling_thread = signaling_thread.thread();
   state->worker_thread = worker_thread.thread();
@@ -1089,6 +1097,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     return nullptr;
   }
   auto state = std::make_unique<NativePeerConnection::State>();
+  state->opus_transformer = factory.state()->opus_transformer;
   state->headless_audio_device = factory.state()->headless_audio_device;
   state->native_audio_enabled = factory.state()->audio_device != nullptr;
   state->peer = result.MoveValue();

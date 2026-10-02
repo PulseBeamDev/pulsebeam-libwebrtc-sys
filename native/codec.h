@@ -9,6 +9,7 @@
 namespace webrtc {
 class AudioDecoderFactory;
 class AudioEncoderFactory;
+class FrameTransformerInterface;
 class VideoFrame;
 class VideoDecoderFactory;
 class VideoEncoderFactory;
@@ -101,6 +102,7 @@ public:
   ~NativeAudioEncoderFactory();
   const State &state() const noexcept;
   webrtc::scoped_refptr<webrtc::AudioEncoderFactory> factory() const noexcept;
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer() const noexcept;
 
 private:
   std::unique_ptr<State> state_;
@@ -126,6 +128,8 @@ std::unique_ptr<NativeAudioEncoderFactory>
 new_builtin_audio_encoder_factory() noexcept;
 std::unique_ptr<NativeAudioEncoderFactory>
 new_opus_carrier_audio_encoder_factory() noexcept;
+std::uint64_t audio_encoder_opus_handoff_failures(
+    const NativeAudioEncoderFactory& factory) noexcept;
 std::unique_ptr<NativeAudioDecoderFactory>
 new_builtin_audio_decoder_factory() noexcept;
 std::unique_ptr<NativeVideoDecoderFactory>

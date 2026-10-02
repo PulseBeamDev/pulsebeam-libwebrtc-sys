@@ -9,6 +9,7 @@
 
 namespace webrtc {
 class AudioDeviceModule;
+class FrameTransformerInterface;
 class PeerConnectionFactoryInterface;
 class PeerConnectionInterface;
 class Thread;
@@ -69,6 +70,7 @@ class NativePeerConnection final {
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer() const noexcept;
   webrtc::Thread* signaling_thread() const noexcept;
   webrtc::Thread* worker_thread() const noexcept;
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer() const noexcept;
   std::shared_ptr<ReadinessSignal> readiness() const noexcept;
   bool reserve_encoded_receiver(const std::string& id) const noexcept;
   bool reserve_audio_receiver(const std::string& id) const noexcept;

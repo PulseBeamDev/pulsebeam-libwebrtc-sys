@@ -5,9 +5,9 @@ mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
     AudioDecoderFactory, AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment,
-    ManualClock, OperationId, OpusInputError, OpusInputFrame, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RtpHeaderExtensionDirection,
-    RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
+    ManualClock, OperationId, OpusAudioLevel, OpusInputError, OpusInputFrame, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
+    RtpHeaderExtensionDirection, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
 };
 
 fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> {
@@ -239,11 +239,12 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
     let b = network
         .register_endpoint(Ipv4Addr::new(10, 9, 0, 2).into())
         .unwrap();
+    let encoder = AudioEncoderFactory::with_opus_frames().unwrap();
     let alice_factory = PeerConnectionFactory::builder()
         .environment(environment.clone())
         .network_manager(a.network_manager().unwrap())
         .packet_socket_factory(a.packet_socket_factory().unwrap())
-        .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+        .audio_encoder_factory(encoder.clone())
         .build()
         .unwrap();
     let bob_factory = PeerConnectionFactory::builder()
@@ -393,6 +394,10 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         "peers must connect before pushing Opus"
     );
     let packets = [vec![0xf8, 0xff, 0xfe], vec![0xfc, 0x12, 0x34, 0x56]];
+    let levels = [
+        OpusAudioLevel::new(127, true).unwrap(),
+        OpusAudioLevel::new(0, false).unwrap(),
+    ];
     let mut seen = [false; 2];
     let mut sink_stream = [None; 2];
     let mut last_push_timestamp = [0; 2];
@@ -407,7 +412,7 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
                 });
             }
             if let Some(frame) = &pending[index] {
-                match source.push_opus(frame) {
+                match source.push_opus_with_audio_level(frame, levels[index]) {
                     Ok(()) => {
                         last_push_timestamp[index] = frame.rtp_timestamp;
                         pending[index] = None;
@@ -441,6 +446,8 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
                 }
                 seen[stream] = true;
                 assert_eq!(frame.samples_per_channel, 960);
+                assert_eq!(frame.audio_level_dbov, Some(levels[stream].level_dbov()));
+                assert_eq!(frame.voice_activity, Some(levels[stream].voice_activity()));
             }
         }
         if seen == [true; 2] {
@@ -465,7 +472,7 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         };
         let mut admitted = false;
         for _ in 0..100_000 {
-            match source.push_opus(&frame) {
+            match source.push_opus_with_audio_level(&frame, levels[index]) {
                 Ok(()) => {
                     admitted = true;
                     break;
@@ -495,10 +502,14 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
                 if frame.data == variants[0].0 {
                     assert_eq!(frame.samples_per_channel, 480);
                     assert_eq!(sink_stream[sink_index].unwrap().0, 0);
+                    assert_eq!(frame.audio_level_dbov, Some(127));
+                    assert_eq!(frame.voice_activity, Some(true));
                     variant_seen[0] = true;
                 } else if frame.data == variants[1].0 {
                     assert_eq!(frame.samples_per_channel, 2880);
                     assert_eq!(sink_stream[sink_index].unwrap().0, 1);
+                    assert_eq!(frame.audio_level_dbov, Some(0));
+                    assert_eq!(frame.voice_activity, Some(false));
                     variant_seen[1] = true;
                 }
             }
@@ -513,6 +524,7 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         variant_seen, [true; 2],
         "10 ms and 60 ms Opus must arrive intact"
     );
+    assert_eq!(encoder.opus_frame_handoff_failures(), 0);
     alice.close().unwrap();
     bob.close().unwrap();
 }

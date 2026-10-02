@@ -573,6 +573,21 @@ impl ProductionSession {
             .push_opus(frame)
             .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
     }
+    /// Submit producer RFC6464 metadata without exposing sequence-bound handles.
+    pub fn push_opus_with_audio_level(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::OpusInputFrame,
+        level: crate::OpusAudioLevel,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Opus(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .push_opus_with_audio_level(frame, level)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
     pub fn push_video(
         &mut self,
         source: SessionSourceId,

@@ -86,6 +86,12 @@ bool audio_source_push_opus_at(const NativeAudioSource& source,
                               std::uint32_t rtp_timestamp,
                               std::uint32_t samples_per_channel,
                               std::int64_t capture_time_us) noexcept;
+bool audio_source_push_opus_with_level_at(const NativeAudioSource& source,
+                              rust::Slice<const std::uint8_t> payload,
+                              std::uint32_t rtp_timestamp,
+                              std::uint32_t samples_per_channel,
+                              std::int64_t capture_time_us, bool has_level,
+                              std::uint8_t level_dbov, bool voice_activity) noexcept;
 std::unique_ptr<NativeAudioTrack> create_microphone_track(
     const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
 std::unique_ptr<NativeAudioTrack> create_audio_track(

@@ -1,6 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/codec.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -9,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include "absl/strings/match.h"
@@ -18,6 +20,8 @@
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/environment/environment_factory.h"
+#include "api/frame_transformer_interface.h"
+#include "api/task_queue/task_queue_base.h"
 #include "api/scoped_refptr.h"
 #include "api/units/data_rate.h"
 #include "api/video/encoded_image.h"
@@ -331,6 +335,8 @@ struct NativeDecodedImageCallback::State {
 };
 struct NativeAudioEncoderFactory::State {
   webrtc::scoped_refptr<webrtc::AudioEncoderFactory> factory;
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
+  std::shared_ptr<std::atomic<std::uint64_t>> handoff_failures;
 };
 struct NativeAudioDecoderFactory::State {
   webrtc::scoped_refptr<webrtc::AudioDecoderFactory> factory;
@@ -843,6 +849,15 @@ webrtc::scoped_refptr<webrtc::AudioEncoderFactory>
 NativeAudioEncoderFactory::factory() const noexcept {
   return state_->factory;
 }
+webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
+NativeAudioEncoderFactory::opus_transformer() const noexcept {
+  return state_->opus_transformer;
+}
+std::uint64_t audio_encoder_opus_handoff_failures(
+    const NativeAudioEncoderFactory& factory) noexcept {
+  const auto& counter = factory.state().handoff_failures;
+  return counter ? counter->load() : 0;
+}
 NativeAudioDecoderFactory::NativeAudioDecoderFactory(
     std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
@@ -867,14 +882,116 @@ new_video_decoder_factory(rust::Box<RustVideoDecoderFactory> factory) noexcept {
       std::make_unique<RustDecoderFactory>(std::move(factory)));
 }
 namespace {
+// One completed emission, including legacy emissions without a declared level.
+// No payload/timestamp/SSRC join: Encode -> initial Transform is synchronous on
+// ChannelSend's dedicated queue in the pinned PeerConnection audio pipeline.
+struct OpusEmission {
+  bool has_level = false;
+  std::uint8_t level = 0;
+  bool voice = true;
+};
+struct OpusEmissionSlot {
+  std::mutex mutex;
+  std::optional<OpusEmission> pending;
+};
+// Only installed through the provided PC sender setter, after AddTransceiver.
+// PC voice streams are constructed with null transformers; registration and
+// reset then run on the encoder queue. Arbitrary direct Call/AudioSendStream
+// construction with a non-null transformer does NOT satisfy this invariant.
+class OpusMetadataTransformer : public webrtc::FrameTransformerInterface {
+ public:
+  OpusMetadataTransformer()
+      : failures_(std::make_shared<std::atomic<std::uint64_t>>(0)) {}
+  std::shared_ptr<std::atomic<std::uint64_t>> failures() const {
+    return failures_;
+  }
+  void Begin(webrtc::TaskQueueBase* queue,
+             const std::shared_ptr<OpusEmissionSlot>& slot) {
+    { std::lock_guard lock(slot->mutex); slot->pending.reset(); }
+    if (!queue) return;
+    std::lock_guard lock(mutex_);
+    emissions_[queue] = slot;
+  }
+  void Clear(webrtc::TaskQueueBase* queue,
+             const std::shared_ptr<OpusEmissionSlot>& slot) {
+    { std::lock_guard lock(slot->mutex); slot->pending.reset(); }
+    std::lock_guard lock(mutex_);
+    const auto it = emissions_.find(queue);
+    // An old encoder can be destroyed after its queue address is reused.
+    // Never erase a replacement generation's registration.
+    if (it != emissions_.end() && it->second.lock() == slot)
+      emissions_.erase(it);
+  }
+  void Publish(const std::shared_ptr<OpusEmissionSlot>& slot,
+               OpusEmission emission) {
+    std::lock_guard lock(slot->mutex);
+    slot->pending = emission;
+  }
+  void RegisterTransformedFrameCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override {
+    auto* queue = webrtc::TaskQueueBase::Current();
+    if (!queue || !callback) { ++*failures_; return; }
+    std::lock_guard lock(mutex_);
+    callbacks_[queue] = std::move(callback);
+  }
+  void UnregisterTransformedFrameCallback() override {
+    std::lock_guard lock(mutex_);
+    callbacks_.erase(webrtc::TaskQueueBase::Current());
+  }
+  void Transform(
+      std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    const auto* queue = webrtc::TaskQueueBase::Current();
+    std::shared_ptr<OpusEmissionSlot> slot;
+    webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
+    {
+      std::lock_guard lock(mutex_);
+      if (auto it = emissions_.find(queue); it != emissions_.end())
+        slot = it->second.lock();
+      if (auto it = callbacks_.find(queue); it != callbacks_.end())
+        callback = it->second;
+    }
+    std::optional<OpusEmission> emission;
+    if (slot) {
+      std::lock_guard lock(slot->mutex);
+      emission = std::exchange(slot->pending, std::nullopt);
+    }
+    if (!emission || !callback || !frame ||
+        frame->GetDirection() != webrtc::TransformableFrameInterface::Direction::kSender) {
+      ++*failures_;
+      return;
+    }
+    if (emission->has_level) {
+      auto* audio = static_cast<webrtc::TransformableAudioFrameInterface*>(frame.get());
+      const bool voice = audio->Type() ==
+          webrtc::TransformableAudioFrameInterface::FrameType::kAudioFrameSpeech;
+      if (!audio->CanSetAudioLevel() || voice != emission->voice) {
+        ++*failures_;
+        return;
+      }
+      audio->SetAudioLevel(emission->level);
+    }
+    // Native delegate posts to its provided send queue. No locks cross it.
+    callback->OnTransformedFrame(std::move(frame));
+  }
+ private:
+  std::shared_ptr<std::atomic<std::uint64_t>> failures_;
+  std::mutex mutex_;
+  std::unordered_map<const webrtc::TaskQueueBase*, std::weak_ptr<OpusEmissionSlot>>
+      emissions_;
+  std::unordered_map<const webrtc::TaskQueueBase*,
+                     webrtc::scoped_refptr<webrtc::TransformedFrameCallback>>
+      callbacks_;
+};
 // This factory is exclusively for Opus-frame tracks. Ordinary PCM must use
 // a separate peer factory: a PCM sentinel cannot be made collision-free.
 class OpusCarrierEncoder final : public webrtc::AudioEncoder {
  public:
   OpusCarrierEncoder(webrtc::AudioEncoderFactory::Options options,
-                     std::uint8_t channels)
-      : options_(std::move(options)), channels_(channels) {}
-  ~OpusCarrierEncoder() override { ReleasePacket(); }
+                     std::uint8_t channels,
+                     webrtc::scoped_refptr<OpusMetadataTransformer> transformer)
+      : options_(std::move(options)), channels_(channels),
+        transformer_(std::move(transformer)) {}
+  ~OpusCarrierEncoder() override { transformer_->Clear(queue_, emission_slot_); }
 
   int SampleRateHz() const override { return 48000; }
   size_t NumChannels() const override { return channels_; }
@@ -886,6 +1003,7 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
     return 32000;
   }
   void Reset() override {
+    transformer_->Clear(queue_, emission_slot_);
     ReleasePacket();
     remaining_ = 0;
     bytes_.clear();
@@ -902,6 +1020,10 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
                          std::span<const std::int16_t> audio,
                          webrtc::Buffer* encoded) override {
     using namespace opus_carrier;
+    auto* queue = webrtc::TaskQueueBase::Current();
+    if (queue_ != queue) transformer_->Clear(queue_, emission_slot_);
+    queue_ = queue;
+    transformer_->Begin(queue_, emission_slot_);
     EncodedInfo info;
     auto block = std::span(reinterpret_cast<const std::uint8_t*>(audio.data()),
                            audio.size_bytes());
@@ -918,6 +1040,11 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
     const auto packet = Load32(block.data() + 24);
     const auto recipient = Load32(block.data() + 28);
     const auto slot = block[32];
+    const OpusEmission emission{block[35] != 0, block[33], block[34] != 0};
+    if (block[35] > 1 || (emission.has_level && (block[33] > 127 || block[34] > 1))) {
+      Reset();
+      return info;
+    }
     if (duration < 480 || duration > 2880 || duration % 480 != 0 ||
         !length || length > kMaxPayloadBytes ||
         length > (duration / 480) * (block_bytes - kHeaderBytes) ||
@@ -938,6 +1065,7 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
       source_id_ = source;
       packet_id_ = packet;
       recipient_id_ = recipient;
+      emission_ = emission;
       if (!first_timestamp_) {
         first_timestamp_ = packet_timestamp_;
         first_encoder_timestamp_ = timestamp;
@@ -948,7 +1076,10 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
                recipient != recipient_id_ || length != expected_bytes_ ||
                duration / 480 != next_slots_ ||
                slot != next_slots_ - remaining_ ||
-               packet_timestamp != packet_timestamp_ || checksum != checksum_) {
+               packet_timestamp != packet_timestamp_ || checksum != checksum_ ||
+               emission.has_level != emission_.has_level ||
+               (emission.has_level && (emission.level != emission_.level ||
+                                       emission.voice != emission_.voice))) {
       Reset();
       return info;
     }
@@ -968,6 +1099,8 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
                              (packet_timestamp_ - *first_timestamp_);
     info.payload_type = options_.payload_type;
     info.encoder_type = CodecType::kOpus;
+    if (emission_.has_level) info.speech = emission_.voice;
+    transformer_->Publish(emission_slot_, emission_);
     bytes_.clear();
     ReleasePacket();
     return info;
@@ -981,6 +1114,10 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
 
   const webrtc::AudioEncoderFactory::Options options_;
   const std::uint8_t channels_;
+  webrtc::scoped_refptr<OpusMetadataTransformer> transformer_;
+  std::shared_ptr<OpusEmissionSlot> emission_slot_ = std::make_shared<OpusEmissionSlot>();
+  webrtc::TaskQueueBase* queue_ = nullptr;
+  OpusEmission emission_;
   std::vector<std::uint8_t> bytes_;
   std::optional<std::uint32_t> first_timestamp_;
   std::uint32_t first_encoder_timestamp_ = 0;
@@ -996,7 +1133,9 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
 
 class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
  public:
-  OpusCarrierFactory() : builtin_(webrtc::CreateBuiltinAudioEncoderFactory()) {}
+  explicit OpusCarrierFactory(webrtc::scoped_refptr<OpusMetadataTransformer> transformer)
+      : builtin_(webrtc::CreateBuiltinAudioEncoderFactory()),
+        transformer_(std::move(transformer)) {}
   std::vector<webrtc::AudioCodecSpec> GetSupportedEncoders() override {
     std::vector<webrtc::AudioCodecSpec> opus;
     for (auto spec : builtin_->GetSupportedEncoders()) {
@@ -1026,7 +1165,7 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
       Options options) override {
     if (!QueryAudioEncoder(format)) return nullptr;
     return std::make_unique<OpusCarrierEncoder>(
-        std::move(options), *OpusChannels(format));
+        std::move(options), *OpusChannels(format), transformer_);
   }
  private:
   static std::optional<std::uint8_t> OpusChannels(
@@ -1040,13 +1179,17 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
   }
  private:
   webrtc::scoped_refptr<webrtc::AudioEncoderFactory> builtin_;
+  webrtc::scoped_refptr<OpusMetadataTransformer> transformer_;
 };
 } // namespace
 
 std::unique_ptr<NativeAudioEncoderFactory>
 new_opus_carrier_audio_encoder_factory() noexcept {
   auto state = std::make_unique<NativeAudioEncoderFactory::State>();
-  state->factory = webrtc::make_ref_counted<OpusCarrierFactory>();
+  auto transformer = webrtc::make_ref_counted<OpusMetadataTransformer>();
+  state->handoff_failures = transformer->failures();
+  state->opus_transformer = transformer;
+  state->factory = webrtc::make_ref_counted<OpusCarrierFactory>(std::move(transformer));
   return std::make_unique<NativeAudioEncoderFactory>(std::move(state));
 }
 

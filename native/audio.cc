@@ -83,7 +83,8 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
                 std::uint32_t rtp_timestamp, std::uint32_t samples_per_channel,
                 std::uint8_t channels, std::int64_t capture_time_us,
                 const std::shared_ptr<opus_carrier::Budget>& budget,
-                std::uint32_t source_id) {
+                std::uint32_t source_id, bool has_level,
+                std::uint8_t level_dbov, bool voice_activity) {
     using namespace opus_carrier;
     // Snapshot and deliver the complete packet under the same sink lock.
     // No recipient can join/leave between its individual carrier blocks.
@@ -110,6 +111,9 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
         Store32(bytes + 24, *packet);
         Store32(bytes + 28, entry.recipient);
         bytes[32] = static_cast<std::uint8_t>(slot);
+        bytes[33] = has_level ? level_dbov : 0;
+        bytes[34] = has_level && voice_activity;
+        bytes[35] = has_level;
         const auto offset = slot * capacity;
         if (offset < payload.size())
           std::memcpy(bytes + kHeaderBytes, payload.data() + offset,
@@ -387,6 +391,7 @@ struct NativeAudioSource::State {
 };
 
 struct NativeAudioTrack::State {
+  bool opus_frames = false;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
   webrtc::scoped_refptr<webrtc::AudioSourceInterface> microphone_source;
   webrtc::Thread* signaling_thread = nullptr;
@@ -499,7 +504,16 @@ bool audio_source_push_opus_at(const NativeAudioSource& source,
                             std::uint32_t rtp_timestamp,
                             std::uint32_t samples_per_channel,
                             std::int64_t capture_time_us) noexcept {
-  if (capture_time_us < -1) return false;
+  return audio_source_push_opus_with_level_at(source, payload, rtp_timestamp,
+      samples_per_channel, capture_time_us, false, 0, false);
+}
+bool audio_source_push_opus_with_level_at(const NativeAudioSource& source,
+                            rust::Slice<const std::uint8_t> payload,
+                            std::uint32_t rtp_timestamp,
+                            std::uint32_t samples_per_channel,
+                            std::int64_t capture_time_us, bool has_level,
+                            std::uint8_t level_dbov, bool voice_activity) noexcept {
+  if (capture_time_us < -1 || (has_level && level_dbov > 127)) return false;
   using namespace opus_carrier;
   // The private carrier matches the negotiated encoder's mono/stereo input.
   const auto channels = source.state()->encoded_channels;
@@ -520,7 +534,8 @@ bool audio_source_push_opus_at(const NativeAudioSource& source,
   }
   return state.source->PushOpus({payload.data(), payload.size()}, rtp_timestamp,
                                 samples_per_channel, channels, capture_time_us,
-                                state.budget, state.budget_id);
+                                state.budget, state.budget_id, has_level,
+                                level_dbov, voice_activity);
 }
 std::unique_ptr<NativeAudioTrack> create_microphone_track(
     const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
@@ -547,6 +562,7 @@ std::unique_ptr<NativeAudioTrack> create_audio_track(
   auto state = std::make_unique<NativeAudioTrack::State>();
   state->track = std::move(track);
   state->signaling_thread = factory.signaling_thread();
+  state->opus_frames = source.state()->encoded_channels != 0;
   return std::make_unique<NativeAudioTrack>(std::move(state));
 }
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept {
@@ -696,7 +712,17 @@ std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(
     error = result.error().message();
     return nullptr;
   }
-  return wrap_rtp_transceiver(result.MoveValue());
+  auto transceiver = result.MoveValue();
+  if (track.state()->opus_frames) {
+    if (auto transformer = peer.opus_transformer()) {
+      // Native sender proxy is sequence-bound; do not replace the factory's
+      // stable transformer identity on any live audio ChannelSend.
+      peer.signaling_thread()->BlockingCall([&] {
+        transceiver->sender()->SetEncoderToPacketizerFrameTransformer(transformer);
+      });
+    }
+  }
+  return wrap_rtp_transceiver(std::move(transceiver));
 }
 
 }  // namespace pulsebeam::webrtc_sys

@@ -403,7 +403,7 @@ impl AudioSource {
 /// 48 kHz; supported packet durations are 10, 20, 30, 40, 50, or 60 ms.
 /// The packet's TOC duration must agree with `samples_per_channel`.
 /// The payload is at most 1200 bytes and must fit in 960 bytes per 10 ms
-/// slot, less 28 internal header bytes in its first slot.
+/// slot, less 36 internal envelope bytes per slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpusInputFrame {
     pub data: Vec<u8>,
@@ -416,6 +416,7 @@ pub enum OpusInputError {
     InvalidPacket,
     InvalidDuration,
     InvalidTimestamp,
+    InvalidAudioLevel,
     Backpressure,
     Released,
 }
@@ -425,6 +426,35 @@ impl fmt::Display for OpusInputError {
     }
 }
 impl std::error::Error for OpusInputError {}
+
+/// Explicit producer RFC6464 level and voice-activity bit, not derived from
+/// packet bytes, carrier PCM, or decoder speech classification. The native
+/// sender serializes these only when the audio-level extension is negotiated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpusAudioLevel {
+    level_dbov: u8,
+    voice_activity: bool,
+}
+impl OpusAudioLevel {
+    /// Level is the positive magnitude in -dBov: 0 is full scale, 127 silence.
+    /// Voice activity is independently declared, not inferred from this value.
+    pub fn new(level_dbov: u8, voice_activity: bool) -> Result<Self, OpusInputError> {
+        if level_dbov > 127 {
+            return Err(OpusInputError::InvalidAudioLevel);
+        }
+        Ok(Self {
+            level_dbov,
+            voice_activity,
+        })
+    }
+
+    pub fn level_dbov(self) -> u8 {
+        self.level_dbov
+    }
+    pub fn voice_activity(self) -> bool {
+        self.voice_activity
+    }
+}
 
 /// A sequence-bound Opus input source. Create its factory with
 /// [`crate::AudioEncoderFactory::with_opus_frames`]. Frames bypass Opus
@@ -469,7 +499,7 @@ impl EncodedAudioSource {
         if !self.source.inner._factory.controlled_media {
             return Err(OpusInputError::InvalidTimestamp);
         }
-        self.push_opus_with_time(frame, Some(capture_time))
+        self.push_opus_with_time(frame, Some(capture_time), None)
     }
 
     /// In the controlled media profile, use the current world time for capture.
@@ -482,13 +512,47 @@ impl EncodedAudioSource {
                 .controlled_time()
                 .expect("controlled media clock")
         });
-        self.push_opus_with_time(frame, capture_time)
+        self.push_opus_with_time(frame, capture_time, None)
+    }
+
+    /// Submit an independent producer level/V pair alongside an unchanged Opus
+    /// packet. Native encoder speech and the supported outgoing level setter
+    /// carry it to native RTP extension serialization. Capture timing follows
+    /// the same rules as `push_opus`. Missing negotiation produces no extension.
+    pub fn push_opus_with_audio_level(
+        &self,
+        frame: &OpusInputFrame,
+        level: OpusAudioLevel,
+    ) -> Result<(), OpusInputError> {
+        let capture_time = self.source.inner._factory.controlled_media.then(|| {
+            self.source
+                .inner
+                ._factory
+                .controlled_time()
+                .expect("controlled media clock")
+        });
+        self.push_opus_with_time(frame, capture_time, Some(level))
+    }
+
+    /// Combine explicit controlled capture timing with a declared level/V pair.
+    /// Ordinary production clock domains remain unsupported by this timing API.
+    pub fn push_opus_at_with_audio_level(
+        &self,
+        frame: &OpusInputFrame,
+        capture_time: std::time::Duration,
+        level: OpusAudioLevel,
+    ) -> Result<(), OpusInputError> {
+        if !self.source.inner._factory.controlled_media {
+            return Err(OpusInputError::InvalidTimestamp);
+        }
+        self.push_opus_with_time(frame, Some(capture_time), Some(level))
     }
 
     fn push_opus_with_time(
         &self,
         frame: &OpusInputFrame,
         capture_time: Option<std::time::Duration>,
+        audio_level: Option<OpusAudioLevel>,
     ) -> Result<(), OpusInputError> {
         if self.source.inner.closed.get() {
             return Err(OpusInputError::Released);
@@ -540,12 +604,15 @@ impl EncodedAudioSource {
         } else {
             -1
         };
-        if !ffi::audio_source_push_opus_at(
+        if !ffi::audio_source_push_opus_with_level_at(
             self.source.native(),
             bytes,
             frame.rtp_timestamp,
             frame.samples_per_channel,
             capture_us,
+            audio_level.is_some(),
+            audio_level.map_or(0, OpusAudioLevel::level_dbov),
+            audio_level.is_some_and(OpusAudioLevel::voice_activity),
         ) {
             return Err(OpusInputError::Backpressure);
         }
