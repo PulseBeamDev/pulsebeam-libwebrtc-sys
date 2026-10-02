@@ -38,6 +38,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("actions/checkout@", validate)
         self.assertIn("ref: ${{ github.sha }}", validate)
         self.assertNotIn("fetch-depth: 0", validate)
+        self.assertNotIn("fetch-tags:", validate)
+        self.assertIn("RELEASE_COMMIT: ${{ github.sha }}", validate)
+        identity = 'just ci release-tag "$RELEASE_TAG" "$RELEASE_COMMIT" --repository "$RELEASE_REPOSITORY"'
+        self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", validate)
+        self.assertIn("RELEASE_REPOSITORY: ${{ github.repository }}", validate)
+        identity_step = validate[validate.index("      - name: Validate release identity"):validate.index("      - name: Validate release CLI")]
+        self.assertIn("if: github.event_name == 'push'", identity_step)
+        tag_fetch = 'git fetch --no-tags --depth=1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"'
+        self.assertLess(validate.index(tag_fetch), validate.index(identity))
+        for expensive in ("just ci-preflight", "just ci podman", "just linux-image", "cargo fetch", "just check"):
+            self.assertLess(validate.index(identity), validate.index(expensive))
         self.assertIn("run: just ci-preflight", validate)
         self.assertIn("run: just ci podman", validate)
         self.assertIn("just linux-image pulsebeam-linux-${{ github.sha }}", validate)
@@ -79,8 +90,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         bundle = self.job("linux-release-bundle")
         publish = self.job("publish-linux")
         self.assertIn("needs: linux-qualification", bundle)
-        self.assertIn("fetch-depth: 0", bundle)
-        self.assertIn('just ci release-tag "$RELEASE_TAG" "$(git rev-parse HEAD)"', bundle)
+        self.assertNotIn("fetch-depth: 0", bundle)
+        self.assertNotIn("just ci release-tag", bundle)
+        self.assertNotIn(".release-tag", self.contents)
+        self.assertIn('release-input/LINUX-RELEASE-MANIFEST.json "$RELEASE_TAG" linux-release', bundle)
         self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", bundle)
         self.assertIn("just ci release-prepare", bundle)
         self.assertIn("needs: [linux-qualification, linux-release-bundle]", publish)

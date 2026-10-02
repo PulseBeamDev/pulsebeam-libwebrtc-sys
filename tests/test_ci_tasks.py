@@ -1,4 +1,8 @@
+from contextlib import chdir
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,20 +23,66 @@ class CiTasksTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ci_tasks.TaskError):
                 ci_tasks.require_success(invalid)
 
-    def test_tag_is_same_commit_and_never_creates_marker_on_failure(self):
+    def test_release_identity_rejects_static_errors_before_git(self):
+        with tempfile.TemporaryDirectory() as temp, chdir(temp):
+            Path("Cargo.toml").write_text('[package]\nversion = "0.5.6"\n')
+            cases = [
+                ("v0.6.0", "a" * 40, ci_tasks.linux_release_publication.CANONICAL_REPOSITORY, "must match Cargo package version v0.5.6"),
+                ("v0.5.0", "a" * 40, ci_tasks.linux_release_publication.CANONICAL_REPOSITORY, "prohibited"),
+                ("v0.5.6", "bad", ci_tasks.linux_release_publication.CANONICAL_REPOSITORY, "revision"),
+                ("v0.5.6", "a" * 40, "fork/repo", "publication repository must be"),
+                ("v0.5.6/invalid", "a" * 40, ci_tasks.linux_release_publication.CANONICAL_REPOSITORY, "prohibited"),
+            ]
+            for tag, commit, repository, diagnostic in cases:
+                with self.subTest(tag=tag, repository=repository), patch.object(ci_tasks.subprocess, "run") as run:
+                    with self.assertRaisesRegex(ci_tasks.TaskError, diagnostic):
+                        ci_tasks.release_tag(tag, commit, repository)
+                    run.assert_not_called()
+
+    def test_release_identity_cli_checks_shallow_lightweight_and_annotated_tags(self):
+        root = Path(__file__).resolve().parents[1]
+        environment = {**os.environ, "PYTHONPATH": str(root)}
         with tempfile.TemporaryDirectory() as temp:
-            marker = Path(temp) / "tag"
-            with patch.object(ci_tasks.subprocess, "run", return_value=type("Result", (), {"stdout": "b" * 40})()):
-                with self.assertRaisesRegex(ci_tasks.TaskError, "does not resolve"):
-                    ci_tasks.release_tag("v0.5.6", "a" * 40, marker)
-            self.assertFalse(marker.exists())
-            with patch.object(ci_tasks.subprocess, "run", return_value=type("Result", (), {"stdout": "a" * 40})()):
-                ci_tasks.release_tag("v0.5.6", "a" * 40, marker)
-            self.assertEqual(marker.read_text(), "v0.5.6")
-            with self.assertRaisesRegex(ci_tasks.TaskError, "must match Cargo package version"):
-                ci_tasks.release_tag("v0.5.7", "a" * 40, marker)
-            with self.assertRaisesRegex(ci_tasks.TaskError, "prohibited"):
-                ci_tasks.release_tag("v0.5.0", "a" * 40, marker)
+            directory = Path(temp)
+
+            def git(*args, cwd=directory):
+                return subprocess.run(["git", "-c", "user.name=CI Test", "-c", "user.email=ci@example.invalid", *args], cwd=cwd, check=True, text=True, capture_output=True).stdout.strip()
+
+            git("init", "-q")
+            (directory / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n')
+            git("add", "Cargo.toml")
+            git("commit", "-qm", "fixture")
+            commit = git("rev-parse", "HEAD")
+            for annotated in (False, True):
+                with self.subTest(annotated=annotated):
+                    if annotated:
+                        git("tag", "-a", "v1.2.3", "-m", "fixture")
+                    else:
+                        git("tag", "v1.2.3")
+                    checkout = directory / f"checkout-{annotated}"
+                    git("init", "-q", str(checkout))
+                    git("remote", "add", "origin", directory.as_uri(), cwd=checkout)
+                    # Keep source pinned to the event SHA, then explicitly fetch
+                    # the tag. SHA-only shallow fetches can omit the tag ref.
+                    git("fetch", "--no-tags", "--depth=1", "origin", commit, cwd=checkout)
+                    git("checkout", "--detach", "FETCH_HEAD", cwd=checkout)
+                    git("fetch", "--no-tags", "--depth=1", "origin", "refs/tags/v1.2.3:refs/tags/v1.2.3", cwd=checkout)
+                    self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=checkout), "true")
+                    result = subprocess.run([sys.executable, "-m", "tools.ci_tasks", "release-tag", "v1.2.3", commit], cwd=checkout, env=environment, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"v1.2.3 at {commit}", result.stdout)
+                    with chdir(checkout), self.assertRaisesRegex(ci_tasks.TaskError, "does not resolve"):
+                        ci_tasks.release_tag("v1.2.3", "b" * 40)
+                    git("tag", "-d", "v1.2.3")
+            result = subprocess.run([sys.executable, "-m", "tools.ci_tasks", "release-tag", "v1.2.3", commit], cwd=directory, env=environment, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("CI task:", result.stderr)
+
+    def test_release_prepare_cli_passes_tag_without_marker_file(self):
+        with patch.object(sys, "argv", ["ci_tasks", "release-prepare", "archives", "sums", "audit", "v1.2.3", "bundle"]):
+            with patch.object(ci_tasks.linux_release_publication, "prepare") as prepare:
+                self.assertEqual(ci_tasks.main(), 0)
+            prepare.assert_called_once_with(Path("archives"), Path("sums"), Path("audit"), "v1.2.3", Path("bundle"))
 
     def test_closed_linux_audit_runs_locally(self):
         with tempfile.TemporaryDirectory() as temp:

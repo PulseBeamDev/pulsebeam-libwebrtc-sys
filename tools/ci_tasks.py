@@ -34,7 +34,9 @@ def revision(value: str) -> None:
         raise TaskError("revision must be exactly 40 lowercase hexadecimal characters")
 
 
-def release_tag(tag: str, commit: str, marker: Path) -> None:
+def release_tag(tag: str, commit: str, repository: str = linux_release_publication.CANONICAL_REPOSITORY) -> None:
+    if repository != linux_release_publication.CANONICAL_REPOSITORY:
+        raise TaskError(f"publication repository must be {linux_release_publication.CANONICAL_REPOSITORY!r}, got {repository!r}")
     if not write_artifact_lock.TAG.fullmatch(tag) or tag == "v0.5.0":
         raise TaskError("invalid or prohibited tag")
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
@@ -44,7 +46,7 @@ def release_tag(tag: str, commit: str, marker: Path) -> None:
     result = subprocess.run(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], check=True, text=True, capture_output=True)
     if result.stdout.strip() != commit:
         raise TaskError("tag does not resolve to the workflow commit")
-    marker.write_text(tag, encoding="utf-8")
+    print(f"Release identity validated: {repository} {tag} at {commit}")
 
 
 def require_success(results: list[str]) -> None:
@@ -130,7 +132,7 @@ def main() -> int:
     tag = commands.add_parser("release-tag")
     tag.add_argument("tag")
     tag.add_argument("commit")
-    tag.add_argument("marker", type=Path)
+    tag.add_argument("--repository", default=linux_release_publication.CANONICAL_REPOSITORY)
     commands.add_parser("require-success").add_argument("results", nargs="+")
     audit_parser = commands.add_parser("audit")
     audit_parser.add_argument("scope", choices=("linux", "complete"))
@@ -145,7 +147,7 @@ def main() -> int:
     prepare.add_argument("archives", type=Path)
     prepare.add_argument("checksums", type=Path)
     prepare.add_argument("audit", type=Path)
-    prepare.add_argument("marker", type=Path)
+    prepare.add_argument("tag")
     prepare.add_argument("output", type=Path)
     for task in ("upgrade-refresh", "upgrade-build"):
         commands.add_parser(task).add_argument("image")
@@ -158,11 +160,11 @@ def main() -> int:
         elif args.task == "revision": revision(args.value)
         elif args.task == "rust-target": install_target(args.value)
         elif args.task == "upgrade-pin": subprocess.run([sys.executable, "tools/select_upgrade_pin.py", args.value], check=True)
-        elif args.task == "release-tag": release_tag(args.tag, args.commit, args.marker)
+        elif args.task == "release-tag": release_tag(args.tag, args.commit, args.repository)
         elif args.task == "require-success": require_success(args.results)
         elif args.task == "audit": audit(args.scope, args.archives, args.checksums, args.output)
         elif args.task == "candidate": candidate(args.flavor, args.target, args.checksums)
-        elif args.task == "release-prepare": linux_release_publication.prepare(args.archives, args.checksums, args.audit, args.marker.read_text(encoding="utf-8"), args.output)
+        elif args.task == "release-prepare": linux_release_publication.prepare(args.archives, args.checksums, args.audit, args.tag, args.output)
         elif args.task == "asan": asan(args.image, args.flavor)
         elif args.task == "upgrade-refresh": upgrade(args.image, False)
         elif args.task == "upgrade-build": upgrade(args.image, True)

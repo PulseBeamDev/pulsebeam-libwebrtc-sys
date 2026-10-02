@@ -25,6 +25,17 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with:
           just-version: 1.43.1
+      - name: Validate release identity before any expensive work
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          # Keep the checker pinned to the event SHA and fetch only the tag ref.
+          # A SHA-only shallow checkout does not reliably fetch even its tags.
+          git fetch --no-tags --depth=1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          just ci release-tag "$RELEASE_TAG" "$RELEASE_COMMIT" --repository "$RELEASE_REPOSITORY"
       - name: Validate release CLI options before building the image
         run: just ci-preflight
       - name: Prove rootless Podman is available
@@ -266,7 +277,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with:
@@ -280,15 +290,12 @@ jobs:
         with:
           name: linux-audit
           path: release-input
-      - name: Validate the requested immutable release tag
-        shell: bash
+      - name: Construct one closed audited Linux publication bundle
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: just ci release-tag "$RELEASE_TAG" "$(git rev-parse HEAD)" release-input/.release-tag
-      - name: Construct one closed audited Linux publication bundle
         run: >-
           just ci release-prepare release-input release-input/SHA256SUMS
-          release-input/LINUX-RELEASE-MANIFEST.json release-input/.release-tag linux-release
+          release-input/LINUX-RELEASE-MANIFEST.json "$RELEASE_TAG" linux-release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-release-bundle

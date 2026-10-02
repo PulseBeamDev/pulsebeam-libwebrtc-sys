@@ -497,10 +497,16 @@ artifact automatically. No separate setup is needed.
 
 1. **One CI workflow** runs fast checks on pull requests. Push a new `v*`
    version tag to run the full Linux x86_64 core and native qualification, with
-   runtime tests, ASan, audit, and cold candidate consumers. Publication starts
-   automatically only if all qualification gates pass, the tag resolves to
-   the checked-out commit, and it equals `v<package.version>` in `Cargo.toml`.
-   Bump the crate version before creating a new tag. The resulting bundle contains two archives,
+   runtime tests, ASan, audit, and cold candidate consumers. Before building any
+   container or native code, the first job checks that the repository is the
+   canonical producer, the tag resolves to the checked-out commit, and it equals
+   `v<package.version>` in `Cargo.toml`. Pull requests skip this tag-only check.
+   Bump the crate version (and update `Cargo.lock`) before creating a new tag;
+   for example, `v0.6.0` cannot release a crate still declaring `0.5.6`.
+   `just ci release-tag <tag> <commit>` runs the same check locally without a
+   container, GitHub authentication, or marker files. The tag must already exist
+   in the local checkout. Publication starts automatically only if all
+   qualification gates pass. The resulting bundle contains two archives,
    `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository license, and a
    schema-2 `artifacts.lock.json` with two Linux x86_64 URLs/digests and sixteen
    explicitly unavailable selections. Other targets are not released.
