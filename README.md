@@ -608,7 +608,29 @@ IDs and directions; stopped entries are not negotiated, including stopped
 snapshots returned before negotiation. Negotiation does not prove that a frame
 carried an extension. Libwebrtc computes and transmits VLA, but its pinned public
 receiver, transformer and stats APIs do not expose received VLA allocations.
-The encoded sink therefore makes no received-VLA claim.
+The encoded sink therefore makes no received-VLA claim. A test-only offline
+native parser checks captured clear VLA/RID extensions against actual negotiated
+IDs and native sender SSRCs after all controlled roots have been destroyed.
+It proves sender wire generation, not authenticated received allocation; it
+neither decrypts payload nor verifies SRTP authentication. The SDK still owns
+metadata authentication. On Linux x86_64 with a matching core export:
+
+```sh
+python3 tests/build_native_vla_probe.py \
+  --kit "$PWD/.work/package/webrtc-core-linux-x86_64" \
+  --checkout-src "$PWD/.work/checkout/src" --output "$PWD/.work/native-probes/vla"
+CARGO_HOME="$PWD/.work/cargo-home" \
+PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$PWD/.work/package/webrtc-core-linux-x86_64" \
+PULSEBEAM_NATIVE_VLA_PROBE="$PWD/.work/native-probes/vla" \
+cargo test --offline --test controlled_media native_vla_wire_uses_provided_offline_parser \
+  -- --ignored --nocapture --test-threads=1
+```
+
+The probe-dependent test is explicitly ignored in the default Rust suite; run
+it separately for wire qualification. It checks native full three-rung
+allocations, RID/index association, actual primary SSRC publication and the
+full captured packet-size bound. This does not establish simultaneous stock
+simulcast receipt or exhaustive MTU/retransmission behavior.
 
 For direct encoded sending, create `EncodedVideoInput::new_for_format()` with
 an actual VP8, VP9, AV1 or H265 format (or `EncodedH264Input::new()` for the

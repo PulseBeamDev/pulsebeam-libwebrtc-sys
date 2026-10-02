@@ -89,6 +89,13 @@ struct Trace {
 }
 
 #[derive(Default)]
+struct WireCapture {
+    extensions: Vec<(i32, String)>,
+    streams: Vec<(String, u32)>,
+    packets: Vec<Vec<u8>>,
+}
+
+#[derive(Default)]
 struct Observations {
     impaired: bool,
     link_sequence: u64,
@@ -104,6 +111,8 @@ struct Observations {
     video: Vec<(usize, VideoSink)>,
     encoded_video_only: bool,
     sender_only_simulcast_answer: bool,
+    capture_wire: bool,
+    wire: WireCapture,
     encoded_video: Vec<(usize, EncodedVideoSink)>,
     transceivers: Vec<(usize, RtpTransceiver)>,
     channels: Vec<(usize, DataChannel)>,
@@ -126,6 +135,9 @@ impl Observations {
             let Some(packet) = network.next_packet() else {
                 break;
             };
+            if self.capture_wire && packet.kind == OutboundKind::Udp {
+                self.wire.packets.push(packet.payload.clone());
+            }
             if self.impaired && !self.retired {
                 self.link_sequence += 1;
                 let sequence = self.link_sequence;
@@ -1151,6 +1163,15 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
 }
 
 fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace {
+    run_h264_profile_with_wire(temporal, impaired, simulcast_mode, None)
+}
+
+fn run_h264_profile_with_wire(
+    temporal: bool,
+    impaired: bool,
+    simulcast_mode: u8,
+    mut capture: Option<&mut WireCapture>,
+) -> Trace {
     let simulcast = simulcast_mode != 0;
     const KEY: &[u8] = &[
         0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
@@ -1258,10 +1279,29 @@ fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace
             impaired,
             encoded_video_only: true,
             sender_only_simulcast_answer: simulcast_mode >= 2,
+            capture_wire: capture.is_some(),
             ..Observations::default()
         };
         observations.negotiate_with_layers(&world, &network, &peers, 0, temporal);
         let sender = transceiver.sender();
+        if capture.is_some() {
+            observations.wire.extensions = transceiver
+                .negotiated_header_extensions()
+                .unwrap()
+                .into_iter()
+                .filter(|extension| extension.direction != RtpHeaderExtensionDirection::Stopped)
+                .map(|extension| {
+                    assert!(
+                        !extension.preferred_encrypt(),
+                        "offline probe requires clear extensions"
+                    );
+                    (
+                        extension.preferred_id().unwrap(),
+                        extension.uri().to_owned(),
+                    )
+                })
+                .collect();
+        }
         if simulcast_mode >= 2 {
             peers[0]
                 .set_bitrate(Some(3_000_000), Some(3_000_000), Some(4_000_000))
@@ -1485,6 +1525,12 @@ fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace
                     _ => None,
                 })
                 .collect();
+            if capture.is_some() {
+                observations.wire.streams = outgoing
+                    .iter()
+                    .map(|(rid, ssrc)| (rid.clone(), u32::try_from(*ssrc).unwrap()))
+                    .collect();
+            }
             assert_eq!(
                 outgoing
                     .iter()
@@ -1531,6 +1577,9 @@ fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace
         );
         for peer in &mut peers {
             peer.close().unwrap();
+        }
+        if let Some(target) = capture.as_mut() {
+            **target = std::mem::take(&mut observations.wire);
         }
         observations.trace
     };
@@ -1592,6 +1641,51 @@ fn controlled_h264_simulcast_native_sender_rejects_ambiguous_fallback() {
                 assert!(first.encoded_video.is_empty());
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "requires PULSEBEAM_NATIVE_VLA_PROBE compiled against the matching exported SDK"]
+fn native_vla_wire_uses_provided_offline_parser() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let probe = std::env::var_os("PULSEBEAM_NATIVE_VLA_PROBE").expect("native parser probe path");
+    for impaired in [false, true] {
+        let mut wire = WireCapture::default();
+        let _trace = run_h264_profile_with_wire(false, impaired, 2, Some(&mut wire));
+        // All native roots and controlled hooks are gone. Only the external
+        // test process invokes this offline parser, never an engine helper.
+        let mut child = Command::new(&probe)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for (id, uri) in wire.extensions {
+            writeln!(input, "extension {id} {uri}").unwrap();
+        }
+        for (rid, ssrc) in wire.streams {
+            writeln!(input, "stream {rid} {ssrc}").unwrap();
+        }
+        for packet in wire.packets {
+            let mut hex = String::with_capacity(packet.len() * 2);
+            for byte in packet {
+                std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}")).unwrap();
+            }
+            writeln!(input, "packet {hex}").unwrap();
+        }
+        drop(input);
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "native wire probe impaired={impaired}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprintln!("{}", String::from_utf8_lossy(&output.stdout));
     }
 }
 
