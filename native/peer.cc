@@ -1126,6 +1126,19 @@ bool peer_request_stats(const NativePeerConnection& peer,
   return true;
 }
 
+bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
+                      std::int32_t start, std::int32_t maximum,
+                      std::uint8_t& error_type, rust::String& message) noexcept {
+  webrtc::BitrateSettings settings;
+  if (minimum >= 0) settings.min_bitrate_bps = minimum;
+  if (start >= 0) settings.start_bitrate_bps = start;
+  if (maximum >= 0) settings.max_bitrate_bps = maximum;
+  const auto result = peer.state()->peer->SetBitrate(settings);
+  error_type = static_cast<std::uint8_t>(result.type());
+  message = result.message();
+  return result.ok();
+}
+
 std::uint8_t peer_descriptions(
     const NativePeerConnection& peer,
     rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept {

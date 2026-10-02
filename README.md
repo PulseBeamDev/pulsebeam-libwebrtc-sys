@@ -631,13 +631,35 @@ baseline profile and at most level 3.1. The native sender constructs a private
 raw trigger solely to drive WebRTC's video stream scheduling. Caller-supplied
 access-unit bytes bypass encoding, and WebRTC derives the RTP timestamp from
 its capture clock. Each source has a stable `stream_id`; a bounded shared
-16-frame/8 MiB pending queue evicts oldest frames under pressure, with
+16-capture-token/8 MiB pending queue evicts oldest complete captures under pressure, with
 per-source `dropped_frames()` and `pending_frames()` observability.
 `take_encoder_error()` retrieves and clears the latest source-keyed adapter
 rejection or encoded callback failure; repeated errors coalesce and rejected
 queued units also increment that source's drop count. This adapter
-does not supply a decoder. The direct input source does not support encoded
-simulcast, spatial SVC or H.264 packetization mode 0.
+does not supply a decoder. Ordinary direct input does not support encoded
+simulcast; spatial SVC and H.264 packetization mode 0 are unsupported.
+
+`EncodedH264Input::new_simulcast()` opts into three-rung H.264 sending through
+native per-image callbacks. Create a sender with three ordered RIDs, then use
+`push_simulcast([unit0, unit1, unit2])` with matching capture timestamps, ascending
+width/height and explicit simulcast indices 0..2. All three units are validated
+and reserved as one bounded capture token; `pending_frames()` counts access
+units, and eviction/drop accounting counts every unit. Images are published
+separately, so a later native callback failure cannot retract an earlier image.
+Native initialization must retain three ordered streams with matching active
+rung geometry. Collapsed senders and ambiguous single-encoder fallback are
+rejected asynchronously with `InvalidConfiguration`, including the native
+single-active-rung fallback. Geometry is not substituted for encoding identity.
+Inactive or unfunded rungs can be dropped observably. Native per-encoding
+keyframe feedback is available via `take_encoding_keyframe_requests()`; this
+has the same callback-only, non-idle guarantee. `ProductionSession::new_simulcast`
+and `push_video_simulcast` expose the same bounded path in the actor.
+`PeerConnection::set_bitrate` and actor `set_peer_bitrate` forward optional native
+bandwidth-estimation constraints and native validation; they do not inject a
+per-rung allocation. The initial native allocation can fund fewer than three
+rungs. Stock libwebrtc does not receive all three simulcast rungs concurrently;
+sender-only SFU-answer tests and outbound RID/SSRC statistics are not evidence
+of simultaneous receipt or received DD/VLA on those rungs.
 
 `EncodedH264Input::new_l1t3([64, 128, 255])` opts into single-encoding H.264
 three-temporal-layer input. The supplied nonzero, nondecreasing cumulative
@@ -674,9 +696,9 @@ simulcast, spatial and temporal indices for caller-provided encoders. These
 fields are passed to libwebrtc, not used for binding-generated dependencies or
 VLA; `emit()` retains the ordinary
 single-layer behavior. Ordinary direct inputs reject layered units; the explicit
-H.264 L1T3 profile allows its three temporal indices. Multiple RIDs, other SVC
-modes and resolution scaling on a direct input source are rejected
-explicitly before changing a sender.
+H.264 L1T3 profile allows its three temporal indices, and the explicit simulcast
+profile admits exactly three RIDs and non-scalable rung encodings. Other SVC
+modes and unsupported resolution changes are rejected before sender mutation.
 
 `RtpReceiver::request_keyframe()` submits an RTCP keyframe request for a live
 remote video receiver without guaranteeing that a remote sender honors it.

@@ -180,7 +180,7 @@ unsafe impl Send for ProductionSession {}
 
 impl ProductionSession {
     pub fn new(config: ProductionSessionConfig) -> Result<Self, PeerError> {
-        Self::build(config, None)
+        Self::build(config, None, false)
     }
 
     /// Create the actor with direct, single-encoding H264 L1T3 input.
@@ -194,12 +194,28 @@ impl ProductionSession {
                 "L1T3 requires an H264 video format",
             ));
         }
-        Self::build(config, Some(fps))
+        Self::build(config, Some(fps), false)
+    }
+
+    /// Create direct three-rung H264 input through native sender callbacks.
+    /// Publication requires native three-stream initialization and three RIDs
+    /// with matching rung geometry. Ambiguous single-encoder fallback rejects
+    /// asynchronously rather than guessing an encoding. This does
+    /// not extend stock libwebrtc's simultaneous simulcast receiving support.
+    pub fn new_simulcast(config: ProductionSessionConfig) -> Result<Self, PeerError> {
+        if config.video_format.is_none() {
+            return Err(error(
+                PeerErrorKind::UnsupportedParameter,
+                "simulcast requires an H264 video format",
+            ));
+        }
+        Self::build(config, None, true)
     }
 
     fn build(
         config: ProductionSessionConfig,
         temporal_fps: Option<[u8; 3]>,
+        simulcast: bool,
     ) -> Result<Self, PeerError> {
         if config
             .video_format
@@ -220,6 +236,9 @@ impl ProductionSession {
             .video_format
             .map(|format| {
                 let input = match temporal_fps {
+                    None if simulcast => {
+                        EncodedVideoInput::new_simulcast_for_format(format.clone())
+                    }
                     Some(fps) => EncodedVideoInput::new_l1t3_for_format(format.clone(), fps),
                     None => EncodedVideoInput::new_for_format(format.clone()),
                 }
@@ -502,6 +521,22 @@ impl ProductionSession {
             .close()
     }
 
+    /// Forward native bandwidth-estimation constraints without a binding allocator.
+    pub fn set_peer_bitrate(
+        &mut self,
+        peer: SessionPeerId,
+        minimum: Option<u32>,
+        start: Option<u32>,
+        maximum: Option<u32>,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .set_bitrate(minimum, start, maximum)
+    }
+
     pub fn create_opus_source(&mut self, channels: u8) -> Result<SessionSourceId, PeerError> {
         self.check_open()?;
         let id = SessionSourceId(next_id()?);
@@ -549,6 +584,29 @@ impl ProductionSession {
         };
         source.push_encoded(frame).map_err(codec_error)
     }
+    /// Atomically admit a bounded three-unit capture batch, not atomic wire publication.
+    pub fn push_video_simulcast(
+        &mut self,
+        source: SessionSourceId,
+        frames: [EncodedVideoAccessUnit; 3],
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Video(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source.push_simulcast(frames).map_err(codec_error)
+    }
+
+    pub fn video_encoding_keyframe_requests(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<[bool; 3], PeerError> {
+        let Some(Source::Video(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        Ok(source.take_encoding_keyframe_requests())
+    }
+
     pub fn video_feedback(
         &mut self,
         source: SessionSourceId,

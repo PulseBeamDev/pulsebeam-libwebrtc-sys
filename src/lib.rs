@@ -781,6 +781,14 @@ mod ffi {
         fn peer_create_offer(peer: &NativePeerConnection, operation_id: u64, ice_restart: bool);
         fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64);
         fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> bool;
+        fn peer_set_bitrate(
+            peer: &NativePeerConnection,
+            minimum: i32,
+            start: i32,
+            maximum: i32,
+            error_type: &mut u8,
+            message: &mut String,
+        ) -> bool;
         fn peer_descriptions(
             peer: &NativePeerConnection,
             descriptions: &mut Vec<FfiDescriptionSnapshot>,

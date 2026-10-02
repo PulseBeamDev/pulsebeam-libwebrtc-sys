@@ -772,7 +772,9 @@ impl VideoEncoderFactoryHandle {
         matches!(
             self.0.direct_encoded,
             Some(
-                crate::video::DirectEncodedVideo::H264 | crate::video::DirectEncodedVideo::H264L1T3
+                crate::video::DirectEncodedVideo::H264
+                    | crate::video::DirectEncodedVideo::H264L1T3
+                    | crate::video::DirectEncodedVideo::H264Simulcast
             )
         )
     }

@@ -1322,7 +1322,13 @@ impl PeerConnection {
                 message: "video track must belong to this peer factory".into(),
             });
         }
-        if track.is_direct_encoded() && rids.len() > 1 {
+        if track.is_direct_encoded()
+            && if track.is_direct_simulcast() {
+                rids.len() != 3
+            } else {
+                rids.len() > 1
+            }
+        {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedParameter,
                 message: "encoded H264 input cannot use multiple RIDs".into(),
@@ -1554,6 +1560,50 @@ impl PeerConnection {
                 message: "peer closed or previous stats result not yet consumed".into(),
             })
         }
+    }
+
+    /// Apply libwebrtc's bandwidth-estimation constraints. Values are bits per
+    /// second; absent fields are forwarded as native unset values. This
+    /// does not bypass the native allocator or promise a per-encoding rate.
+    /// Native validation reports inconsistent bounds and closed-state errors.
+    pub fn set_bitrate(
+        &self,
+        minimum: Option<u32>,
+        start: Option<u32>,
+        maximum: Option<u32>,
+    ) -> Result<(), PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            });
+        }
+        let convert = |value: Option<u32>| -> Result<i32, PeerError> {
+            value
+                .map(i32::try_from)
+                .transpose()
+                .map(|value| value.unwrap_or(-1))
+                .map_err(|_| PeerError {
+                    kind: PeerErrorKind::InvalidParameter,
+                    message: "bitrate exceeds native i32 range".into(),
+                })
+        };
+        let (minimum, start, maximum) = (convert(minimum)?, convert(start)?, convert(maximum)?);
+        let mut error_type = 0;
+        let mut message = String::new();
+        ffi::peer_set_bitrate(
+            self.native(),
+            minimum,
+            start,
+            maximum,
+            &mut error_type,
+            &mut message,
+        )
+        .then_some(())
+        .ok_or_else(|| PeerError {
+            kind: error_kind(error_type),
+            message,
+        })
     }
 
     pub fn try_next_event(&self) -> Option<PeerConnectionEvent> {

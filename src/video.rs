@@ -503,6 +503,7 @@ pub struct VideoTrack {
 pub(crate) enum DirectEncodedVideo {
     H264,
     H264L1T3,
+    H264Simulcast,
     Vp8,
     Vp9,
     Av1,
@@ -602,10 +603,19 @@ impl VideoTrack {
         self.inner.encoded_codec.get() == Some(DirectEncodedVideo::H264L1T3)
     }
 
+    pub(crate) fn is_direct_simulcast(&self) -> bool {
+        self.inner.encoded_codec.get() == Some(DirectEncodedVideo::H264Simulcast)
+    }
+
     pub(crate) fn is_admitted_controlled_video(&self) -> bool {
         matches!(
             self.inner.encoded_codec.get(),
-            Some(DirectEncodedVideo::Vp8 | DirectEncodedVideo::H264 | DirectEncodedVideo::H264L1T3)
+            Some(
+                DirectEncodedVideo::Vp8
+                    | DirectEncodedVideo::H264
+                    | DirectEncodedVideo::H264L1T3
+                    | DirectEncodedVideo::H264Simulcast
+            )
         )
     }
 
@@ -787,7 +797,14 @@ impl RtpSender {
                             .into(),
                 });
             }
-            if track.is_direct_encoded() && self.parameters()?.encodings.len() > 1 {
+            let encodings = self.parameters()?.encodings.len();
+            if track.is_direct_encoded()
+                && if track.is_direct_simulcast() {
+                    encodings != 3
+                } else {
+                    encodings > 1
+                }
+            {
                 return Err(PeerError {
                     kind: PeerErrorKind::UnsupportedParameter,
                     message: "encoded H264 input cannot replace a simulcast sender".into(),
@@ -929,16 +946,25 @@ impl RtpSender {
     /// fields are preserved, and native validation rejects unsupported modes.
     pub fn set_parameters(&self, parameters: RtpSenderParameters) -> Result<(), PeerError> {
         if self.track().is_some_and(|track| track.is_direct_encoded())
-            && (parameters.encodings.len() > 1
-                || parameters.encodings.iter().any(|encoding| {
-                    (encoding.scalability_mode.is_some()
-                        && !(self.track().is_some_and(|track| track.is_direct_l1t3())
-                            && encoding.scalability_mode.as_deref() == Some("L1T3")))
-                        || encoding.scale_resolution_down_to.is_some()
-                        || encoding
-                            .scale_resolution_down_by
-                            .is_some_and(|scale| scale != 1.0)
-                }))
+            && (if self
+                .track()
+                .is_some_and(|track| track.is_direct_simulcast())
+            {
+                parameters.encodings.len() != 3
+            } else {
+                parameters.encodings.len() > 1
+            } || parameters.encodings.iter().any(|encoding| {
+                (encoding.scalability_mode.is_some()
+                    && !(self.track().is_some_and(|track| track.is_direct_l1t3())
+                        && encoding.scalability_mode.as_deref() == Some("L1T3")))
+                    || (!self
+                        .track()
+                        .is_some_and(|track| track.is_direct_simulcast())
+                        && (encoding.scale_resolution_down_to.is_some()
+                            || encoding
+                                .scale_resolution_down_by
+                                .is_some_and(|scale| scale != 1.0)))
+            }))
         {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedParameter,

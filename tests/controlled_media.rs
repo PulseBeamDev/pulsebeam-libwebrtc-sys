@@ -96,12 +96,14 @@ struct Observations {
     retired: bool,
     gathered: [bool; 2],
     operations: Vec<(usize, OperationCompletion)>,
+    stats: Vec<(usize, PeerStatsSnapshot)>,
     terminal_operations: Vec<(usize, OperationId)>,
     audio_ids: Vec<(usize, String)>,
     video_ids: Vec<(usize, String)>,
     audio: Vec<(usize, AudioSink)>,
     video: Vec<(usize, VideoSink)>,
     encoded_video_only: bool,
+    sender_only_simulcast_answer: bool,
     encoded_video: Vec<(usize, EncodedVideoSink)>,
     transceivers: Vec<(usize, RtpTransceiver)>,
     channels: Vec<(usize, DataChannel)>,
@@ -182,6 +184,11 @@ impl Observations {
         for (who, peer) in peers.iter().enumerate() {
             while let Some(event) = peer.try_next_event() {
                 let description = match event {
+                    PeerConnectionEvent::Stats(snapshot) => {
+                        let description = format!("stats:{:?}", snapshot.operation_id);
+                        self.stats.push((who, snapshot));
+                        description
+                    }
                     PeerConnectionEvent::OperationComplete(result) => {
                         let status = match &result.result {
                             Ok(Some(description)) => format!(
@@ -428,7 +435,15 @@ impl Observations {
             answerer,
             peers[answerer].set_local_description(answer),
         );
-        let answer = self.gather(world, network, peers, answerer);
+        let mut answer = self.gather(world, network, peers, answerer);
+        if self.sender_only_simulcast_answer {
+            // External SFU acceptance fixture for sender evidence only. The
+            // stock endpoint's local description is NOT changed and its
+            // receiver does not claim simultaneous three-rung support.
+            answer.sdp.push_str(
+                "a=rid:q recv\r\na=rid:h recv\r\na=rid:f recv\r\na=simulcast:recv q;h;f\r\n",
+            );
+        }
         self.completed(
             world,
             network,
@@ -1135,7 +1150,8 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
     trace
 }
 
-fn run_h264(temporal: bool, impaired: bool) -> Trace {
+fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace {
+    let simulcast = simulcast_mode != 0;
     const KEY: &[u8] = &[
         0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
         0x3c, 0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88,
@@ -1154,8 +1170,15 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
             if let Some(error) = source.take_encoder_error() {
                 return Err(error);
             }
-            if observations.trace.encoded_video.len() > before {
-                return Ok(observations.trace.encoded_video.last().unwrap().1.clone());
+            let previous_timestamp = before
+                .checked_sub(1)
+                .map(|index| observations.trace.encoded_video[index].1.rtp_timestamp);
+            if let Some((_, frame)) = observations.trace.encoded_video[before..]
+                .iter()
+                .rev()
+                .find(|(_, frame)| Some(frame.rtp_timestamp) != previous_timestamp)
+            {
+                return Ok(frame.clone());
             }
             world.advance(Duration::from_millis(1)).unwrap();
         }
@@ -1168,10 +1191,12 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
         );
     }
     eprintln!("CONTROLLED_MEDIA_BEGIN");
-    let trace = {
+    let trace = 'lifecycle: {
         let world = ControlledWorld::acquire(731, Duration::from_secs(10)).unwrap();
         let network = world.create_network().unwrap();
-        let input = if temporal {
+        let input = if simulcast {
+            EncodedVideoInput::new_simulcast().unwrap()
+        } else if temporal {
             EncodedVideoInput::new_l1t3([64, 128, 255]).unwrap()
         } else {
             EncodedVideoInput::new().unwrap()
@@ -1216,26 +1241,50 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
         let track = source
             .create_track(&factories[0], "controlled-h264")
             .unwrap();
-        let transceiver = peers[0]
-            .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
-            .unwrap();
+        let transceiver = if simulcast {
+            peers[0]
+                .add_video_transceiver_with_rids(
+                    &track,
+                    RtpTransceiverDirection::SendOnly,
+                    &["q".into(), "h".into(), "f".into()],
+                )
+                .unwrap()
+        } else {
+            peers[0]
+                .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+                .unwrap()
+        };
         let mut observations = Observations {
             impaired,
             encoded_video_only: true,
+            sender_only_simulcast_answer: simulcast_mode >= 2,
             ..Observations::default()
         };
         observations.negotiate_with_layers(&world, &network, &peers, 0, temporal);
         let sender = transceiver.sender();
+        if simulcast_mode >= 2 {
+            peers[0]
+                .set_bitrate(Some(3_000_000), Some(3_000_000), Some(4_000_000))
+                .unwrap();
+        }
         if temporal {
             let mut parameters = sender.parameters().unwrap();
             parameters.encodings[0].scalability_mode = Some("L1T3".into());
             sender.set_parameters(parameters).unwrap();
         }
+        if simulcast_mode == 3 {
+            let mut parameters = sender.parameters().unwrap();
+            assert_eq!(parameters.encodings.len(), 3);
+            for (index, encoding) in parameters.encodings.iter_mut().enumerate() {
+                encoding.active = index == 1;
+            }
+            sender.set_parameters(parameters).unwrap();
+        }
         assert_eq!(observations.encoded_video.len(), 1);
         let mut unit = EncodedVideoAccessUnit {
             data: KEY.to_vec(),
-            width: 16,
-            height: 16,
+            width: if simulcast { 320 } else { 16 },
+            height: if simulcast { 180 } else { 16 },
             timestamp_us: i64::try_from(world.now().as_micros()).unwrap(),
             key_frame: true,
             qp: None,
@@ -1250,17 +1299,79 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
             },
         };
         let before = observations.trace.encoded_video.len();
-        source.push_encoded(unit.clone()).unwrap();
-        let first = outcome(&world, &network, &peers, &source, &mut observations, before).unwrap();
+        push_h264(&source, unit.clone(), simulcast);
+        let result = outcome(&world, &network, &peers, &source, &mut observations, before);
+        if matches!(simulcast_mode, 1 | 3) {
+            // Neither collapsed senders nor single-encoder fallback expose
+            // enough native initialization identity to associate a rung.
+            assert_eq!(result.unwrap_err(), CodecError::InvalidConfiguration);
+            assert_eq!(source.pending_frames(), 0);
+            assert_eq!(source.dropped_frames(), 3);
+            assert!(observations.trace.encoded_video.is_empty());
+            source.close().unwrap();
+            for (_, sink) in &mut observations.encoded_video {
+                sink.close();
+            }
+            for peer in &mut peers {
+                peer.close().unwrap();
+            }
+            break 'lifecycle observations.trace;
+        }
+        let first = result.unwrap();
         assert_eq!(first.data, unit.data);
         assert!(first.key_frame);
-        assert_eq!(first.temporal_index, temporal.then_some(0));
+        assert_eq!(first.temporal_index, (temporal || simulcast).then_some(0));
         assert!(first.dependencies.is_empty());
-        assert_eq!(first.frame_id.is_some(), temporal);
+        assert_eq!(first.frame_id.is_some(), temporal || simulcast);
         let mut base_id = first.frame_id;
         source.take_keyframe_request();
+        if simulcast {
+            assert_eq!(
+                source.take_encoding_keyframe_requests(),
+                if simulcast_mode == 3 {
+                    [false, true, false]
+                } else {
+                    [true; 3]
+                }
+            );
+            let rates = source.latest_rate_control().unwrap();
+            if simulcast_mode == 3 {
+                assert!(rates.layer_bitrates_bps[1][0].unwrap_or(0) > 0);
+                for index in [0, 2, 3, 4] {
+                    assert!(
+                        rates.layer_bitrates_bps[index]
+                            .iter()
+                            .all(|cell| cell.unwrap_or(0) == 0)
+                    );
+                }
+            } else {
+                assert!(
+                    rates.layer_bitrates_bps[..3]
+                        .iter()
+                        .all(|layer| layer[0].unwrap_or(0) > 0)
+                );
+            }
+        }
         let mut rejected = 0;
         for temporal_index in [2, 1, 2, 0] {
+            if simulcast_mode == 2 {
+                // Sender-only SFU fixture: stock native receiver is not a
+                // three-rung metadata boundary. Qualify publication using
+                // native allocation, callback feedback and sender statistics.
+                world.advance(Duration::from_millis(34)).unwrap();
+                unit.timestamp_us = i64::try_from(world.now().as_micros()).unwrap();
+                push_h264(&source, unit.clone(), true);
+                for _ in 0..2_000 {
+                    observations.step(&world, &network, &peers, true);
+                    assert!(source.take_encoder_error().is_none());
+                    if source.pending_frames() == 0 {
+                        break;
+                    }
+                    world.advance(Duration::from_millis(1)).unwrap();
+                }
+                assert_eq!(source.pending_frames(), 0);
+                continue;
+            }
             let mut delivered = None;
             for _ in 0..4 {
                 world.advance(Duration::from_millis(34)).unwrap();
@@ -1272,7 +1383,7 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
                     base_layer_sync: temporal && temporal_index != 0,
                 };
                 let before = observations.trace.encoded_video.len();
-                source.push_encoded(unit.clone()).unwrap();
+                push_h264(&source, unit.clone(), simulcast);
                 match outcome(&world, &network, &peers, &source, &mut observations, before) {
                     Ok(frame) => {
                         delivered = Some(frame);
@@ -1292,7 +1403,7 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
                             base_layer_sync: false,
                         };
                         let before = observations.trace.encoded_video.len();
-                        source.push_encoded(key.clone()).unwrap();
+                        push_h264(&source, key.clone(), simulcast);
                         let frame =
                             outcome(&world, &network, &peers, &source, &mut observations, before)
                                 .unwrap();
@@ -1308,7 +1419,11 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
             assert_eq!(received.ssrc, first.ssrc);
             assert_eq!(
                 received.temporal_index,
-                temporal.then_some(i32::from(temporal_index))
+                if simulcast {
+                    Some(0)
+                } else {
+                    temporal.then_some(i32::from(temporal_index))
+                }
             );
             if temporal {
                 assert!(received.frame_id.unwrap() > base_id.unwrap());
@@ -1316,19 +1431,92 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
                 assert_eq!(received.decode_target_indications.len(), 4);
                 let rates = source.latest_rate_control().unwrap();
                 assert!(rates.layer_bitrates_bps[0][2].is_some());
+            } else if simulcast {
+                assert!(received.frame_id.unwrap() > base_id.unwrap());
+                assert_eq!(received.dependencies, vec![base_id.unwrap()]);
+                // Pinned H264ToGeneric advertises kMaxTemporalStreams (4)
+                // decode targets even for an absent temporal index / TL0.
+                assert_eq!(received.decode_target_indications.len(), 4);
             } else {
                 assert!(received.frame_id.is_none());
                 assert!(received.decode_target_indications.is_empty());
             }
-            if temporal_index == 0 {
+            if temporal_index == 0 || simulcast {
                 base_id = received.frame_id;
             }
         }
-        assert_eq!(source.dropped_frames(), rejected);
+        assert_eq!(
+            source.dropped_frames(),
+            if simulcast_mode == 3 {
+                10 + 5 * rejected
+            } else if simulcast {
+                3 * rejected
+            } else {
+                rejected
+            }
+        );
         assert_eq!(source.pending_frames(), 0);
+        if simulcast_mode >= 2 {
+            let operation = peers[0].request_stats().unwrap();
+            let mut snapshot = None;
+            for _ in 0..2_000 {
+                observations.step(&world, &network, &peers, true);
+                if let Some(at) = observations
+                    .stats
+                    .iter()
+                    .position(|(who, stats)| *who == 0 && stats.operation_id == operation)
+                {
+                    snapshot = Some(observations.stats.remove(at).1);
+                    break;
+                }
+                world.advance(Duration::from_millis(1)).unwrap();
+            }
+            let snapshot = snapshot.expect("native sender stats missing");
+            let outgoing: Vec<_> = snapshot
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    PeerStatsRecord::OutboundRtp(stats)
+                        if stats.kind.as_deref() == Some("video")
+                            && stats.packets_sent.unwrap_or(0) > 0 =>
+                    {
+                        Some((stats.rid.clone().unwrap(), stats.ssrc.unwrap()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                outgoing
+                    .iter()
+                    .map(|(rid, _)| rid.as_str())
+                    .collect::<std::collections::HashSet<_>>(),
+                if simulcast_mode == 3 {
+                    std::collections::HashSet::from(["h"])
+                } else {
+                    std::collections::HashSet::from(["q", "h", "f"])
+                }
+            );
+            assert_eq!(
+                outgoing
+                    .iter()
+                    .map(|(_, ssrc)| *ssrc)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                outgoing.len()
+            );
+        }
         source.close().unwrap();
         for (_, sink) in &mut observations.encoded_video {
-            assert_eq!(sink.dropped_frames(), 0);
+            if simulcast_mode != 2 {
+                assert_eq!(sink.dropped_frames(), 0);
+            } else {
+                // Unsupported simultaneous-receive endpoint is not evidence
+                // of media delivery. Preserve its observable queue-drop count.
+                observations.trace.events.push(format!(
+                    "sender-only-endpoint-drops:{}",
+                    sink.dropped_frames()
+                ));
+            }
             sink.close();
             assert!(sink.try_next_frame().is_none());
         }
@@ -1348,6 +1536,164 @@ fn run_h264(temporal: bool, impaired: bool) -> Trace {
     };
     eprintln!("CONTROLLED_MEDIA_END");
     trace
+}
+
+fn run_h264(temporal: bool, impaired: bool) -> Trace {
+    run_h264_profile(temporal, impaired, 0)
+}
+
+fn push_h264(source: &EncodedVideoSource, unit: EncodedVideoAccessUnit, simulcast: bool) {
+    if simulcast {
+        let frames = std::array::from_fn(|index| {
+            let mut frame = unit.clone();
+            frame.width *= 1 << index;
+            frame.height *= 1 << index;
+            frame.metadata.simulcast_index = Some(index as u8);
+            frame
+        });
+        source.push_simulcast(frames).unwrap();
+    } else {
+        source.push_encoded(unit).unwrap();
+    }
+}
+
+#[test]
+fn controlled_simulcast_input_rejects_collapsed_sender_and_replays() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    // Honest stock-native answer declines simultaneous simulcast reception.
+    // Reject the ambiguous native fallback, not claim three-rung receipt.
+    for impaired in [false, true] {
+        let first = run_h264_profile(false, impaired, 1);
+        let replay = run_h264_profile(false, impaired, 1);
+        assert_eq!(first, replay);
+        assert!(first.video.is_empty());
+        assert!(first.encoded_video.is_empty());
+    }
+}
+
+#[test]
+fn controlled_h264_simulcast_native_sender_rejects_ambiguous_fallback() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for mode in [2, 3] {
+        for impaired in [false, true] {
+            let first = run_h264_profile(false, impaired, mode);
+            let replay = run_h264_profile(false, impaired, mode);
+            assert_eq!(first, replay);
+            assert!(first.video.is_empty());
+            if mode == 2 {
+                // Sender statistics inside the fixture establish publication.
+                // Stock reception here is not a three-rung metadata boundary.
+                assert!(!first.encoded_video.is_empty());
+            } else {
+                assert!(first.encoded_video.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn controlled_simulcast_admission_is_atomic_and_bitrate_errors_are_native() {
+    let _guard = CONTROLLED_TEST
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let world = ControlledWorld::acquire(733, Duration::from_secs(10)).unwrap();
+    let network = world.create_network().unwrap();
+    let endpoint = network
+        .register_endpoint(Ipv4Addr::new(10, 79, 1, 1).into())
+        .unwrap();
+    let input = EncodedVideoInput::new_simulcast().unwrap();
+    let factory = world
+        .peer_factory_builder()
+        .unwrap()
+        .network_manager(endpoint.network_manager().unwrap())
+        .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+        .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
+        .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
+        .video_encoder_factory(input.encoder_factory())
+        .video_decoder_factory(input.encoded_receive_factory().unwrap())
+        .controlled_media()
+        .build()
+        .unwrap();
+    let mut source = input.create_source(&factory).unwrap();
+    let frames = std::array::from_fn(|index| EncodedVideoAccessUnit {
+        data: vec![
+            0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x65, 1,
+        ],
+        width: 320 << index,
+        height: 180 << index,
+        timestamp_us: 1,
+        key_frame: true,
+        qp: None,
+        metadata: EncodedVideoMetadata {
+            codec: EncodedVideoCodec::H264 {
+                base_layer_sync: false,
+            },
+            simulcast_index: Some(index as u8),
+            spatial_index: None,
+            temporal_index: None,
+            end_of_picture: true,
+        },
+    });
+    let mutations: [fn(&mut [EncodedVideoAccessUnit; 3]); 8] = [
+        |units| units[2].metadata.simulcast_index = Some(1),
+        |units| units[2].metadata.temporal_index = Some(0),
+        |units| units[2].metadata.codec = EncodedVideoCodec::Av1,
+        |units| units[2].timestamp_us = 2,
+        |units| units[2].width = 320,
+        |units| units[2].qp = Some(52),
+        |units| units[2].data.clear(),
+        |units| units[2].key_frame = false,
+    ];
+    for mutate in mutations {
+        let mut invalid = frames.clone();
+        mutate(&mut invalid);
+        assert_eq!(
+            source.push_simulcast(invalid),
+            Err(CodecError::InvalidFrame)
+        );
+        assert_eq!(source.pending_frames(), 0);
+        assert_eq!(source.dropped_frames(), 0);
+    }
+    assert_eq!(
+        source.push_encoded(frames[0].clone()),
+        Err(CodecError::InvalidConfiguration)
+    );
+    source.push_simulcast(frames.clone()).unwrap();
+    assert_eq!(source.pending_frames(), 3);
+    assert_eq!(
+        source.push_simulcast(frames.clone()),
+        Err(CodecError::InvalidFrame)
+    );
+    assert_eq!(source.pending_frames(), 3);
+    source.close().unwrap();
+    assert_eq!(source.pending_frames(), 0);
+    assert_eq!(source.push_simulcast(frames), Err(CodecError::Released));
+
+    let mut peer = factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    assert_eq!(
+        peer.set_bitrate(Some(u32::MAX), None, None)
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::InvalidParameter
+    );
+    let native_error = peer
+        .set_bitrate(Some(200_000), Some(100_000), Some(300_000))
+        .unwrap_err();
+    assert!(!native_error.message.is_empty());
+    peer.set_bitrate(Some(100_000), Some(200_000), Some(300_000))
+        .unwrap();
+    peer.set_bitrate(None, None, None).unwrap();
+    peer.close().unwrap();
+    assert_eq!(
+        peer.set_bitrate(None, None, None).unwrap_err().kind,
+        PeerErrorKind::Closed
+    );
 }
 
 #[test]

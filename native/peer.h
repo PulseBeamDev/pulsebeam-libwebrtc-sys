@@ -117,6 +117,9 @@ void peer_create_answer(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
 bool peer_request_stats(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
+bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
+                      std::int32_t start, std::int32_t maximum,
+                      std::uint8_t& error_type, rust::String& message) noexcept;
 std::uint8_t peer_descriptions(
     const NativePeerConnection& peer,
     rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept;

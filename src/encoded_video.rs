@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -52,6 +52,7 @@ pub struct EncodedVideoAccessUnit {
 #[derive(Default)]
 struct SourceFeedback {
     keyframe_requested: AtomicBool,
+    encoding_keyframes: AtomicU8,
     rates: Mutex<Option<VideoRateControl>>,
     encoder_error: Mutex<Option<CodecError>>,
     readiness: Option<Arc<crate::readiness::Readiness>>,
@@ -84,6 +85,15 @@ impl SourceFeedback {
         }
     }
 
+    fn request_encoding_keyframe(&self, index: usize) {
+        let bit = 1 << index;
+        let changed = self.encoding_keyframes.fetch_or(bit, Ordering::AcqRel) & bit == 0;
+        self.request_keyframe();
+        if changed {
+            self.notify();
+        }
+    }
+
     fn record_error(&self, error: CodecError) {
         *self
             .encoder_error
@@ -97,12 +107,13 @@ struct Pending {
     source_id: u64,
     dropped: Arc<AtomicU64>,
     feedback: Arc<SourceFeedback>,
-    frame: EncodedVideoAccessUnit,
+    frames: Vec<EncodedVideoAccessUnit>,
 }
 
 impl Pending {
     fn reject(&self, error: CodecError) -> CodecError {
-        self.dropped.fetch_add(1, Ordering::Relaxed);
+        self.dropped
+            .fetch_add(self.frames.len() as u64, Ordering::Relaxed);
         self.feedback.record_error(error);
         error
     }
@@ -123,9 +134,9 @@ impl Broker {
         source_id: u64,
         dropped: Arc<AtomicU64>,
         feedback: Arc<SourceFeedback>,
-        frame: EncodedVideoAccessUnit,
+        frames: Vec<EncodedVideoAccessUnit>,
     ) -> Result<i64, CodecError> {
-        let size = frame.data.len();
+        let size: usize = frames.iter().map(|frame| frame.data.len()).sum();
         if size > MAX_PENDING_BYTES || self.next_token == i64::MAX {
             return Err(CodecError::InvalidFrame);
         }
@@ -134,8 +145,14 @@ impl Broker {
                 return Err(CodecError::InvalidFrame);
             };
             if let Some(previous) = self.pending.remove(&old) {
-                self.bytes -= previous.frame.data.len();
-                previous.dropped.fetch_add(1, Ordering::Relaxed);
+                self.bytes -= previous
+                    .frames
+                    .iter()
+                    .map(|frame| frame.data.len())
+                    .sum::<usize>();
+                previous
+                    .dropped
+                    .fetch_add(previous.frames.len() as u64, Ordering::Relaxed);
             }
         }
         self.next_token += 1;
@@ -148,7 +165,7 @@ impl Broker {
                 source_id,
                 dropped,
                 feedback,
-                frame,
+                frames,
             },
         );
         Ok(token)
@@ -156,7 +173,11 @@ impl Broker {
 
     fn take(&mut self, token: i64) -> Option<Pending> {
         let pending = self.pending.remove(&token)?;
-        self.bytes -= pending.frame.data.len();
+        self.bytes -= pending
+            .frames
+            .iter()
+            .map(|frame| frame.data.len())
+            .sum::<usize>();
         // Older tokens lost upstream are pruned by insert's bounded FIFO.
         self.order.retain(|queued| *queued != token);
         Some(pending)
@@ -195,7 +216,7 @@ impl EncodedH264Input {
     /// Advertise a single encoded-input format without requiring a bundled
     /// software encoder. Format parameters must agree with the compressed input.
     pub fn new_for_format(format: VideoCodecFormat) -> Result<Self, CodecError> {
-        Self::build(format, None)
+        Self::build(format, None, false)
     }
 
     /// Declare single-encoding H264 L1T3 input. Fractions are the producer's
@@ -226,12 +247,29 @@ impl EncodedH264Input {
         let format = format
             .with_scalability_mode(crate::VideoScalabilityMode::parse("L1T1")?)
             .with_scalability_mode(crate::VideoScalabilityMode::parse("L1T3")?);
-        Self::build(format, Some(fps))
+        Self::build(format, Some(fps), false)
+    }
+
+    /// Direct three-rung H264 simulcast. Submit complete capture batches with
+    /// ordered indexes 0, 1, 2 and increasing, distinct rung dimensions. Configure
+    /// exactly three native sender RIDs and their matching scaling settings.
+    /// Native callbacks publish each image separately, not atomically on wire.
+    /// Stock libwebrtc receivers do not receive all simulcast rungs concurrently.
+    pub fn new_simulcast() -> Result<Self, CodecError> {
+        Self::new_simulcast_for_format(format())
+    }
+
+    pub(crate) fn new_simulcast_for_format(format: VideoCodecFormat) -> Result<Self, CodecError> {
+        if format.name != "H264" || !format.scalability_modes.is_empty() {
+            return Err(CodecError::UnsupportedFormat);
+        }
+        Self::build(format, None, true)
     }
 
     fn build(
         mut format: VideoCodecFormat,
         temporal_fps: Option<[u8; 3]>,
+        simulcast: bool,
     ) -> Result<Self, CodecError> {
         if format.name == "VP9" && !format.parameters.iter().any(|p| p.key == "profile-id") {
             format = format.with_parameter("profile-id", "0");
@@ -258,6 +296,7 @@ impl EncodedH264Input {
         }
         use crate::video::DirectEncodedVideo;
         let codec = match format.name.as_str() {
+            "H264" if simulcast => DirectEncodedVideo::H264Simulcast,
             "H264" if temporal_fps.is_some() => DirectEncodedVideo::H264L1T3,
             "H264" => DirectEncodedVideo::H264,
             "VP8" => DirectEncodedVideo::Vp8,
@@ -272,6 +311,7 @@ impl EncodedH264Input {
                 broker: broker.clone(),
                 format: format.clone(),
                 temporal_fps,
+                simulcast,
             },
             codec,
         )?;
@@ -401,6 +441,43 @@ impl EncodedH264Source {
     }
 
     pub fn push_encoded(&self, frame: EncodedVideoAccessUnit) -> Result<(), CodecError> {
+        if self.codec == crate::video::DirectEncodedVideo::H264Simulcast {
+            return Err(CodecError::InvalidConfiguration);
+        }
+        self.validate_unit(&frame, None)?;
+        self.enqueue(vec![frame])
+    }
+
+    /// Reserve one bounded three-rung capture batch before triggering native
+    /// work. All units share capture time and have ordered native indexes 0..2.
+    /// Native initialization must expose all three ordered streams; ambiguous
+    /// single-encoder fallback returns `InvalidConfiguration` asynchronously.
+    /// Native inactive/unallocated rungs may be dropped and are counted. Images
+    /// are published separately; a later callback failure cannot retract an
+    /// earlier image. Dimensions must match native sender configuration.
+    pub fn push_simulcast(&self, frames: [EncodedVideoAccessUnit; 3]) -> Result<(), CodecError> {
+        if self.codec != crate::video::DirectEncodedVideo::H264Simulcast {
+            return Err(CodecError::InvalidConfiguration);
+        }
+        let time = frames[0].timestamp_us;
+        for (index, frame) in frames.iter().enumerate() {
+            self.validate_unit(frame, Some(index as u8))?;
+            if frame.timestamp_us != time
+                || (index > 0
+                    && (frames[index - 1].width >= frame.width
+                        || frames[index - 1].height >= frame.height))
+            {
+                return Err(CodecError::InvalidFrame);
+            }
+        }
+        self.enqueue(Vec::from(frames))
+    }
+
+    fn validate_unit(
+        &self,
+        frame: &EncodedVideoAccessUnit,
+        index: Option<u8>,
+    ) -> Result<(), CodecError> {
         if self.closed {
             return Err(CodecError::Released);
         }
@@ -429,7 +506,7 @@ impl EncodedH264Source {
             || matches!(frame.metadata.codec, EncodedVideoCodec::Vp8 { key_index: Some(index), .. } if index > 31)
             || matches!(frame.metadata.codec, EncodedVideoCodec::Vp9 { num_spatial_layers, .. } if num_spatial_layers != 1)
             || !matching_codec
-            || frame.metadata.simulcast_index.is_some()
+            || frame.metadata.simulcast_index != index
             || frame.metadata.spatial_index.is_some()
             || if self.codec == crate::video::DirectEncodedVideo::H264L1T3 {
                 !matches!(frame.metadata.temporal_index, Some(0..=2))
@@ -444,15 +521,18 @@ impl EncodedH264Source {
         {
             return Err(CodecError::InvalidFrame);
         }
-        let width = frame.width;
-        let height = frame.height;
-        let time = frame.timestamp_us;
-        let key_frame = frame.key_frame;
+        Ok(())
+    }
+
+    fn enqueue(&self, frames: Vec<EncodedVideoAccessUnit>) -> Result<(), CodecError> {
+        let largest = frames.last().ok_or(CodecError::InvalidFrame)?;
+        let (width, height, time) = (largest.width, largest.height, largest.timestamp_us);
+        let key_frame = frames.iter().all(|frame| frame.key_frame);
         let token = self
             .broker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(self.id, self.dropped.clone(), self.feedback.clone(), frame)?;
+            .insert(self.id, self.dropped.clone(), self.feedback.clone(), frames)?;
         if !ffi::video_source_push_encoded_trigger(self.source.native(), width, height, time, token)
         {
             let _ = self
@@ -480,6 +560,15 @@ impl EncodedH264Source {
             .swap(false, Ordering::AcqRel)
     }
 
+    /// Returns and clears source-local encoding-indexed native keyframe feedback.
+    /// For three-rung input indexes correspond to the ordered sender encodings.
+    /// Like aggregate feedback, requests become visible at native Encode time.
+    /// Reading this mask and the aggregate boolean clears them independently.
+    pub fn take_encoding_keyframe_requests(&self) -> [bool; 3] {
+        let mask = self.feedback.encoding_keyframes.swap(0, Ordering::AcqRel);
+        std::array::from_fn(|index| mask & (1 << index) != 0)
+    }
+
     /// Most recent native rate control for the encoder associated with this
     /// stream's presentation token. After that association, later native rate
     /// callbacks update this snapshot without another submitted access unit.
@@ -502,6 +591,7 @@ impl EncodedH264Source {
             .take()
     }
 
+    /// Queued access units, not capture tokens (a simulcast batch counts three).
     pub fn pending_frames(&self) -> usize {
         self.broker
             .lock()
@@ -509,7 +599,8 @@ impl EncodedH264Source {
             .pending
             .values()
             .filter(|pending| pending.source_id == self.id)
-            .count()
+            .map(|pending| pending.frames.len())
+            .sum()
     }
 
     pub fn dropped_frames(&self) -> u64 {
@@ -612,6 +703,7 @@ struct InputFactory {
     broker: Arc<Mutex<Broker>>,
     format: VideoCodecFormat,
     temporal_fps: Option<[u8; 3]>,
+    simulcast: bool,
 }
 impl VideoEncoderFactory for InputFactory {
     fn supported_formats(&self) -> Vec<VideoCodecFormat> {
@@ -640,6 +732,7 @@ impl VideoEncoderFactory for InputFactory {
             released: false,
             rates: None,
             temporal_fps: self.temporal_fps,
+            simulcast: self.simulcast,
             configuration: None,
             active_feedback: Weak::new(),
         }))
@@ -656,6 +749,7 @@ struct InputEncoder {
     released: bool,
     rates: Option<VideoRateControl>,
     temporal_fps: Option<[u8; 3]>,
+    simulcast: bool,
     configuration: Option<VideoEncoderSettings>,
     active_feedback: Weak<SourceFeedback>,
 }
@@ -702,26 +796,73 @@ impl VideoEncoder for InputEncoder {
         {
             return Err(pending.reject(CodecError::InvalidConfiguration));
         }
+        let settings = self
+            .configuration
+            .as_ref()
+            .ok_or_else(|| pending.reject(CodecError::InvalidConfiguration))?;
+        let mut selected = vec![true; pending.frames.len()];
+        if self.simulcast {
+            if pending.frames.len() != 3 || settings.h264_temporal_layers != Some(1) {
+                return Err(pending.reject(CodecError::InvalidConfiguration));
+            }
+            match settings.simulcast_streams.len() {
+                3 => {
+                    for (index, stream) in settings.simulcast_streams.iter().enumerate() {
+                        let unit = &pending.frames[index];
+                        if stream.temporal_layers != 1
+                            || (stream.active
+                                && (unit.width, unit.height) != (stream.width, stream.height))
+                        {
+                            return Err(pending.reject(CodecError::InvalidConfiguration));
+                        }
+                        // Native VideoBitrateAllocation sums unset cells as
+                        // zero. No positive cell means no allocated funding;
+                        // preserve None vs Some(0) in the exposed snapshot.
+                        selected[index] = stream.active
+                            && self.rates.is_none_or(|rates| {
+                                rates.layer_bitrates_bps[index]
+                                    .iter()
+                                    .flatten()
+                                    .any(|&bps| bps > 0)
+                            });
+                    }
+                }
+                // A single-encoder SEA fallback and a collapsed sender can
+                // expose the same zero-stream configuration. Geometry does
+                // not prove original encoding identity. Never guess a rung.
+                _ => return Err(pending.reject(CodecError::InvalidConfiguration)),
+            }
+        } else if pending.frames.len() != 1
+            || (pending.frames[0].width, pending.frames[0].height) != (frame.width, frame.height)
+        {
+            return Err(pending.reject(CodecError::InvalidFrame));
+        }
         self.active_feedback = Arc::downgrade(&pending.feedback);
         if let Some(rates) = self.rates {
             pending.feedback.set_rates(rates);
         }
-        let unit = &pending.frame;
-        if frame_types.contains(&VideoFrameType::Key) {
-            // Preserve the request even when this supplied unit satisfies it.
-            // Feedback belongs to the source identified by the trigger token,
-            // so replacement on a stable sender cannot misroute the request.
-            pending.feedback.request_keyframe();
-            if !unit.key_frame {
-                return Err(pending.reject(CodecError::InvalidFrame));
+        // Validate every selected image before the first callback. Callback
+        // publication is still non-atomic, exactly like the native interface.
+        for (index, unit) in pending
+            .frames
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected[*index])
+        {
+            if frame_types.get(index) == Some(&VideoFrameType::Key) {
+                pending.feedback.request_encoding_keyframe(index);
+                if !unit.key_frame {
+                    return Err(pending.reject(CodecError::InvalidFrame));
+                }
             }
         }
-        if (unit.width, unit.height) != (frame.width, frame.height) {
-            return Err(pending.reject(CodecError::InvalidFrame));
-        }
-        let unit = pending.frame;
-        callback
-            .emit_with_metadata(
+        let count = pending.frames.len();
+        for (index, unit) in pending.frames.into_iter().enumerate() {
+            if !selected[index] {
+                pending.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if let Err(error) = callback.emit_with_metadata(
                 &EncodedVideoFrame {
                     data: unit.data,
                     width: unit.width,
@@ -735,12 +876,15 @@ impl VideoEncoder for InputEncoder {
                     qp: unit.qp,
                 },
                 unit.metadata,
-            )
-            .map_err(|error| {
-                pending.dropped.fetch_add(1, Ordering::Relaxed);
+            ) {
+                pending
+                    .dropped
+                    .fetch_add((count - index) as u64, Ordering::Relaxed);
                 pending.feedback.record_error(error);
-                error
-            })
+                return Err(error);
+            }
+        }
+        Ok(())
     }
     fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
         self.rates = Some(rates);
@@ -761,10 +905,13 @@ impl VideoEncoder for InputEncoder {
             implementation_name: "direct encoded video input".into(),
             hardware_accelerated: false,
             supports_native_handle: false,
-            supports_simulcast: false,
-            fps_allocation: self
-                .temporal_fps
-                .map(|fps| [fps.to_vec(), vec![], vec![], vec![], vec![]]),
+            supports_simulcast: self.simulcast,
+            fps_allocation: if self.simulcast {
+                Some([vec![255], vec![255], vec![255], vec![], vec![]])
+            } else {
+                self.temporal_fps
+                    .map(|fps| [fps.to_vec(), vec![], vec![], vec![], vec![]])
+            },
         }
     }
 }
@@ -778,6 +925,98 @@ pub type EncodedVideoSource = EncodedH264Source;
 mod tests {
     use super::*;
 
+    fn broker_batch(bytes: usize) -> Vec<EncodedVideoAccessUnit> {
+        (0..3)
+            .map(|index| EncodedVideoAccessUnit {
+                data: vec![0; bytes],
+                width: 320 << index,
+                height: 180 << index,
+                timestamp_us: 0,
+                key_frame: true,
+                qp: None,
+                metadata: EncodedVideoMetadata {
+                    codec: EncodedVideoCodec::H264 {
+                        base_layer_sync: false,
+                    },
+                    simulcast_index: Some(index as u8),
+                    spatial_index: None,
+                    temporal_index: None,
+                    end_of_picture: true,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batch_budget_rejects_atomically_and_evicts_whole_capture_tokens() {
+        let mut broker = Broker::default();
+        let dropped = Arc::new(AtomicU64::new(0));
+        let feedback = Arc::new(SourceFeedback::default());
+        let first = broker
+            .insert(1, dropped.clone(), feedback.clone(), broker_batch(1))
+            .unwrap();
+        assert_eq!(broker.bytes, 3);
+        assert_eq!(
+            broker.insert(
+                1,
+                dropped.clone(),
+                feedback.clone(),
+                broker_batch(MAX_PENDING_BYTES / 3 + 1)
+            ),
+            Err(CodecError::InvalidFrame)
+        );
+        assert_eq!(broker.order, VecDeque::from([first]));
+        assert_eq!(broker.bytes, 3);
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        let large = broker
+            .insert(
+                1,
+                dropped.clone(),
+                feedback.clone(),
+                broker_batch(MAX_PENDING_BYTES / 3),
+            )
+            .unwrap();
+        assert!(!broker.pending.contains_key(&first));
+        assert_eq!(broker.pending[&large].frames.len(), 3);
+        assert_eq!(dropped.load(Ordering::Relaxed), 3);
+        assert_eq!(broker.bytes, (MAX_PENDING_BYTES / 3) * 3);
+        let pending = broker.take(large).unwrap();
+        assert_eq!(broker.bytes, 0);
+        assert!(broker.order.is_empty());
+        assert_eq!(
+            pending.reject(CodecError::InvalidConfiguration),
+            CodecError::InvalidConfiguration
+        );
+        assert_eq!(dropped.load(Ordering::Relaxed), 6);
+    }
+
+    #[test]
+    fn batch_fifo_and_source_cleanup_preserve_unit_accounting() {
+        let mut broker = Broker::default();
+        let dropped = Arc::new(AtomicU64::new(0));
+        let feedback = Arc::new(SourceFeedback::default());
+        for _ in 0..MAX_PENDING + 1 {
+            broker
+                .insert(1, dropped.clone(), feedback.clone(), broker_batch(1))
+                .unwrap();
+        }
+        assert_eq!(broker.pending.len(), MAX_PENDING);
+        assert_eq!(broker.bytes, MAX_PENDING * 3);
+        assert_eq!(dropped.load(Ordering::Relaxed), 3);
+        let other = broker
+            .insert(2, dropped.clone(), feedback.clone(), broker_batch(1))
+            .unwrap();
+        assert_eq!(dropped.load(Ordering::Relaxed), 6);
+        broker.remove_source(1);
+        assert_eq!(broker.bytes, 3);
+        assert_eq!(broker.order, VecDeque::from([other]));
+        assert_eq!(dropped.load(Ordering::Relaxed), 6);
+        broker.remove_source(2);
+        assert_eq!(broker.bytes, 0);
+        assert!(broker.pending.is_empty());
+        assert!(broker.order.is_empty());
+    }
+
     #[test]
     fn native_rate_updates_follow_the_active_source_without_another_frame() {
         let first = Arc::new(SourceFeedback::default());
@@ -787,6 +1026,7 @@ mod tests {
             released: false,
             rates: None,
             temporal_fps: None,
+            simulcast: false,
             configuration: None,
             active_feedback: Arc::downgrade(&first),
         };
