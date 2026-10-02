@@ -86,6 +86,7 @@ struct Trace {
     audio: Vec<ReceivedAudioFrame>,
     video: Vec<ReceivedVideoFrame>,
     encoded_video: Vec<(usize, EncodedReceivedVideoFrame)>,
+    encoded_audio: Vec<(usize, EncodedAudioFrame)>,
 }
 
 #[derive(Default)]
@@ -1094,6 +1095,156 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
                 >= 2
         );
         assert!(!reborn_transceiver.stopped());
+
+        // Exercise audio mode changes inside the controlled lifecycle, while
+        // the other audio/video streams continue using their native paths.
+        let slot = observations
+            .audio
+            .iter()
+            .position(|(who, _)| *who == 1)
+            .unwrap();
+        let (_, mut old_decoded) = observations.audio.remove(slot);
+        let receiver_id = observations
+            .audio_ids
+            .iter()
+            .find(|(who, _)| *who == 1)
+            .unwrap()
+            .1
+            .clone();
+        let receiver = peers[1]
+            .audio_receivers()
+            .unwrap()
+            .into_iter()
+            .find(|receiver| receiver.id() == receiver_id)
+            .unwrap();
+        old_decoded.close().unwrap();
+        let mut encoded = receiver.attach_encoded_audio_sink().unwrap();
+        drop(old_decoded);
+        assert_eq!(
+            receiver.attach_audio_sink().err().unwrap().kind,
+            PeerErrorKind::InvalidState
+        );
+        observations.trace.events.push(format!(
+            "{}:audio-mode:{receiver_id}:encoded",
+            world.now().as_micros()
+        ));
+        let before = audio_decoders[1]
+            .decoder_statistics()
+            .unwrap()
+            .input_packets;
+        let encoded_begin = observations.trace.encoded_audio.len();
+        let other_audio_begin = observations.trace.audio.len();
+        let other_video_begin = observations.trace.video.len();
+        for tick in 0..40 {
+            if tick % 2 == 0 {
+                for who in 0..2 {
+                    audio_sources[who]
+                        .push_opus_at(
+                            &OpusInputFrame {
+                                data: OPUS[who].to_vec(),
+                                rtp_timestamp: (world.now().as_micros() * 48 / 1000) as u32,
+                                samples_per_channel: 960,
+                            },
+                            world.now(),
+                        )
+                        .unwrap();
+                }
+            }
+            if tick % 10 == 0 {
+                reborn.push_encoded(vp8_frame(&world, VP8[0])).unwrap();
+                video_sources[1]
+                    .push_encoded(vp8_frame(&world, VP8[1]))
+                    .unwrap();
+            }
+            observations.step(&world, &network, &peers, true);
+            while let Some(frame) = encoded.try_next_frame() {
+                assert_eq!(frame.data, OPUS[0]);
+                assert!(frame.sequence_number.is_some());
+                observations.trace.encoded_audio.push((1, frame));
+            }
+            world.advance(Duration::from_millis(10)).unwrap();
+        }
+        assert!(observations.trace.encoded_audio.len() > encoded_begin);
+        assert!(
+            observations.trace.audio[other_audio_begin..]
+                .iter()
+                .any(|frame| frame.peer_id == peers[0].controlled_id())
+        );
+        for who in 0..2 {
+            assert!(
+                observations.trace.video[other_video_begin..]
+                    .iter()
+                    .any(|frame| frame.peer_id == peers[who].controlled_id()),
+                "audio mode change interrupted unrelated video"
+            );
+        }
+        assert_eq!(
+            audio_decoders[1]
+                .decoder_statistics()
+                .unwrap()
+                .input_packets,
+            before,
+            "encoded receive must not admit new packets to NetEq"
+        );
+        let saved_encoded = observations.trace.encoded_audio[encoded_begin].clone();
+        encoded.close().unwrap();
+        encoded.close().unwrap();
+        assert!(encoded.try_next_frame().is_none());
+        let restored = receiver.attach_audio_sink().unwrap();
+        drop(encoded);
+        assert_eq!(
+            receiver.attach_encoded_audio_sink().err().unwrap().kind,
+            PeerErrorKind::InvalidState
+        );
+        observations.audio.push((1, restored));
+        observations.trace.events.push(format!(
+            "{}:audio-mode:{receiver_id}:decoded",
+            world.now().as_micros()
+        ));
+        let resume_begin = observations.trace.audio.len();
+        for tick in 0..40 {
+            if tick % 2 == 0 {
+                for who in 0..2 {
+                    audio_sources[who]
+                        .push_opus_at(
+                            &OpusInputFrame {
+                                data: OPUS[who].to_vec(),
+                                rtp_timestamp: (world.now().as_micros() * 48 / 1000) as u32,
+                                samples_per_channel: 960,
+                            },
+                            world.now(),
+                        )
+                        .unwrap();
+                }
+            }
+            if tick % 10 == 0 {
+                reborn.push_encoded(vp8_frame(&world, VP8[0])).unwrap();
+                video_sources[1]
+                    .push_encoded(vp8_frame(&world, VP8[1]))
+                    .unwrap();
+            }
+            observations.step(&world, &network, &peers, true);
+            world.advance(Duration::from_millis(10)).unwrap();
+        }
+        assert!(
+            audio_decoders[1]
+                .decoder_statistics()
+                .unwrap()
+                .input_packets
+                > before,
+            "closed encoded transformer must restore native packet delivery"
+        );
+        for who in 0..2 {
+            assert!(
+                observations.trace.audio[resume_begin..]
+                    .iter()
+                    .any(|frame| frame.peer_id == peers[who].controlled_id())
+            );
+        }
+        assert_eq!(
+            saved_encoded,
+            observations.trace.encoded_audio[encoded_begin]
+        );
 
         // Close with accepted signaling, encoded input and network work still
         // queued. Every observed operation must terminate exactly once, without

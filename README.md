@@ -166,7 +166,11 @@ Headless audio sources accept owned, interleaved signed 16-bit PCM in exactly
 10 ms blocks at 8, 16, 32 or 48 kHz, mono or stereo. The source's capture
 microsecond value is validated but is not used as an RTP or absolute capture
 clock. A receiver can select one decoded PCM sink or one encoded Opus sink
-before packets arrive. The encoded sink delivers complete Opus packets without
+before packets arrive. Audio sink close releases its reservation for reattachment
+or a mode change. Encoded close restores native decoding for future packets;
+stop reception before closing when opaque packets must never reach a decoder,
+and resume only after a new encoded sink is attached. Dropping an already closed
+sink does not affect a replacement. The encoded sink delivers complete Opus packets without
 passing them to NetEq's decoder, with RTP timestamp, payload type, SSRC and
 48 kHz sample duration, native sequence number, received audio level and optional
 RFC6464 voice-activity bit. The pinned native incoming frame's `Type()` projects

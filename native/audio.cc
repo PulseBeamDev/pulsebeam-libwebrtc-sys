@@ -105,15 +105,21 @@ std::uint32_t OpusSamples(std::span<const std::uint8_t> data) {
 }
 
 // Swallow frames before NetEq so observing Opus never invokes its decoder.
-// Upstream retains the transformer after close until the receiver dies.
+// After close, forward through the native delegate to resume decoding. Audio
+// delegate replacement unregisters the old callback in this pinned revision.
 class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
  public:
   explicit EncodedAudioCollector(std::shared_ptr<ReadinessSignal> readiness)
       : readiness_(std::move(readiness)) {}
   void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
     ReadinessNotification notify{};
-    std::lock_guard lock(mutex_);
-    if (!active_) return;
+    std::unique_lock lock(mutex_);
+    if (!active_) {
+      auto callback = callback_;
+      lock.unlock();
+      if (callback) callback->OnTransformedFrame(std::move(frame));
+      return;
+    }
     notify.readiness = readiness_;
     const auto data = frame->GetData();
     if (frame->GetDirection() !=
@@ -161,6 +167,15 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
     if (auto time = frame->ReceiveTime()) saved.receive_us = time->us();
     bytes_ += saved.data.size();
     frames_.push_back(std::move(saved));
+  }
+  void RegisterTransformedFrameCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override {
+    std::lock_guard lock(mutex_);
+    callback_ = std::move(callback);
+  }
+  void UnregisterTransformedFrameCallback() override {
+    std::lock_guard lock(mutex_);
+    callback_ = nullptr;
   }
   FfiEncodedAudioFrame Take() {
     std::lock_guard lock(mutex_);
@@ -216,6 +231,7 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
   };
   const std::shared_ptr<ReadinessSignal> readiness_;
   mutable std::mutex mutex_;
+  webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_;
   std::deque<Frame> frames_;
   std::size_t bytes_ = 0;
   std::uint64_t dropped_ = 0;
@@ -291,11 +307,15 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
 }  // namespace
 
 struct NativeEncodedAudioSink::State {
+  const NativePeerConnection* peer = nullptr;
+  std::string receiver_id;
   webrtc::scoped_refptr<EncodedAudioCollector> collector;
+  std::atomic<bool> closed{false};
 };
 
 struct NativeAudioSink::State {
   const NativePeerConnection* peer = nullptr;
+  std::string receiver_id;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
   std::unique_ptr<ReceivedAudioCollector> collector;
   webrtc::Thread* signaling_thread = nullptr;
@@ -556,6 +576,7 @@ std::unique_ptr<NativeAudioSink> rtp_receiver_attach_audio_sink(
   }
   auto state = std::make_unique<NativeAudioSink::State>();
   state->peer = &peer;
+  state->receiver_id = remote->id();
   state->track = static_cast<webrtc::AudioTrackInterface*>(remote->track().get());
   state->collector = std::make_unique<ReceivedAudioCollector>();
   state->signaling_thread = peer.signaling_thread();
@@ -587,6 +608,7 @@ bool close_audio_sink(const NativeAudioSink& sink) noexcept {
   state.signaling_thread->BlockingCall([&] {
     state.track->RemoveSink(state.collector.get());
   });
+  state.peer->release_audio_receiver(state.receiver_id);
   return true;
 }
 std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(
@@ -604,6 +626,8 @@ std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(
   }
   if (!opus || !peer.reserve_audio_receiver(remote->id())) return nullptr;
   auto state = std::make_unique<NativeEncodedAudioSink::State>();
+  state->peer = &peer;
+  state->receiver_id = remote->id();
   state->collector = webrtc::make_ref_counted<EncodedAudioCollector>(peer.readiness());
   peer.worker_thread()->BlockingCall([&] {
     remote->SetFrameTransformer(state->collector);
@@ -619,7 +643,10 @@ std::uint64_t encoded_audio_sink_dropped_frames(
   return sink.state()->collector->DroppedFrames();
 }
 bool close_encoded_audio_sink(const NativeEncodedAudioSink& sink) noexcept {
-  sink.state()->collector->Deactivate();
+  auto& state = *sink.state();
+  if (state.closed.exchange(true)) return true;
+  state.collector->Deactivate();
+  state.peer->release_audio_receiver(state.receiver_id);
   return true;
 }
 std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(

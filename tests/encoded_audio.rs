@@ -4,10 +4,10 @@ use std::{net::Ipv4Addr, thread, time::Duration};
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment, ManualClock, OperationId,
-    OpusInputError, OpusInputFrame, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerErrorKind, RtpHeaderExtensionDirection, RtpTransceiverDirection,
-    SessionDescription, SimulatedNetwork,
+    AudioDecoderFactory, AudioEncoderFactory, AudioPcmFrame, ConnectionState, Environment,
+    ManualClock, OperationId, OpusInputError, OpusInputFrame, PeerConfiguration, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RtpHeaderExtensionDirection,
+    RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
 };
 
 fn finish(peer: &PeerConnection, id: OperationId) -> Option<SessionDescription> {
@@ -41,11 +41,13 @@ fn received_audio_extension_profile(include_level: bool) {
     let bob_endpoint = network
         .register_endpoint(Ipv4Addr::new(10, 8, 0, 2).into())
         .unwrap();
+    let decoder = AudioDecoderFactory::builtin_opus().unwrap();
     let factory = |endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint| {
         PeerConnectionFactory::builder()
             .environment(environment.clone())
             .network_manager(endpoint.network_manager().unwrap())
             .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+            .audio_decoder_factory(decoder.clone())
             .build()
             .unwrap()
     };
@@ -62,6 +64,15 @@ fn received_audio_extension_profile(include_level: bool) {
     let transceiver = alice
         .add_audio_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap();
+    // The observed real decoder deliberately supports only Opus; do not offer
+    // the builtin encoder's other codecs to an Opus-only receive factory.
+    let opus = alice
+        .audio_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .find(|codec| codec.name().eq_ignore_ascii_case("opus"))
+        .expect("native Opus encoder capability");
+    transceiver.set_audio_codec_preferences(&[opus]).unwrap();
     if !include_level {
         let mut extensions = transceiver.header_extensions_to_negotiate().unwrap();
         let level = extensions
@@ -128,11 +139,82 @@ fn received_audio_extension_profile(include_level: bool) {
         assert_eq!(received.audio_level_dbov, None);
         assert_eq!(received.voice_activity, None);
     }
+    assert_eq!(decoder.decoder_statistics().unwrap().decode_calls, 0);
+    assert_eq!(decoder.decoder_statistics().unwrap().input_packets, 0);
     sink.close().unwrap();
     sink.close().unwrap();
     assert!(sink.try_next_frame().is_none());
+    let mut decoded = receivers[0].attach_audio_sink().unwrap();
+    // The closed encoded handle must not release the new sink's reservation.
+    drop(sink);
+    assert_eq!(
+        receivers[0].attach_encoded_audio_sink().err().unwrap().kind,
+        PeerErrorKind::InvalidState
+    );
+    let mut got_decoded = false;
+    for tick in 0..100_000 {
+        if tick % 10 == 0 {
+            source.push_frame(&frame).unwrap();
+        }
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        while alice.try_next_event().is_some() {}
+        while bob.try_next_event().is_some() {}
+        got_decoded |= decoded.try_next_frame().is_some();
+        if got_decoded && decoder.decoder_statistics().unwrap().decode_calls > 0 {
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert!(got_decoded);
+    assert!(
+        decoder.decoder_statistics().unwrap().decode_calls > 0,
+        "encoded close must resume real native decoding, not just PLC output"
+    );
+    decoded.close().unwrap();
+    decoded.close().unwrap();
+    assert!(decoded.try_next_frame().is_none());
+    let mut replacement_decoded = receivers[0].attach_audio_sink().unwrap();
+    drop(decoded);
+    assert_eq!(
+        receivers[0].attach_audio_sink().err().unwrap().kind,
+        PeerErrorKind::InvalidState
+    );
+    replacement_decoded.close().unwrap();
+    let replacement_encoded = receivers[0].attach_encoded_audio_sink().unwrap();
+    drop(replacement_decoded);
+    assert_eq!(
+        receivers[0].attach_audio_sink().err().unwrap().kind,
+        PeerErrorKind::InvalidState
+    );
+    let before = decoder.decoder_statistics().unwrap().input_packets;
+    let mut got_encoded = false;
+    for tick in 0..100_000 {
+        if tick % 10 == 0 {
+            source.push_frame(&frame).unwrap();
+        }
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        while alice.try_next_event().is_some() {}
+        while bob.try_next_event().is_some() {}
+        if replacement_encoded.try_next_frame().is_some() {
+            got_encoded = true;
+            break;
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        thread::yield_now();
+    }
+    assert!(
+        got_encoded,
+        "encoded interception must resume after mode switching"
+    );
+    assert_eq!(decoder.decoder_statistics().unwrap().input_packets, before);
     alice.close().unwrap();
     bob.close().unwrap();
+    assert!(replacement_encoded.try_next_frame().is_none());
 }
 
 #[test]

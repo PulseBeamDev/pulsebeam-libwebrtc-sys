@@ -72,6 +72,7 @@ class NativePeerConnection final {
   std::shared_ptr<ReadinessSignal> readiness() const noexcept;
   bool reserve_encoded_receiver(const std::string& id) const noexcept;
   bool reserve_audio_receiver(const std::string& id) const noexcept;
+  void release_audio_receiver(const std::string& id) const noexcept;
 
  private:
   std::unique_ptr<State> state_;

@@ -232,7 +232,9 @@ impl AudioSink {
         ffi::audio_sink_dropped_frames(self.native())
     }
 
-    /// Detach on the signaling thread. Repeated calls succeed.
+    /// Detach on the signaling thread and release the receiver reservation.
+    /// Either audio receive mode may then be attached again. Repeated calls
+    /// and dropping this closed handle do not affect a replacement sink.
     pub fn close(&mut self) -> Result<(), PeerError> {
         ffi::close_audio_sink(self.native())
             .then_some(())
@@ -290,6 +292,9 @@ impl EncodedAudioSink {
     }
 
     pub fn try_next_frame(&self) -> Option<EncodedAudioFrame> {
+        if self._peer.closed.get() {
+            return None;
+        }
         let frame = ffi::encoded_audio_sink_take_frame(self.native());
         frame.available.then_some(EncodedAudioFrame {
             data: frame.data,
@@ -309,8 +314,10 @@ impl EncodedAudioSink {
         ffi::encoded_audio_sink_dropped_frames(self.native())
     }
 
-    /// Stop delivery. Idempotent; the upstream transformer remains inert until
-    /// the receiver ends and cannot be attached again to the same receiver.
+    /// Stop encoded delivery, discard queued output, and restore native
+    /// decoding for future packets. Either receive mode may be attached again.
+    /// Stop reception before closing if opaque packets must never be decoded.
+    /// Idempotent; dropping this closed handle does not close a replacement.
     pub fn close(&mut self) -> Result<(), PeerError> {
         ffi::close_encoded_audio_sink(self.native())
             .then_some(())

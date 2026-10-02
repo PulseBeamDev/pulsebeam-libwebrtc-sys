@@ -756,6 +756,10 @@ bool NativePeerConnection::reserve_audio_receiver(
     const std::string& id) const noexcept {
   return !state_->closed && state_->audio_receiver_ids.insert(id).second;
 }
+void NativePeerConnection::release_audio_receiver(
+    const std::string& id) const noexcept {
+  state_->audio_receiver_ids.erase(id);
+}
 
 std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeEnvironment& environment,

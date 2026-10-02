@@ -1104,6 +1104,8 @@ impl RtpReceiver {
     }
 
     /// Attach a bounded decoded PCM sink to a receiver on this peer.
+    /// Only one audio sink may be active; close it before selecting either mode
+    /// again. Closing an encoded sink restores the native decoder first.
     pub fn attach_audio_sink(&self) -> Result<crate::AudioSink, PeerError> {
         if self.peer.closed.get() {
             return Err(PeerError {
@@ -1115,7 +1117,8 @@ impl RtpReceiver {
         if native.is_null() {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidState,
-                message: "receiver is foreign, ended or not an audio receiver".into(),
+                message: "receiver is foreign, ended, not audio, or already has an audio sink"
+                    .into(),
             });
         }
         Ok(crate::AudioSink::from_native(
@@ -1126,8 +1129,10 @@ impl RtpReceiver {
     }
 
     /// Receive encoded Opus without decoding. Select this instead of a decoded
-    /// audio sink before media arrives. A receiver permits only one encoded
-    /// sink during its lifetime, including after that sink closes.
+    /// audio sink before media arrives. Only one audio sink may be active.
+    /// Closing permits reattachment or an explicit mode change, but restores
+    /// native decoding in the interval. For opaque packets, stop reception
+    /// before closing and resume only after attaching another encoded sink.
     pub fn attach_encoded_audio_sink(&self) -> Result<crate::EncodedAudioSink, PeerError> {
         if self.peer.closed.get() {
             return Err(PeerError {
@@ -1140,7 +1145,7 @@ impl RtpReceiver {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidState,
                 message:
-                    "receiver is foreign, not negotiated for Opus, or already has an encoded sink"
+                    "receiver is foreign, not negotiated for Opus, or already has an audio sink"
                         .into(),
             });
         }
