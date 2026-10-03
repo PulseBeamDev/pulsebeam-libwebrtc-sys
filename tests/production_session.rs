@@ -847,28 +847,49 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
                 wait(&mut session);
             }
         }
+        assert_eq!(session.channel_label(outgoing).unwrap(), "actor");
+        assert_eq!(session.channel_configuration(outgoing).unwrap().id, Some(0));
+        assert_eq!(
+            session.channel_state(outgoing).unwrap(),
+            DataChannelState::Open
+        );
+        assert!(session.channel_reliable(outgoing).unwrap());
+        assert_eq!(
+            session.channel_counters(outgoing).unwrap(),
+            DataChannelCounters::default()
+        );
+        session
+            .set_channel_event_observation(outgoing, false)
+            .unwrap();
+        let mut outstanding = HashSet::new();
         for index in 0..64u32 {
-            assert_eq!(
+            outstanding.insert(
                 session
-                    .send(
-                        outgoing,
-                        DataChannelMessage {
-                            kind: DataChannelMessageKind::Binary,
-                            bytes: index.to_be_bytes().to_vec(),
-                        }
-                    )
+                    .send_async(outgoing, DataChannelMessage::binary(index.to_be_bytes()))
                     .unwrap(),
-                DataChannelSendResult::Sent
             );
         }
+        assert_eq!(
+            session
+                .send_async(outgoing, DataChannelMessage::binary([0]))
+                .unwrap_err()
+                .kind,
+            PeerErrorKind::ResourceExhausted
+        );
         let mut received = Vec::new();
-        while received.len() < 64 {
+        while received.len() < 64 || !outstanding.is_empty() {
+            while let Some(event) = session.try_channel_event(outgoing).unwrap() {
+                if let DataChannelEvent::SendComplete(done) = event {
+                    assert!(outstanding.remove(&done.send_id));
+                    assert_eq!(done.result, Ok(()));
+                }
+            }
             while let Some(event) = session.try_channel_event(incoming).unwrap() {
                 if let DataChannelEvent::Message(message) = event {
                     received.push(message.bytes);
                 }
             }
-            if received.len() < 64 {
+            if received.len() < 64 || !outstanding.is_empty() {
                 wait(&mut session);
             }
         }
@@ -878,6 +899,23 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
                 .map(|n| n.to_be_bytes().to_vec())
                 .collect::<Vec<_>>()
         );
+        assert_eq!(
+            session.channel_counters(outgoing).unwrap().messages_sent,
+            64
+        );
+        assert_eq!(session.channel_counters(outgoing).unwrap().bytes_sent, 256);
+        assert_eq!(
+            session
+                .channel_counters(incoming)
+                .unwrap()
+                .messages_received,
+            64
+        );
+        assert_eq!(
+            session.channel_counters(incoming).unwrap().bytes_received,
+            256
+        );
+        assert_eq!(session.channel_buffered_amount(outgoing).unwrap(), 0);
         session.shutdown().unwrap();
         drop(session);
     })

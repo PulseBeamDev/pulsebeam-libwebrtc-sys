@@ -44,8 +44,9 @@ pub use codec::{
     VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode, VideoSimulcastStream,
 };
 pub use data_channel::{
-    DataChannel, DataChannelConfiguration, DataChannelError, DataChannelErrorDetail,
-    DataChannelEvent, DataChannelMessage, DataChannelMessageKind, DataChannelPriority,
+    DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelError,
+    DataChannelErrorDetail, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
+    DataChannelPriority, DataChannelSendCompletion, DataChannelSendError, DataChannelSendId,
     DataChannelSendResult, DataChannelState,
 };
 pub use encoded_video::{
@@ -337,8 +338,19 @@ mod ffi {
         message: String,
     }
 
+    struct FfiDataChannelCounters {
+        messages_sent: u32,
+        bytes_sent: u64,
+        messages_received: u32,
+        bytes_received: u64,
+    }
+
     struct FfiDataChannelEvent {
         kind: u8,
+        send_id: u64,
+        canceled: bool,
+        error: FfiDataChannelError,
+        max_message_size: i32,
         state: u8,
         binary: bool,
         sent_data_size: u64,
@@ -856,21 +868,24 @@ mod ffi {
             protocol: &str,
             negotiated: bool,
             id: i32,
-            priority: i8,
+            priority: i32,
             error_type: &mut u8,
             error: &mut String,
         ) -> UniquePtr<NativeDataChannel>;
         fn data_channel_label(channel: &NativeDataChannel) -> String;
         fn data_channel_ordered(channel: &NativeDataChannel) -> bool;
+        fn data_channel_reliable(channel: &NativeDataChannel) -> bool;
+        fn data_channel_counters(channel: &NativeDataChannel) -> FfiDataChannelCounters;
         fn data_channel_max_retransmit_time_ms(channel: &NativeDataChannel) -> i32;
         fn data_channel_max_retransmits(channel: &NativeDataChannel) -> i32;
         fn data_channel_protocol(channel: &NativeDataChannel) -> String;
         fn data_channel_negotiated(channel: &NativeDataChannel) -> bool;
         fn data_channel_id(channel: &NativeDataChannel) -> i32;
-        fn data_channel_priority(channel: &NativeDataChannel) -> u8;
+        fn data_channel_priority(channel: &NativeDataChannel) -> u16;
         fn data_channel_state(channel: &NativeDataChannel) -> u8;
         fn data_channel_buffered_amount(channel: &NativeDataChannel) -> u64;
         fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
+        fn data_channel_send_async(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u64;
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
         fn data_channel_error(channel: &NativeDataChannel) -> FfiDataChannelError;

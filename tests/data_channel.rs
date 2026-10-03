@@ -4,10 +4,11 @@ use std::{net::Ipv4Addr, thread, time::Duration};
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    DataChannel, DataChannelConfiguration, DataChannelEvent, DataChannelMessage,
-    DataChannelMessageKind, DataChannelSendResult, DataChannelState, Environment, ManualClock,
-    OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
-    PeerErrorKind, RandomnessLease, SessionDescription, SimulatedNetwork,
+    DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelEvent,
+    DataChannelMessage, DataChannelMessageKind, DataChannelSendError, DataChannelSendResult,
+    DataChannelState, Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RandomnessLease, SessionDescription,
+    SimulatedNetwork,
 };
 
 struct Pair {
@@ -314,14 +315,14 @@ fn advisory_notifications_coalesce_while_messages_remain_ordered() {
     }
     assert_eq!(alice.state(), DataChannelState::Open);
     assert_eq!(bob.state(), DataChannelState::Open);
-    assert_eq!(
-        drain_channel(&alice),
-        [DataChannelEvent::StateChanged(DataChannelState::Open)]
-    );
-    assert_eq!(
-        drain_channel(&bob),
-        [DataChannelEvent::StateChanged(DataChannelState::Open)]
-    );
+    for channel in [&alice, &bob] {
+        let events = drain_channel(channel);
+        assert!(events.contains(&DataChannelEvent::StateChanged(DataChannelState::Open)));
+        assert!(events.iter().any(|event| matches!(
+            event, DataChannelEvent::MaxMessageSizeChanged { max_message_size } if *max_message_size > 0
+        )));
+        assert_eq!(events.len(), 2);
+    }
 
     let mut messages = Vec::new();
     for sequence in 0..64u8 {
@@ -606,14 +607,230 @@ fn invalid_data_channel_configuration_is_explicit() {
         )
         .is_err()
     );
-    assert!(
+    // SCTP reserves 65535. Keep the owned native validation outcome rather
+    // than treating the entire Rust u16 representation as an admitted range.
+    assert_eq!(
         peer.create_data_channel(
-            "invalid",
+            "reserved-id",
+            DataChannelConfiguration {
+                negotiated: true,
+                id: Some(u16::MAX),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .kind,
+        PeerErrorKind::InvalidRange
+    );
+    // The native engine admits a negotiated channel without an assigned id.
+    // It will allocate the stream id when the DTLS role becomes known.
+    let channel = peer
+        .create_data_channel(
+            "native-assigned",
             DataChannelConfiguration {
                 negotiated: true,
                 ..Default::default()
             },
         )
-        .is_err()
+        .unwrap();
+    assert_eq!(channel.configuration().id, None);
+    let inband = peer
+        .create_data_channel(
+            "native-inband",
+            DataChannelConfiguration {
+                id: Some(42),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // Upstream intentionally ignores an id for in-band negotiation.
+    assert_eq!(inband.configuration().id, None);
+    for (id, priority) in [(13, 17), (15, u16::MAX)] {
+        let config = DataChannelConfiguration {
+            ordered: false,
+            max_retransmit_time_ms: Some(0),
+            protocol: "opaque/application-protocol".into(),
+            negotiated: true,
+            id: Some(id),
+            priority: Some(pulsebeam_webrtc_sys::DataChannelPriority::Custom(priority)),
+            ..Default::default()
+        };
+        let channel = peer.create_data_channel("custom", config.clone()).unwrap();
+        assert_eq!(channel.configuration(), config);
+        assert!(!channel.reliable());
+    }
+}
+
+#[test]
+fn async_native_completion_size_and_counters() {
+    let pair = Pair::new(20);
+    let mut alice = pair
+        .alice
+        .create_data_channel("async", Default::default())
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let bob = wait_for_remote_channel(&pair, events);
+    // Collect negotiation advisories while waiting for open. The shared
+    // wait_for_open helper drains these events as well as state changes.
+    let mut limits = Vec::new();
+    for _ in 0..2_000_000 {
+        pair.progress();
+        for event in drain_channel(&alice) {
+            if let DataChannelEvent::MaxMessageSizeChanged { max_message_size } = event {
+                limits.push(max_message_size);
+            }
+        }
+        if alice.state() == DataChannelState::Open && bob.state() == DataChannelState::Open {
+            break;
+        }
+    }
+    assert_eq!(alice.state(), DataChannelState::Open);
+    assert_eq!(bob.state(), DataChannelState::Open);
+    assert_eq!(limits.len(), 1);
+    let limit = usize::try_from(limits[0]).unwrap();
+    assert!(limit > 0);
+    assert!(alice.reliable());
+    assert_eq!(alice.counters(), DataChannelCounters::default());
+    alice.set_event_observation(false);
+    let first = alice.send_async(DataChannelMessage::text("hello")).unwrap();
+    let second = alice
+        .send_async(DataChannelMessage::binary([1, 2, 3]))
+        .unwrap();
+    let mut completed = std::collections::HashMap::new();
+    let mut received = Vec::new();
+    for _ in 0..2_000_000 {
+        pair.progress();
+        for event in drain_channel(&alice) {
+            if let DataChannelEvent::SendComplete(done) = event {
+                assert!(completed.insert(done.send_id, done.result).is_none());
+            }
+        }
+        for event in drain_channel(&bob) {
+            if let DataChannelEvent::Message(message) = event {
+                received.push(message);
+            }
+        }
+        if completed.len() == 2 && received.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(completed.remove(&first), Some(Ok(())));
+    assert_eq!(completed.remove(&second), Some(Ok(())));
+    assert_eq!(
+        received,
+        [
+            DataChannelMessage::text("hello"),
+            DataChannelMessage::binary([1, 2, 3])
+        ]
     );
+    assert_eq!(alice.counters().messages_sent, 2);
+    assert_eq!(alice.counters().bytes_sent, 8);
+    assert_eq!(bob.counters().messages_received, 2);
+    assert_eq!(bob.counters().bytes_received, 8);
+
+    // The pinned SCTP engine reports oversized messages as a network failure
+    // and closes the channel. Observe that native result, not a fabricated
+    // InvalidRange error, after the valid sends have reached the receiver.
+    let oversized = alice
+        .send_async(DataChannelMessage::binary(vec![0; limit + 1]))
+        .unwrap();
+    let mut rejection = None;
+    for _ in 0..2_000_000 {
+        pair.progress();
+        for event in drain_channel(&alice) {
+            if let DataChannelEvent::SendComplete(done) = event {
+                assert_eq!(done.send_id, oversized);
+                assert!(rejection.replace(done.result).is_none());
+            }
+        }
+        if rejection.is_some() {
+            break;
+        }
+    }
+    match rejection.unwrap().unwrap_err() {
+        DataChannelSendError::Native(error) => {
+            assert_eq!(error.kind, PeerErrorKind::Network);
+            assert!(!error.message.is_empty());
+        }
+        error => panic!("expected native size rejection, got {error:?}"),
+    }
+    assert_eq!(alice.counters().messages_sent, 2);
+    assert_eq!(alice.error().unwrap().kind, PeerErrorKind::Network);
+    alice.close().unwrap();
+    for _ in 0..2_000_000 {
+        pair.progress();
+        if alice.state() == DataChannelState::Closed {
+            break;
+        }
+    }
+    assert_eq!(alice.state(), DataChannelState::Closed);
+    let closed = alice
+        .send_async(DataChannelMessage::text("closed"))
+        .unwrap();
+    for _ in 0..2_000_000 {
+        pair.progress();
+        if let Some(DataChannelEvent::SendComplete(done)) = alice.try_next_event() {
+            assert_eq!(done.send_id, closed);
+            assert!(done.result.is_err());
+            return;
+        }
+    }
+    panic!("closed send never settled");
+}
+
+#[test]
+fn async_admission_and_cancellation_survive_peer_drop() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let peer = factory.create_peer_connection(Default::default()).unwrap();
+    let channel = peer
+        .create_data_channel("detached", Default::default())
+        .unwrap();
+    drop(peer);
+    let mut admitted = std::collections::HashSet::new();
+    for _ in 0..64 {
+        assert!(admitted.insert(channel.send_async(DataChannelMessage::binary([1])).unwrap()));
+    }
+    assert_eq!(
+        channel
+            .send_async(DataChannelMessage::binary([2]))
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::ResourceExhausted
+    );
+    assert_eq!(
+        channel
+            .send_async(DataChannelMessage::binary(vec![
+                0;
+                DataChannel::send_queue_capacity()
+                    as usize
+                    + 1
+            ]))
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::ResourceExhausted
+    );
+    for _ in 0..2_000_000 {
+        if let Some(DataChannelEvent::SendComplete(done)) = channel.try_next_event() {
+            assert!(
+                admitted.remove(&done.send_id),
+                "duplicate or unknown result"
+            );
+            assert_eq!(done.result, Err(DataChannelSendError::Canceled));
+        }
+        if admitted.is_empty() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(admitted.is_empty());
+    let next = channel.send_async(DataChannelMessage::binary([3])).unwrap();
+    for _ in 0..2_000_000 {
+        if let Some(DataChannelEvent::SendComplete(done)) = channel.try_next_event() {
+            assert_eq!(done.send_id, next);
+            assert_eq!(done.result, Err(DataChannelSendError::Canceled));
+            return;
+        }
+        std::thread::yield_now();
+    }
+    panic!("detached send never settled");
 }

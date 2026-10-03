@@ -22,6 +22,8 @@ enum EventKind : std::uint8_t {
   kStateChanged = 1,
   kMessage = 2,
   kBufferedAmountChanged = 3,
+  kMaxMessageSizeChanged = 4,
+  kSendComplete = 5,
 };
 
 enum SendResult : std::uint8_t {
@@ -35,6 +37,17 @@ struct NotifyOnExit {
   std::shared_ptr<ReadinessSignal> readiness;
   ~NotifyOnExit() { SignalReadiness(readiness); }
 };
+
+FfiDataChannelError CopyError(const webrtc::RTCError& error) {
+  FfiDataChannelError result{};
+  result.has_error = !error.ok();
+  result.error_type = static_cast<std::uint8_t>(error.type());
+  result.error_detail = static_cast<std::uint8_t>(error.error_detail());
+  result.sctp_cause_code = error.sctp_cause_code().has_value()
+      ? static_cast<std::int32_t>(*error.sctp_cause_code()) : -1;
+  result.message = error.message();
+  return result;
+}
 
 struct EventState {
   explicit EventState(std::shared_ptr<ReadinessSignal> signal)
@@ -84,23 +97,60 @@ struct EventState {
     }
   }
 
+  void PushMaxMessageSize(int value) {
+    NotifyOnExit notify{readiness};
+    std::lock_guard lock(mutex);
+    if (!closed) pending_max_message_size = value;
+  }
+
+  std::uint64_t ReserveSend() {
+    std::lock_guard lock(mutex);
+    // Include completed-but-unconsumed outcomes in the bound. Reservation
+    // precedes the native call, which may invoke or discard its callback inline.
+    if (outstanding_sends == 64 || next_send == std::numeric_limits<std::uint64_t>::max()) {
+      return 0;
+    }
+    ++outstanding_sends;
+    return ++next_send;
+  }
+
+  void CompleteSend(std::uint64_t id, FfiDataChannelError error, bool canceled) {
+    NotifyOnExit notify{readiness};
+    FfiDataChannelEvent event{};
+    event.kind = kSendComplete;
+    event.send_id = id;
+    event.error = std::move(error);
+    event.canceled = canceled;
+    std::lock_guard lock(mutex);
+    completions.push_back(std::move(event));
+  }
+
   FfiDataChannelEvent Take() {
     std::lock_guard lock(mutex);
-    FfiDataChannelEvent event;
-    // Advisory snapshots have priority; message delivery remains FIFO.
-    if (pending_state) {
+    FfiDataChannelEvent event{};
+    // Terminal send outcomes cannot be lost to coalescing or channel close.
+    if (!completions.empty()) {
+      event = std::move(completions.front());
+      completions.pop_front();
+      --outstanding_sends;
+    } else if (pending_state) {
       event.kind = kStateChanged;
       event.state = static_cast<std::uint8_t>(*pending_state);
       if (*pending_state == webrtc::DataChannelInterface::kClosed) {
         closed = true;
         events.clear();
         pending_sent_bytes.reset();
+        pending_max_message_size.reset();
       }
       pending_state.reset();
     } else if (pending_sent_bytes) {
       event.kind = kBufferedAmountChanged;
       event.sent_data_size = *pending_sent_bytes;
       pending_sent_bytes.reset();
+    } else if (pending_max_message_size) {
+      event.kind = kMaxMessageSizeChanged;
+      event.max_message_size = *pending_max_message_size;
+      pending_max_message_size.reset();
     } else if (!events.empty()) {
       event = std::move(events.front());
       events.pop_front();
@@ -111,9 +161,30 @@ struct EventState {
   const std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::deque<FfiDataChannelEvent> events;
+  std::deque<FfiDataChannelEvent> completions;
+  std::size_t outstanding_sends = 0;
+  std::uint64_t next_send = 0;
+  std::optional<int> pending_max_message_size;
   std::optional<webrtc::DataChannelInterface::DataState> pending_state;
   std::optional<std::uint64_t> pending_sent_bytes;
   bool closed = false;
+};
+
+// The pinned SCTP implementation discards the callback when disconnected from
+// its transport. The callback's lifetime, not an observer or channel raw pointer,
+// owns this fallback. Destruction settles cancellation even on queued-task drop.
+struct SendCompletion {
+  std::shared_ptr<EventState> events;
+  std::uint64_t id;
+  bool completed = false;
+
+  ~SendCompletion() {
+    if (!completed) events->CompleteSend(id, FfiDataChannelError{}, true);
+  }
+  void Finish(const webrtc::RTCError& error) {
+    completed = true;
+    events->CompleteSend(id, CopyError(error), false);
+  }
 };
 
 class DataChannelObserver final : public webrtc::DataChannelObserver {
@@ -122,11 +193,13 @@ class DataChannelObserver final : public webrtc::DataChannelObserver {
                       webrtc::DataChannelInterface* channel) noexcept
       : events_(std::move(events)), channel_(channel) {}
 
-  // Avoid upstream's signaling-thread observer adapter, which defers callbacks
-  // and loses the state associated with each transition. These callbacks only
-  // copy/coalesce owned values and wake readiness, never engine operations.
+  // Capture on the native network sequence without scheduling application
+  // work. The pinned public state() accessor deliberately bypasses its proxy
+  // for observer callbacks and directly reads the triggering state here.
+  // No other channel operations are invoked until callbacks unwind.
   bool IsOkToCallOnTheNetworkThread() override { return true; }
   void OnStateChange() override { events_->PushState(channel_->state()); }
+  void OnMaxMessageSize(int value) override { events_->PushMaxMessageSize(value); }
   void OnMessage(const webrtc::DataBuffer& buffer) override {
     events_->PushMessage(buffer);
   }
@@ -140,34 +213,9 @@ class DataChannelObserver final : public webrtc::DataChannelObserver {
   webrtc::DataChannelInterface* const channel_;
 };
 
-std::optional<webrtc::Priority> Priority(std::int8_t value) {
-  switch (value) {
-    case 0:
-      return webrtc::Priority::kVeryLow;
-    case 1:
-      return webrtc::Priority::kLow;
-    case 2:
-      return webrtc::Priority::kMedium;
-    case 3:
-      return webrtc::Priority::kHigh;
-    default:
-      return std::nullopt;
-  }
-}
-
-std::uint8_t PriorityIndex(webrtc::PriorityValue value) {
-  switch (value.value()) {
-    case 128:
-      return 0;
-    case 256:
-      return 1;
-    case 512:
-      return 2;
-    case 1024:
-      return 3;
-    default:
-      return 1;
-  }
+std::optional<webrtc::PriorityValue> Priority(std::int32_t value) {
+  return value < 0 ? std::nullopt
+      : std::make_optional(webrtc::PriorityValue(static_cast<std::uint16_t>(value)));
 }
 
 }  // namespace
@@ -233,7 +281,7 @@ std::unique_ptr<NativeDataChannel> create_data_channel(
     rust::Str protocol,
     bool negotiated,
     std::int32_t id,
-    std::int8_t priority,
+    std::int32_t priority,
     std::uint8_t& error_type,
     rust::String& error) noexcept {
   webrtc::DataChannelInit configuration;
@@ -264,6 +312,18 @@ std::unique_ptr<NativeDataChannel> create_data_channel(
 rust::String data_channel_label(const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->label();
 }
+bool data_channel_reliable(const NativeDataChannel& channel) noexcept {
+  return channel.state()->channel->reliable();
+}
+FfiDataChannelCounters data_channel_counters(const NativeDataChannel& channel) noexcept {
+  const auto& native = channel.state()->channel;
+  FfiDataChannelCounters result{};
+  result.messages_sent = native->messages_sent();
+  result.bytes_sent = native->bytes_sent();
+  result.messages_received = native->messages_received();
+  result.bytes_received = native->bytes_received();
+  return result;
+}
 bool data_channel_ordered(const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->ordered();
 }
@@ -284,8 +344,8 @@ bool data_channel_negotiated(const NativeDataChannel& channel) noexcept {
 std::int32_t data_channel_id(const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->id();
 }
-std::uint8_t data_channel_priority(const NativeDataChannel& channel) noexcept {
-  return PriorityIndex(channel.state()->channel->priority());
+std::uint16_t data_channel_priority(const NativeDataChannel& channel) noexcept {
+  return channel.state()->channel->priority().value();
 }
 std::uint8_t data_channel_state(const NativeDataChannel& channel) noexcept {
   return static_cast<std::uint8_t>(channel.state()->channel->state());
@@ -310,6 +370,22 @@ std::uint8_t data_channel_send(const NativeDataChannel& channel,
   const webrtc::CopyOnWriteBuffer bytes(data.data(), data.size());
   return native->Send(webrtc::DataBuffer(bytes, binary)) ? kSent : kSendFailed;
 }
+std::uint64_t data_channel_send_async(const NativeDataChannel& channel,
+                                      rust::Slice<const std::uint8_t> data,
+                                      bool binary) noexcept {
+  const auto& state = *channel.state();
+  const auto id = state.events->ReserveSend();
+  if (id == 0) return 0;
+  auto completion = std::make_unique<SendCompletion>();
+  completion->events = state.events;
+  completion->id = id;
+  state.channel->SendAsync(
+      webrtc::DataBuffer(webrtc::CopyOnWriteBuffer(data.data(), data.size()), binary),
+      [completion = std::move(completion)](webrtc::RTCError error) mutable {
+        completion->Finish(error);
+      });
+  return id;
+}
 FfiDataChannelEvent data_channel_take_event(
     const NativeDataChannel& channel) noexcept {
   return channel.state()->events->Take();
@@ -319,15 +395,7 @@ bool close_data_channel(const NativeDataChannel& channel) noexcept {
   return true;
 }
 FfiDataChannelError data_channel_error(const NativeDataChannel& channel) noexcept {
-  const auto error = channel.state()->channel->error();
-  FfiDataChannelError result{};
-  result.has_error = !error.ok();
-  result.error_type = static_cast<std::uint8_t>(error.type());
-  result.error_detail = static_cast<std::uint8_t>(error.error_detail());
-  result.sctp_cause_code = error.sctp_cause_code().has_value()
-      ? static_cast<std::int32_t>(*error.sctp_cause_code()) : -1;
-  result.message = error.message();
-  return result;
+  return CopyError(channel.state()->channel->error());
 }
 std::uint64_t data_channel_send_queue_capacity() noexcept {
   return webrtc::DataChannelInterface::MaxSendQueueSize();

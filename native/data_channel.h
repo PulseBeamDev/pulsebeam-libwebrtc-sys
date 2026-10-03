@@ -16,6 +16,7 @@ namespace pulsebeam::webrtc_sys {
 
 struct FfiDataChannelEvent;
 struct FfiDataChannelError;
+struct FfiDataChannelCounters;
 class NativePeerConnection;
 class ReadinessSignal;
 
@@ -49,11 +50,13 @@ std::unique_ptr<NativeDataChannel> create_data_channel(
     rust::Str protocol,
     bool negotiated,
     std::int32_t id,
-    std::int8_t priority,
+    std::int32_t priority,
     std::uint8_t& error_type,
     rust::String& error) noexcept;
 rust::String data_channel_label(const NativeDataChannel& channel) noexcept;
 bool data_channel_ordered(const NativeDataChannel& channel) noexcept;
+bool data_channel_reliable(const NativeDataChannel& channel) noexcept;
+FfiDataChannelCounters data_channel_counters(const NativeDataChannel& channel) noexcept;
 std::int32_t data_channel_max_retransmit_time_ms(
     const NativeDataChannel& channel) noexcept;
 std::int32_t data_channel_max_retransmits(
@@ -61,13 +64,16 @@ std::int32_t data_channel_max_retransmits(
 rust::String data_channel_protocol(const NativeDataChannel& channel) noexcept;
 bool data_channel_negotiated(const NativeDataChannel& channel) noexcept;
 std::int32_t data_channel_id(const NativeDataChannel& channel) noexcept;
-std::uint8_t data_channel_priority(const NativeDataChannel& channel) noexcept;
+std::uint16_t data_channel_priority(const NativeDataChannel& channel) noexcept;
 std::uint8_t data_channel_state(const NativeDataChannel& channel) noexcept;
 std::uint64_t data_channel_buffered_amount(
     const NativeDataChannel& channel) noexcept;
 std::uint8_t data_channel_send(const NativeDataChannel& channel,
                                rust::Slice<const std::uint8_t> data,
                                bool binary) noexcept;
+std::uint64_t data_channel_send_async(const NativeDataChannel& channel,
+                                      rust::Slice<const std::uint8_t> data,
+                                      bool binary) noexcept;
 FfiDataChannelEvent data_channel_take_event(
     const NativeDataChannel& channel) noexcept;
 bool close_data_channel(const NativeDataChannel& channel) noexcept;

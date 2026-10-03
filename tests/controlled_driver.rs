@@ -121,10 +121,56 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     let mut peer = factory
         .create_peer_connection(PeerConfiguration::default())
         .unwrap();
+    let channel = peer
+        .create_data_channel(
+            "async-controlled",
+            DataChannelConfiguration {
+                priority: Some(pulsebeam_webrtc_sys::DataChannelPriority::Custom(67)),
+                max_retransmits: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        channel.configuration().priority,
+        Some(pulsebeam_webrtc_sys::DataChannelPriority::Custom(67))
+    );
+    assert!(!channel.reliable());
+    let mut admitted = BTreeSet::new();
+    for _ in 0..64 {
+        admitted.insert(
+            channel
+                .send_async(DataChannelMessage::binary([1]))
+                .unwrap()
+                .get(),
+        );
+    }
+    assert_eq!(
+        channel
+            .send_async(DataChannelMessage::binary([2]))
+            .unwrap_err()
+            .kind,
+        PeerErrorKind::ResourceExhausted
+    );
+    // No autonomous work: the caller must run the driver's posted send tasks.
+    assert!(!matches!(
+        channel.try_next_event(),
+        Some(DataChannelEvent::SendComplete(_))
+    ));
+    driver.run_ready();
+    queues.run_ready();
+    while let Some(event) = channel.try_next_event() {
+        if let DataChannelEvent::SendComplete(done) = event {
+            assert!(admitted.remove(&done.send_id.get()));
+            assert!(done.result.is_err());
+        }
+    }
+    assert!(admitted.is_empty());
+    drop(channel);
     #[cfg(target_os = "linux")]
     assert!(
         native_thread_ids().is_subset(&threads_before),
-        "constructing a controlled peer started an OS thread"
+        "constructing and asynchronously using a controlled peer started an OS thread"
     );
     let operation = peer.create_offer().unwrap();
     let mut offer_completed = false;

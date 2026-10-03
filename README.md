@@ -562,13 +562,15 @@ description restores
 stable negotiation state, while a nonempty rollback SDP is rejected.
 
 Data-channel advisory events have bounded retention: each channel retains at
-most one callback-time state snapshot and one buffered-amount notification.
-Intermediate states may coalesce. Buffered-amount notifications accumulate bytes
-removed from the local send queue since the preceding notification, saturating
+most one callback-time state snapshot, one buffered-amount notification and one
+negotiated maximum-message-size snapshot. Intermediate states may coalesce.
+Buffered-amount notifications accumulate bytes removed from the local send queue
+since the preceding notification, saturating
 at `u64::MAX`; they do not establish remote application delivery. Polling returns
-advisory events before messages, while messages retain FIFO ordering. Consuming
-the terminal closed snapshot discards queued deliveries and suppresses later
-events. These advisory bounds do not bound received-message storage or establish
+send completions before advisory events, then messages. Each queue retains FIFO
+ordering. Consuming the terminal closed snapshot discards queued message deliveries
+and suppresses later observer events, but send outcomes remain available. These
+advisory bounds do not bound received-message storage or establish
 consumption-driven SCTP receive backpressure.
 
 `DataChannel::send_queue_capacity()` and
@@ -578,6 +580,31 @@ send-queue limit. It is not a negotiated maximum message size or receive budget.
 `ProductionSession::channel_error()` copy the current native error into an owned
 value, preserving its kind, diagnostic message, optional detail and optional
 SCTP cause code. No error on an ordinarily closed channel is not a failure.
+
+`DataChannel::send_async()` and `ProductionSession::send_async()` return a
+channel-local `DataChannelSendId`. Consume `DataChannelEvent::SendComplete` for
+exactly one owned native result, including the native error detail and SCTP
+cause code when provided. Success means native local admission, not remote
+application delivery. If the engine discards the callback (for example after
+transport detachment), the outcome is `DataChannelSendError::Canceled`, not a
+fabricated native failure. Up to 64 operations per channel can be outstanding,
+including completed outcomes not yet consumed. Admission exhaustion or a
+payload larger than the native send queue returns `ResourceExhausted` without
+allocating an id. Native negotiated size/state errors arrive asynchronously.
+Close does not discard admitted outcomes while the channel remains retained.
+Dropping the channel releases application observability; in-flight callbacks
+retain only their owned completion storage, not a raw handle or application
+owner. Completions still notify readiness with observer registration disabled.
+Controlled sends post tasks and require the caller's driver pump.
+
+`DataChannel::counters()` copies cumulative native message/byte counters; the
+fields are independently sampled, not an atomic multi-field snapshot. Receipt
+counts native delivery, not Rust inbox consumption. `reliable()` queries native
+reliability. The session exposes equivalent owned queries together with label,
+configuration, state and buffered amount. Priorities support the four convenient
+presets and `DataChannelPriority::Custom(u16)` for the full native value range.
+Native handling of explicitly assigned in-band ids and unassigned negotiated
+ids is preserved rather than rejected by a binding policy.
 
 The pinned PeerConnection data-channel path is push-based. Native dcSCTP
 reassembly has its own receive window; native pre-observer/connecting delivery
@@ -592,7 +619,8 @@ Native allocation, reset and stream-ID reuse behavior are preserved.
 observer registration/unregistration. Disabling quiesces new channel callbacks,
 not transport; already-owned Rust events remain available. While disabled, the
 engine can buffer messages or fail on its own overflow limit, and channel
-activity does not notify readiness. Re-enabling drains native queued messages
+observer activity does not notify readiness. Send completions still do.
+Re-enabling drains native queued messages
 when open and samples current state. This is not a consumption-credit API.
 
 Peer state/negotiation advisories retain only their latest callback-time owned

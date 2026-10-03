@@ -469,6 +469,85 @@ impl ProductionSession {
             .value
             .send(message))
     }
+    /// Admit a bounded native send without blocking on network-thread completion.
+    /// Consume `SendComplete` from `try_channel_event` for the terminal result.
+    pub fn send_async(
+        &mut self,
+        channel: SessionChannelId,
+        message: DataChannelMessage,
+    ) -> Result<crate::DataChannelSendId, PeerError> {
+        self.check_open()?;
+        self.channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .send_async(message)
+    }
+
+    /// Independently sampled native cumulative transport counters.
+    pub fn channel_counters(
+        &mut self,
+        channel: SessionChannelId,
+    ) -> Result<crate::DataChannelCounters, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .counters())
+    }
+
+    pub fn channel_configuration(
+        &mut self,
+        channel: SessionChannelId,
+    ) -> Result<DataChannelConfiguration, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .configuration())
+    }
+
+    pub fn channel_label(&mut self, channel: SessionChannelId) -> Result<String, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .label())
+    }
+
+    pub fn channel_state(
+        &mut self,
+        channel: SessionChannelId,
+    ) -> Result<crate::DataChannelState, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .state())
+    }
+
+    pub fn channel_reliable(&mut self, channel: SessionChannelId) -> Result<bool, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .reliable())
+    }
+
+    pub fn channel_buffered_amount(&mut self, channel: SessionChannelId) -> Result<u64, PeerError> {
+        Ok(self
+            .channels
+            .get(&channel)
+            .ok_or_else(missing)?
+            .value
+            .buffered_amount())
+    }
+
     pub fn try_channel_event(
         &mut self,
         channel: SessionChannelId,
