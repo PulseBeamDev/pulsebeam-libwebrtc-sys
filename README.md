@@ -559,7 +559,32 @@ to the other peer. Applications own signaling; forwarding per-candidate events
 is not required. `PeerConnection::descriptions()` copies current and pending
 local/remote SDP in one signaling-thread snapshot; an empty-SDP `Rollback`
 description restores
-stable negotiation state, while a nonempty rollback SDP is rejected.
+stable negotiation state, while a nonempty rollback SDP is rejected. The
+snapshot's `local()` and `remote()` accessors prefer pending SDP over current
+SDP, matching native effective-description access.
+
+`create_offer_with_options()` and `create_answer_with_options()` take
+`OfferAnswerOptions`, including native receive counts, voice-activity detection,
+ICE restart, BUNDLE, packetization, legacy SCTP syntax, and Plan B simulcast
+options. Defaults match the engine. Counts outside native integer range fail
+before admission; native option validation otherwise arrives in the operation
+completion. `set_local_description_auto()` lets signaling state choose,
+generate and apply an offer or answer without manual SDP handling. Its success
+completion carries no description; copy the resulting `descriptions()` snapshot.
+It shares ordinary SDP admission, cancellation and controlled-media restrictions.
+
+`restart_ice()` marks future offers for restart without generating SDP. Use
+`should_fire_negotiation_needed(event_id)` to validate an observed negotiation
+notification before delivering it: native operations or later state changes can
+make a queued ID stale. `add_ice_candidate_sync()` and `remove_ice_candidate()`
+preserve the native synchronous choices. They do not create operation IDs or
+wait behind the asynchronous SDP operations chain. Candidate parsing errors
+carry `PeerErrorKind::Syntax`; native acknowledgment or rejection is an
+`IceCandidateDisposition`, since this native API supplies no error detail for
+rejection. Acceptance is not connectivity evidence or proof that a removed
+candidate previously existed. All these operations also have owned-ID
+`ProductionSession` counterparts and retain native sequencing after actor
+migration.
 
 Data-channel advisory events have bounded retention: each channel retains at
 most one callback-time state snapshot, one buffered-amount notification and one

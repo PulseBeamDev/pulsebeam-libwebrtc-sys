@@ -136,6 +136,19 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         Some(pulsebeam_webrtc_sys::DataChannelPriority::Custom(67))
     );
     assert!(!channel.reliable());
+    driver.run_ready();
+    queues.run_ready();
+    let negotiation = std::iter::from_fn(|| peer.try_next_event())
+        .find_map(|event| {
+            if let PeerConnectionEvent::NegotiationNeeded { event_id } = event {
+                Some(event_id)
+            } else {
+                None
+            }
+        })
+        .expect("native negotiation event was not delivered");
+    assert!(peer.should_fire_negotiation_needed(negotiation).unwrap());
+    assert!(!peer.should_fire_negotiation_needed(u32::MAX).unwrap());
     let mut admitted = BTreeSet::new();
     for _ in 0..64 {
         admitted.insert(
@@ -201,6 +214,53 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         offer_completed,
         "the controlled peer did not produce an offer"
     );
+    let mut auto_events = Vec::new();
+    assert_eq!(
+        completed(
+            &peer,
+            peer.set_local_description_auto().unwrap(),
+            &mut auto_events,
+            &driver,
+            &queues,
+            &clock,
+            &network,
+        ),
+        None
+    );
+    assert!(peer.descriptions().unwrap().pending_local.is_some());
+    assert!(!peer.should_fire_negotiation_needed(negotiation).unwrap());
+    peer.restart_ice().unwrap();
+    // Offer generation can create native receive transceivers. The automatic
+    // setter must not bypass the controlled media dependency restriction.
+    let media_offer = peer
+        .create_offer_with_options(pulsebeam_webrtc_sys::OfferAnswerOptions {
+            receive_video: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        completed(
+            &peer,
+            media_offer,
+            &mut auto_events,
+            &driver,
+            &queues,
+            &clock,
+            &network
+        )
+        .is_some()
+    );
+    let rejected = peer.set_local_description_auto().unwrap();
+    let PeerConnectionEvent::OperationComplete(done) = peer.try_next_event().unwrap() else {
+        panic!("expected controlled automatic SDP rejection");
+    };
+    assert_eq!(done.operation_id, rejected);
+    assert_eq!(
+        done.result.unwrap_err().kind,
+        PeerErrorKind::UnsupportedOperation
+    );
+    #[cfg(target_os = "linux")]
+    assert!(native_thread_ids().is_subset(&threads_before));
     // The pinned upstream video receiver synchronously waits for a task on
     // its decode queue while applying remote SDP. The cooperative queue
     // cannot execute that task until this call returns, so reject instead.

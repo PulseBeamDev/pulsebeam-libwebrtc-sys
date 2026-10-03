@@ -53,6 +53,86 @@ pub struct PeerDescriptions {
     pub pending_remote: Option<SessionDescription>,
 }
 
+impl PeerDescriptions {
+    /// Effective local SDP, preferring an in-progress negotiation over the
+    /// current description, as native `local_description()` does.
+    pub fn local(&self) -> Option<&SessionDescription> {
+        self.pending_local.as_ref().or(self.current_local.as_ref())
+    }
+
+    /// Effective remote SDP, preferring the pending description if present.
+    pub fn remote(&self) -> Option<&SessionDescription> {
+        self.pending_remote
+            .as_ref()
+            .or(self.current_remote.as_ref())
+    }
+}
+
+/// Options for native offer/answer generation. Each field is forwarded to the
+/// engine, which decides its applicability to the current SDP semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfferAnswerOptions {
+    /// Legacy receive count: `None` leaves it unspecified, `Some(0)` disables
+    /// receiving and `Some(1)` requests receiving. Other counts are submitted
+    /// to native validation rather than silently clamped.
+    pub receive_video: Option<u32>,
+    pub receive_audio: Option<u32>,
+    pub voice_activity_detection: bool,
+    pub ice_restart: bool,
+    /// Offer BUNDLE, not RTP/RTCP multiplexing.
+    pub use_rtp_mux: bool,
+    pub raw_packetization_for_video: bool,
+    /// Native Plan B simulcast generation option. For Unified Plan, configure
+    /// the transceiver's send encodings instead.
+    pub simulcast_layers: u32,
+    pub use_obsolete_sctp_sdp: bool,
+}
+
+impl Default for OfferAnswerOptions {
+    fn default() -> Self {
+        Self {
+            receive_video: None,
+            receive_audio: None,
+            voice_activity_detection: true,
+            ice_restart: false,
+            use_rtp_mux: true,
+            raw_packetization_for_video: false,
+            simulcast_layers: 1,
+            use_obsolete_sctp_sdp: false,
+        }
+    }
+}
+
+impl OfferAnswerOptions {
+    fn to_native(&self) -> Result<ffi::FfiOfferAnswerOptions, PeerError> {
+        let count = |value| {
+            i32::try_from(value).map_err(|_| PeerError {
+                kind: PeerErrorKind::InvalidRange,
+                message: "offer/answer count exceeds native i32 range".into(),
+            })
+        };
+        Ok(ffi::FfiOfferAnswerOptions {
+            receive_video: self.receive_video.map(count).transpose()?.unwrap_or(-1),
+            receive_audio: self.receive_audio.map(count).transpose()?.unwrap_or(-1),
+            voice_activity_detection: self.voice_activity_detection,
+            ice_restart: self.ice_restart,
+            use_rtp_mux: self.use_rtp_mux,
+            raw_packetization_for_video: self.raw_packetization_for_video,
+            simulcast_layers: count(self.simulcast_layers)?,
+            use_obsolete_sctp_sdp: self.use_obsolete_sctp_sdp,
+        })
+    }
+}
+
+/// Result of the native synchronous candidate operation. Rejection has no
+/// native error detail. Acceptance is an acknowledgment, not a promise that
+/// a candidate pair is selected or that a matching candidate previously existed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IceCandidateDisposition {
+    Accepted,
+    Rejected,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IceCandidate {
     pub sdp_mid: String,
@@ -1485,23 +1565,71 @@ impl PeerConnection {
     /// Only one offer/answer/description setter may have a pending native
     /// callback per peer, for safe shutdown of the pinned SDP operations chain.
     pub fn create_offer(&self) -> Result<OperationId, PeerError> {
-        self.create_offer_with_ice_restart(false)
+        self.create_offer_with_options(OfferAnswerOptions::default())
     }
 
     /// Request new ICE credentials and candidate gathering in the next offer.
     /// The operation completes through `OperationComplete` like a normal offer.
     pub fn create_ice_restart_offer(&self) -> Result<OperationId, PeerError> {
-        self.create_offer_with_ice_restart(true)
+        self.create_offer_with_options(OfferAnswerOptions {
+            ice_restart: true,
+            ..Default::default()
+        })
     }
 
-    fn create_offer_with_ice_restart(&self, ice_restart: bool) -> Result<OperationId, PeerError> {
+    /// Generate SDP with the complete native offer/answer option set.
+    /// Success admits work, not SDP: native validation and generation outcomes
+    /// arrive in the corresponding `OperationComplete` event.
+    pub fn create_offer_with_options(
+        &self,
+        options: OfferAnswerOptions,
+    ) -> Result<OperationId, PeerError> {
+        let options = options.to_native()?;
         let id = self.next_operation();
-        Self::operation_admission(id, ffi::peer_create_offer(self.native(), id.0, ice_restart))
+        Self::operation_admission(id, ffi::peer_create_offer(self.native(), id.0, &options))
     }
 
     pub fn create_answer(&self) -> Result<OperationId, PeerError> {
+        self.create_answer_with_options(OfferAnswerOptions::default())
+    }
+
+    pub fn create_answer_with_options(
+        &self,
+        options: OfferAnswerOptions,
+    ) -> Result<OperationId, PeerError> {
+        let options = options.to_native()?;
         let id = self.next_operation();
-        Self::operation_admission(id, ffi::peer_create_answer(self.native(), id.0))
+        Self::operation_admission(id, ffi::peer_create_answer(self.native(), id.0, &options))
+    }
+
+    /// Mark ICE for restart and trigger native negotiation-needed processing.
+    /// Subsequent offers use new credentials until a restart is negotiated.
+    /// Unlike `create_ice_restart_offer`, this does not create an SDP operation.
+    pub fn restart_ice(&self) -> Result<(), PeerError> {
+        if ffi::peer_restart_ice(self.native()) {
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            })
+        }
+    }
+
+    /// Revalidate a queued `NegotiationNeeded` ID against the current native
+    /// operations chain and negotiation state before delivering it to a user.
+    /// A stale ID or a nonempty operations chain returns `false`.
+    pub fn should_fire_negotiation_needed(&self, event_id: u32) -> Result<bool, PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            });
+        }
+        Ok(ffi::peer_should_fire_negotiation_needed(
+            self.native(),
+            event_id,
+        ))
     }
 
     fn operation_admission(id: OperationId, status: u8) -> Result<OperationId, PeerError> {
@@ -1558,6 +1686,20 @@ impl PeerConnection {
         }
     }
 
+    /// Let native signaling state choose an offer or answer, generate it and
+    /// apply it without SDP munging. Completion may occur during initiation,
+    /// but remains owned until the corresponding event is consumed. Read
+    /// `descriptions()` after success to obtain the resulting SDP.
+    pub fn set_local_description_auto(&self) -> Result<OperationId, PeerError> {
+        let id = self.next_operation();
+        let allow_media = self.inner._factory._controlled_driver.is_none()
+            || self.inner._factory.controlled_media;
+        Self::operation_admission(
+            id,
+            ffi::peer_set_local_description_auto(self.native(), id.0, allow_media),
+        )
+    }
+
     pub fn set_local_description(
         &self,
         description: SessionDescription,
@@ -1606,6 +1748,54 @@ impl PeerConnection {
                 &candidate.candidate,
             ),
         )
+    }
+
+    /// Native synchronous candidate admission. Unlike `add_ice_candidate`,
+    /// this is not chained after pending SDP operations and produces no
+    /// completion event. Parsing failures are typed errors; native `false`
+    /// remains a rejection without an invented error reason.
+    pub fn add_ice_candidate_sync(
+        &self,
+        candidate: IceCandidate,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        self.modify_ice_candidate(candidate, false)
+    }
+
+    /// Remove a remote candidate using the native synchronous API. Acceptance
+    /// does not establish whether that candidate was previously present.
+    pub fn remove_ice_candidate(
+        &self,
+        candidate: IceCandidate,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        self.modify_ice_candidate(candidate, true)
+    }
+
+    fn modify_ice_candidate(
+        &self,
+        candidate: IceCandidate,
+        remove: bool,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        let mut message = String::new();
+        match ffi::peer_modify_ice_candidate(
+            self.native(),
+            remove,
+            &candidate.sdp_mid,
+            candidate.sdp_mline_index,
+            &candidate.candidate,
+            &mut message,
+        ) {
+            0 => Ok(IceCandidateDisposition::Accepted),
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }),
+            2 => Err(PeerError {
+                kind: PeerErrorKind::Syntax,
+                message,
+            }),
+            3 => Ok(IceCandidateDisposition::Rejected),
+            _ => unreachable!("invalid native candidate outcome"),
+        }
     }
 
     /// Request one typed stats snapshot. Only one request may be outstanding

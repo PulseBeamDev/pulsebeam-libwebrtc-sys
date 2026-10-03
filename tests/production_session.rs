@@ -800,6 +800,104 @@ fn set_local_and_gather(
 }
 
 #[test]
+fn migrated_actor_preserves_native_signaling_choices() {
+    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let alice = session.create_peer(PeerConfiguration::default()).unwrap();
+    let bob = session.create_peer(PeerConfiguration::default()).unwrap();
+    session
+        .create_channel(alice, "auto", DataChannelConfiguration::default())
+        .unwrap();
+    let operation = session.set_local_description_auto(alice).unwrap();
+    let (session, offer) = thread::spawn(move || {
+        let mut session = session;
+        assert_eq!(finish(&mut session, alice, operation), None);
+        let offer = session
+            .descriptions(alice)
+            .unwrap()
+            .local()
+            .unwrap()
+            .clone();
+        assert_eq!(offer.kind, SessionDescriptionType::Offer);
+        let operation = session.set_remote_description(bob, offer.clone()).unwrap();
+        finish(&mut session, bob, operation);
+        let candidate = IceCandidate {
+            sdp_mid: offer
+                .sdp
+                .lines()
+                .find_map(|line| line.strip_prefix("a=mid:"))
+                .unwrap()
+                .into(),
+            sdp_mline_index: 0,
+            candidate: "candidate:1 1 UDP 2122260223 192.0.2.1 5000 typ host".into(),
+        };
+        assert_eq!(
+            session
+                .add_ice_candidate_sync(bob, candidate.clone())
+                .unwrap(),
+            IceCandidateDisposition::Accepted
+        );
+        assert_eq!(
+            session.remove_ice_candidate(bob, candidate).unwrap(),
+            IceCandidateDisposition::Accepted
+        );
+        let operation = session
+            .create_answer_with_options(
+                bob,
+                OfferAnswerOptions {
+                    use_rtp_mux: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let unbundled = finish(&mut session, bob, operation).unwrap();
+        // Native answers preserve an offered BUNDLE group even when the
+        // option excludes all MIDs, as required by RFC 5888.
+        let bundle_groups: Vec<_> = unbundled
+            .sdp
+            .lines()
+            .filter(|line| line.starts_with("a=group:BUNDLE"))
+            .collect();
+        assert_eq!(bundle_groups, ["a=group:BUNDLE"]);
+        let operation = session.set_local_description_auto(bob).unwrap();
+        assert_eq!(finish(&mut session, bob, operation), None);
+        let answer = session.descriptions(bob).unwrap().local().unwrap().clone();
+        assert_eq!(answer.kind, SessionDescriptionType::Answer);
+        let operation = session.set_remote_description(alice, answer).unwrap();
+        finish(&mut session, alice, operation);
+        (session, offer)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        assert!(
+            !session
+                .should_fire_negotiation_needed(alice, u32::MAX)
+                .unwrap()
+        );
+        session.restart_ice(alice).unwrap();
+        let operation = session
+            .create_offer_with_options(alice, OfferAnswerOptions::default())
+            .unwrap();
+        let restart = finish(&mut session, alice, operation).unwrap();
+        let ufrag = |sdp: &str| {
+            sdp.lines()
+                .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
+                .unwrap()
+                .to_owned()
+        };
+        assert_ne!(ufrag(&offer.sdp), ufrag(&restart.sdp));
+        session.shutdown().unwrap();
+        assert_eq!(
+            session.restart_ice(alice).unwrap_err().kind,
+            PeerErrorKind::Closed
+        );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
     let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
     let alice = session.create_peer(PeerConfiguration::default()).unwrap();

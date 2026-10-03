@@ -65,12 +65,12 @@ pub use network::{
     ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
-    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceGatheringState,
-    IceServer, IceTransportPolicy, InboundRtpStats, OperationCompletion, OperationId,
-    OutboundRtpStats, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions, PeerError,
-    PeerErrorKind, PeerEventObservation, PeerStatsRecord, PeerStatsSnapshot, SessionDescription,
-    SessionDescriptionType, SignalingState, TransportStats,
+    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceCandidateDisposition,
+    IceGatheringState, IceServer, IceTransportPolicy, InboundRtpStats, OfferAnswerOptions,
+    OperationCompletion, OperationId, OutboundRtpStats, PeerConfiguration, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions,
+    PeerError, PeerErrorKind, PeerEventObservation, PeerStatsRecord, PeerStatsSnapshot,
+    SessionDescription, SessionDescriptionType, SignalingState, TransportStats,
 };
 pub use production::{
     ProductionSession, ProductionSessionConfig, SessionChannelId, SessionEvent, SessionPeerId,
@@ -270,6 +270,17 @@ mod ffi {
         highpass_platform_available: bool,
         highpass_platform: i8,
         highpass_effective: u8,
+    }
+
+    struct FfiOfferAnswerOptions {
+        receive_video: i32,
+        receive_audio: i32,
+        voice_activity_detection: bool,
+        ice_restart: bool,
+        use_rtp_mux: bool,
+        raw_packetization_for_video: bool,
+        simulcast_layers: i32,
+        use_obsolete_sctp_sdp: bool,
     }
 
     struct FfiIceServer {
@@ -804,9 +815,28 @@ mod ffi {
         fn peer_create_offer(
             peer: &NativePeerConnection,
             operation_id: u64,
-            ice_restart: bool,
+            options: &FfiOfferAnswerOptions,
         ) -> u8;
-        fn peer_create_answer(peer: &NativePeerConnection, operation_id: u64) -> u8;
+        fn peer_create_answer(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            options: &FfiOfferAnswerOptions,
+        ) -> u8;
+        fn peer_restart_ice(peer: &NativePeerConnection) -> bool;
+        fn peer_should_fire_negotiation_needed(peer: &NativePeerConnection, event_id: u32) -> bool;
+        fn peer_set_local_description_auto(
+            peer: &NativePeerConnection,
+            operation_id: u64,
+            allow_media: bool,
+        ) -> u8;
+        fn peer_modify_ice_candidate(
+            peer: &NativePeerConnection,
+            remove: bool,
+            sdp_mid: &str,
+            sdp_mline_index: i32,
+            candidate: &str,
+            message: &mut String,
+        ) -> u8;
         fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> u8;
         fn peer_set_bitrate(
             peer: &NativePeerConnection,

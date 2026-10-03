@@ -17,11 +17,11 @@ use crate::{
     DataChannelError, DataChannelEvent, DataChannelMessage, DataChannelSendResult,
     EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource, EncodedReceivedVideoFrame,
     EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink, EncodedVideoSource, IceCandidate,
-    OperationCompletion, OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerDescriptions, PeerError, PeerErrorKind, PeerStatsSnapshot,
-    RtpHeaderExtensionCapability, RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, SessionDescription, VideoCodecFormat, VideoRateControl,
-    readiness::Readiness,
+    IceCandidateDisposition, OfferAnswerOptions, OperationCompletion, OperationId,
+    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    PeerDescriptions, PeerError, PeerErrorKind, PeerStatsSnapshot, RtpHeaderExtensionCapability,
+    RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
+    SessionDescription, VideoCodecFormat, VideoRateControl, readiness::Readiness,
 };
 
 macro_rules! resource_id {
@@ -328,6 +328,70 @@ impl ProductionSession {
                 p.create_offer()
             }
         })
+    }
+    pub fn create_offer_with_options(
+        &mut self,
+        peer: SessionPeerId,
+        options: OfferAnswerOptions,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, |p| p.create_offer_with_options(options))
+    }
+    pub fn create_answer_with_options(
+        &mut self,
+        peer: SessionPeerId,
+        options: OfferAnswerOptions,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, |p| p.create_answer_with_options(options))
+    }
+    pub fn restart_ice(&mut self, peer: SessionPeerId) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .restart_ice()
+    }
+    pub fn should_fire_negotiation_needed(
+        &mut self,
+        peer: SessionPeerId,
+        event_id: u32,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .should_fire_negotiation_needed(event_id)
+    }
+    pub fn set_local_description_auto(
+        &mut self,
+        peer: SessionPeerId,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, PeerConnection::set_local_description_auto)
+    }
+    pub fn add_ice_candidate_sync(
+        &mut self,
+        peer: SessionPeerId,
+        candidate: IceCandidate,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_ice_candidate_sync(candidate)
+    }
+    pub fn remove_ice_candidate(
+        &mut self,
+        peer: SessionPeerId,
+        candidate: IceCandidate,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .remove_ice_candidate(candidate)
     }
     pub fn create_answer(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::create_answer)

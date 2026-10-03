@@ -18,6 +18,7 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiIceServer;
+struct FfiOfferAnswerOptions;
 struct FfiAudioDevice;
 struct FfiAudioProcessingConfig;
 struct FfiAudioProcessingState;
@@ -116,9 +117,18 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
 
 std::uint8_t peer_create_offer(const NativePeerConnection& peer,
                        std::uint64_t operation_id,
-                       bool ice_restart) noexcept;
+                       const FfiOfferAnswerOptions& options) noexcept;
 std::uint8_t peer_create_answer(const NativePeerConnection& peer,
-                        std::uint64_t operation_id) noexcept;
+                        std::uint64_t operation_id,
+                        const FfiOfferAnswerOptions& options) noexcept;
+bool peer_restart_ice(const NativePeerConnection& peer) noexcept;
+bool peer_should_fire_negotiation_needed(const NativePeerConnection& peer,
+                                         std::uint32_t event_id) noexcept;
+std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
+    std::uint64_t operation_id, bool allow_media) noexcept;
+std::uint8_t peer_modify_ice_candidate(const NativePeerConnection& peer,
+    bool remove, rust::Str sdp_mid, std::int32_t sdp_mline_index,
+    rust::Str candidate, rust::String& message) noexcept;
 std::uint8_t peer_request_stats(const NativePeerConnection& peer,
                         std::uint64_t operation_id) noexcept;
 bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,

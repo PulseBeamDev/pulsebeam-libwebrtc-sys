@@ -103,6 +103,20 @@ class HeadlessAudioDevice
   std::atomic<bool> playing_{false};
 };
 
+webrtc::PeerConnectionInterface::RTCOfferAnswerOptions OfferAnswerOptions(
+    const FfiOfferAnswerOptions& input) {
+  webrtc::PeerConnectionInterface::RTCOfferAnswerOptions result;
+  result.offer_to_receive_video = input.receive_video;
+  result.offer_to_receive_audio = input.receive_audio;
+  result.voice_activity_detection = input.voice_activity_detection;
+  result.ice_restart = input.ice_restart;
+  result.use_rtp_mux = input.use_rtp_mux;
+  result.raw_packetization_for_video = input.raw_packetization_for_video;
+  result.num_simulcast_layers = input.simulcast_layers;
+  result.use_obsolete_sctp_sdp = input.use_obsolete_sctp_sdp;
+  return result;
+}
+
 FfiPeerEvent EmptyEvent() { return FfiPeerEvent{}; }
 
 FfiPeerEvent ErrorEvent(std::uint64_t operation_id,
@@ -1190,16 +1204,14 @@ bool pump_headless_audio(const NativePeerConnection& peer) noexcept {
 
 std::uint8_t peer_create_offer(const NativePeerConnection& peer,
                        std::uint64_t operation_id,
-                       bool ice_restart) noexcept {
+                       const FfiOfferAnswerOptions& options) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(state->events,
                                                           operation_id);
-  webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
-  options.ice_restart = ice_restart;
-  state->peer->CreateOffer(observer.get(), options);
+  state->peer->CreateOffer(observer.get(), OfferAnswerOptions(options));
   return 0;
 }
 
@@ -1264,15 +1276,69 @@ std::uint8_t peer_descriptions(
 }
 
 std::uint8_t peer_create_answer(const NativePeerConnection& peer,
-                        std::uint64_t operation_id) noexcept {
+                        std::uint64_t operation_id,
+                        const FfiOfferAnswerOptions& options) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(state->events,
                                                           operation_id);
-  state->peer->CreateAnswer(observer.get(), {});
+  state->peer->CreateAnswer(observer.get(), OfferAnswerOptions(options));
   return 0;
+}
+
+bool peer_restart_ice(const NativePeerConnection& peer) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&] {
+    if (state->closed) return false;
+    state->peer->RestartIce();
+    return true;
+  });
+}
+
+bool peer_should_fire_negotiation_needed(const NativePeerConnection& peer,
+                                         std::uint32_t event_id) noexcept {
+  return peer.state()->peer->ShouldFireNegotiationNeededEvent(event_id);
+}
+
+std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
+    std::uint64_t operation_id, bool allow_media) noexcept {
+  const auto& state = peer.state();
+  const auto status = state->events->Begin(operation_id, true);
+  if (status != 0) return status;
+  state->signaling_thread->BlockingCall([&] {
+    if (!allow_media && (!state->peer->GetSenders().empty() ||
+                         !state->peer->GetReceivers().empty())) {
+      state->events->Complete(ErrorEvent(
+          operation_id, webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
+          "controlled audio/video requires admitted cooperative media dependencies"));
+      return;
+    }
+    state->peer->SetLocalDescription(
+        webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+  });
+  return 0;
+}
+
+std::uint8_t peer_modify_ice_candidate(const NativePeerConnection& peer,
+    bool remove, rust::Str sdp_mid, std::int32_t sdp_mline_index,
+    rust::Str candidate_sdp, rust::String& message) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
+    if (state->closed) return 1;
+    webrtc::SdpParseError parse_error;
+    auto candidate = webrtc::IceCandidate::Create(
+        std::string_view(sdp_mid.data(), sdp_mid.size()), sdp_mline_index,
+        std::string_view(candidate_sdp.data(), candidate_sdp.size()), &parse_error);
+    if (!candidate) {
+      message = parse_error.description;
+      return 2;
+    }
+    const bool accepted = remove ? state->peer->RemoveIceCandidate(candidate.get())
+                                 : state->peer->AddIceCandidate(candidate.get());
+    return accepted ? 0 : 3;
+  });
 }
 
 std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
