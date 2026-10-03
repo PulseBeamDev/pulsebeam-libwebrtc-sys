@@ -405,10 +405,17 @@ pub struct PeerConnectionFactoryBuilder {
     video_decoder: Option<VideoDecoderFactoryHandle>,
     native_audio: bool,
     audio_processing: Option<crate::AudioProcessingConfig>,
+    options: crate::FactoryOptions,
     readiness: Option<std::sync::Arc<crate::readiness::Readiness>>,
 }
 
 impl PeerConnectionFactoryBuilder {
+    /// Apply native factory options before any peer is created.
+    pub fn options(mut self, options: crate::FactoryOptions) -> Self {
+        self.options = options;
+        self
+    }
+
     pub(crate) fn readiness(
         mut self,
         readiness: std::sync::Arc<crate::readiness::Readiness>,
@@ -666,6 +673,10 @@ impl PeerConnectionFactoryBuilder {
                 message,
             });
         }
+        ffi::factory_set_options(
+            native.as_ref().expect("validated peer factory"),
+            &self.options.ffi(),
+        );
         Ok(PeerConnectionFactory(Rc::new(FactoryInner {
             native,
             _environment: environment,
@@ -702,6 +713,7 @@ impl Default for PeerConnectionFactoryBuilder {
             video_decoder: None,
             native_audio: false,
             audio_processing: None,
+            options: crate::FactoryOptions::default(),
             readiness: None,
         }
     }
@@ -837,6 +849,13 @@ impl PeerConnectionFactory {
     }
     pub fn builder() -> PeerConnectionFactoryBuilder {
         PeerConnectionFactoryBuilder::default()
+    }
+
+    /// Replace the native options used for subsequently created peers.
+    /// Existing peers retain the options copied at their construction. Native
+    /// `SetOptions` is infallible and has no effective-state getter.
+    pub fn set_options(&self, options: crate::FactoryOptions) {
+        ffi::factory_set_options(self.native(), &options.ffi());
     }
 
     pub fn create_peer_connection(

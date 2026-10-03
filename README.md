@@ -530,6 +530,26 @@ closure. It does not claim physical camera, microphone, speaker, GPU, platform
 UI, or hardware-codec qualification; physical-device qualification remains a
 downstream application responsibility.
 
+## Factory configuration (Linux core and native)
+
+`PeerConnectionFactory::builder().options(FactoryOptions { .. })` applies
+native factory options before peer creation. `factory.set_options(options)`
+replaces options for subsequent peers; existing peers retain their construction
+options. `ProductionSession::set_factory_options()` provides the same operation
+under exclusive actor access, including before the first peer and after caller
+migration. Native `SetOptions` has no validation outcome or readback getter;
+the actor method can still reject a closed session.
+
+The defaults preserve encryption, the native network-monitor choice, a
+loopback-only ignored-adapter mask, and the native DTLS 1.3 maximum.
+`NetworkAdapterMask` supports bitwise composition and retains unknown native
+bits. `SslProtocolVersion` includes the native unspecified and legacy values,
+with `DTLS_10`, `DTLS_12` and `DTLS_13` aliases. The pinned engine has a DTLS 1.2
+minimum, so legacy selectors do not enable obsolete protocols. DTLS 1.3 remains
+subject to native build support. These options do not configure TURN TLS.
+Setting `disable_encryption` is insecure and prevents DTLS-dependent SCTP
+channels. See [factory configuration contracts](docs/factory-configuration-contracts.md).
+
 ## Peer transport and stats (Linux core and native)
 
 `PeerConfiguration` accepts STUN/TURN URLs with credentials and an explicit

@@ -18,6 +18,7 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiIceServer;
+struct FfiFactoryOptions;
 struct FfiOfferAnswerOptions;
 struct FfiAudioDevice;
 struct FfiAudioProcessingConfig;
@@ -97,6 +98,8 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept;
+void factory_set_options(const NativePeerConnectionFactory& factory,
+                         const FfiFactoryOptions& options) noexcept;
 FfiAudioProcessingState factory_audio_processing_state(
     const NativePeerConnectionFactory& factory) noexcept;
 bool factory_audio_devices(const NativePeerConnectionFactory& factory,

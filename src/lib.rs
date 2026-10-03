@@ -3,6 +3,7 @@
 mod audio;
 mod audio_processing;
 mod codec;
+mod configuration;
 mod data_channel;
 mod encoded_video;
 mod execution;
@@ -43,6 +44,7 @@ pub use codec::{
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
     VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode, VideoSimulcastStream,
 };
+pub use configuration::{FactoryOptions, NetworkAdapterMask, SslProtocolVersion};
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelError,
     DataChannelErrorDetail, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
@@ -270,6 +272,13 @@ mod ffi {
         highpass_platform_available: bool,
         highpass_platform: i8,
         highpass_effective: u8,
+    }
+
+    struct FfiFactoryOptions {
+        disable_encryption: bool,
+        disable_network_monitor: bool,
+        network_ignore_mask: i32,
+        ssl_max_version: i32,
     }
 
     struct FfiOfferAnswerOptions {
@@ -788,6 +797,7 @@ mod ffi {
             processing: &FfiAudioProcessingConfig,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn factory_set_options(factory: &NativePeerConnectionFactory, options: &FfiFactoryOptions);
         fn factory_audio_processing_state(
             factory: &NativePeerConnectionFactory,
         ) -> FfiAudioProcessingState;

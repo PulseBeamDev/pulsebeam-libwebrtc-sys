@@ -2,7 +2,6 @@
   "schema_version": 3,
   "bridge": {
     "identity": "pulsebeam-webrtc-sys-bridge-v2",
-    "native_adapter_sha256": "7c6b4f9c26a053f093b5f72d7925d6598a4f9bd997b734468b596f18a61654eb",
     "cxx": {
       "version": "1.0.200",
       "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
@@ -10,15 +9,18 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "74052322572286d4112e448c73c1fc06a4cce14b637e815b01099ad58fc90a7c",
-      "generated_header_sha256": "e472cbc8c14087284d527056cd65bc35cce8cdc655e35bd9eca6b0a695568ac5",
-      "generated_source_sha256": "059520a781147ed036aa0c3c33f867b246d2af27f060d0b3b83645bf0c4c544a"
-    }
+      "bridge_source_sha256": "2e251e2bb8eebd80ef9b20c4685726ead6ea560f00b7a8e162d310a234bde543",
+      "generated_header_sha256": "44bbc01051b279f450308f6085f97bc374e41ae39ed7527b477783606b35fec5",
+      "generated_source_sha256": "41370f2d3268f75a1a57647e03d1ce53d4042e83606be3b3219fa90995bd050b"
+    },
+    "native_adapter_sha256": "80143859eda41189da0b9b41d727c14e9ba4e0a5f1cde782fac179a11cd721f7"
   },
   "sources": {
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
-      "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582"
+      "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
+      "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+      "state": "pristine"
     },
     "depot_tools": {
       "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
@@ -30,7 +32,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "12648ccc1dcfbb51940956263574bfea92ba1454de0b0eac1cfee834100eb1bc",
+  "native_configuration_sha256": "2dca885202b89f3d6758522a1ac52f230d679db4cd116b5888a566d17105aa48",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",

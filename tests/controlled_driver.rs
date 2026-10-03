@@ -12,10 +12,11 @@ static DRIVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use pulsebeam_webrtc_sys::{
     ControlledPeerDriver, ControlledSimulatedNetwork, DataChannelConfiguration, DataChannelEvent,
-    DataChannelMessage, DataChannelSendResult, DataChannelState, Environment, IceGatheringState,
-    IceServer, ManualClock, OperationId, OutboundKind, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RandomnessLease,
-    RtpTransceiverDirection, SessionDescription, SessionDescriptionType, TaskQueueFactory,
+    DataChannelMessage, DataChannelSendResult, DataChannelState, Environment, FactoryOptions,
+    IceGatheringState, IceServer, ManualClock, NetworkAdapterMask, OperationId, OutboundKind,
+    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
+    RandomnessLease, RtpTransceiverDirection, SessionDescription, SessionDescriptionType,
+    SslProtocolVersion, TaskQueueFactory,
 };
 
 #[test]
@@ -112,6 +113,11 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
             .is_err()
     );
     let factory = PeerConnectionFactory::builder()
+        .options(FactoryOptions {
+            disable_network_monitor: true,
+            ssl_max_version: SslProtocolVersion::DTLS_12,
+            ..Default::default()
+        })
         .environment(environment)
         .controlled_driver(&driver)
         .network_manager(endpoint.network_manager().unwrap())
@@ -214,6 +220,12 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         offer_completed,
         "the controlled peer did not produce an offer"
     );
+    // Ignore the injected Ethernet network for new peers. The existing peer
+    // must retain its own allocator mask and still gather its host candidate.
+    factory.set_options(FactoryOptions {
+        ignored_network_adapters: NetworkAdapterMask::ETHERNET | NetworkAdapterMask::LOOPBACK,
+        ..Default::default()
+    });
     let mut auto_events = Vec::new();
     assert_eq!(
         completed(
@@ -228,6 +240,60 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         None
     );
     assert!(peer.descriptions().unwrap().pending_local.is_some());
+    let original = gathered(&peer, &mut auto_events, &driver, &queues, &clock, &network);
+    assert!(original.sdp.contains("a=candidate:"));
+    let mut ignored = factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    let ignored_channel = ignored
+        .create_data_channel("ignored-network", DataChannelConfiguration::default())
+        .unwrap();
+    let mut ignored_events = Vec::new();
+    completed(
+        &ignored,
+        ignored.set_local_description_auto().unwrap(),
+        &mut ignored_events,
+        &driver,
+        &queues,
+        &clock,
+        &network,
+    );
+    let mut gathered_ignored = false;
+    for _ in 0..10_000 {
+        ignored_events.extend(std::iter::from_fn(|| ignored.try_next_event()));
+        if ignored_events.iter().any(|event| {
+            matches!(
+                event,
+                PeerConnectionEvent::IceGatheringStateChanged(IceGatheringState::Complete)
+            )
+        }) {
+            gathered_ignored = true;
+            break;
+        }
+        pump(&driver, &queues, &clock, &network);
+    }
+    assert!(
+        gathered_ignored,
+        "ignored-network ICE gathering did not complete"
+    );
+    assert!(
+        !ignored_events
+            .iter()
+            .any(|event| matches!(event, PeerConnectionEvent::IceCandidate(_)))
+    );
+    assert!(
+        !ignored
+            .descriptions()
+            .unwrap()
+            .local()
+            .unwrap()
+            .sdp
+            .contains("a=candidate:")
+    );
+    ignored.close().unwrap();
+    drop(ignored_channel);
+    drop(ignored);
+    factory.set_options(FactoryOptions::default());
     assert!(!peer.should_fire_negotiation_needed(negotiation).unwrap());
     peer.restart_ice().unwrap();
     // Offer generation can create native receive transceivers. The automatic
@@ -610,6 +676,11 @@ fn connect_with_seed() -> (
         .unwrap();
     let factory = |endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint| {
         PeerConnectionFactory::builder()
+            .options(FactoryOptions {
+                disable_network_monitor: true,
+                ssl_max_version: SslProtocolVersion::DTLS_12,
+                ..Default::default()
+            })
             .environment(environment.clone())
             .controlled_driver(&driver)
             .network_manager(endpoint.network_manager().unwrap())

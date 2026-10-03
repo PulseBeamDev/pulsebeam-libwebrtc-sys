@@ -281,6 +281,15 @@ impl ProductionSession {
         }
     }
 
+    /// Replace factory options for subsequently created peers. Existing peers
+    /// are unchanged. This can be called before the first peer is created and
+    /// after migrating the actor. Native `SetOptions` has no validation result.
+    pub fn set_factory_options(&mut self, options: crate::FactoryOptions) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.factory.set_options(options);
+        Ok(())
+    }
+
     pub fn create_peer(&mut self, config: PeerConfiguration) -> Result<SessionPeerId, PeerError> {
         self.check_open()?;
         let id = SessionPeerId(next_id()?);

@@ -1000,6 +1000,19 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
 }
 
+void factory_set_options(const NativePeerConnectionFactory& factory,
+                         const FfiFactoryOptions& options) noexcept {
+  webrtc::PeerConnectionFactoryInterface::Options native;
+  native.disable_encryption = options.disable_encryption;
+  native.disable_network_monitor = options.disable_network_monitor;
+  native.network_ignore_mask = options.network_ignore_mask;
+  native.ssl_max_version =
+      static_cast<webrtc::SSLProtocolVersion>(options.ssl_max_version);
+  factory.signaling_thread()->BlockingCall([&] {
+    factory.factory()->SetOptions(native);
+  });
+}
+
 FfiAudioProcessingState factory_audio_processing_state(
     const NativePeerConnectionFactory& factory) noexcept {
   FfiAudioProcessingState result{};
