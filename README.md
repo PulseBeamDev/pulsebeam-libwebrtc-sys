@@ -561,6 +561,19 @@ SRTP profile selection returns an error instead of triggering native `RTC_CHECK`
 These helpers do not install frame providers or configure a peer by themselves.
 See [crypto option contracts](docs/crypto-options-contracts.md).
 
+## Native certificate resources (Linux core and native)
+
+`Certificate` provides owned native generation, PEM/chain import and export,
+expiration queries, chain snapshots, and native fingerprint lookup.
+`CertificateKeyParams` preserves native RSA parameter validation and P-256
+generation. Clones retain native identity; imported PEM creates a distinct
+resource with native value equality. Immutable resources may cross actor
+caller threads under the qualified pinned BoringSSL backend. Synchronous
+generation uses native system epoch time and crypto randomness, not a manual
+environment clock. Exported PEM contains sensitive private-key material.
+This standalone resource does not yet configure a peer or expose an async
+generator. See [certificate contracts](docs/certificate-contracts.md).
+
 ## Peer transport and stats (Linux core and native)
 
 `PeerConfiguration` accepts STUN/TURN URLs with credentials and an explicit

@@ -2,6 +2,7 @@
 
 mod audio;
 mod audio_processing;
+mod certificate;
 mod codec;
 mod configuration;
 mod crypto;
@@ -35,6 +36,10 @@ pub use audio::{
 pub use audio_processing::{
     AudioProcessingConfig, AudioProcessingOptions, AudioProcessingState, GainControl,
     NoiseSuppression, ProcessingChoice, ProcessingComponentState, ProcessingImplementation,
+};
+pub use certificate::{
+    Certificate, CertificateCurve, CertificateData, CertificateFingerprint, CertificateKeyParams,
+    CertificatePem,
 };
 pub use codec::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, CodecParameter, CodecSupport,
@@ -288,6 +293,33 @@ mod ffi {
         cryptex_policy: u8,
         require_frame_encryption: bool,
         key_exchange_groups: Vec<u16>,
+    }
+
+    struct FfiCertificateKeyParams {
+        kind: u8,
+        modulus_bits: u32,
+        public_exponent: u32,
+        curve: u8,
+    }
+
+    struct FfiCertificatePem {
+        private_key: String,
+        certificate: String,
+    }
+
+    struct FfiCertificateData {
+        pem: String,
+        der: Vec<u8>,
+        expiration_unix_seconds: i64,
+        has_signature_digest_algorithm: bool,
+        signature_digest_algorithm: String,
+    }
+
+    struct FfiCertificateFingerprint {
+        valid: bool,
+        algorithm: String,
+        value: String,
+        digest: Vec<u8>,
     }
 
     struct FfiFactoryOptions {
@@ -559,6 +591,7 @@ mod ffi {
         type NativeEncodedVideoFrame;
         type NativeEncodedImageCallback;
         type NativeDecodedImageCallback;
+        type NativeCertificate;
         type NativePeerConnectionFactory;
         type NativePeerConnection;
         type NativeDataChannel;
@@ -813,6 +846,28 @@ mod ffi {
             processing: &FfiAudioProcessingConfig,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn certificate_default_key_params(rsa: bool) -> FfiCertificateKeyParams;
+        fn certificate_key_params_valid(params: &FfiCertificateKeyParams) -> bool;
+        fn certificate_generate(
+            params: &FfiCertificateKeyParams,
+            has_lifetime: bool,
+            lifetime_ms: u64,
+        ) -> SharedPtr<NativeCertificate>;
+        fn certificate_from_pem(
+            private_key: &str,
+            certificate: &str,
+            chain: bool,
+        ) -> SharedPtr<NativeCertificate>;
+        fn certificate_to_pem(certificate: &NativeCertificate) -> FfiCertificatePem;
+        fn certificate_expires(certificate: &NativeCertificate) -> u64;
+        fn certificate_has_expired(certificate: &NativeCertificate, now: u64) -> bool;
+        fn certificate_chain(certificate: &NativeCertificate) -> Vec<FfiCertificateData>;
+        fn certificate_fingerprint(
+            certificate: &NativeCertificate,
+            algorithm: &str,
+        ) -> FfiCertificateFingerprint;
+        fn certificate_equal(a: &NativeCertificate, b: &NativeCertificate) -> bool;
+        fn certificate_same_resource(a: &NativeCertificate, b: &NativeCertificate) -> bool;
         fn crypto_default_options() -> FfiCryptoOptions;
         fn crypto_supported_srtp_suites(options: &FfiCryptoOptions, suites: &mut Vec<u16>) -> bool;
         fn crypto_supported_key_exchange_groups() -> Vec<u16>;

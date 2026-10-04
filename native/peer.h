@@ -12,11 +12,16 @@ class AudioDeviceModule;
 class FrameTransformerInterface;
 class PeerConnectionFactoryInterface;
 class PeerConnectionInterface;
+class RTCCertificate;
 class Thread;
 }
 
 namespace pulsebeam::webrtc_sys {
 
+struct FfiCertificateKeyParams;
+struct FfiCertificatePem;
+struct FfiCertificateData;
+struct FfiCertificateFingerprint;
 struct FfiIceServer;
 struct FfiFactoryOptions;
 struct FfiCryptoOptions;
@@ -39,6 +44,19 @@ class NativeVideoEncoderFactory;
 
 class NativeReadiness;
 class ReadinessSignal;
+
+// An immutable, independently retained certificate resource. No mutable
+// identity or SSL backend pointers are exposed by the Rust bridge.
+class NativeCertificate final {
+ public:
+  explicit NativeCertificate(
+      webrtc::scoped_refptr<webrtc::RTCCertificate> certificate) noexcept;
+  ~NativeCertificate();
+  const webrtc::scoped_refptr<webrtc::RTCCertificate>& certificate() const noexcept;
+
+ private:
+  const webrtc::scoped_refptr<webrtc::RTCCertificate> certificate_;
+};
 
 class NativePeerConnectionFactory final {
  public:
@@ -99,6 +117,25 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept;
+FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept;
+bool certificate_key_params_valid(const FfiCertificateKeyParams& params) noexcept;
+std::shared_ptr<NativeCertificate> certificate_generate(
+    const FfiCertificateKeyParams& params, bool has_lifetime,
+    std::uint64_t lifetime_ms) noexcept;
+std::shared_ptr<NativeCertificate> certificate_from_pem(
+    rust::Str private_key, rust::Str certificate, bool chain) noexcept;
+FfiCertificatePem certificate_to_pem(const NativeCertificate& certificate) noexcept;
+std::uint64_t certificate_expires(const NativeCertificate& certificate) noexcept;
+bool certificate_has_expired(const NativeCertificate& certificate,
+                             std::uint64_t now) noexcept;
+rust::Vec<FfiCertificateData> certificate_chain(
+    const NativeCertificate& certificate) noexcept;
+FfiCertificateFingerprint certificate_fingerprint(
+    const NativeCertificate& certificate, rust::Str algorithm) noexcept;
+bool certificate_equal(const NativeCertificate& a,
+                       const NativeCertificate& b) noexcept;
+bool certificate_same_resource(const NativeCertificate& a,
+                               const NativeCertificate& b) noexcept;
 FfiCryptoOptions crypto_default_options() noexcept;
 bool crypto_supported_srtp_suites(const FfiCryptoOptions& options,
                                   rust::Vec<std::uint16_t>& suites) noexcept;

@@ -48,6 +48,14 @@
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/buffer.h"
 #include "rtc_base/ssl_certificate.h"
+#include "rtc_base/ssl_adapter.h"
+#include "rtc_base/ssl_fingerprint.h"
+#include "rtc_base/rtc_certificate.h"
+#include "rtc_base/rtc_certificate_generator.h"
+
+#ifndef OPENSSL_IS_BORINGSSL
+#error "Shared immutable certificate resources require the qualified BoringSSL backend"
+#endif
 #include "rtc_base/thread.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -1084,6 +1092,144 @@ FfiCryptoOptions crypto_update_key_exchange_groups(
   native.ephemeral_key_exchange_cipher_groups.Update(&env.field_trials(),
                                                      &disabled_groups);
   return CryptoOptionsSnapshot(native);
+}
+
+namespace {
+
+webrtc::KeyParams NativeCertificateKeyParams(
+    const FfiCertificateKeyParams& params) {
+  if (params.kind == 0) {
+    return webrtc::KeyParams::RSA(static_cast<int>(params.modulus_bits),
+                                 static_cast<int>(params.public_exponent));
+  }
+  return webrtc::KeyParams::ECDSA(static_cast<webrtc::ECCurve>(params.curve));
+}
+
+bool CertificateSslReady() {
+  static const bool initialized = webrtc::InitializeSSL();
+  return initialized;
+}
+
+std::shared_ptr<NativeCertificate> RetainCertificate(
+    webrtc::scoped_refptr<webrtc::RTCCertificate> certificate) {
+  if (!certificate) return nullptr;
+  return std::make_shared<NativeCertificate>(std::move(certificate));
+}
+
+}  // namespace
+
+NativeCertificate::NativeCertificate(
+    webrtc::scoped_refptr<webrtc::RTCCertificate> certificate) noexcept
+    : certificate_(std::move(certificate)) {}
+NativeCertificate::~NativeCertificate() = default;
+const webrtc::scoped_refptr<webrtc::RTCCertificate>&
+NativeCertificate::certificate() const noexcept {
+  return certificate_;
+}
+
+FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept {
+  const webrtc::KeyParams params(
+      rsa ? webrtc::KT_RSA : webrtc::KT_DEFAULT);
+  FfiCertificateKeyParams result{};
+  result.kind = params.type() == webrtc::KT_RSA ? 0 : 1;
+  if (result.kind == 0) {
+    result.modulus_bits = params.rsa_params().mod_size;
+    result.public_exponent = params.rsa_params().pub_exp;
+  } else {
+    result.curve = static_cast<std::uint8_t>(params.ec_curve());
+  }
+  return result;
+}
+
+bool certificate_key_params_valid(
+    const FfiCertificateKeyParams& params) noexcept {
+  return params.kind <= 1 && NativeCertificateKeyParams(params).IsValid();
+}
+
+std::shared_ptr<NativeCertificate> certificate_generate(
+    const FfiCertificateKeyParams& params, bool has_lifetime,
+    std::uint64_t lifetime_ms) noexcept {
+  if (!certificate_key_params_valid(params) || !CertificateSslReady()) return nullptr;
+  return RetainCertificate(webrtc::RTCCertificateGenerator::GenerateCertificate(
+      NativeCertificateKeyParams(params),
+      has_lifetime ? std::optional<std::uint64_t>(lifetime_ms) : std::nullopt));
+}
+
+std::shared_ptr<NativeCertificate> certificate_from_pem(
+    rust::Str private_key, rust::Str certificate, bool chain) noexcept {
+  if (!CertificateSslReady()) return nullptr;
+  const std::string key(private_key);
+  const std::string cert(certificate);
+  if (!chain) {
+    return RetainCertificate(webrtc::RTCCertificate::FromPEM(
+        webrtc::RTCCertificatePEM(key, cert)));
+  }
+  auto identity = webrtc::SSLIdentity::CreateFromPEMChainStrings(key, cert);
+  if (!identity) return nullptr;
+  return RetainCertificate(webrtc::RTCCertificate::Create(std::move(identity)));
+}
+
+FfiCertificatePem certificate_to_pem(
+    const NativeCertificate& certificate) noexcept {
+  const auto pem = certificate.certificate()->ToPEM();
+  FfiCertificatePem result{};
+  result.private_key = pem.private_key();
+  result.certificate = pem.certificate();
+  return result;
+}
+
+std::uint64_t certificate_expires(
+    const NativeCertificate& certificate) noexcept {
+  return certificate.certificate()->Expires();
+}
+
+bool certificate_has_expired(const NativeCertificate& certificate,
+                             std::uint64_t now) noexcept {
+  return certificate.certificate()->HasExpired(now);
+}
+
+rust::Vec<FfiCertificateData> certificate_chain(
+    const NativeCertificate& certificate) noexcept {
+  rust::Vec<FfiCertificateData> result;
+  const auto& chain = certificate.certificate()->GetSSLCertificateChain();
+  for (std::size_t index = 0; index < chain.GetSize(); ++index) {
+    const auto& cert = chain.Get(index);
+    FfiCertificateData data{};
+    data.pem = cert.ToPEMString();
+    webrtc::Buffer der;
+    cert.ToDER(&der);
+    for (auto byte : der) data.der.push_back(byte);
+    data.expiration_unix_seconds = cert.CertificateExpirationTime();
+    std::string algorithm;
+    data.has_signature_digest_algorithm =
+        cert.GetSignatureDigestAlgorithm(&algorithm);
+    data.signature_digest_algorithm = algorithm;
+    result.push_back(std::move(data));
+  }
+  return result;
+}
+
+FfiCertificateFingerprint certificate_fingerprint(
+    const NativeCertificate& certificate, rust::Str algorithm) noexcept {
+  FfiCertificateFingerprint result{};
+  auto fingerprint = webrtc::SSLFingerprint::Create(
+      std::string(algorithm), certificate.certificate()->GetSSLCertificate());
+  if (!fingerprint) return result;
+  result.valid = true;
+  result.algorithm = fingerprint->algorithm;
+  result.value = fingerprint->GetRfc4572Fingerprint();
+  for (auto byte : fingerprint->digest) result.digest.push_back(byte);
+  return result;
+}
+
+bool certificate_equal(const NativeCertificate& a,
+                       const NativeCertificate& b) noexcept {
+  return *a.certificate() == *b.certificate();
+}
+
+bool certificate_same_resource(const NativeCertificate& a,
+                               const NativeCertificate& b) noexcept {
+  return a.certificate().get() == b.certificate().get();
 }
 
 void factory_set_options(const NativePeerConnectionFactory& factory,
