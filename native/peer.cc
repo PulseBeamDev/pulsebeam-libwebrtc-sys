@@ -20,6 +20,7 @@
 #include <openssl/x509v3.h>
 
 #include "api/create_modular_peer_connection_factory.h"
+#include "api/crypto/crypto_options.h"
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO)
 #include "api/audio/create_audio_device_module.h"
 #endif
@@ -998,6 +999,91 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   state->signaling_thread = signaling_thread.thread();
   state->worker_thread = worker_thread.thread();
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
+}
+
+static webrtc::CryptoOptions NativeCryptoOptions(const FfiCryptoOptions& options) {
+  webrtc::CryptoOptions native;
+  native.srtp.enable_gcm_crypto_suites = options.enable_gcm_crypto_suites;
+  native.srtp.prefer_gcm_crypto_suites = options.prefer_gcm_crypto_suites;
+  native.srtp.enable_aes128_sha1_32_crypto_cipher =
+      options.enable_aes128_sha1_32_crypto_cipher;
+  native.srtp.enable_aes128_sha1_80_crypto_cipher =
+      options.enable_aes128_sha1_80_crypto_cipher;
+  native.srtp.enable_encrypted_rtp_header_extensions =
+      options.enable_encrypted_rtp_header_extensions;
+  native.srtp.cryptex_policy =
+      static_cast<webrtc::CryptoOptions::Srtp::CryptexPolicy>(options.cryptex_policy);
+  native.sframe.require_frame_encryption = options.require_frame_encryption;
+  native.ephemeral_key_exchange_cipher_groups.SetEnabled(
+      std::vector<std::uint16_t>(options.key_exchange_groups.begin(),
+                                 options.key_exchange_groups.end()));
+  return native;
+}
+
+static FfiCryptoOptions CryptoOptionsSnapshot(const webrtc::CryptoOptions& native) {
+  FfiCryptoOptions result{};
+  result.enable_gcm_crypto_suites = native.srtp.enable_gcm_crypto_suites;
+  result.prefer_gcm_crypto_suites = native.srtp.prefer_gcm_crypto_suites;
+  result.enable_aes128_sha1_32_crypto_cipher =
+      native.srtp.enable_aes128_sha1_32_crypto_cipher;
+  result.enable_aes128_sha1_80_crypto_cipher =
+      native.srtp.enable_aes128_sha1_80_crypto_cipher;
+  result.enable_encrypted_rtp_header_extensions =
+      native.srtp.enable_encrypted_rtp_header_extensions;
+  result.cryptex_policy = static_cast<std::uint8_t>(native.srtp.cryptex_policy);
+  result.require_frame_encryption = native.sframe.require_frame_encryption;
+  for (auto group : native.ephemeral_key_exchange_cipher_groups.GetEnabled()) {
+    result.key_exchange_groups.push_back(group);
+  }
+  return result;
+}
+
+FfiCryptoOptions crypto_default_options() noexcept {
+  return CryptoOptionsSnapshot(webrtc::CryptoOptions());
+}
+
+bool crypto_supported_srtp_suites(const FfiCryptoOptions& options,
+                                rust::Vec<std::uint16_t>& suites) noexcept {
+  suites.clear();
+  // The native query has RTC_CHECK(!crypto_suites.empty()). Never let an
+  // expressible invalid value terminate a safe Rust consumer.
+  if (!options.enable_gcm_crypto_suites &&
+      !options.enable_aes128_sha1_32_crypto_cipher &&
+      !options.enable_aes128_sha1_80_crypto_cipher) {
+    return false;
+  }
+  for (auto suite : NativeCryptoOptions(options).GetSupportedDtlsSrtpCryptoSuites()) {
+    suites.push_back(static_cast<std::uint16_t>(suite));
+  }
+  return true;
+}
+
+rust::Vec<std::uint16_t> crypto_supported_key_exchange_groups() noexcept {
+  rust::Vec<std::uint16_t> groups;
+  for (auto group : webrtc::CryptoOptions::EphemeralKeyExchangeCipherGroups::GetSupported()) {
+    groups.push_back(group);
+  }
+  return groups;
+}
+
+bool crypto_key_exchange_group_name(std::uint16_t group,
+                                   rust::String& name) noexcept {
+  const auto native =
+      webrtc::CryptoOptions::EphemeralKeyExchangeCipherGroups::GetName(group);
+  if (!native) return false;
+  name = *native;
+  return true;
+}
+
+FfiCryptoOptions crypto_update_key_exchange_groups(
+    const NativeEnvironment& environment, const FfiCryptoOptions& options,
+    rust::Slice<const std::uint16_t> disabled) noexcept {
+  auto native = NativeCryptoOptions(options);
+  const auto env = environment.environment();
+  const std::vector<std::uint16_t> disabled_groups(disabled.begin(), disabled.end());
+  native.ephemeral_key_exchange_cipher_groups.Update(&env.field_trials(),
+                                                     &disabled_groups);
+  return CryptoOptionsSnapshot(native);
 }
 
 void factory_set_options(const NativePeerConnectionFactory& factory,

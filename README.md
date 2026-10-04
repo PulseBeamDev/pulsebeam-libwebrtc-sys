@@ -550,6 +550,17 @@ subject to native build support. These options do not configure TURN TLS.
 Setting `disable_encryption` is insecure and prevents DTLS-dependent SCTP
 channels. See [factory configuration contracts](docs/factory-configuration-contracts.md).
 
+## Crypto option values (Linux core and native)
+
+`CryptoOptions` provides owned native crypto settings and native SRTP cipher-order
+queries. `KeyExchangeGroup` queries the selected binary's supported groups and
+names while retaining open protocol identifiers. `KeyExchangeGroups::update`
+applies native field-trial defaults through a synchronously borrowed environment;
+the resulting values can be moved into actor configuration. Querying an empty
+SRTP profile selection returns an error instead of triggering native `RTC_CHECK`.
+These helpers do not install frame providers or configure a peer by themselves.
+See [crypto option contracts](docs/crypto-options-contracts.md).
+
 ## Peer transport and stats (Linux core and native)
 
 `PeerConfiguration` accepts STUN/TURN URLs with credentials and an explicit

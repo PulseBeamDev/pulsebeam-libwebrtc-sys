@@ -1,0 +1,11 @@
+# Crypto option value contracts
+
+`CryptoOptions` owns the complete pinned native crypto option value: SRTP cipher enablement and preference, encrypted-header-extension support, Cryptex policy, frame-encryption requirements, and ordered ephemeral key-exchange groups. It is an owned `Send + Sync` value, not a cryptographic engine or an installed frame-encryption provider.
+
+Defaults and supported-group/name queries come from the selected native binary. The binding does not substitute a fixed platform allowlist. Native `NoGcm` and `PreferGcm` have idiomatic value constructors. `supported_dtls_srtp_cipher_suites` calls native `GetSupportedDtlsSrtpCryptoSuites` and preserves its preference order. If every SRTP protection profile is disabled, the native query aborts with `RTC_CHECK`; the safe query returns `PeerErrorKind::InvalidParameter` instead.
+
+`KeyExchangeGroup` and `DtlsSrtpCipherSuite` use open protocol identifiers. Unknown group IDs and empty selections remain expressible. A known or supported identifier does not prove a successful handshake. `KeyExchangeGroups::add_first` matches native `AddFirst`: it removes existing occurrences of the selected group, inserts it first, and retains other ordering and duplicates. `update` invokes the native field-trial update with a synchronously borrowed `Environment`. It removes disabled groups from both defaults and existing values, inserts missing trial defaults first, and deduplicates retained values in native order. Its output has no borrowed environment or sequence-bound handle and may be moved into actor configuration.
+
+The standalone option/query surface is available now. Passing this complete value to peers, observing native effective peer configuration, and updating peer configuration belong to the next peer-configuration increment. Existing `PeerConfiguration` literals remain source-compatible.
+
+Source authority: pinned `api/crypto/crypto_options.h` and `.cc`, `rtc_base/ssl_stream_adapter.h`, and the selected native SSL implementation. Query tests exercise native cipher ordering, native group support/name lookup, disabled-group update, open identifiers, and the safe all-profiles-disabled rejection. These tests qualify value helpers; they do not claim effective peer negotiation or installed frame providers.

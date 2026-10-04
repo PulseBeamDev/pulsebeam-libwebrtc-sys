@@ -19,6 +19,7 @@ namespace pulsebeam::webrtc_sys {
 
 struct FfiIceServer;
 struct FfiFactoryOptions;
+struct FfiCryptoOptions;
 struct FfiOfferAnswerOptions;
 struct FfiAudioDevice;
 struct FfiAudioProcessingConfig;
@@ -98,6 +99,15 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept;
+FfiCryptoOptions crypto_default_options() noexcept;
+bool crypto_supported_srtp_suites(const FfiCryptoOptions& options,
+                                  rust::Vec<std::uint16_t>& suites) noexcept;
+rust::Vec<std::uint16_t> crypto_supported_key_exchange_groups() noexcept;
+bool crypto_key_exchange_group_name(std::uint16_t group,
+                                     rust::String& name) noexcept;
+FfiCryptoOptions crypto_update_key_exchange_groups(
+    const NativeEnvironment& environment, const FfiCryptoOptions& options,
+    rust::Slice<const std::uint16_t> disabled) noexcept;
 void factory_set_options(const NativePeerConnectionFactory& factory,
                          const FfiFactoryOptions& options) noexcept;
 FfiAudioProcessingState factory_audio_processing_state(

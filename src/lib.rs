@@ -4,6 +4,7 @@ mod audio;
 mod audio_processing;
 mod codec;
 mod configuration;
+mod crypto;
 mod data_channel;
 mod encoded_video;
 mod execution;
@@ -45,6 +46,10 @@ pub use codec::{
     VideoRateControl, VideoResolution, VideoRotation, VideoScalabilityMode, VideoSimulcastStream,
 };
 pub use configuration::{FactoryOptions, NetworkAdapterMask, SslProtocolVersion};
+pub use crypto::{
+    CryptexPolicy, CryptoOptions, DtlsSrtpCipherSuite, KeyExchangeGroup, KeyExchangeGroups,
+    SrtpCryptoOptions,
+};
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelError,
     DataChannelErrorDetail, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
@@ -272,6 +277,17 @@ mod ffi {
         highpass_platform_available: bool,
         highpass_platform: i8,
         highpass_effective: u8,
+    }
+
+    struct FfiCryptoOptions {
+        enable_gcm_crypto_suites: bool,
+        prefer_gcm_crypto_suites: bool,
+        enable_aes128_sha1_32_crypto_cipher: bool,
+        enable_aes128_sha1_80_crypto_cipher: bool,
+        enable_encrypted_rtp_header_extensions: bool,
+        cryptex_policy: u8,
+        require_frame_encryption: bool,
+        key_exchange_groups: Vec<u16>,
     }
 
     struct FfiFactoryOptions {
@@ -797,6 +813,15 @@ mod ffi {
             processing: &FfiAudioProcessingConfig,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
+        fn crypto_default_options() -> FfiCryptoOptions;
+        fn crypto_supported_srtp_suites(options: &FfiCryptoOptions, suites: &mut Vec<u16>) -> bool;
+        fn crypto_supported_key_exchange_groups() -> Vec<u16>;
+        fn crypto_key_exchange_group_name(group: u16, name: &mut String) -> bool;
+        fn crypto_update_key_exchange_groups(
+            environment: &NativeEnvironment,
+            options: &FfiCryptoOptions,
+            disabled: &[u16],
+        ) -> FfiCryptoOptions;
         fn factory_set_options(factory: &NativePeerConnectionFactory, options: &FfiFactoryOptions);
         fn factory_audio_processing_state(
             factory: &NativePeerConnectionFactory,
