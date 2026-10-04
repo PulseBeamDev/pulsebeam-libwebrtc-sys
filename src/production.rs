@@ -17,11 +17,11 @@ use crate::{
     DataChannelError, DataChannelEvent, DataChannelMessage, DataChannelSendResult,
     EncodedAudioFrame, EncodedAudioSink, EncodedAudioSource, EncodedReceivedVideoFrame,
     EncodedVideoAccessUnit, EncodedVideoInput, EncodedVideoSink, EncodedVideoSource, IceCandidate,
-    IceCandidateDisposition, OfferAnswerOptions, OperationCompletion, OperationId,
-    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
-    PeerDescriptions, PeerError, PeerErrorKind, PeerStatsSnapshot, RtpHeaderExtensionCapability,
-    RtpReceiver, RtpSender, RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection,
-    SessionDescription, VideoCodecFormat, VideoRateControl, readiness::Readiness,
+    IceCandidateDisposition, OfferAnswerOptions, OperationCompletion, OperationId, PeerConnection,
+    PeerConnectionEvent, PeerConnectionFactory, PeerDescriptions, PeerError, PeerErrorKind,
+    PeerStatsSnapshot, RtcConfiguration, RtpHeaderExtensionCapability, RtpReceiver, RtpSender,
+    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, SessionDescription,
+    VideoCodecFormat, VideoRateControl, readiness::Readiness,
 };
 
 macro_rules! resource_id {
@@ -290,10 +290,23 @@ impl ProductionSession {
         Ok(())
     }
 
-    pub fn create_peer(&mut self, config: PeerConfiguration) -> Result<SessionPeerId, PeerError> {
+    pub fn create_peer(
+        &mut self,
+        config: crate::PeerConfiguration,
+    ) -> Result<SessionPeerId, PeerError> {
+        self.create_peer_with_configuration(config.into())
+    }
+
+    /// Actor-safe creation with complete owned native configuration values.
+    pub fn create_peer_with_configuration(
+        &mut self,
+        config: RtcConfiguration,
+    ) -> Result<SessionPeerId, PeerError> {
         self.check_open()?;
         let id = SessionPeerId(next_id()?);
-        let value = self.factory.create_peer_connection(config)?;
+        let value = self
+            .factory
+            .create_peer_connection_with_configuration(config)?;
         self.peers.insert(
             id,
             Peer {
@@ -302,6 +315,30 @@ impl ProductionSession {
             },
         );
         Ok(id)
+    }
+
+    /// Owned native snapshot. This can leave the actor, including across
+    /// migrations; it contains no peer-affine references.
+    pub fn peer_configuration(&self, peer: SessionPeerId) -> Result<RtcConfiguration, PeerError> {
+        self.check_open()?;
+        let peer = self.peers.get(&peer).ok_or_else(missing)?;
+        if peer.value.inner.closed.get() {
+            return Err(error(PeerErrorKind::Closed, "peer is closed"));
+        }
+        Ok(peer.value.configuration())
+    }
+
+    pub fn set_peer_configuration(
+        &mut self,
+        peer: SessionPeerId,
+        config: RtcConfiguration,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .set_configuration(config)
     }
 
     fn operation(

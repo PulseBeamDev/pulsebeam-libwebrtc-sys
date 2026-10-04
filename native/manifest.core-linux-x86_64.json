@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "9c11b1be39dddebc4a1e4d05514922150c68f0b88fd413bebda65ca4dd2de48c",
-      "generated_header_sha256": "5a3df19d1e1fef3b4bd6b5df2f5e0ba14c2f269b30d7dc3a8cd2fb870ab55adf",
-      "generated_source_sha256": "32477c946f0c8f2412767bfe97f69d83a2972d175b2a2b08c3411bd9aed9fb31"
+      "bridge_source_sha256": "88547b9ffd34626afc9488f47383e4a7a00db9c120f4f97ec78b67e52d48b40e",
+      "generated_header_sha256": "e5f5826843d377dfe7b1eb7d75bc4afa79d9d10b5f68f697155550dbee4cd1b9",
+      "generated_source_sha256": "7d00750835751f532d92d20d91468f448878fd4918b1be234972a4e35a4f21bf"
     },
-    "native_adapter_sha256": "542c3fb09c77a9dc90b9400a5b4cf9ba147f5e417ca3fef0c71f72b0efb130e7"
+    "native_adapter_sha256": "19c91e00c5c21e37c414e26088719d4134118c73b8fd4c8f1567d9e6e535611f"
   },
   "sources": {
     "webrtc": {

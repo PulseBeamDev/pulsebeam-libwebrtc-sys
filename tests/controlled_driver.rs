@@ -690,12 +690,31 @@ fn connect_with_seed() -> (
     };
     let factory_a = factory(&endpoint_a);
     let factory_b = factory(&endpoint_b);
+    let alice_certificate = pulsebeam_webrtc_sys::Certificate::generate(
+        pulsebeam_webrtc_sys::CertificateKeyParams::default(),
+        None,
+    )
+    .unwrap();
+    let bob_certificate = pulsebeam_webrtc_sys::Certificate::generate(
+        pulsebeam_webrtc_sys::CertificateKeyParams::default(),
+        None,
+    )
+    .unwrap();
+    let configured = |certificate: &pulsebeam_webrtc_sys::Certificate| {
+        let mut config = pulsebeam_webrtc_sys::RtcConfiguration::from(PeerConfiguration::default());
+        config.options.certificates.push(certificate.clone());
+        config.options.enable_ice_renomination = true;
+        config.options.tcp_candidate_policy = pulsebeam_webrtc_sys::TcpCandidatePolicy::Disabled;
+        config
+    };
     let mut alice = factory_a
-        .create_peer_connection(PeerConfiguration::default())
+        .create_peer_connection_with_configuration(configured(&alice_certificate))
         .unwrap();
     let mut bob = factory_b
-        .create_peer_connection(PeerConfiguration::default())
+        .create_peer_connection_with_configuration(configured(&bob_certificate))
         .unwrap();
+    assert!(alice.configuration().options.certificates[0].same_resource(&alice_certificate));
+    assert!(bob.configuration().options.certificates[0].same_resource(&bob_certificate));
     let mut alice_channel = alice
         .create_data_channel("controlled", DataChannelConfiguration::default())
         .unwrap();
@@ -740,6 +759,20 @@ fn connect_with_seed() -> (
         &clock,
         &network,
     );
+    let fingerprint = alice_certificate.fingerprint("sha-256").unwrap();
+    assert!(offer.sdp.contains(&format!(
+        "a=fingerprint:{} {}",
+        fingerprint.algorithm, fingerprint.value
+    )));
+    assert!(offer.sdp.contains("renomination"));
+    let original = alice.configuration();
+    let mut invalid_update = original.clone();
+    invalid_update.ice_candidate_pool_size = 1;
+    assert_eq!(
+        alice.set_configuration(invalid_update).unwrap_err().kind,
+        pulsebeam_webrtc_sys::PeerErrorKind::InvalidModification
+    );
+    assert_eq!(alice.configuration(), original);
     completed(
         &bob,
         bob.set_remote_description(offer).unwrap(),
@@ -769,6 +802,11 @@ fn connect_with_seed() -> (
         &network,
     );
     let answer = gathered(&bob, &mut bob_events, &driver, &queues, &clock, &network);
+    let fingerprint = bob_certificate.fingerprint("sha-256").unwrap();
+    assert!(answer.sdp.contains(&format!(
+        "a=fingerprint:{} {}",
+        fingerprint.algorithm, fingerprint.value
+    )));
     completed(
         &alice,
         alice.set_remote_description(answer).unwrap(),

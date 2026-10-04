@@ -341,7 +341,7 @@ pub enum PeerConnectionEvent {
 /// ICE server URLs use `stun:`, `stuns:`, `turn:` or `turns:` URI schemes.
 /// TURN UDP/TCP/TLS transport is selected by the URL (`?transport=udp` or
 /// `?transport=tcp`); `turns:` requires a valid server TLS certificate.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct IceServer {
     pub urls: Vec<String>,
     pub username: String,
@@ -360,10 +360,24 @@ impl fmt::Debug for IceServer {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
 pub enum IceTransportPolicy {
+    None = 0,
+    RelayOnly = 1,
+    NoHost = 2,
     #[default]
-    All,
-    RelayOnly,
+    All = 3,
+}
+impl IceTransportPolicy {
+    pub(crate) fn from_native(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::RelayOnly,
+            2 => Self::NoHost,
+            3 => Self::All,
+            _ => unreachable!("unknown pinned native ICE transport policy"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -862,52 +876,21 @@ impl PeerConnectionFactory {
         &self,
         configuration: PeerConfiguration,
     ) -> Result<PeerConnection, PeerError> {
-        if configuration.ice_candidate_pool_size > u8::MAX.into() {
-            return Err(PeerError {
-                kind: PeerErrorKind::InvalidRange,
-                message: "ICE candidate pool size must be at most 255".into(),
-            });
-        }
+        self.create_peer_connection_with_configuration(configuration.into())
+    }
+
+    /// Create a peer using the complete owned native configuration.
+    pub fn create_peer_connection_with_configuration(
+        &self,
+        configuration: crate::RtcConfiguration,
+    ) -> Result<PeerConnection, PeerError> {
         if configuration.turn_tls_ca_pem.as_deref() == Some("") {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
                 message: "TURN TLS CA certificate cannot be empty".into(),
             });
         }
-        let mut ice_servers = Vec::new();
-        for server in &configuration.ice_servers {
-            if server.urls.is_empty() {
-                return Err(invalid_ice_server("ICE server requires at least one URL"));
-            }
-            for url in &server.urls {
-                let turn = url.starts_with("turn:") || url.starts_with("turns:");
-                let scheme = if turn {
-                    if url.starts_with("turns:") {
-                        "turns:"
-                    } else {
-                        "turn:"
-                    }
-                } else if url.starts_with("stuns:") {
-                    "stuns:"
-                } else {
-                    "stun:"
-                };
-                if !url.starts_with(scheme)
-                    || url[scheme.len()..].is_empty()
-                    || url.chars().any(char::is_whitespace)
-                {
-                    return Err(invalid_ice_server("invalid STUN/TURN server URL"));
-                }
-                if turn && (server.username.is_empty() || server.password.is_empty()) {
-                    return Err(invalid_ice_server("TURN requires username and password"));
-                }
-                ice_servers.push(ffi::FfiIceServer {
-                    url: url.clone(),
-                    username: server.username.clone(),
-                    password: server.password.clone(),
-                });
-            }
-        }
+        let config = configuration.to_native();
         let controlled_id = self
             .0
             ._controlled_driver
@@ -920,22 +903,16 @@ impl PeerConnectionFactory {
             })
             .transpose()?;
         let mut message = String::new();
+        let mut native_error_kind = 10;
         let native = ffi::create_peer_connection(
             self.0.native.as_ref().expect("validated peer factory"),
-            configuration.ice_candidate_pool_size,
-            configuration.always_negotiate_data_channels,
-            &ice_servers,
-            configuration.ice_transport_policy == IceTransportPolicy::RelayOnly,
-            configuration.turn_tls_ca_pem.as_deref().unwrap_or(""),
+            config.as_ref().expect("owned native configuration"),
+            &mut native_error_kind,
             &mut message,
         );
         if native.is_null() {
             Err(PeerError {
-                kind: if message == "invalid TURN TLS CA certificate" {
-                    PeerErrorKind::InvalidParameter
-                } else {
-                    PeerErrorKind::NativeConstruction
-                },
+                kind: error_kind(native_error_kind),
                 message,
             })
         } else {
@@ -1261,6 +1238,46 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    /// Owned effective native configuration, including retained certificates.
+    pub fn configuration(&self) -> crate::RtcConfiguration {
+        let native = ffi::peer_get_configuration(self.inner.native());
+        crate::RtcConfiguration::from_native(
+            native.as_ref().expect("native configuration snapshot"),
+        )
+    }
+
+    /// Apply native SetConfiguration semantics. Unsupported changes return
+    /// InvalidModification. Failed updates do not change the effective config.
+    pub fn set_configuration(&self, config: crate::RtcConfiguration) -> Result<(), PeerError> {
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if config.turn_tls_ca_pem.as_deref() == Some("") {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "TURN TLS CA certificate cannot be empty".into(),
+            });
+        }
+        let native = config.to_native();
+        let mut message = String::new();
+        let status = ffi::peer_set_configuration(
+            self.inner.native(),
+            native.as_ref().expect("native configuration"),
+            &mut message,
+        );
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: error_kind(status),
+                message,
+            })
+        }
+    }
+
     /// Stable identifier within the controlled world, allocated in peer
     /// creation order. Owned media outputs carry this recipient identity.
     /// Ordinary production peers have no controlled identity.
@@ -1965,13 +1982,6 @@ impl PeerInner {
 
     pub(crate) fn native(&self) -> &ffi::NativePeerConnection {
         self.native.as_ref().expect("validated peer connection")
-    }
-}
-
-fn invalid_ice_server(message: &str) -> PeerError {
-    PeerError {
-        kind: PeerErrorKind::InvalidParameter,
-        message: message.into(),
     }
 }
 

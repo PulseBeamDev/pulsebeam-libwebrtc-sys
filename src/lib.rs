@@ -11,6 +11,7 @@ mod encoded_video;
 mod execution;
 mod network;
 mod peer;
+mod peer_configuration;
 mod production;
 mod readiness;
 mod video;
@@ -83,6 +84,11 @@ pub use peer::{
     PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions,
     PeerError, PeerErrorKind, PeerEventObservation, PeerStatsRecord, PeerStatsSnapshot,
     SessionDescription, SessionDescriptionType, SignalingState, TransportStats,
+};
+pub use peer_configuration::{
+    BundlePolicy, CandidateNetworkPolicy, ContinualGatheringPolicy, NativeTimeDelta, NetworkMask,
+    PeerConnectionOptions, PortAllocatorOptions, RtcConfiguration, RtcIceServer, RtcpMuxPolicy,
+    SdpSemantics, TcpCandidatePolicy, TlsCertificatePolicy, TurnPortPrunePolicy, VpnPreference,
 };
 pub use production::{
     ProductionSession, ProductionSessionConfig, SessionChannelId, SessionEvent, SessionPeerId,
@@ -341,9 +347,93 @@ mod ffi {
     }
 
     struct FfiIceServer {
-        url: String,
+        uri: String,
+        urls: Vec<String>,
         username: String,
         password: String,
+        tls_certificate_policy: u8,
+        hostname: String,
+        tls_alpn_protocols: Vec<String>,
+        tls_elliptic_curves: Vec<String>,
+    }
+
+    struct FfiOptionalI32 {
+        present: bool,
+        value: i32,
+    }
+    struct FfiOptionalI64 {
+        present: bool,
+        value: i64,
+    }
+    struct FfiNetworkMask {
+        address: String,
+        prefix_length: i32,
+    }
+    struct FfiPortAllocatorOptions {
+        min_port: i32,
+        max_port: i32,
+        flags: u32,
+    }
+    struct FfiPeerConnectionOptions {
+        bundle_policy: u8,
+        rtcp_mux_policy: u8,
+        disable_ipv6_on_wifi: bool,
+        max_ipv6_networks: i32,
+        disable_link_local_networks: bool,
+        screencast_min_bitrate: FfiOptionalI32,
+        tcp_candidate_policy: u8,
+        candidate_network_policy: u8,
+        audio_jitter_buffer_max_packets: i32,
+        audio_jitter_buffer_fast_accelerate: bool,
+        audio_jitter_buffer_min_delay_ms: i32,
+        ice_connection_receiving_timeout: i32,
+        ice_backup_candidate_pair_ping_interval: i32,
+        continual_gathering_policy: u8,
+        prioritize_most_likely_ice_candidate_pairs: bool,
+        prune_turn_ports: bool,
+        turn_port_prune_policy: u8,
+        presume_writable_when_fully_relayed: bool,
+        enable_ice_renomination: bool,
+        redetermine_role_on_ice_restart: bool,
+        surface_ice_candidates_on_ice_transport_type_changed: bool,
+        ice_check_interval_strong_connectivity: FfiOptionalI32,
+        ice_check_interval_weak_connectivity: FfiOptionalI32,
+        ice_check_min_interval: FfiOptionalI32,
+        ice_unwritable_timeout: FfiOptionalI32,
+        ice_unwritable_min_checks: FfiOptionalI32,
+        ice_inactive_timeout: FfiOptionalI32,
+        stun_candidate_keepalive_interval: FfiOptionalI32,
+        stable_writable_connection_ping_interval_ms: FfiOptionalI32,
+        report_usage_pattern_delay_ms: FfiOptionalI32,
+        network_preference: FfiOptionalI32,
+        sdp_semantics: u8,
+        crypto_options: FfiCryptoOptions,
+        offer_extmap_allow_mixed: bool,
+        turn_logging_id: String,
+        enable_implicit_rollback: bool,
+        vpn_preference: u8,
+        vpn_list: Vec<FfiNetworkMask>,
+        port_allocator: FfiPortAllocatorOptions,
+        pacer_burst_interval: FfiOptionalI64,
+        enable_any_address_ports: bool,
+        max_sctp_streams: i32,
+        enable_sctp_snap: bool,
+        dscp: bool,
+        stats_timestamp_with_environment_clock: bool,
+        cpu_adaptation: bool,
+        suspend_below_min_bitrate: bool,
+        prerenderer_smoothing: bool,
+        experiment_cpu_load_estimator: bool,
+        audio_rtcp_report_interval_ms: i32,
+        video_rtcp_report_interval_ms: i32,
+    }
+    struct FfiPeerConfiguration {
+        ice_candidate_pool_size: i32,
+        always_negotiate_data_channels: bool,
+        ice_servers: Vec<FfiIceServer>,
+        ice_transport_policy: u8,
+        turn_tls_ca_pem: String,
+        options: FfiPeerConnectionOptions,
     }
 
     struct FfiDescriptionSnapshot {
@@ -893,13 +983,33 @@ mod ffi {
             index: u16,
             error: &mut String,
         ) -> bool;
+        type NativePeerConfiguration;
+        fn peer_configuration_default(aggressive: bool) -> FfiPeerConfiguration;
+        fn peer_configuration_new(
+            values: &FfiPeerConfiguration,
+        ) -> UniquePtr<NativePeerConfiguration>;
+        fn peer_configuration_add_certificate(
+            config: Pin<&mut NativePeerConfiguration>,
+            certificate: &NativeCertificate,
+        );
+        fn peer_configuration_values(config: &NativePeerConfiguration) -> FfiPeerConfiguration;
+        fn peer_configuration_certificate_count(config: &NativePeerConfiguration) -> usize;
+        fn peer_configuration_certificate(
+            config: &NativePeerConfiguration,
+            index: usize,
+        ) -> SharedPtr<NativeCertificate>;
+        fn peer_get_configuration(
+            peer: &NativePeerConnection,
+        ) -> UniquePtr<NativePeerConfiguration>;
+        fn peer_set_configuration(
+            peer: &NativePeerConnection,
+            config: &NativePeerConfiguration,
+            error: &mut String,
+        ) -> u8;
         fn create_peer_connection(
             factory: &NativePeerConnectionFactory,
-            ice_candidate_pool_size: u16,
-            always_negotiate_data_channels: bool,
-            ice_servers: &[FfiIceServer],
-            relay_only: bool,
-            turn_tls_ca_pem: &str,
+            config: &NativePeerConfiguration,
+            error_kind: &mut u8,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnection>;
         fn peer_create_offer(

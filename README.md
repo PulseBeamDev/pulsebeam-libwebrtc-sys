@@ -571,8 +571,23 @@ resource with native value equality. Immutable resources may cross actor
 caller threads under the qualified pinned BoringSSL backend. Synchronous
 generation uses native system epoch time and crypto randomness, not a manual
 environment clock. Exported PEM contains sensitive private-key material.
-This standalone resource does not yet configure a peer or expose an async
-generator. See [certificate contracts](docs/certificate-contracts.md).
+Retained resources can be supplied through `RtcConfiguration::options.certificates`;
+this does not expose an async generator. See
+[certificate contracts](docs/certificate-contracts.md).
+
+## Peer configuration values (Linux core and native)
+
+`RtcConfiguration` exposes owned native safe/aggressive presets, full
+`RtcIceServer` values, certificates, crypto, SDP/ICE policies, timing,
+network/VPN, allocator, SCTP and media-related configuration values.
+`create_peer_connection_with_configuration` and actor
+`create_peer_with_configuration` accept it without changing existing
+`PeerConfiguration` and `IceServer` literals. Native `configuration` and
+`set_configuration` operations have actor counterparts and preserve native
+update errors and certificate resource identity. The candidate-pool range is
+0..=65535, with invalid creation input rejected before allocator work.
+Provider and environment dependencies are separate remaining parity work.
+See [peer configuration contracts](docs/peer-configuration-contracts.md).
 
 ## Peer transport and stats (Linux core and native)
 

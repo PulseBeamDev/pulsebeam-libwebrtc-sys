@@ -777,6 +777,7 @@ struct NativePeerConnection::State {
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   bool native_audio_enabled = false;
+  std::string turn_tls_ca_pem;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer;
   std::shared_ptr<EventState> events;
   std::unique_ptr<PeerObserver> observer;
@@ -1381,14 +1382,239 @@ class TurnCaVerifier final : public webrtc::SSLCertificateVerifier {
   std::unique_ptr<X509, decltype(&X509_free)> ca_;
 };
 
+
+struct NativePeerConfiguration::State {
+  webrtc::PeerConnectionInterface::RTCConfiguration configuration;
+  std::string turn_tls_ca_pem;
+};
+NativePeerConfiguration::NativePeerConfiguration(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativePeerConfiguration::~NativePeerConfiguration() = default;
+const std::unique_ptr<NativePeerConfiguration::State>& NativePeerConfiguration::state() const noexcept { return state_; }
+
+static std::optional<int> OptionalInt(const FfiOptionalI32& v) {
+  return v.present ? std::optional<int>(v.value) : std::nullopt;
+}
+static FfiOptionalI32 OptionalSnapshot(const std::optional<int>& v) {
+  return {v.has_value(), v.value_or(0)};
+}
+static void ApplyPeerOptions(webrtc::PeerConnectionInterface::RTCConfiguration& c, const FfiPeerConnectionOptions& v) {
+  c.bundle_policy = static_cast<decltype(c.bundle_policy)>(v.bundle_policy);
+  c.rtcp_mux_policy = static_cast<decltype(c.rtcp_mux_policy)>(v.rtcp_mux_policy);
+  c.disable_ipv6_on_wifi = v.disable_ipv6_on_wifi;
+  c.max_ipv6_networks = v.max_ipv6_networks;
+  c.disable_link_local_networks = v.disable_link_local_networks;
+  c.screencast_min_bitrate = OptionalInt(v.screencast_min_bitrate);
+  c.tcp_candidate_policy = static_cast<decltype(c.tcp_candidate_policy)>(v.tcp_candidate_policy);
+  c.candidate_network_policy = static_cast<decltype(c.candidate_network_policy)>(v.candidate_network_policy);
+  c.audio_jitter_buffer_max_packets = v.audio_jitter_buffer_max_packets;
+  c.audio_jitter_buffer_fast_accelerate = v.audio_jitter_buffer_fast_accelerate;
+  c.audio_jitter_buffer_min_delay_ms = v.audio_jitter_buffer_min_delay_ms;
+  c.ice_connection_receiving_timeout = v.ice_connection_receiving_timeout;
+  c.ice_backup_candidate_pair_ping_interval = v.ice_backup_candidate_pair_ping_interval;
+  c.continual_gathering_policy = static_cast<decltype(c.continual_gathering_policy)>(v.continual_gathering_policy);
+  c.prioritize_most_likely_ice_candidate_pairs = v.prioritize_most_likely_ice_candidate_pairs;
+  c.prune_turn_ports = v.prune_turn_ports;
+  c.turn_port_prune_policy = static_cast<decltype(c.turn_port_prune_policy)>(v.turn_port_prune_policy);
+  c.presume_writable_when_fully_relayed = v.presume_writable_when_fully_relayed;
+  c.enable_ice_renomination = v.enable_ice_renomination;
+  c.redetermine_role_on_ice_restart = v.redetermine_role_on_ice_restart;
+  c.surface_ice_candidates_on_ice_transport_type_changed = v.surface_ice_candidates_on_ice_transport_type_changed;
+  c.ice_check_interval_strong_connectivity = OptionalInt(v.ice_check_interval_strong_connectivity);
+  c.ice_check_interval_weak_connectivity = OptionalInt(v.ice_check_interval_weak_connectivity);
+  c.ice_check_min_interval = OptionalInt(v.ice_check_min_interval);
+  c.ice_unwritable_timeout = OptionalInt(v.ice_unwritable_timeout);
+  c.ice_unwritable_min_checks = OptionalInt(v.ice_unwritable_min_checks);
+  c.ice_inactive_timeout = OptionalInt(v.ice_inactive_timeout);
+  c.stun_candidate_keepalive_interval = OptionalInt(v.stun_candidate_keepalive_interval);
+  c.stable_writable_connection_ping_interval_ms = OptionalInt(v.stable_writable_connection_ping_interval_ms);
+  c.report_usage_pattern_delay_ms = OptionalInt(v.report_usage_pattern_delay_ms);
+  if (v.network_preference.present) c.network_preference = static_cast<webrtc::AdapterType>(v.network_preference.value);
+  c.sdp_semantics = static_cast<decltype(c.sdp_semantics)>(v.sdp_semantics);
+  c.crypto_options = NativeCryptoOptions(v.crypto_options);
+  c.offer_extmap_allow_mixed = v.offer_extmap_allow_mixed;
+  c.turn_logging_id = std::string(v.turn_logging_id);
+  c.enable_implicit_rollback = v.enable_implicit_rollback;
+  c.vpn_preference = static_cast<decltype(c.vpn_preference)>(v.vpn_preference);
+  for (const auto& entry : v.vpn_list) {
+    webrtc::IPAddress address;
+    if (webrtc::IPFromString(std::string(entry.address), &address))
+      c.vpn_list.emplace_back(address, entry.prefix_length);
+  }
+  c.port_allocator_config.min_port = v.port_allocator.min_port;
+  c.port_allocator_config.max_port = v.port_allocator.max_port;
+  c.port_allocator_config.flags = v.port_allocator.flags;
+  if (v.pacer_burst_interval.present) {
+    const auto us = v.pacer_burst_interval.value;
+    c.pacer_burst_interval = us == INT64_MAX ? webrtc::TimeDelta::PlusInfinity() :
+      us == INT64_MIN ? webrtc::TimeDelta::MinusInfinity() : webrtc::TimeDelta::Micros(us);
+  }
+  c.enable_any_address_ports = v.enable_any_address_ports;
+  c.max_sctp_streams = v.max_sctp_streams;
+  c.enable_sctp_snap = v.enable_sctp_snap;
+  c.set_dscp(v.dscp);
+  c.set_stats_timestamp_with_environment_clock(v.stats_timestamp_with_environment_clock);
+  c.set_cpu_adaptation(v.cpu_adaptation);
+  c.set_suspend_below_min_bitrate(v.suspend_below_min_bitrate);
+  c.set_prerenderer_smoothing(v.prerenderer_smoothing);
+  c.set_experiment_cpu_load_estimator(v.experiment_cpu_load_estimator);
+  c.set_audio_rtcp_report_interval_ms(v.audio_rtcp_report_interval_ms);
+  c.set_video_rtcp_report_interval_ms(v.video_rtcp_report_interval_ms);
+}
+static FfiPeerConnectionOptions PeerOptionsSnapshot(const webrtc::PeerConnectionInterface::RTCConfiguration& c) {
+  FfiPeerConnectionOptions v{};
+  v.bundle_policy = static_cast<std::uint8_t>(c.bundle_policy);
+  v.rtcp_mux_policy = static_cast<std::uint8_t>(c.rtcp_mux_policy);
+  v.disable_ipv6_on_wifi = c.disable_ipv6_on_wifi;
+  v.max_ipv6_networks = c.max_ipv6_networks;
+  v.disable_link_local_networks = c.disable_link_local_networks;
+  v.screencast_min_bitrate = OptionalSnapshot(c.screencast_min_bitrate);
+  v.tcp_candidate_policy = static_cast<std::uint8_t>(c.tcp_candidate_policy);
+  v.candidate_network_policy = static_cast<std::uint8_t>(c.candidate_network_policy);
+  v.audio_jitter_buffer_max_packets = c.audio_jitter_buffer_max_packets;
+  v.audio_jitter_buffer_fast_accelerate = c.audio_jitter_buffer_fast_accelerate;
+  v.audio_jitter_buffer_min_delay_ms = c.audio_jitter_buffer_min_delay_ms;
+  v.ice_connection_receiving_timeout = c.ice_connection_receiving_timeout;
+  v.ice_backup_candidate_pair_ping_interval = c.ice_backup_candidate_pair_ping_interval;
+  v.continual_gathering_policy = static_cast<std::uint8_t>(c.continual_gathering_policy);
+  v.prioritize_most_likely_ice_candidate_pairs = c.prioritize_most_likely_ice_candidate_pairs;
+  v.prune_turn_ports = c.prune_turn_ports;
+  v.turn_port_prune_policy = static_cast<std::uint8_t>(c.turn_port_prune_policy);
+  v.presume_writable_when_fully_relayed = c.presume_writable_when_fully_relayed;
+  v.enable_ice_renomination = c.enable_ice_renomination;
+  v.redetermine_role_on_ice_restart = c.redetermine_role_on_ice_restart;
+  v.surface_ice_candidates_on_ice_transport_type_changed = c.surface_ice_candidates_on_ice_transport_type_changed;
+  v.ice_check_interval_strong_connectivity = OptionalSnapshot(c.ice_check_interval_strong_connectivity);
+  v.ice_check_interval_weak_connectivity = OptionalSnapshot(c.ice_check_interval_weak_connectivity);
+  v.ice_check_min_interval = OptionalSnapshot(c.ice_check_min_interval);
+  v.ice_unwritable_timeout = OptionalSnapshot(c.ice_unwritable_timeout);
+  v.ice_unwritable_min_checks = OptionalSnapshot(c.ice_unwritable_min_checks);
+  v.ice_inactive_timeout = OptionalSnapshot(c.ice_inactive_timeout);
+  v.stun_candidate_keepalive_interval = OptionalSnapshot(c.stun_candidate_keepalive_interval);
+  v.stable_writable_connection_ping_interval_ms = OptionalSnapshot(c.stable_writable_connection_ping_interval_ms);
+  v.report_usage_pattern_delay_ms = OptionalSnapshot(c.report_usage_pattern_delay_ms);
+  v.network_preference = {c.network_preference.has_value(), c.network_preference ? static_cast<std::int32_t>(*c.network_preference) : 0};
+  v.sdp_semantics = static_cast<std::uint8_t>(c.sdp_semantics);
+  v.crypto_options = CryptoOptionsSnapshot(c.crypto_options);
+  v.offer_extmap_allow_mixed = c.offer_extmap_allow_mixed;
+  v.turn_logging_id = c.turn_logging_id;
+  v.enable_implicit_rollback = c.enable_implicit_rollback;
+  v.vpn_preference = static_cast<std::uint8_t>(c.vpn_preference);
+  for (const auto& entry : c.vpn_list) {
+    FfiNetworkMask mask{}; mask.address = entry.address().ToString();
+    mask.prefix_length = entry.prefix_length(); v.vpn_list.push_back(std::move(mask));
+  }
+  v.port_allocator = {c.port_allocator_config.min_port, c.port_allocator_config.max_port, c.port_allocator_config.flags};
+  v.pacer_burst_interval.present = c.pacer_burst_interval.has_value();
+  if (c.pacer_burst_interval) v.pacer_burst_interval.value = c.pacer_burst_interval->IsPlusInfinity() ? INT64_MAX :
+    c.pacer_burst_interval->IsMinusInfinity() ? INT64_MIN : c.pacer_burst_interval->us();
+  v.enable_any_address_ports = c.enable_any_address_ports;
+  v.max_sctp_streams = c.max_sctp_streams;
+  v.enable_sctp_snap = c.enable_sctp_snap;
+  v.dscp = c.dscp();
+  v.stats_timestamp_with_environment_clock = c.stats_timestamp_with_environment_clock();
+  v.cpu_adaptation = c.cpu_adaptation();
+  v.suspend_below_min_bitrate = c.suspend_below_min_bitrate();
+  v.prerenderer_smoothing = c.prerenderer_smoothing();
+  v.experiment_cpu_load_estimator = c.experiment_cpu_load_estimator();
+  v.audio_rtcp_report_interval_ms = c.audio_rtcp_report_interval_ms();
+  v.video_rtcp_report_interval_ms = c.video_rtcp_report_interval_ms();
+  return v;
+}
+static webrtc::PeerConnectionInterface::IceServer NativeIceServer(const FfiIceServer& v) {
+  webrtc::PeerConnectionInterface::IceServer c;
+  c.uri = std::string(v.uri);
+  for (const auto& url : v.urls) c.urls.push_back(std::string(url));
+  c.username = std::string(v.username); c.password = std::string(v.password);
+  c.tls_cert_policy = static_cast<webrtc::PeerConnectionInterface::TlsCertPolicy>(v.tls_certificate_policy);
+  c.hostname = std::string(v.hostname);
+  for (const auto& protocol : v.tls_alpn_protocols) c.tls_alpn_protocols.push_back(std::string(protocol));
+  for (const auto& curve : v.tls_elliptic_curves) c.tls_elliptic_curves.push_back(std::string(curve));
+  return c;
+}
+static FfiIceServer IceServerSnapshot(const webrtc::PeerConnectionInterface::IceServer& c) {
+  FfiIceServer v{};
+  v.uri = c.uri;
+  for (const auto& url : c.urls) v.urls.push_back(url);
+  v.username = c.username; v.password = c.password;
+  v.tls_certificate_policy = static_cast<std::uint8_t>(c.tls_cert_policy);
+  v.hostname = c.hostname;
+  for (const auto& protocol : c.tls_alpn_protocols) v.tls_alpn_protocols.push_back(protocol);
+  for (const auto& curve : c.tls_elliptic_curves) v.tls_elliptic_curves.push_back(curve);
+  return v;
+}
+FfiPeerConfiguration peer_configuration_values(const NativePeerConfiguration& native) noexcept {
+  const auto& c = native.state()->configuration;
+  FfiPeerConfiguration v{};
+  v.ice_candidate_pool_size = c.ice_candidate_pool_size;
+  v.always_negotiate_data_channels = c.always_negotiate_data_channels;
+  for (const auto& server : c.servers) v.ice_servers.push_back(IceServerSnapshot(server));
+  v.ice_transport_policy = static_cast<std::uint8_t>(c.type);
+  v.turn_tls_ca_pem = native.state()->turn_tls_ca_pem;
+  v.options = PeerOptionsSnapshot(c);
+  return v;
+}
+FfiPeerConfiguration peer_configuration_default(bool aggressive) noexcept {
+  auto state = std::make_unique<NativePeerConfiguration::State>();
+  state->configuration = webrtc::PeerConnectionInterface::RTCConfiguration(
+      aggressive ? webrtc::PeerConnectionInterface::RTCConfigurationType::kAggressive :
+                   webrtc::PeerConnectionInterface::RTCConfigurationType::kSafe);
+  return peer_configuration_values(NativePeerConfiguration(std::move(state)));
+}
+std::unique_ptr<NativePeerConfiguration> peer_configuration_new(const FfiPeerConfiguration& v) noexcept {
+  auto state = std::make_unique<NativePeerConfiguration::State>();
+  auto& c = state->configuration;
+  c.ice_candidate_pool_size = v.ice_candidate_pool_size;
+  c.always_negotiate_data_channels = v.always_negotiate_data_channels;
+  c.type = static_cast<webrtc::PeerConnectionInterface::IceTransportsType>(v.ice_transport_policy);
+  for (const auto& server : v.ice_servers) c.servers.push_back(NativeIceServer(server));
+  state->turn_tls_ca_pem = std::string(v.turn_tls_ca_pem);
+  ApplyPeerOptions(c, v.options);
+  return std::make_unique<NativePeerConfiguration>(std::move(state));
+}
+void peer_configuration_add_certificate(NativePeerConfiguration& native, const NativeCertificate& certificate) noexcept {
+  native.state()->configuration.certificates.push_back(certificate.certificate());
+}
+std::size_t peer_configuration_certificate_count(const NativePeerConfiguration& native) noexcept {
+  return native.state()->configuration.certificates.size();
+}
+std::shared_ptr<NativeCertificate> peer_configuration_certificate(const NativePeerConfiguration& native, std::size_t index) noexcept {
+  const auto& certificates = native.state()->configuration.certificates;
+  return index < certificates.size() ? std::make_shared<NativeCertificate>(certificates[index]) : nullptr;
+}
+std::unique_ptr<NativePeerConfiguration> peer_get_configuration(const NativePeerConnection& peer) noexcept {
+  auto state = std::make_unique<NativePeerConfiguration::State>();
+  state->configuration = peer.state()->peer->GetConfiguration();
+  state->turn_tls_ca_pem = peer.state()->turn_tls_ca_pem;
+  return std::make_unique<NativePeerConfiguration>(std::move(state));
+}
+std::uint8_t peer_set_configuration(const NativePeerConnection& peer, const NativePeerConfiguration& native, rust::String& error) noexcept {
+  if (peer.state()->closed) { error = "peer is closed"; return 255; }
+  if (peer.state()->turn_tls_ca_pem != native.state()->turn_tls_ca_pem) {
+    error = "TURN TLS CA is a creation-time dependency"; return 7;
+  }
+  auto result = peer.state()->peer->SetConfiguration(native.state()->configuration);
+  if (!result.ok()) error = result.message();
+  return static_cast<std::uint8_t>(result.type());
+}
+
 std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
-    std::uint16_t ice_candidate_pool_size,
-    bool always_negotiate_data_channels,
-    rust::Slice<const FfiIceServer> ice_servers,
-    bool relay_only,
-    rust::Str turn_tls_ca_pem,
+    const NativePeerConfiguration& native,
+    std::uint8_t& error_kind,
     rust::String& error) noexcept {
+  const auto& configuration = native.state()->configuration;
+  const auto& turn_tls_ca_pem = native.state()->turn_tls_ca_pem;
+  // PortAllocator creation only DCHECKs this native range before allocating
+  // pooled sessions. Match SetConfiguration's INVALID_RANGE result rather
+  // than triggering a debug abort or unbounded invalid allocation work.
+  if (configuration.ice_candidate_pool_size < 0 ||
+      configuration.ice_candidate_pool_size > static_cast<int>(UINT16_MAX)) {
+    error_kind = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_RANGE);
+    error = "ICE candidate pool size must be in the native range 0..=65535";
+    return nullptr;
+  }
+  error_kind = static_cast<std::uint8_t>(webrtc::RTCErrorType::INVALID_PARAMETER);
   auto events = std::make_shared<EventState>(factory.readiness());
   auto observer = std::make_unique<PeerObserver>(events);
   webrtc::PeerConnectionDependencies dependencies(observer.get());
@@ -1410,27 +1636,15 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     dependencies.tls_cert_verifier =
         std::make_unique<TurnCaVerifier>(ca.release());
   }
-  webrtc::PeerConnectionInterface::RTCConfiguration configuration;
-  configuration.ice_candidate_pool_size = ice_candidate_pool_size;
-  configuration.always_negotiate_data_channels =
-      always_negotiate_data_channels;
-  configuration.type = relay_only
-                           ? webrtc::PeerConnectionInterface::kRelay
-                           : webrtc::PeerConnectionInterface::kAll;
-  for (const auto& entry : ice_servers) {
-    webrtc::PeerConnectionInterface::IceServer server;
-    server.urls.push_back(std::string(entry.url));
-    server.username = std::string(entry.username);
-    server.password = std::string(entry.password);
-    configuration.servers.push_back(std::move(server));
-  }
   auto result = factory.state()->factory->CreatePeerConnectionOrError(
       configuration, std::move(dependencies));
   if (!result.ok()) {
+    error_kind = static_cast<std::uint8_t>(result.error().type());
     error = result.error().message();
     return nullptr;
   }
   auto state = std::make_unique<NativePeerConnection::State>();
+  state->turn_tls_ca_pem = turn_tls_ca_pem;
   state->opus_transformer = factory.state()->opus_transformer;
   state->headless_audio_device = factory.state()->headless_audio_device;
   state->native_audio_enabled = factory.state()->audio_device != nullptr;

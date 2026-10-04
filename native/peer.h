@@ -23,6 +23,8 @@ struct FfiCertificatePem;
 struct FfiCertificateData;
 struct FfiCertificateFingerprint;
 struct FfiIceServer;
+struct FfiPeerConfiguration;
+class NativePeerConnection;
 struct FfiFactoryOptions;
 struct FfiCryptoOptions;
 struct FfiOfferAnswerOptions;
@@ -57,6 +59,25 @@ class NativeCertificate final {
  private:
   const webrtc::scoped_refptr<webrtc::RTCCertificate> certificate_;
 };
+
+
+class NativePeerConfiguration final {
+ public:
+  struct State;
+  explicit NativePeerConfiguration(std::unique_ptr<State> state) noexcept;
+  ~NativePeerConfiguration();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+FfiPeerConfiguration peer_configuration_default(bool aggressive) noexcept;
+std::unique_ptr<NativePeerConfiguration> peer_configuration_new(const FfiPeerConfiguration& values) noexcept;
+void peer_configuration_add_certificate(NativePeerConfiguration& native, const NativeCertificate& certificate) noexcept;
+FfiPeerConfiguration peer_configuration_values(const NativePeerConfiguration& native) noexcept;
+std::size_t peer_configuration_certificate_count(const NativePeerConfiguration& native) noexcept;
+std::shared_ptr<NativeCertificate> peer_configuration_certificate(const NativePeerConfiguration& native, std::size_t index) noexcept;
+std::unique_ptr<NativePeerConfiguration> peer_get_configuration(const NativePeerConnection& peer) noexcept;
+std::uint8_t peer_set_configuration(const NativePeerConnection& peer, const NativePeerConfiguration& native, rust::String& error) noexcept;
 
 class NativePeerConnectionFactory final {
  public:
@@ -158,11 +179,8 @@ bool factory_select_audio_device(const NativePeerConnectionFactory& factory,
 
 std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
-    std::uint16_t ice_candidate_pool_size,
-    bool always_negotiate_data_channels,
-    rust::Slice<const FfiIceServer> ice_servers,
-    bool relay_only,
-    rust::Str turn_tls_ca_pem,
+    const NativePeerConfiguration& configuration,
+    std::uint8_t& error_kind,
     rust::String& error) noexcept;
 
 std::uint8_t peer_create_offer(const NativePeerConnection& peer,

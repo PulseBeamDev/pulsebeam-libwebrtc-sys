@@ -435,8 +435,8 @@ fn invalid_inputs_closed_operations_and_construction_failures_are_explicit() {
     let factory = PeerConnectionFactory::builder().build().unwrap();
     assert!(
         factory
-            .create_peer_connection(PeerConfiguration {
-                ice_candidate_pool_size: u16::MAX,
+            .create_peer_connection_with_configuration(pulsebeam_webrtc_sys::RtcConfiguration {
+                ice_candidate_pool_size: 65536,
                 ..Default::default()
             })
             .is_err()
@@ -487,7 +487,7 @@ fn ice_server_policy_and_restart_offer_are_explicit() {
             })
             .err()
             .expect("invalid URL should fail");
-        assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+        assert_eq!(error.kind, PeerErrorKind::Syntax);
     }
     let error = factory
         .create_peer_connection(PeerConfiguration {
