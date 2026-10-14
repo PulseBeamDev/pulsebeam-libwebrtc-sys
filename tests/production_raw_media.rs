@@ -392,6 +392,10 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         }
         let warm = drive_pcm_tones(&mut session, &mut call, peers, sources);
         let receiver = call.all_audio[0].1;
+        // The pinned stock tracks do not install a per-track AudioProcessor,
+        // even while the voice engine is actively processing this real call.
+        assert_eq!(session.sender_audio_processor(sender).unwrap(), None);
+        assert_eq!(session.receiver_audio_processor(receiver).unwrap(), None);
         let remote = session
             .receiver_audio_source_view(receiver)
             .unwrap()
@@ -425,6 +429,8 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
     let (session, later) = thread::spawn(move || {
         let mut session = session;
         let (alias, installed, volume, _, track, producer, receiver) = retained;
+        assert_eq!(session.sender_audio_processor(sender).unwrap(), None);
+        assert_eq!(session.receiver_audio_processor(receiver).unwrap(), None);
         for value in [0.0, 0.25, 0.5] {
             session.set_audio_source_view_volume(alias, value).unwrap();
         }

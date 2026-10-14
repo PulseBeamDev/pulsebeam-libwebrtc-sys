@@ -346,6 +346,13 @@ retirement. Releasing an outer view/producer identifier does not invalidate an
 observer or discard its queued callbacks. Polling notifications does not pump
 media or advance a controlled clock.
 
+`AudioTrack::processor` queries the native per-track processor and returns an
+owning alias only when one exists. The pinned stock tracks return `None`, even
+when the shared voice-engine APM is processing audio; source options and peer
+statistics are not substitute processors. `AudioProcessor::stats` forwards the
+remote-track condition and preserves every optional observation, including the
+deprecated voice-detection value. No new processor/APM factory is provided.
+
 Borrowed `MonoPcm`, `InterleavedPcm` and `DeinterleavedPcm` views support signed
 16-bit and float PCM without owning or copying their storage. Mutable variants
 carry exclusive borrows; separate-channel views retain each channel borrow.

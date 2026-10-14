@@ -241,6 +241,8 @@ mod rtp_sources;
 pub use rtp_sources::{RtpSource, RtpSourceExtensions, RtpSourceType};
 mod rtp_packet_values;
 pub use rtp_packet_values::{AbsoluteCaptureTime, RtpReceivedPacketInfo, RtpReceivedPacketInfos};
+mod audio_processor;
+pub use audio_processor::{AudioProcessingStats, AudioProcessor, AudioProcessorStatistics};
 mod pcm_view;
 pub use pcm_view::{
     DeinterleavedPcm, DeinterleavedPcmMut, InterleavedPcm, InterleavedPcmMut, MonoPcm, MonoPcmMut,
@@ -3728,6 +3730,28 @@ mod ffi {
         present: bool,
         volume: bool,
         value: f64,
+    }
+
+    struct FfiAudioProcessorStatistics {
+        typing_noise_detected: bool,
+        has_voice_detected: bool,
+        voice_detected: bool,
+        has_echo_return_loss: bool,
+        echo_return_loss: f64,
+        has_echo_return_loss_enhancement: bool,
+        echo_return_loss_enhancement: f64,
+        has_divergent_filter_fraction: bool,
+        divergent_filter_fraction: f64,
+        has_delay_median_ms: bool,
+        delay_median_ms: i32,
+        has_delay_standard_deviation_ms: bool,
+        delay_standard_deviation_ms: i32,
+        has_residual_echo_likelihood: bool,
+        residual_echo_likelihood: f64,
+        has_residual_echo_likelihood_recent_max: bool,
+        residual_echo_likelihood_recent_max: f64,
+        has_delay_ms: bool,
+        delay_ms: i32,
     }
 
     struct FfiAudioTrackStatus {
@@ -7447,6 +7471,14 @@ mod ffi {
             changes: &FfiAudioSourceOptions,
         ) -> FfiAudioSourceOptions;
         fn audio_options_description(value: &FfiAudioSourceOptions) -> String;
+        type NativeAudioProcessor;
+        fn audio_track_processor(track: &NativeAudioTrack) -> UniquePtr<NativeAudioProcessor>;
+        fn audio_processors_same(a: &NativeAudioProcessor, b: &NativeAudioProcessor) -> bool;
+        fn audio_processor_stats(
+            processor: &NativeAudioProcessor,
+            has_remote_tracks: bool,
+        ) -> FfiAudioProcessorStatistics;
+        fn audio_processor_statistics_default() -> FfiAudioProcessorStatistics;
         type NativeAudioSourceView;
         type NativeAudioObserver;
         fn audio_source_view(source: &NativeAudioSource) -> UniquePtr<NativeAudioSourceView>;

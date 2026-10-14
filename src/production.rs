@@ -46,6 +46,7 @@ resource_id!(
     SessionChannelId,
     SessionSourceId,
     SessionAudioSourceViewId,
+    SessionAudioProcessorId,
     SessionAudioObserverId,
     SessionTransceiverId,
     SessionSenderId,
@@ -901,6 +902,7 @@ impl ProductionSession {
             audio_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
+            audio_processors: HashMap::new(),
             audio_observers: HashMap::new(),
             audio_source_views: HashMap::new(),
             peers: HashMap::new(),
@@ -1790,7 +1792,6 @@ impl ProductionSession {
             .value
             .set_bitrate(minimum, start, maximum)
     }
-
     /// Current binding observation backlog, separate from native transport
     /// buffering and already-returned owned outputs.
     pub fn peer_event_observation(
@@ -1884,6 +1885,75 @@ impl ProductionSession {
         self.audio_source_views.insert(id, view);
         Ok(Some(id))
     }
+    /// Native per-track processor acquisition, not voice-engine APM inference.
+    pub fn sender_audio_processor(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<Option<SessionAudioProcessorId>, PeerError> {
+        self.check_open()?;
+        let Some(track) = self
+            .senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+        else {
+            return Ok(None);
+        };
+        let Some(processor) = track.processor() else {
+            return Ok(None);
+        };
+        let id = SessionAudioProcessorId(next_id()?);
+        self.audio_processors.insert(id, processor);
+        Ok(Some(id))
+    }
+    pub fn receiver_audio_processor(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<SessionAudioProcessorId>, PeerError> {
+        self.check_open()?;
+        let Some(track) = self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+        else {
+            return Ok(None);
+        };
+        let Some(processor) = track.processor() else {
+            return Ok(None);
+        };
+        let id = SessionAudioProcessorId(next_id()?);
+        self.audio_processors.insert(id, processor);
+        Ok(Some(id))
+    }
+    pub fn audio_processor_statistics(
+        &mut self,
+        id: SessionAudioProcessorId,
+        has_remote_tracks: bool,
+    ) -> Result<crate::AudioProcessorStatistics, PeerError> {
+        Ok(self
+            .audio_processors
+            .get(&id)
+            .ok_or_else(missing)?
+            .stats(has_remote_tracks))
+    }
+    pub fn audio_processors_same(
+        &mut self,
+        a: SessionAudioProcessorId,
+        b: SessionAudioProcessorId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .audio_processors
+            .get(&a)
+            .ok_or_else(missing)?
+            .same_resource(self.audio_processors.get(&b).ok_or_else(missing)?))
+    }
+    pub fn release_audio_processor(&mut self, id: SessionAudioProcessorId) {
+        self.audio_processors.remove(&id);
+    }
+
     pub fn audio_source_views_same(
         &mut self,
         a: SessionAudioSourceViewId,

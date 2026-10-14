@@ -958,6 +958,10 @@ impl AudioTrack {
     pub fn state(&self) -> crate::AudioTrackState {
         crate::AudioTrackState::from_native(ffi::audio_track_state(self.native()))
     }
+    /// The actual native per-track processor, including a native null result.
+    pub fn processor(&self) -> Option<crate::AudioProcessor> {
+        crate::AudioProcessor::from_native(ffi::audio_track_processor(self.native()), self.clone())
+    }
     pub fn signal_level(&self) -> Option<i32> {
         let value = ffi::audio_track_signal_level(self.native());
         value.present.then_some(value.value)

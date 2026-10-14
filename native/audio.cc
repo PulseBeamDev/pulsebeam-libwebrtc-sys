@@ -518,6 +518,11 @@ struct NativeAudioTrack::State {
   webrtc::Thread* signaling_thread = nullptr;
 };
 
+struct NativeAudioProcessor::State {
+  webrtc::scoped_refptr<webrtc::AudioProcessorInterface> processor;
+  webrtc::Thread* signaling_thread = nullptr;
+};
+
 struct NativeAudioSourceView::State {
   webrtc::scoped_refptr<webrtc::AudioSourceInterface> source;
   webrtc::Thread* signaling_thread = nullptr;
@@ -548,6 +553,58 @@ struct NativeAudioObserver::State final : webrtc::ObserverInterface,
   void OnChanged() override { Push(false, 0); }
   void OnSetVolume(double volume) override { Push(true, volume); }
 };
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static FfiAudioProcessorStatistics WriteProcessorStatistics(
+    const webrtc::AudioProcessorInterface::AudioProcessorStatistics& value) {
+  FfiAudioProcessorStatistics out;
+  out.typing_noise_detected = value.typing_noise_detected;
+  const auto& apm = value.apm_statistics;
+  out.has_voice_detected = apm.voice_detected.has_value();
+  out.voice_detected = apm.voice_detected.value_or(false);
+  out.has_echo_return_loss = apm.echo_return_loss.has_value();
+  out.echo_return_loss = apm.echo_return_loss.value_or(0);
+  out.has_echo_return_loss_enhancement = apm.echo_return_loss_enhancement.has_value();
+  out.echo_return_loss_enhancement = apm.echo_return_loss_enhancement.value_or(0);
+  out.has_divergent_filter_fraction = apm.divergent_filter_fraction.has_value();
+  out.divergent_filter_fraction = apm.divergent_filter_fraction.value_or(0);
+  out.has_delay_median_ms = apm.delay_median_ms.has_value();
+  out.delay_median_ms = apm.delay_median_ms.value_or(0);
+  out.has_delay_standard_deviation_ms = apm.delay_standard_deviation_ms.has_value();
+  out.delay_standard_deviation_ms = apm.delay_standard_deviation_ms.value_or(0);
+  out.has_residual_echo_likelihood = apm.residual_echo_likelihood.has_value();
+  out.residual_echo_likelihood = apm.residual_echo_likelihood.value_or(0);
+  out.has_residual_echo_likelihood_recent_max = apm.residual_echo_likelihood_recent_max.has_value();
+  out.residual_echo_likelihood_recent_max = apm.residual_echo_likelihood_recent_max.value_or(0);
+  out.has_delay_ms = apm.delay_ms.has_value();
+  out.delay_ms = apm.delay_ms.value_or(0);
+  return out;
+}
+#pragma clang diagnostic pop
+FfiAudioProcessorStatistics audio_processor_statistics_default() noexcept {
+  return WriteProcessorStatistics({});
+}
+NativeAudioProcessor::NativeAudioProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeAudioProcessor::~NativeAudioProcessor() {
+  state_->signaling_thread->BlockingCall([&] { state_->processor = nullptr; });
+}
+const std::unique_ptr<NativeAudioProcessor::State>& NativeAudioProcessor::state() const noexcept { return state_; }
+std::unique_ptr<NativeAudioProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept {
+  auto state = std::make_unique<NativeAudioProcessor::State>();
+  state->signaling_thread = track.state()->signaling_thread;
+  state->signaling_thread->BlockingCall([&] { state->processor = track.state()->track->GetAudioProcessor(); });
+  if (!state->processor) return nullptr;
+  return std::make_unique<NativeAudioProcessor>(std::move(state));
+}
+bool audio_processors_same(const NativeAudioProcessor& a, const NativeAudioProcessor& b) noexcept {
+  return a.state()->processor.get() == b.state()->processor.get();
+}
+FfiAudioProcessorStatistics audio_processor_stats(const NativeAudioProcessor& processor, bool has_remote_tracks) noexcept {
+  return processor.state()->signaling_thread->BlockingCall([&] {
+    return WriteProcessorStatistics(processor.state()->processor->GetStats(has_remote_tracks));
+  });
+}
+
 NativeAudioSourceView::NativeAudioSourceView(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeAudioSourceView::~NativeAudioSourceView() {
   state_->signaling_thread->BlockingCall([&] { state_->source = nullptr; });

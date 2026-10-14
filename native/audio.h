@@ -24,6 +24,21 @@ struct FfiAudioObserverEvent;
 class NativeAudioSource;
 class NativeAudioTrack;
 
+struct FfiAudioProcessorStatistics;
+class NativeAudioProcessor final {
+ public:
+  struct State;
+  explicit NativeAudioProcessor(std::unique_ptr<State> state) noexcept;
+  ~NativeAudioProcessor();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeAudioProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept;
+bool audio_processors_same(const NativeAudioProcessor& a, const NativeAudioProcessor& b) noexcept;
+FfiAudioProcessorStatistics audio_processor_stats(const NativeAudioProcessor& processor, bool has_remote_tracks) noexcept;
+FfiAudioProcessorStatistics audio_processor_statistics_default() noexcept;
+
 class NativeAudioSourceView final {
  public:
   struct State;

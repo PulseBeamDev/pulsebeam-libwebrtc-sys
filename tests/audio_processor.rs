@@ -281,3 +281,38 @@ fn aec_numeric_parser_representations_are_guarded_before_native_scan() {
         ));
     }
 }
+
+
+#[test]
+fn native_statistics_defaults_preserve_absent_observations() {
+    let value = AudioProcessorStatistics::default();
+    assert!(!value.typing_noise_detected);
+    let apm = &value.apm_statistics;
+    assert_eq!(apm.voice_detected, None);
+    assert_eq!(apm.echo_return_loss, None);
+    assert_eq!(apm.echo_return_loss_enhancement, None);
+    assert_eq!(apm.divergent_filter_fraction, None);
+    assert_eq!(apm.delay_median_ms, None);
+    assert_eq!(apm.delay_standard_deviation_ms, None);
+    assert_eq!(apm.residual_echo_likelihood, None);
+    assert_eq!(apm.residual_echo_likelihood_recent_max, None);
+    assert_eq!(apm.delay_ms, None);
+    assert_eq!(apm, &AudioProcessingStats::default());
+    assert_eq!(value.clone(), value);
+}
+
+#[test]
+fn stock_track_native_null_is_not_replaced_by_voice_engine_statistics() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let mut source = factory.create_audio_source().unwrap();
+    let track = factory.create_audio_track("processor", &source).unwrap();
+    assert!(track.processor().is_none());
+    let mut options = AudioSourceOptions::default();
+    options.echo_cancellation = Some(true);
+    source.set_options(&options).unwrap();
+    assert!(track.processor().is_none());
+    source.close().unwrap();
+    drop((factory, source));
+    assert_eq!(track.state(), AudioTrackState::Ended);
+    assert!(track.processor().is_none());
+}
