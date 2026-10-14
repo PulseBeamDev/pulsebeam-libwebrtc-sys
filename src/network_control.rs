@@ -21,6 +21,9 @@ impl NetworkControllerEnvironment {
     pub fn field_trials(&self) -> FieldTrialsSnapshot {
         self.0.field_trials()
     }
+    pub fn environment(&self) -> &crate::Environment {
+        self.0.environment()
+    }
 }
 pub struct NetworkControllerConfig {
     pub environment: NetworkControllerEnvironment,
@@ -118,12 +121,13 @@ impl NetworkControllerFactory {
 fn report(observer: &AtomicU8, value: u8) {
     let _ = observer.compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire);
 }
-pub(crate) struct RustNetworkControllerFactory(pub Option<NetworkControllerFactory>);
+pub(crate) struct RustNetworkControllerFactory(pub Option<NetworkControllerFactory>, pub Option<crate::Environment>);
 pub(crate) struct RustNetworkController {
     provider: Mutex<Option<Box<dyn NetworkController>>>,
     failed: AtomicBool,
     factory_failed: Arc<AtomicBool>,
     observed_failure: Arc<AtomicU8>,
+    _environment: EventLogEnvironment,
 }
 impl Drop for RustNetworkController {
     fn drop(&mut self) {
@@ -143,6 +147,7 @@ pub(crate) fn network_controller_create(
     environment: cxx::UniquePtr<ffi::NativeEnvironment>,
     config: ffi::FfiNcConfig,
 ) -> Box<RustNetworkController> {
+    let environment = EventLogEnvironment::from_native(environment, source.1.as_ref());
     let mut product = None;
     let observer = source
         .0
@@ -157,9 +162,7 @@ pub(crate) fn network_controller_create(
             .unwrap_or_else(|error| error.into_inner());
         if !factory.has_failed() {
             let config = NetworkControllerConfig {
-                environment: NetworkControllerEnvironment(EventLogEnvironment::from_native(
-                    environment,
-                )),
+                environment: NetworkControllerEnvironment(environment.clone()),
                 constraints: TargetRateConstraints::from_native(config.constraints),
                 stream_based_config: StreamsConfig::from_native(config.stream_based_config),
                 default_pacing_time_window: TimeDelta::from_native_microsecond_bits(
@@ -188,6 +191,7 @@ pub(crate) fn network_controller_create(
     Box::new(RustNetworkController {
         provider: Mutex::new(product),
         failed: AtomicBool::new(failed),
+        _environment: environment,
         factory_failed,
         observed_failure: observer,
     })

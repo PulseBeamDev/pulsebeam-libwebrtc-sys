@@ -246,7 +246,7 @@ fn invoke(
     let observer = factory.0.observed_failure.clone();
     let replies = ffi::network_controller_native_probe(
         environment.native(),
-        Box::new(RustNetworkControllerFactory(Some(factory))),
+        Box::new(RustNetworkControllerFactory(Some(factory), None)),
         messages,
         kinds,
     );

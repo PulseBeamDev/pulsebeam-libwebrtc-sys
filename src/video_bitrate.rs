@@ -385,6 +385,9 @@ impl VideoBitrateAllocatorEnvironment {
     pub fn field_trials(&self) -> FieldTrialsSnapshot {
         self.0.field_trials()
     }
+    pub fn environment(&self) -> &crate::Environment {
+        self.0.environment()
+    }
 }
 
 /// A callable allocator product, not a factory-time policy callback. Native
@@ -457,11 +460,12 @@ impl VideoBitrateAllocatorFactory {
         self.0.failed.load(Ordering::Acquire)
     }
 }
-pub(crate) struct RustVideoBitrateAllocatorFactory(pub Option<VideoBitrateAllocatorFactory>);
+pub(crate) struct RustVideoBitrateAllocatorFactory(pub Option<VideoBitrateAllocatorFactory>, pub Option<crate::Environment>);
 pub(crate) struct RustVideoBitrateAllocator {
     provider: Mutex<Option<Box<dyn VideoBitrateAllocator>>>,
     builtin: bool,
     failed: AtomicBool,
+    _environment: Option<crate::EventLogEnvironment>,
 }
 impl RustVideoBitrateAllocator {
     fn with<T>(&self, fallback: T, call: impl FnOnce(&mut dyn VideoBitrateAllocator) -> T) -> T {
@@ -519,6 +523,7 @@ pub(crate) fn video_bitrate_factory_create(
     environment: cxx::UniquePtr<ffi::NativeEnvironment>,
     codec: ffi::FfiVideoBitrateCodec,
 ) -> Box<RustVideoBitrateAllocator> {
+    let environment = crate::EventLogEnvironment::from_native(environment, source.1.as_ref());
     let mut provider = None;
     let mut builtin = false;
     if let Some(factory) = &source.0 {
@@ -534,7 +539,7 @@ pub(crate) fn video_bitrate_factory_create(
                     factory_provider.as_deref_mut().map(|provider| {
                         provider.create(
                             VideoBitrateAllocatorEnvironment(
-                                crate::EventLogEnvironment::from_native(environment),
+                                environment.clone(),
                             ),
                             VideoCodecConfiguration::from_native(codec),
                         )
@@ -556,6 +561,7 @@ pub(crate) fn video_bitrate_factory_create(
         provider: Mutex::new(provider),
         builtin,
         failed: AtomicBool::new(false),
+        _environment: Some(environment),
     })
 }
 pub(crate) fn video_bitrate_allocator_builtin(source: &RustVideoBitrateAllocator) -> bool {
@@ -636,6 +642,7 @@ mod tests {
             provider: Mutex::new(Some(Box::new(provider))),
             builtin: false,
             failed: AtomicBool::new(false),
+            _environment: None,
         }
     }
     #[test]
@@ -648,10 +655,10 @@ mod tests {
         shared::<VideoCodecConfiguration>();
         shared::<crate::PeerConnectionDependencies>();
         assert!(!video_bitrate_factory_present(
-            &RustVideoBitrateAllocatorFactory(None)
+            &RustVideoBitrateAllocatorFactory(None, None)
         ));
         let builtin = VideoBitrateAllocatorFactory::builtin();
-        let native = RustVideoBitrateAllocatorFactory(Some(builtin.clone()));
+        let native = RustVideoBitrateAllocatorFactory(Some(builtin.clone()), None);
         assert!(video_bitrate_factory_present(&native));
         assert!(video_bitrate_factory_builtin(&native));
         assert!(!builtin.failed());
@@ -678,7 +685,7 @@ mod tests {
             calls: calls.clone(),
             mutable: Cell::new(0),
         });
-        let source = Arc::new(RustVideoBitrateAllocatorFactory(Some(registration.clone())));
+        let source = Arc::new(RustVideoBitrateAllocatorFactory(Some(registration.clone()), None));
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let source = source.clone();

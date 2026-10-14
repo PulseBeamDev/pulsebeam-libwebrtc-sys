@@ -1088,7 +1088,7 @@ impl PeerConnectionFactoryBuilder {
         // other non-null pointer is retained in FactoryInner and its
         // native factory is destroyed before those dependencies are dropped.
         let event_log_factory = self.event_log_factory.map(|factory| {
-            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory)))
+            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory, environment.clone())))
         });
         let audio_processor = match (self.audio_processor, self.audio_processor_builder) {
             (Some(processor), _) => Some(processor),
@@ -1123,9 +1123,10 @@ impl PeerConnectionFactoryBuilder {
                 Box::new(crate::RustNetworkStatePredictorFactory(
                     self.network_predictor_factory,
                 )),
-                Box::new(crate::RustFecControllerFactory(self.fec_factory)),
+                Box::new(crate::RustFecControllerFactory(self.fec_factory, Some(environment.clone()))),
                 Box::new(crate::RustNetworkControllerFactory(
                     self.network_controller_factory,
+                    Some(environment.clone()),
                 )),
                 optional_ptr(
                     self.packet_socket_factory
@@ -1598,6 +1599,7 @@ impl PeerConnectionFactory {
             )),
             Box::new(crate::RustVideoBitrateAllocatorFactory(
                 dependencies.video_bitrate_allocator_factory,
+                Some(self.0._environment.clone()),
             )),
             &mut native_error_kind,
             &mut message,

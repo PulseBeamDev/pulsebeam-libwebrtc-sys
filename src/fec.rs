@@ -323,6 +323,9 @@ impl FecControllerEnvironment {
     pub fn field_trials(&self) -> FieldTrialsSnapshot {
         self.0.field_trials()
     }
+    pub fn environment(&self) -> &crate::Environment {
+        self.0.environment()
+    }
 }
 /// Full callable FEC controller product. Native can call methods concurrently
 /// from arbitrary threads. Sync and shared receivers preserve that contract;
@@ -387,11 +390,12 @@ impl FecControllerFactory {
         self.0.failed.load(Ordering::Acquire)
     }
 }
-pub(crate) struct RustFecControllerFactory(pub Option<FecControllerFactory>);
+pub(crate) struct RustFecControllerFactory(pub Option<FecControllerFactory>, pub Option<crate::Environment>);
 pub(crate) struct RustFecController {
     provider: Option<Box<dyn FecController>>,
     builtin: bool,
     failed: AtomicBool,
+    _environment: Option<crate::EventLogEnvironment>,
 }
 impl Drop for RustFecController {
     fn drop(&mut self) {
@@ -429,6 +433,7 @@ pub(crate) fn fec_controller_create(
     source: &RustFecControllerFactory,
     environment: cxx::UniquePtr<ffi::NativeEnvironment>,
 ) -> Box<RustFecController> {
+    let environment = crate::EventLogEnvironment::from_native(environment, source.1.as_ref());
     let mut product = None;
     let mut builtin = false;
     let mut failed = false;
@@ -445,7 +450,7 @@ pub(crate) fn fec_controller_create(
         } else if let Some(provider) = provider.as_deref_mut() {
             match catch_unwind(AssertUnwindSafe(|| {
                 provider.create_fec_controller(FecControllerEnvironment(
-                    crate::EventLogEnvironment::from_native(environment),
+                    environment.clone(),
                 ))
             })) {
                 Ok(FecControllerCreation::Builtin) => builtin = true,
@@ -461,6 +466,7 @@ pub(crate) fn fec_controller_create(
         provider: product,
         builtin,
         failed: AtomicBool::new(failed),
+        _environment: Some(environment),
     })
 }
 pub(crate) fn fec_controller_builtin(source: &RustFecController) -> bool {
@@ -662,7 +668,7 @@ mod tests {
         assert_eq!(
             ffi::fec_native_probe(
                 environment.native(),
-                Box::new(RustFecControllerFactory(Some(registration)))
+                Box::new(RustFecControllerFactory(Some(registration), None))
             ),
             73_212
         );
@@ -759,6 +765,7 @@ mod tests {
             })),
             builtin: false,
             failed: AtomicBool::new(false),
+            _environment: None,
         });
         let worker = {
             let source = source.clone();
@@ -789,7 +796,7 @@ mod tests {
             assert_eq!(
                 ffi::fec_native_probe(
                     environment.native(),
-                    Box::new(RustFecControllerFactory(Some(factory.clone())))
+                    Box::new(RustFecControllerFactory(Some(factory.clone()), None))
                 ),
                 0
             );
@@ -811,7 +818,7 @@ mod tests {
             FecRetransmissionMode::ALL_LAYERS.bits()
         );
         assert_eq!(FecEncodedFrameType::from(4), FecEncodedFrameType::Delta);
-        assert!(!fec_factory_present(&RustFecControllerFactory(None)));
+        assert!(!fec_factory_present(&RustFecControllerFactory(None, None)));
         let (mut operation, completion) = FecCallbackOperation::new(|value| value.map(|_| ()));
         assert_eq!(operation.try_take(), None);
         drop(completion);
@@ -843,7 +850,7 @@ mod tests {
         assert_eq!(operation.try_take(), None);
         let environment = crate::Environment::builder().build().unwrap();
         let builtin = fec_controller_create(
-            &RustFecControllerFactory(Some(FecControllerFactory::builtin())),
+            &RustFecControllerFactory(Some(FecControllerFactory::builtin()), None),
             ffi::clone_environment(environment.native()),
         );
         assert!(fec_controller_builtin(&builtin));

@@ -304,30 +304,33 @@ impl RtcEvent {
 /// A retained, read-only native environment value for provider construction.
 /// This owns the native leaf, including clocks and task-queue factory values,
 /// and does not import a local factory or peer into the application actor.
+#[derive(Clone)]
 pub struct EventLogEnvironment {
-    native: cxx::UniquePtr<ffi::NativeEnvironment>,
+    environment: crate::Environment,
 }
-// SAFETY: native Environment is explicitly thread-safe; only shared utility
-// reads are exposed. The native owning leaf retains all borrowed dependencies.
-unsafe impl Send for EventLogEnvironment {}
-unsafe impl Sync for EventLogEnvironment {}
 impl EventLogEnvironment {
-    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeEnvironment>) -> Self {
-        Self { native }
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeEnvironment>,
+        retention: Option<&crate::Environment>,
+    ) -> Self {
+        Self { environment: crate::Environment::from_sdk(native, retention) }
     }
+
+    /// The exact SDK creation environment, including identity-matched
+    /// scheduling capabilities and the installation's Rust-only leases.
+    pub fn environment(&self) -> &crate::Environment {
+        &self.environment
+    }
+
     pub fn time_us(&self) -> i64 {
-        ffi::environment_time_us(self.native.as_ref().expect("provider environment"))
+        ffi::environment_time_us(self.environment.native())
     }
     /// Exact native CurrentTime, independent of the legacy microsecond query.
     pub fn timestamp(&self) -> crate::Timestamp {
-        crate::Timestamp::from_native_microsecond_bits(ffi::environment_timestamp(
-            self.native.as_ref().expect("provider environment"),
-        ))
+        self.environment.timestamp()
     }
     pub fn field_trials(&self) -> crate::FieldTrialsSnapshot {
-        crate::FieldTrialsSnapshot::from_native(ffi::environment_field_trials(
-            self.native.as_ref().expect("provider environment"),
-        ))
+        self.environment.field_trials()
     }
 }
 
@@ -409,33 +412,22 @@ impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
     }
 }
 
-pub(crate) struct RustRtcEventLogFactory(pub Arc<dyn RtcEventLogFactory>);
+pub(crate) struct RustRtcEventLogFactory(pub Arc<dyn RtcEventLogFactory>, pub crate::Environment);
 pub(crate) struct RustRtcEventLog {
     logger: Option<Box<dyn RtcEventLogger>>,
     failed: AtomicBool,
+    // Destroy the provider before releasing its creation dependencies.
+    _environment: Option<EventLogEnvironment>,
 }
 impl RustRtcEventLog {
     pub(crate) fn from_logger(logger: Option<Box<dyn RtcEventLogger>>) -> Box<Self> {
-        Box::new(Self {
-            logger,
-            failed: AtomicBool::new(false),
-        })
+        Box::new(Self { logger, failed: AtomicBool::new(false), _environment: None })
     }
 }
-pub(crate) fn rust_event_log_create(
-    factory: &RustRtcEventLogFactory,
-    environment: cxx::UniquePtr<ffi::NativeEnvironment>,
-) -> Box<RustRtcEventLog> {
-    let logger = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        factory.0.create(EventLogEnvironment {
-            native: environment,
-        })
-    }))
-    .ok();
-    Box::new(RustRtcEventLog {
-        logger,
-        failed: AtomicBool::new(false),
-    })
+pub(crate) fn rust_event_log_create(factory: &RustRtcEventLogFactory, environment: cxx::UniquePtr<ffi::NativeEnvironment>) -> Box<RustRtcEventLog> {
+    let environment = EventLogEnvironment::from_native(environment, Some(&factory.1));
+    let logger = std::panic::catch_unwind(AssertUnwindSafe(|| factory.0.create(environment.clone()))).ok();
+    Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(false), _environment: Some(environment) })
 }
 pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool {
     logger.logger.is_some()

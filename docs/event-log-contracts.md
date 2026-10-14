@@ -38,7 +38,7 @@ Decoded values retain meaningful native presence and conditional validity. Gener
 
 Callback panics are contained. Start/log failures deactivate further start/log calls; cleanup callbacks remain attempted. Provider resource destructors must not panic. Factory/logger registration persists through native ownership, not just through Rust builder scope. `Arc` registrations are supported for shared application state.
 
-`EventLogEnvironment` owns a native environment value and exposes time and independently owned field-trial snapshots. It is not a sequence-bound peer/factory handle and may be retained by a provider. Other environment utility access is still implementation work.
+`EventLogEnvironment` owns the exact SDK creation environment. `environment()` exposes its bound utility operations, and time and field-trial snapshots remain available directly. Clock and queue capabilities are inherited only when their native identities match the selected installation. The installation's Rust-only randomness lease is also retained, not reconstructed from a native pointer or a global registry. Cloned contexts, cloned environment views, and executable logger products retain these dependencies independently through final destruction. This is not a sequence-bound peer/factory handle and may be retained or moved by a provider. Unbound native environment utility operations are not supplied by this view.
 
 ## Controlled execution
 
