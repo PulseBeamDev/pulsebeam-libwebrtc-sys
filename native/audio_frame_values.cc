@@ -1,5 +1,9 @@
 #include "pulsebeam-webrtc-sys/native/audio_frame_values.h"
 #include <algorithm>
+#include <map>
+#include "api/audio/audio_mixer.h"
+#include "modules/audio_mixer/audio_mixer_impl.h"
+#include "modules/audio_mixer/default_output_rate_calculator.h"
 #include "api/audio/audio_frame.h"
 #include "api/audio/audio_view.h"
 #include "api/audio/channel_layout.h"
@@ -32,6 +36,14 @@ NativeAudioFrame::NativeAudioFrame(std::int32_t rate, std::size_t channels, std:
     : owned_(std::make_unique<webrtc::AudioFrame>(rate, channels, static_cast<webrtc::ChannelLayout>(layout))),
       frame_(owned_.get()) { Initialize(*frame_); }
 NativeAudioFrame::NativeAudioFrame(webrtc::AudioFrame& frame) noexcept : frame_(&frame) {}
+NativeAudioFrame::NativeAudioFrame(std::unique_ptr<webrtc::AudioFrame> frame) noexcept
+    : owned_(std::move(frame)), frame_(owned_.get()) {
+  const bool muted = frame_->muted();
+  auto* data = frame_->mutable_data();
+  if (muted) frame_->Mute();
+  else std::fill(data + frame_->samples_per_channel_ * frame_->num_channels_,
+      data + webrtc::AudioFrame::kMaxDataSizeSamples, 0);
+}
 NativeAudioFrame::~NativeAudioFrame() = default;
 webrtc::AudioFrame& NativeAudioFrame::value() noexcept { return *frame_; }
 const webrtc::AudioFrame& NativeAudioFrame::value() const noexcept { return *frame_; }
@@ -161,5 +173,100 @@ bool media_audio_frame_set_sample_rate(NativeAudioFrame& owner, std::int32_t rat
   if (rate < 0 || rate > 192000 || !CapacityShape(static_cast<std::size_t>(rate) / 100, owner.value().num_channels_)) return false;
   owner.value().SetSampleRateAndChannelSize(rate);
   return true;
+}
+namespace {
+thread_local std::uint8_t* active_mix_error = nullptr;
+class MixScope {
+ public:
+  explicit MixScope(std::uint8_t& error) { active_mix_error = &error; }
+  ~MixScope() { active_mix_error = nullptr; }
+};
+void MixFailure(std::uint8_t error) { if (active_mix_error && !*active_mix_error) *active_mix_error = error; }
+class GuardedRateCalculator final : public webrtc::OutputRateCalculator {
+ public:
+  int CalculateOutputRateFromRange(std::span<const int> rates) override {
+    if (!rates.empty()) {
+      const auto maximum = *std::max_element(rates.begin(), rates.end());
+      if (maximum < 8000 || maximum > 48000) {
+        MixFailure(2);
+        // The SDK has no rate error path. Finish its call without consuming
+        // source frames; the owning operation refuses this output.
+        return 8000;
+      }
+    }
+    return original_.CalculateOutputRateFromRange(rates);
+  }
+ private:
+  webrtc::DefaultOutputRateCalculator original_;
+};
+}
+struct NativeMixerSource::State final : webrtc::AudioMixer::Source {
+  explicit State(rust::Box<RustMixerSource> owner) : owner(std::move(owner)) {}
+  AudioFrameInfo GetAudioFrameWithInfo(int rate, webrtc::AudioFrame* output) override {
+    if (active_mix_error && *active_mix_error) return AudioFrameInfo::kError;
+    auto frame = mixer_source_frame(*owner, rate);
+    if (frame.failed) { MixFailure(4); return AudioFrameInfo::kError; }
+    if (frame.disposition == 2) return AudioFrameInfo::kError;
+    if (!frame.frame) { MixFailure(3); mixer_source_invalid(*owner); return AudioFrameInfo::kError; }
+    const auto& value = frame.frame->value();
+    if (!MediaAudioFrameViewValid(value) || value.sample_rate_hz_ != rate ||
+        value.samples_per_channel_ != static_cast<std::size_t>(rate / 100) ||
+        (value.num_channels_ != 1 && value.num_channels_ != 2) ||
+        (frame.disposition == 0 && value.muted())) {
+      MixFailure(3); mixer_source_invalid(*owner); return AudioFrameInfo::kError;
+    }
+    output->CopyFrom(value);
+    return frame.disposition == 1 ? AudioFrameInfo::kMuted : AudioFrameInfo::kNormal;
+  }
+  int Ssrc() const override { bool valid = false; const auto v = mixer_source_ssrc(*owner, valid); if (!valid) MixFailure(4); return v; }
+  int PreferredSampleRate() const override { bool valid = false; const auto v = mixer_source_rate(*owner, valid); if (!valid) MixFailure(4); return v; }
+  const rust::Box<RustMixerSource> owner;
+};
+struct NativeAudioMixer::State {
+  std::map<NativeMixerSource::State*, std::shared_ptr<NativeMixerSource::State>> sources;
+  webrtc::scoped_refptr<webrtc::AudioMixer> mixer = webrtc::AudioMixerImpl::Create(
+      std::make_unique<GuardedRateCalculator>(), true);
+};
+NativeMixerSource::NativeMixerSource(std::shared_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeMixerSource::~NativeMixerSource() = default;
+const std::shared_ptr<NativeMixerSource::State>& NativeMixerSource::state() const noexcept { return state_; }
+std::unique_ptr<NativeMixerSource> mixer_source_new(rust::Box<RustMixerSource> source) noexcept {
+  return std::make_unique<NativeMixerSource>(std::make_shared<NativeMixerSource::State>(std::move(source)));
+}
+std::int32_t mixer_source_get_ssrc(const NativeMixerSource& source, bool& valid) noexcept { return mixer_source_ssrc(*source.state()->owner, valid); }
+std::int32_t mixer_source_get_rate(const NativeMixerSource& source, bool& valid) noexcept { return mixer_source_rate(*source.state()->owner, valid); }
+NativeAudioMixer::NativeAudioMixer() : state_(std::make_unique<State>()) {}
+NativeAudioMixer::~NativeAudioMixer() = default;
+NativeAudioMixer::State& NativeAudioMixer::state() noexcept { return *state_; }
+std::unique_ptr<NativeAudioMixer> audio_mixer_new() noexcept { return std::make_unique<NativeAudioMixer>(); }
+bool audio_mixer_add(NativeAudioMixer& mixer, const NativeMixerSource& source, std::uint8_t& error) noexcept {
+  error = 0;
+  if (active_mix_error) { error = 1; return false; }
+  auto& state = mixer.state();
+  if (state.sources.contains(source.state().get())) return false;
+  if (!state.mixer->AddSource(source.state().get())) return false;
+  state.sources.emplace(source.state().get(), source.state());
+  return true;
+}
+bool audio_mixer_remove(NativeAudioMixer& mixer, const NativeMixerSource& source, std::uint8_t& error) noexcept {
+  error = 0;
+  if (active_mix_error) { error = 1; return false; }
+  auto& state = mixer.state();
+  const auto found = state.sources.find(source.state().get());
+  if (found == state.sources.end()) return false;
+  state.mixer->RemoveSource(found->first);
+  state.sources.erase(found);
+  return true;
+}
+std::unique_ptr<NativeAudioFrame> audio_mixer_mix(NativeAudioMixer& mixer, std::size_t channels, std::uint8_t& error) noexcept {
+  error = 0;
+  if (active_mix_error) { error = 1; return nullptr; }
+  if (channels == 0) { error = 3; return nullptr; }
+  MixScope scope(error);
+  auto output = std::make_unique<webrtc::AudioFrame>();
+  mixer.state().mixer->Mix(channels, output.get());
+  if (error) return nullptr;
+  if (!MediaAudioFrameViewValid(*output)) { error = 3; return nullptr; }
+  return std::make_unique<NativeAudioFrame>(std::move(output));
 }
 }  // namespace pulsebeam::webrtc_sys

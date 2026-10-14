@@ -3,6 +3,9 @@
 mod async_dns;
 mod audio;
 mod audio_processing;
+mod audio_mixer;
+use audio_mixer::{RustMixerSource, mixer_source_frame, mixer_source_ssrc, mixer_source_rate, mixer_source_invalid};
+pub use audio_mixer::{AudioMixer, AudioMixerSource, AudioMixerSourceProvider, AudioMixerError, AudioMixerFailureObserver, MixerAudioFrame};
 mod certificate;
 mod certificate_generator;
 pub use async_dns::{
@@ -1069,6 +1072,11 @@ mod ffi {
         local_capture_clock_offset_us: i64,
     }
 
+    struct FfiMixerFrame {
+        disposition: u8,
+        frame: UniquePtr<NativeAudioFrame>,
+        failed: bool,
+    }
     struct FfiAudioFrameFields {
         timestamp: u32,
         elapsed_time_ms: i64,
@@ -2477,6 +2485,11 @@ mod ffi {
     }
 
     extern "Rust" {
+        type RustMixerSource;
+        fn mixer_source_frame(source: &RustMixerSource, rate: i32) -> FfiMixerFrame;
+        fn mixer_source_ssrc(source: &RustMixerSource, valid: &mut bool) -> i32;
+        fn mixer_source_rate(source: &RustMixerSource, valid: &mut bool) -> i32;
+        fn mixer_source_invalid(source: &RustMixerSource);
         type RustCallerAudioDecoderCall;
         type RustCallerParsedFrame;
         fn audio_caller_decoder_scalar_callback(
@@ -3155,6 +3168,15 @@ mod ffi {
         fn network_change_notify(changes: &NativeNetworkChange) -> bool;
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/audio_frame_values.h");
+        type NativeMixerSource;
+        type NativeAudioMixer;
+        fn mixer_source_new(source: Box<RustMixerSource>) -> UniquePtr<NativeMixerSource>;
+        fn mixer_source_get_ssrc(source: &NativeMixerSource, valid: &mut bool) -> i32;
+        fn mixer_source_get_rate(source: &NativeMixerSource, valid: &mut bool) -> i32;
+        fn audio_mixer_new() -> UniquePtr<NativeAudioMixer>;
+        fn audio_mixer_add(mixer: Pin<&mut NativeAudioMixer>, source: &NativeMixerSource, error: &mut u8) -> bool;
+        fn audio_mixer_remove(mixer: Pin<&mut NativeAudioMixer>, source: &NativeMixerSource, error: &mut u8) -> bool;
+        fn audio_mixer_mix(mixer: Pin<&mut NativeAudioMixer>, channels: usize, error: &mut u8) -> UniquePtr<NativeAudioFrame>;
         type NativeAudioFrame;
         fn media_audio_frame_new() -> UniquePtr<NativeAudioFrame>;
         fn media_audio_frame_with_format(

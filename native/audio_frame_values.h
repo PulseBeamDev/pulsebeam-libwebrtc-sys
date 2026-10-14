@@ -16,6 +16,9 @@ class NativeAudioFrame final {
   // Internal synchronous callback view. Never transfer this wrapper to an
   // owning Rust AudioFrame; the SDK frame and its backing storage stay borrowed.
   explicit NativeAudioFrame(webrtc::AudioFrame& frame) noexcept;
+  // Native producer has already established its active prefix/mute state.
+  // Initialize only remaining owned storage, never invent producer output.
+  explicit NativeAudioFrame(std::unique_ptr<webrtc::AudioFrame> frame) noexcept;
   ~NativeAudioFrame();
   webrtc::AudioFrame& value() noexcept;
   const webrtc::AudioFrame& value() const noexcept;
@@ -53,4 +56,30 @@ bool media_audio_frame_set_layout(NativeAudioFrame&, std::int32_t, std::size_t) 
 std::int64_t media_audio_frame_capture_timestamp(const NativeAudioFrame&, bool&) noexcept;
 void media_audio_frame_set_capture_timestamp(NativeAudioFrame&, std::int64_t) noexcept;
 bool media_audio_frame_set_sample_rate(NativeAudioFrame&, std::int32_t) noexcept;
+struct RustMixerSource;
+class NativeMixerSource final {
+ public:
+  struct State;
+  explicit NativeMixerSource(std::shared_ptr<State>) noexcept;
+  ~NativeMixerSource();
+  const std::shared_ptr<State>& state() const noexcept;
+ private:
+  std::shared_ptr<State> state_;
+};
+class NativeAudioMixer final {
+ public:
+  struct State;
+  NativeAudioMixer();
+  ~NativeAudioMixer();
+  State& state() noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeMixerSource> mixer_source_new(rust::Box<RustMixerSource>) noexcept;
+std::int32_t mixer_source_get_ssrc(const NativeMixerSource&, bool&) noexcept;
+std::int32_t mixer_source_get_rate(const NativeMixerSource&, bool&) noexcept;
+std::unique_ptr<NativeAudioMixer> audio_mixer_new() noexcept;
+bool audio_mixer_add(NativeAudioMixer&, const NativeMixerSource&, std::uint8_t&) noexcept;
+bool audio_mixer_remove(NativeAudioMixer&, const NativeMixerSource&, std::uint8_t&) noexcept;
+std::unique_ptr<NativeAudioFrame> audio_mixer_mix(NativeAudioMixer&, std::size_t, std::uint8_t&) noexcept;
 }  // namespace pulsebeam::webrtc_sys
