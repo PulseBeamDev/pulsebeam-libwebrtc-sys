@@ -1,10 +1,19 @@
-use pulsebeam_webrtc_sys::{Clock, ClockProvider, ClockTimeBounds, Environment,
-    FiniteTimestamp, ManualClock, NtpTime, SimulatedClock, Timestamp};
-use std::sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}, mpsc};
+use pulsebeam_webrtc_sys::{
+    Clock, ClockProvider, ClockTimeBounds, Environment, FiniteTimestamp, ManualClock, NtpTime,
+    SimulatedClock, Timestamp,
+};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicI64, Ordering},
+    mpsc,
+};
 
 fn bounds(minimum: i64, maximum: i64) -> ClockTimeBounds {
-    ClockTimeBounds::new(FiniteTimestamp::from_microseconds(minimum).unwrap(),
-        FiniteTimestamp::from_microseconds(maximum).unwrap()).unwrap()
+    ClockTimeBounds::new(
+        FiniteTimestamp::from_microseconds(minimum).unwrap(),
+        FiniteTimestamp::from_microseconds(maximum).unwrap(),
+    )
+    .unwrap()
 }
 struct Provider(AtomicI64);
 impl ClockProvider for Provider {
@@ -47,7 +56,13 @@ fn existing_rewindable_clocks_do_not_acquire_monotonic_evidence() {
     let simulated = SimulatedClock::new(Timestamp::zero()).unwrap();
     assert!(!simulated.clock().is_monotonic());
     let manual = ManualClock::new(std::time::Duration::ZERO).unwrap();
-    assert!(Environment::builder().clock(&manual).build().unwrap().clock_is_monotonic());
+    assert!(
+        Environment::builder()
+            .clock(&manual)
+            .build()
+            .unwrap()
+            .clock_is_monotonic()
+    );
     assert!(!Environment::builder().build().unwrap().clock_is_monotonic());
 }
 
@@ -63,15 +78,28 @@ fn ntp_failure_cannot_publish_fallback_before_an_already_entered_negative_read()
             self.release.lock().unwrap().recv().unwrap();
             FiniteTimestamp::from_microseconds(-10).unwrap()
         }
-        fn convert_timestamp_to_ntp_time(&self, _: Timestamp) -> NtpTime { panic!("NTP provider failure") }
+        fn convert_timestamp_to_ntp_time(&self, _: Timestamp) -> NtpTime {
+            panic!("NTP provider failure")
+        }
     }
     let (entered, observed) = mpsc::channel();
     let (release, wait) = mpsc::channel();
-    let clock = Clock::from_monotonic_bounded_provider(Blocking { entered, release: Mutex::new(wait) }, bounds(-100, 100));
+    let clock = Clock::from_monotonic_bounded_provider(
+        Blocking {
+            entered,
+            release: Mutex::new(wait),
+        },
+        bounds(-100, 100),
+    );
     let copy = clock.clone();
     let thread = std::thread::spawn(move || copy.time_in_microseconds());
     observed.recv().unwrap();
-    assert!(!clock.convert_timestamp_to_ntp_time(Timestamp::zero()).unwrap().is_valid());
+    assert!(
+        !clock
+            .convert_timestamp_to_ntp_time(Timestamp::zero())
+            .unwrap()
+            .is_valid()
+    );
     assert!(clock.has_failed());
     assert_eq!(clock.time_in_microseconds(), 0);
     release.send(()).unwrap();

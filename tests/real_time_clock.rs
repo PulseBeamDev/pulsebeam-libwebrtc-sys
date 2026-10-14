@@ -1,6 +1,6 @@
 use pulsebeam_webrtc_sys::{
-    Clock, ControlledWorld, Environment, NtpTime, ProductionSession,
-    ProductionSessionConfig, RealTimeClockUnavailable, TimeValueError, Timestamp,
+    Clock, ControlledWorld, Environment, NtpTime, ProductionSession, ProductionSessionConfig,
+    RealTimeClockUnavailable, TimeValueError, Timestamp,
 };
 use std::time::Duration;
 
@@ -20,30 +20,49 @@ fn finite_modular_conversion_and_retained_native_leases() {
     let anchor_ntp = clock.convert_timestamp_to_ntp_time(anchor).unwrap();
     const ERA: i128 = (1i128 << 32) * 1_000_000;
     for us in [i64::MIN + 1, -1, 0, 1, i64::MAX - 1] {
-        let ntp = clock.convert_timestamp_to_ntp_time(Timestamp::from_microseconds(us).unwrap()).unwrap();
-        let expected = (microseconds_modulo_era(anchor_ntp) + i128::from(us) - i128::from(anchor_us)).rem_euclid(ERA);
+        let ntp = clock
+            .convert_timestamp_to_ntp_time(Timestamp::from_microseconds(us).unwrap())
+            .unwrap();
+        let expected = (microseconds_modulo_era(anchor_ntp) + i128::from(us)
+            - i128::from(anchor_us))
+        .rem_euclid(ERA);
         assert_eq!(microseconds_modulo_era(ntp), expected);
     }
     for timestamp in [Timestamp::minus_infinity(), Timestamp::plus_infinity()] {
-        assert_eq!(clock.convert_timestamp_to_ntp_time(timestamp), Err(TimeValueError::InfiniteValue));
+        assert_eq!(
+            clock.convert_timestamp_to_ntp_time(timestamp),
+            Err(TimeValueError::InfiniteValue)
+        );
     }
-    assert_eq!(clock.convert_timestamp_to_ntp_time_in_milliseconds(i64::MAX), Err(TimeValueError::OutOfRange));
+    assert_eq!(
+        clock.convert_timestamp_to_ntp_time_in_milliseconds(i64::MAX),
+        Err(TimeValueError::OutOfRange)
+    );
     assert!(clock.current_ntp_time().is_ok());
     assert!(clock.current_ntp_in_milliseconds().is_ok());
 
     let copy = clock.clone();
     std::thread::spawn(move || {
-        assert_eq!(copy.convert_timestamp_to_ntp_time(anchor).unwrap(), anchor_ntp);
-    }).join().unwrap();
+        assert_eq!(
+            copy.convert_timestamp_to_ntp_time(anchor).unwrap(),
+            anchor_ntp
+        );
+    })
+    .join()
+    .unwrap();
 
     let environment = Environment::builder().clock_handle(&clock).build().unwrap();
     let retained_environment = environment.clone();
     let mut actor = ProductionSession::builder(ProductionSessionConfig::default())
-        .clock_handle(&clock).build().unwrap();
+        .clock_handle(&clock)
+        .build()
+        .unwrap();
     actor = std::thread::spawn(move || {
         assert!(actor.clock_timestamp().unwrap().is_finite());
         actor
-    }).join().unwrap();
+    })
+    .join()
+    .unwrap();
     drop(clock);
     drop(environment);
     actor.shutdown().unwrap();
@@ -62,7 +81,10 @@ fn finite_modular_conversion_and_retained_native_leases() {
 }
 
 fn race_clock_and_hook_acquisition() {
-    use std::sync::{Arc, Barrier, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
     let phases = Arc::new(Barrier::new(2));
     let clock_acquired = Arc::new(AtomicBool::new(false));
     let worker_phases = phases.clone();

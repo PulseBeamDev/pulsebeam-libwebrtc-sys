@@ -1,10 +1,13 @@
-use pulsebeam_webrtc_sys::{DegradationPreference as Degradation, MediaType, Resolution,
-    RtcpParameters, RtpCodec, RtpCodecParameters, RtpEncodingParameters, RtpExtension,
-    RtpExtensions, RtpHeaderExtensionId, RtpParameters, RtcError, StringBuilder};
+use pulsebeam_webrtc_sys::{
+    DegradationPreference as Degradation, MediaType, Resolution, RtcError, RtcpParameters,
+    RtpCodec, RtpCodecParameters, RtpEncodingParameters, RtpExtension, RtpExtensions,
+    RtpHeaderExtensionId, RtpParameters, StringBuilder,
+};
 
 #[test]
 fn complete_parameters_defaults_and_sdk_equality_exclude_transaction_identity() {
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpParameters>();
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpParameters>();
     let mut value = RtpParameters::default();
     assert_eq!(value.transaction_id_bytes(), b"");
     assert_eq!(value.mid_bytes(), b"");
@@ -67,17 +70,32 @@ fn complete_parameters_children_are_full_independently_owned_sdk_copies() {
     rtcp.set_ssrc(None);
     assert_eq!(copy.codecs()[0].payload_type(), i32::MAX);
     assert_eq!(copy.encodings()[0].rid_bytes(), b"rid\xff\0");
-    assert_eq!(copy.encodings()[0].scalability_mode_bytes().unwrap(), b"mode\xfe\0");
+    assert_eq!(
+        copy.encodings()[0].scalability_mode_bytes().unwrap(),
+        b"mode\xfe\0"
+    );
     assert!(copy.encodings()[0].request_key_frame());
     assert_eq!(copy.encodings()[0].csrcs(), Some(Vec::new()));
     assert_eq!(copy.encodings()[0].ssrc(), Some(0));
-    assert_eq!(copy.encodings()[0].scale_resolution_down_to().unwrap(), Resolution::new(i32::MIN, i32::MAX));
+    assert_eq!(
+        copy.encodings()[0].scale_resolution_down_to().unwrap(),
+        Resolution::new(i32::MIN, i32::MAX)
+    );
     assert_eq!(copy.rtcp().ssrc(), Some(0));
     assert_eq!(copy.rtcp().cname_bytes(), b"cname\xff\0");
     assert!(!copy.rtcp().mux());
-    assert_eq!(copy.header_extensions().get(0).unwrap().uri_bytes(), b"uri\xff\0");
-    assert_eq!(copy.header_extensions().get(0).unwrap().id().value(), i32::MIN);
-    assert_eq!(copy.degradation_preference(), Some(Degradation::Other(i32::MIN)));
+    assert_eq!(
+        copy.header_extensions().get(0).unwrap().uri_bytes(),
+        b"uri\xff\0"
+    );
+    assert_eq!(
+        copy.header_extensions().get(0).unwrap().id().value(),
+        i32::MIN
+    );
+    assert_eq!(
+        copy.degradation_preference(),
+        Some(Degradation::Other(i32::MIN))
+    );
     assert_eq!(copy.native_string_bytes(), None);
     let detached = copy.encodings();
     drop(copy);
@@ -113,10 +131,21 @@ fn mixed_codec_uses_only_active_encodings_and_distinguishes_absence() {
 
 #[test]
 fn sdk_degradation_aliases_and_full_parameter_formatting_guard_only_consumption() {
-    assert_eq!(Degradation::DISABLED, Degradation::MaintainFramerateAndResolution);
-    for (raw, text) in [(0, "maintain-framerate-and-resolution"), (1, "maintain-framerate"), (2, "maintain-resolution"), (3, "balanced")] {
+    assert_eq!(
+        Degradation::DISABLED,
+        Degradation::MaintainFramerateAndResolution
+    );
+    for (raw, text) in [
+        (0, "maintain-framerate-and-resolution"),
+        (1, "maintain-framerate"),
+        (2, "maintain-resolution"),
+        (3, "balanced"),
+    ] {
         assert_eq!(Degradation::from_native(raw).to_native(), raw);
-        assert_eq!(Degradation::from_native(raw).native_string_bytes().unwrap(), text.as_bytes());
+        assert_eq!(
+            Degradation::from_native(raw).native_string_bytes().unwrap(),
+            text.as_bytes()
+        );
     }
     for raw in [i32::MIN, -1, 4, i32::MAX] {
         assert_eq!(Degradation::from_native(raw), Degradation::Other(raw));
@@ -130,7 +159,9 @@ fn sdk_degradation_aliases_and_full_parameter_formatting_guard_only_consumption(
     assert_eq!(output.as_bytes(), text);
     let mut borrowed = RtcError::network_error("");
     assert!(borrowed.string_builder().append_rtp_parameters(&value));
-    let streamed = RtcError::network_error("").with_appended_rtp_parameters(&value).unwrap();
+    let streamed = RtcError::network_error("")
+        .with_appended_rtp_parameters(&value)
+        .unwrap();
     value.set_degradation_preference(Some(Degradation::Other(4)));
     assert!(!output.append_rtp_parameters(&value));
     assert!(!borrowed.string_builder().append_rtp_parameters(&value));

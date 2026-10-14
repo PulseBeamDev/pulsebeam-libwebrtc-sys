@@ -10,37 +10,77 @@ fn round_trip(value: &RtpHeaderValues) -> RtpHeaderValues {
 
 #[test]
 fn native_header_default_matches_owned_default() {
-    assert_eq!(RtpHeaderValues::from_native(ffi::media_rtp_header_default()), RtpHeaderValues::default());
-    assert_eq!(round_trip(&RtpHeaderValues::default()), RtpHeaderValues::default());
+    assert_eq!(
+        RtpHeaderValues::from_native(ffi::media_rtp_header_default()),
+        RtpHeaderValues::default()
+    );
+    assert_eq!(
+        round_trip(&RtpHeaderValues::default()),
+        RtpHeaderValues::default()
+    );
 }
 
 #[test]
 fn full_native_header_graph_is_not_a_wire_round_trip() {
     let mut header = RtpHeaderValues {
-        marker: true, payload_type: u8::MAX, sequence_number: u16::MAX,
-        timestamp: u32::MAX, ssrc: u32::MAX, csrc_count: u8::MAX,
+        marker: true,
+        payload_type: u8::MAX,
+        sequence_number: u16::MAX,
+        timestamp: u32::MAX,
+        ssrc: u32::MAX,
+        csrc_count: u8::MAX,
         csrcs: std::array::from_fn(|i| i as u32 + 1),
-        padding_length: usize::MAX, header_length: usize::MAX,
+        padding_length: usize::MAX,
+        header_length: usize::MAX,
         extension: RtpHeaderExtensionValues {
             // False presence flags must not erase their independently stored values.
-            transmission_time_offset: i32::MIN, absolute_send_time: u32::MAX,
+            transmission_time_offset: i32::MIN,
+            absolute_send_time: u32::MAX,
             absolute_capture_time: Some(AbsoluteCaptureTime {
-                absolute_capture_timestamp: u64::MAX, estimated_capture_clock_offset: Some(i64::MIN),
-            }), transport_sequence_number: u16::MAX,
-            feedback_request: Some(RtpFeedbackRequest { include_timestamps: true, sequence_count: i32::MIN }),
+                absolute_capture_timestamp: u64::MAX,
+                estimated_capture_clock_offset: Some(i64::MIN),
+            }),
+            transport_sequence_number: u16::MAX,
+            feedback_request: Some(RtpFeedbackRequest {
+                include_timestamps: true,
+                sequence_count: i32::MIN,
+            }),
             audio_level: Some(AudioLevel::new(true, 127).unwrap()),
-            video_rotation: 511, video_content_type: u8::MAX,
-            video_timing: VideoSendTiming { flags: 0x81, encode_start_delta_ms: 1,
-                encode_finish_delta_ms: 2, packetization_finish_delta_ms: 3, pacer_exit_delta_ms: 4,
-                network_timestamp_delta_ms: 5, network2_timestamp_delta_ms: u16::MAX },
-            playout_delay: VideoPlayoutDelay::new(TimeDelta::from_microseconds(7).unwrap(), TimeDelta::from_microseconds(19).unwrap()),
-            stream_id: vec![0, 0xff, 0x80], repaired_stream_id: vec![0xfe, 0], mid: vec![0x81],
-            color_space: Some(ColorSpace { primaries: 255, transfer: 255, matrix: 255,
-                range: i32::MIN, chroma_siting_horizontal: i32::MAX, chroma_siting_vertical: -1,
-                hdr_metadata: Some(HdrMetadata { mastering_metadata: HdrMasteringMetadata {
-                    primary_r: HdrChromaticity { x: -0.0, y: 2.0 }, luminance_max: -1.0,
-                    ..Default::default() }, max_content_light_level: i32::MIN,
-                    max_frame_average_light_level: i32::MAX }) }),
+            video_rotation: 511,
+            video_content_type: u8::MAX,
+            video_timing: VideoSendTiming {
+                flags: 0x81,
+                encode_start_delta_ms: 1,
+                encode_finish_delta_ms: 2,
+                packetization_finish_delta_ms: 3,
+                pacer_exit_delta_ms: 4,
+                network_timestamp_delta_ms: 5,
+                network2_timestamp_delta_ms: u16::MAX,
+            },
+            playout_delay: VideoPlayoutDelay::new(
+                TimeDelta::from_microseconds(7).unwrap(),
+                TimeDelta::from_microseconds(19).unwrap(),
+            ),
+            stream_id: vec![0, 0xff, 0x80],
+            repaired_stream_id: vec![0xfe, 0],
+            mid: vec![0x81],
+            color_space: Some(ColorSpace {
+                primaries: 255,
+                transfer: 255,
+                matrix: 255,
+                range: i32::MIN,
+                chroma_siting_horizontal: i32::MAX,
+                chroma_siting_vertical: -1,
+                hdr_metadata: Some(HdrMetadata {
+                    mastering_metadata: HdrMasteringMetadata {
+                        primary_r: HdrChromaticity { x: -0.0, y: 2.0 },
+                        luminance_max: -1.0,
+                        ..Default::default()
+                    },
+                    max_content_light_level: i32::MIN,
+                    max_frame_average_light_level: i32::MAX,
+                }),
+            }),
             ..Default::default()
         },
     };
@@ -58,27 +98,57 @@ fn full_native_header_graph_is_not_a_wire_round_trip() {
     assert_eq!(info.csrcs, header.csrcs.to_vec());
     assert_eq!(info.receive_time, Timestamp::minus_infinity());
     assert_eq!(info.audio_level, Some(127));
-    assert_eq!(info.absolute_capture_time, header.extension.absolute_capture_time);
+    assert_eq!(
+        info.absolute_capture_time,
+        header.extension.absolute_capture_time
+    );
     assert_eq!(info.local_capture_clock_offset, None);
 }
 
 #[test]
 fn hdr_nan_infinity_and_negative_zero_bits_are_retained() {
-    let hdr = HdrMetadata { mastering_metadata: HdrMasteringMetadata {
-        primary_r: HdrChromaticity { x: f32::from_bits(0x7fc01234), y: -0.0 },
-        luminance_max: f32::INFINITY, ..Default::default()
-    }, ..Default::default() };
-    assert!(!hdr.validate());
-    let header = RtpHeaderValues { extension: RtpHeaderExtensionValues {
-        color_space: Some(ColorSpace { hdr_metadata: Some(hdr), ..Default::default() }),
+    let hdr = HdrMetadata {
+        mastering_metadata: HdrMasteringMetadata {
+            primary_r: HdrChromaticity {
+                x: f32::from_bits(0x7fc01234),
+                y: -0.0,
+            },
+            luminance_max: f32::INFINITY,
+            ..Default::default()
+        },
         ..Default::default()
-    }, ..Default::default() };
-    let output = round_trip(&header).extension.color_space.unwrap().hdr_metadata.unwrap();
+    };
+    assert!(!hdr.validate());
+    let header = RtpHeaderValues {
+        extension: RtpHeaderExtensionValues {
+            color_space: Some(ColorSpace {
+                hdr_metadata: Some(hdr),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = round_trip(&header)
+        .extension
+        .color_space
+        .unwrap()
+        .hdr_metadata
+        .unwrap();
     assert_eq!(output.mastering_metadata.primary_r.x.to_bits(), 0x7fc01234);
-    assert_eq!(output.mastering_metadata.primary_r.y.to_bits(), (-0.0f32).to_bits());
+    assert_eq!(
+        output.mastering_metadata.primary_r.y.to_bits(),
+        (-0.0f32).to_bits()
+    );
     assert_eq!(output.mastering_metadata.luminance_max, f32::INFINITY);
     assert!(HdrMetadata::default().validate());
-    assert!(!HdrChromaticity { x: f32::NAN, y: 0.0 }.validate());
+    assert!(
+        !HdrChromaticity {
+            x: f32::NAN,
+            y: 0.0
+        }
+        .validate()
+    );
 }
 
 #[test]
@@ -109,13 +179,28 @@ fn constructor_clamping_and_reject_without_mutation_are_distinct() {
 #[test]
 fn timing_overloads_keep_native_rounding_and_saturation() {
     assert_eq!(VideoSendTiming::delta_capped_ms(5, 4).unwrap(), 0);
-    assert_eq!(VideoSendTiming::delta_capped_ms(0, 65_535).unwrap(), u16::MAX);
-    assert_eq!(VideoSendTiming::delta_capped_ms(0, i64::MAX).unwrap(), u16::MAX);
+    assert_eq!(
+        VideoSendTiming::delta_capped_ms(0, 65_535).unwrap(),
+        u16::MAX
+    );
+    assert_eq!(
+        VideoSendTiming::delta_capped_ms(0, i64::MAX).unwrap(),
+        u16::MAX
+    );
     assert_eq!(VideoSendTiming::delta_capped_ms(0, i64::MIN).unwrap(), 0);
     assert!(VideoSendTiming::delta_capped_ms(-1, i64::MAX).is_err());
     assert!(VideoSendTiming::delta_capped_ms(1, i64::MIN).is_err());
-    for (us, expected) in [(-1500, 0), (499, 0), (500, 1), (1500, 2), (65_535_500, u16::MAX)] {
-        assert_eq!(VideoSendTiming::duration_capped_ms(TimeDelta::from_microseconds(us).unwrap()).unwrap(), expected);
+    for (us, expected) in [
+        (-1500, 0),
+        (499, 0),
+        (500, 1),
+        (1500, 2),
+        (65_535_500, u16::MAX),
+    ] {
+        assert_eq!(
+            VideoSendTiming::duration_capped_ms(TimeDelta::from_microseconds(us).unwrap()).unwrap(),
+            expected
+        );
     }
     assert!(VideoSendTiming::duration_capped_ms(TimeDelta::plus_infinity()).is_err());
     assert!(VideoSendTiming::duration_capped_ms(TimeDelta::minus_infinity()).is_err());
@@ -130,24 +215,47 @@ fn raw_playout_conversion_delegates_native_constructor_clamping() {
     let output = ffi::media_rtp_header_round_trip(&input, &mut valid);
     assert!(valid);
     let output = RtpHeaderValues::from_native(output);
-    assert_eq!(output.extension.playout_delay.minimum(), VideoPlayoutDelay::MAXIMUM);
-    assert_eq!(output.extension.playout_delay.maximum(), VideoPlayoutDelay::MAXIMUM);
+    assert_eq!(
+        output.extension.playout_delay.minimum(),
+        VideoPlayoutDelay::MAXIMUM
+    );
+    assert_eq!(
+        output.extension.playout_delay.maximum(),
+        VideoPlayoutDelay::MAXIMUM
+    );
 }
 
 #[test]
 fn unsupported_native_getter_and_enum_cast_inputs_are_errors() {
     let mut header = RtpHeaderValues::default();
-    assert_eq!(header.extension.absolute_send_timestamp(), Err(RtpValueError::InvalidAbsoluteSendTime));
+    assert_eq!(
+        header.extension.absolute_send_timestamp(),
+        Err(RtpValueError::InvalidAbsoluteSendTime)
+    );
     header.extension.has_absolute_send_time = true;
     header.extension.absolute_send_time = (1 << 18) + 1;
-    assert_eq!(header.extension.absolute_send_timestamp().unwrap().microseconds().unwrap(), 1_000_003);
+    assert_eq!(
+        header
+            .extension
+            .absolute_send_timestamp()
+            .unwrap()
+            .microseconds()
+            .unwrap(),
+        1_000_003
+    );
     header.extension.absolute_send_time = 1 << 24;
-    assert_eq!(header.extension.absolute_send_timestamp(), Err(RtpValueError::InvalidAbsoluteSendTime));
+    assert_eq!(
+        header.extension.absolute_send_timestamp(),
+        Err(RtpValueError::InvalidAbsoluteSendTime)
+    );
     for rotation in [-1, 512, i32::MAX] {
         header.extension.video_rotation = rotation;
         let mut valid = true;
         let _ = ffi::media_rtp_header_round_trip(&header.to_native(), &mut valid);
         assert!(!valid);
-        assert_eq!(RtpReceivedPacketInfo::from_header(&header, Timestamp::zero()), Err(RtpValueError::InvalidRotation));
+        assert_eq!(
+            RtpReceivedPacketInfo::from_header(&header, Timestamp::zero()),
+            Err(RtpValueError::InvalidRotation)
+        );
     }
 }

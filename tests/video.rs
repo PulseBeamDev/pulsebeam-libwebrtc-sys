@@ -17,12 +17,11 @@ use pulsebeam_webrtc_sys::{
     EncodedVideoMetadata, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
     PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
     PeerStatsRecord, RtcErrorType, RtpSenderOperationError, RtpTransceiver,
-    RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
-    VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
-    VideoDecoderInfo, VideoDecoderSettings, VideoEncoder, VideoEncoderFactory,
-    VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame,
-    VideoFrameBuffer, VideoFrameType, VideoPlane, VideoRateControl, VideoResolution, VideoRotation,
-    VideoSimulcastStream, VideoTrackState,
+    RtpTransceiverDirection, SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder,
+    VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
+    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
+    VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
+    VideoRateControl, VideoResolution, VideoRotation, VideoSimulcastStream, VideoTrackState,
 };
 
 #[derive(Default)]
@@ -226,12 +225,26 @@ impl Pair {
         let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
         let environment = Environment::builder().clock(&clock).build().unwrap();
         let network = SimulatedNetwork::new(&clock).unwrap();
-        let alice_endpoint = network.register_endpoint(Ipv4Addr::new(10, 22, 0, 1).into()).unwrap();
-        let bob_endpoint = network.register_endpoint(Ipv4Addr::new(10, 22, 0, 2).into()).unwrap();
+        let alice_endpoint = network
+            .register_endpoint(Ipv4Addr::new(10, 22, 0, 1).into())
+            .unwrap();
+        let bob_endpoint = network
+            .register_endpoint(Ipv4Addr::new(10, 22, 0, 2).into())
+            .unwrap();
         let encoder = VideoEncoderFactoryHandle::builtin().unwrap();
         let decoder = VideoDecoderFactoryHandle::builtin().unwrap();
-        assert!(encoder.supported_formats().iter().any(|format| format.name == "H264"));
-        assert!(decoder.supported_formats().iter().any(|format| format.name == "H264"));
+        assert!(
+            encoder
+                .supported_formats()
+                .iter()
+                .any(|format| format.name == "H264")
+        );
+        assert!(
+            decoder
+                .supported_formats()
+                .iter()
+                .any(|format| format.name == "H264")
+        );
         assert!(encoder.query_support(&h264(), None, None).supported);
         assert!(decoder.query_support(&h264(), false, None).supported);
         let alice_factory = PeerConnectionFactory::builder()
@@ -240,20 +253,34 @@ impl Pair {
             .packet_socket_factory(alice_endpoint.packet_socket_factory().unwrap())
             .video_encoder_factory(encoder.clone())
             .video_decoder_factory(decoder.clone())
-            .build().unwrap();
+            .build()
+            .unwrap();
         let bob_factory = PeerConnectionFactory::builder()
             .environment(environment)
             .network_manager(bob_endpoint.network_manager().unwrap())
             .packet_socket_factory(bob_endpoint.packet_socket_factory().unwrap())
             .video_encoder_factory(encoder)
             .video_decoder_factory(decoder)
-            .build().unwrap();
+            .build()
+            .unwrap();
         // The peer factories, not caller-owned selection variables, retain the
         // actual codec implementations through use and teardown.
-        let alice = alice_factory.create_peer_connection(PeerConfiguration::default()).unwrap();
-        let bob = bob_factory.create_peer_connection(PeerConfiguration::default()).unwrap();
-        Self { clock, network, alice_factory, bob_factory, alice, bob,
-            _alice_endpoint: alice_endpoint, _bob_endpoint: bob_endpoint }
+        let alice = alice_factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
+        let bob = bob_factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
+        Self {
+            clock,
+            network,
+            alice_factory,
+            bob_factory,
+            alice,
+            bob,
+            _alice_endpoint: alice_endpoint,
+            _bob_endpoint: bob_endpoint,
+        }
     }
 
     fn new_with_encoder(
@@ -362,7 +389,10 @@ impl Pair {
             decoder_format,
         );
         let alice = alice_factory
-            .create_peer_connection_with_dependencies(PeerConfiguration::default().into(), dependencies)
+            .create_peer_connection_with_dependencies(
+                PeerConfiguration::default().into(),
+                dependencies,
+            )
             .unwrap();
         let bob = bob_factory
             .create_peer_connection(PeerConfiguration::default())
@@ -755,18 +785,33 @@ fn video_sink_bounds_retention_and_reports_loss() {
 fn builtin_h264_encodes_and_decodes_over_real_peer_transport() {
     let mut pair = Pair::new_builtin();
     let source = pair.alice_factory.create_video_source().unwrap();
-    let track = pair.alice_factory.create_video_track("builtin-h264", &source).unwrap();
-    let transceiver = pair.alice.add_video_transceiver(&track, RtpTransceiverDirection::SendOnly).unwrap();
-    let codecs: Vec<_> = pair.alice.video_sender_capabilities().unwrap().into_iter()
-        .filter(|codec| codec.format().name == "H264").collect();
+    let track = pair
+        .alice_factory
+        .create_video_track("builtin-h264", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
     assert!(!codecs.is_empty());
     transceiver.set_codec_preferences(&codecs).unwrap();
     let mut events = pair.negotiate();
-    let remote = (0..2_000_000).find_map(|_| {
-        if let Some(remote) = take_remote_transceiver(&mut events) { return Some(remote); }
-        events.extend(pair.progress().1);
-        None
-    }).expect("native H.264 remote transceiver");
+    let remote = (0..2_000_000)
+        .find_map(|_| {
+            if let Some(remote) = take_remote_transceiver(&mut events) {
+                return Some(remote);
+            }
+            events.extend(pair.progress().1);
+            None
+        })
+        .expect("native H.264 remote transceiver");
     let remote_track = remote.receiver().track().unwrap();
     let mut sink = remote_track.attach_sink().unwrap();
     let mut pixels = vec![48; 64 * 64];
@@ -777,19 +822,30 @@ fn builtin_h264_encodes_and_decodes_over_real_peer_transport() {
     // startup. Only an actual decoded frame with representative contents passes.
     for index in 0..20 {
         let timestamp_us = i64::try_from(pair.clock.now().as_micros()).unwrap();
-        source.push_frame(&VideoFrame::i420(64, 64, pixels.clone(), timestamp_us,
-            90_000 + index * 3_000).unwrap()).unwrap();
+        source
+            .push_frame(
+                &VideoFrame::i420(64, 64, pixels.clone(), timestamp_us, 90_000 + index * 3_000)
+                    .unwrap(),
+            )
+            .unwrap();
         received = (0..100_000).find_map(|_| {
             pair.progress();
             sink.try_next_frame()
         });
-        if received.is_some() { break; }
+        if received.is_some() {
+            break;
+        }
     }
     let received = received.expect("bundled OpenH264/FFmpeg decoded output");
     assert_eq!((received.width, received.height), (64, 64));
     let output = received.buffer.as_bytes();
     assert_eq!(output.len(), pixels.len());
-    assert!(output.iter().zip(&pixels).all(|(&actual, &expected)| actual.abs_diff(expected) <= 2));
+    assert!(
+        output
+            .iter()
+            .zip(&pixels)
+            .all(|(&actual, &expected)| actual.abs_diff(expected) <= 2)
+    );
     sink.close().unwrap();
     pair.alice.close().unwrap();
     pair.bob.close().unwrap();
@@ -946,21 +1002,33 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
     for _ in 0..1000 {
         pair.progress();
     }
-    source.push(H264AccessUnit {
-        data: vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1],
-        key_frame: false,
-        timestamp_us: 5_000_000,
-        ..frame.clone()
-    }).unwrap();
-    assert!((0..100_000).any(|_| {
-        pair.progress();
-        source.take_keyframe_request()
-    }), "native GenerateKeyFrame did not reach the actual encoded source callback");
-    source.push(H264AccessUnit { timestamp_us: 6_000_000, ..frame.clone() }).unwrap();
-    let native_recovery = (0..2_000_000).find_map(|_| {
-        pair.progress();
-        sink.try_next_frame()
-    }).expect("native keyframe request did not resume encoded delivery");
+    source
+        .push(H264AccessUnit {
+            data: vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1],
+            key_frame: false,
+            timestamp_us: 5_000_000,
+            ..frame.clone()
+        })
+        .unwrap();
+    assert!(
+        (0..100_000).any(|_| {
+            pair.progress();
+            source.take_keyframe_request()
+        }),
+        "native GenerateKeyFrame did not reach the actual encoded source callback"
+    );
+    source
+        .push(H264AccessUnit {
+            timestamp_us: 6_000_000,
+            ..frame.clone()
+        })
+        .unwrap();
+    let native_recovery = (0..2_000_000)
+        .find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        })
+        .expect("native keyframe request did not resume encoded delivery");
     assert_eq!(native_recovery.data, frame.data);
     assert!(native_recovery.key_frame);
     assert_eq!(
@@ -1721,8 +1789,12 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
     assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 1);
     assert!(observations.product_drops.load(Ordering::SeqCst) > 0);
     assert_eq!(environment.timestamp(), timestamp);
-    assert_eq!(environment.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
-        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+    assert_eq!(
+        environment
+            .field_trials()
+            .lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController")
+    );
 }
 
 #[derive(Default)]
@@ -2075,8 +2147,12 @@ fn injected_network_controller_drives_native_video_without_an_additional_owner()
         observations.creates.load(Ordering::SeqCst)
     );
     assert_eq!(retained.timestamp(), timestamp);
-    assert_eq!(retained.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
-        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+    assert_eq!(
+        retained
+            .field_trials()
+            .lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController")
+    );
 }
 
 #[test]
@@ -2203,8 +2279,12 @@ fn factory_fec_product_uses_native_protection_callback_and_existing_worker_dispa
         Some(Err(FecProtectionCallbackError::Retired))
     );
     assert_eq!(environment.timestamp(), timestamp);
-    assert_eq!(environment.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
-        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+    assert_eq!(
+        environment
+            .field_trials()
+            .lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController")
+    );
 }
 
 #[test]
@@ -2224,8 +2304,14 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     assert_eq!(transceiver.direction(), RtpTransceiverDirection::SendOnly);
     assert_eq!(transceiver.sender().track().unwrap().id(), "synthetic");
     assert!(transceiver.sender().dtmf_sender().is_none());
-    assert_eq!(transceiver.sender().media_type(), pulsebeam_webrtc_sys::MediaType::Video);
-    assert_eq!(transceiver.sender().init_send_encodings(), vec![pulsebeam_webrtc_sys::RtpEncodingParameters::default()]);
+    assert_eq!(
+        transceiver.sender().media_type(),
+        pulsebeam_webrtc_sys::MediaType::Video
+    );
+    assert_eq!(
+        transceiver.sender().init_send_encodings(),
+        vec![pulsebeam_webrtc_sys::RtpEncodingParameters::default()]
+    );
 
     let sender_codecs = pair.alice.video_sender_capabilities().unwrap();
     let receiver_codecs = pair.bob.video_receiver_capabilities().unwrap();
@@ -2713,21 +2799,34 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
 fn full_native_keyframe_operation_preserves_noop_and_rid_error_order() {
     let pair = Pair::new(Arc::new(Counters::default()), false);
     let source = pair.alice_factory.create_video_source().unwrap();
-    let track = pair.alice_factory.create_video_track("native-keyframe", &source).unwrap();
-    let transceiver = pair.alice.add_video_transceiver(&track, RtpTransceiverDirection::SendOnly).unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("native-keyframe", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
     let sender = transceiver.sender();
     assert_eq!(sender.ssrc(), 0);
     // The actual SDK succeeds before validating RIDs without an active channel.
     sender.generate_keyframe(&[vec![], vec![0xff, 0]]).unwrap();
     pair.negotiate();
     let error = sender.generate_keyframe(&[vec![]]).unwrap_err();
-    let RtpSenderOperationError::Native(error) = error else { panic!("actual native RID error required") };
+    let RtpSenderOperationError::Native(error) = error else {
+        panic!("actual native RID error required")
+    };
     assert_eq!(error.kind(), RtcErrorType::InvalidParameter);
     assert_eq!(error.message_bytes(), b"Attempted to specify an empty rid.");
     let error = sender.generate_keyframe(&[vec![0xff, 0]]).unwrap_err();
-    let RtpSenderOperationError::Native(error) = error else { panic!("actual native RID error required") };
+    let RtpSenderOperationError::Native(error) = error else {
+        panic!("actual native RID error required")
+    };
     assert_eq!(error.kind(), RtcErrorType::InvalidParameter);
-    assert_eq!(error.message_bytes(), b"Attempted to specify a rid not configured.");
+    assert_eq!(
+        error.message_bytes(),
+        b"Attempted to specify a rid not configured."
+    );
     transceiver.stop_standard().unwrap();
     sender.generate_keyframe(&[vec![], vec![0xff, 0]]).unwrap();
 }

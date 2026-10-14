@@ -1,6 +1,6 @@
 //! Standalone init-value source fixtures, unrun. This does not install init encodings.
-use std::{sync::Arc, thread};
 use pulsebeam_webrtc_sys::*;
+use std::{sync::Arc, thread};
 
 fn send_sync<T: Send + Sync>() {}
 
@@ -56,9 +56,14 @@ fn init_defaults_copy_assignment_and_complete_owned_children() {
     let other = assigned.clone();
     thread::spawn(move || {
         assert_eq!(other.direction().raw(), i32::MIN);
-        assert_eq!(other.send_encodings()[1].bitrate_priority().to_bits(), 0x7ff8_0000_0000_1234);
+        assert_eq!(
+            other.send_encodings()[1].bitrate_priority().to_bits(),
+            0x7ff8_0000_0000_1234
+        );
         assert_eq!(other.stream_ids()[1], b"stream\0\xff");
-    }).join().unwrap();
+    })
+    .join()
+    .unwrap();
     drop(assigned);
     // Extracted encoding children keep no parent, peer or factory origin.
     assert_eq!(children[1].rid_bytes(), b"rid\0\xff");

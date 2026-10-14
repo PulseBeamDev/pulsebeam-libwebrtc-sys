@@ -1,7 +1,9 @@
-use pulsebeam_webrtc_sys::{FecMechanism, MediaType, RtcpFeedback, RtcpFeedbackType,
-    RtpCapabilities, RtpCodec, RtpCodecCapability, RtpCodecParameter,
-    RtpHeaderExtensionCapabilityValue as HeaderCapability, RtpHeaderExtensionId,
-    RtcError, ScalabilityMode, StringBuilder, RtpTransceiverDirectionValue as Direction};
+use pulsebeam_webrtc_sys::{
+    FecMechanism, MediaType, RtcError, RtcpFeedback, RtcpFeedbackType, RtpCapabilities, RtpCodec,
+    RtpCodecCapability, RtpCodecParameter, RtpHeaderExtensionCapabilityValue as HeaderCapability,
+    RtpHeaderExtensionId, RtpTransceiverDirectionValue as Direction, ScalabilityMode,
+    StringBuilder,
+};
 
 #[test]
 fn codec_capability_preserves_complete_base_fields_modes_and_derived_formatter() {
@@ -17,11 +19,18 @@ fn codec_capability_preserves_complete_base_fields_modes_and_derived_formatter()
     base.set_kind(MediaType::Audio);
     base.set_clock_rate(Some(-7));
     base.set_num_channels(Some(0));
-    base.set_parameters(&[RtpCodecParameter { key: b"k\xff".to_vec(), value: b"v\0".to_vec() }]);
+    base.set_parameters(&[RtpCodecParameter {
+        key: b"k\xff".to_vec(),
+        value: b"v\0".to_vec(),
+    }]);
     base.set_rtcp_feedback(&[RtcpFeedback::for_type(RtcpFeedbackType::Other(-1))]);
     value.set_base_codec(&base);
     value.set_preferred_payload_type(Some(i32::MIN));
-    let modes = [ScalabilityMode::L2T2_KEY_SHIFT, ScalabilityMode::from_raw(255), ScalabilityMode::L2T2_KEY_SHIFT];
+    let modes = [
+        ScalabilityMode::L2T2_KEY_SHIFT,
+        ScalabilityMode::from_raw(255),
+        ScalabilityMode::L2T2_KEY_SHIFT,
+    ];
     value.set_scalability_modes(&modes);
     assert_eq!(value.base_codec(), base);
     assert_eq!(value.scalability_modes(), modes);
@@ -54,7 +63,8 @@ fn codec_capability_preserves_complete_base_fields_modes_and_derived_formatter()
 
 #[test]
 fn header_capability_constructors_optional_ids_raw_direction_bytes_and_assignment() {
-    fn send_sync<T: Send + Sync>() {} send_sync::<HeaderCapability>();
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<HeaderCapability>();
     let value = HeaderCapability::default();
     assert_eq!(value.uri_bytes(), b"");
     assert_eq!(value.preferred_id(), None);
@@ -69,9 +79,18 @@ fn header_capability_constructors_optional_ids_raw_direction_bytes_and_assignmen
     assert!(value.preferred_encrypt());
     assert_eq!(value.direction_raw(), i32::MAX);
     assert_eq!(value.direction(), Direction::Other(i32::MAX));
-    assert_eq!(HeaderCapability::with_id(uri, &id), HeaderCapability::with_raw_id(uri, i32::MIN));
-    assert_eq!(HeaderCapability::with_direction(uri, &id, Direction::Stopped), HeaderCapability::with_raw_id_and_direction(uri, i32::MIN, Direction::Stopped));
-    assert_eq!(value, HeaderCapability::with_raw_preferences(uri, i32::MIN, true, Direction::Other(i32::MAX)));
+    assert_eq!(
+        HeaderCapability::with_id(uri, &id),
+        HeaderCapability::with_raw_id(uri, i32::MIN)
+    );
+    assert_eq!(
+        HeaderCapability::with_direction(uri, &id, Direction::Stopped),
+        HeaderCapability::with_raw_id_and_direction(uri, i32::MIN, Direction::Stopped)
+    );
+    assert_eq!(
+        value,
+        HeaderCapability::with_raw_preferences(uri, i32::MIN, true, Direction::Other(i32::MAX))
+    );
     let copy = value.clone();
     let detached = value.preferred_id().unwrap();
     value.set_uri("");
@@ -90,11 +109,13 @@ fn header_capability_constructors_optional_ids_raw_direction_bytes_and_assignmen
 #[test]
 fn complete_direction_metadata_uses_the_sdk_formatter_including_empty_unknowns() {
     assert_eq!(Direction::Other(0), Direction::SendReceive);
-    let known = [(Direction::SendReceive, b"sendrecv".as_slice()),
+    let known = [
+        (Direction::SendReceive, b"sendrecv".as_slice()),
         (Direction::SendOnly, b"send".as_slice()),
         (Direction::ReceiveOnly, b"recv".as_slice()),
         (Direction::Inactive, b"inactive".as_slice()),
-        (Direction::Stopped, b"stopped".as_slice())];
+        (Direction::Stopped, b"stopped".as_slice()),
+    ];
     for (direction, expected) in known {
         assert_eq!(Direction::from_raw(direction.raw()), direction);
         assert_eq!(direction.native_string_bytes(), expected);
@@ -102,7 +123,9 @@ fn complete_direction_metadata_uses_the_sdk_formatter_including_empty_unknowns()
         output.append_rtp_transceiver_direction(direction);
         assert_eq!(output.as_bytes(), expected);
         let mut error = RtcError::success();
-        error.string_builder().append_rtp_transceiver_direction(direction);
+        error
+            .string_builder()
+            .append_rtp_transceiver_direction(direction);
         assert_eq!(error.string_builder().as_bytes(), expected);
         let mut streamed = RtcError::success().with_appended_rtp_transceiver_direction(direction);
         assert_eq!(streamed.string_builder().as_bytes(), expected);
@@ -117,7 +140,8 @@ fn complete_direction_metadata_uses_the_sdk_formatter_including_empty_unknowns()
 
 #[test]
 fn capabilities_children_and_fec_are_independent_ordered_sdk_copies() {
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpCapabilities>();
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpCapabilities>();
     let mut value = RtpCapabilities::default();
     assert!(value.codecs().is_empty());
     assert!(value.header_extensions().is_empty());
@@ -127,7 +151,13 @@ fn capabilities_children_and_fec_are_independent_ordered_sdk_copies() {
     let header = HeaderCapability::with_raw_preferences(b"e\xff\0", -1, true, Direction::Other(-2));
     value.set_codecs(&[codec.clone(), codec.clone()]);
     value.set_header_extensions(&[header.clone()]);
-    let fec = [FecMechanism::Flexfec, FecMechanism::Other(i32::MIN), FecMechanism::Red, FecMechanism::RedAndUlpfec, FecMechanism::Flexfec];
+    let fec = [
+        FecMechanism::Flexfec,
+        FecMechanism::Other(i32::MIN),
+        FecMechanism::Red,
+        FecMechanism::RedAndUlpfec,
+        FecMechanism::Flexfec,
+    ];
     value.set_fec(&fec);
     let copy = value.clone();
     let codecs = value.codecs();
@@ -155,9 +185,17 @@ fn scalability_uint8_metadata_and_optional_sdk_name_helper_guard_only_consumptio
     assert_eq!(modes.len(), 34);
     assert_eq!(modes[0], ScalabilityMode::L1T1);
     assert_eq!(modes[33], ScalabilityMode::S3T3H);
-    assert_eq!(ScalabilityMode::L2T2_KEY_SHIFT.native_name_bytes().unwrap(), b"L2T2_KEY_SHIFT");
-    assert_eq!(ScalabilityMode::optional_native_name_bytes(None).unwrap(), b"nullopt");
-    for mode in modes { assert!(mode.native_name_bytes().is_some()); }
+    assert_eq!(
+        ScalabilityMode::L2T2_KEY_SHIFT.native_name_bytes().unwrap(),
+        b"L2T2_KEY_SHIFT"
+    );
+    assert_eq!(
+        ScalabilityMode::optional_native_name_bytes(None).unwrap(),
+        b"nullopt"
+    );
+    for mode in modes {
+        assert!(mode.native_name_bytes().is_some());
+    }
     let unknown = ScalabilityMode::from_raw(255);
     assert_eq!(unknown.raw(), 255);
     assert_eq!(unknown.native_name_bytes(), None);

@@ -297,10 +297,14 @@ fn persistent_decoder_preserves_both_overloads_pairs_contexts_and_frame_retentio
     // Generate genuine PCM payload, not a substitute wire-codec fixture.
     let encoder = AudioEncoderFactory::builtin()
         .unwrap()
-        .create(&environment, &pcm(), &pulsebeam_webrtc_sys::AudioEncoderOptions {
-            payload_type: 200,
-            codec_pair_id: None,
-        })
+        .create(
+            &environment,
+            &pcm(),
+            &pulsebeam_webrtc_sys::AudioEncoderOptions {
+                payload_type: 200,
+                codec_pair_id: None,
+            },
+        )
         .unwrap()
         .unwrap();
     assert!(encoder.encode(100, &[0; 80]).unwrap().bytes.is_empty());

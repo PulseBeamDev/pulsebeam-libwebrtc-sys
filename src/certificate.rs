@@ -53,7 +53,10 @@ impl CertificateKeyParams {
                 kind: 1,
                 modulus_bits: 0,
                 public_exponent: 0,
-                curve: match curve { CertificateCurve::P256 => 0, CertificateCurve::Other(value) => value },
+                curve: match curve {
+                    CertificateCurve::P256 => 0,
+                    CertificateCurve::Other(value) => value,
+                },
             },
         }
     }
@@ -65,7 +68,11 @@ impl CertificateKeyParams {
                 public_exponent: value.public_exponent,
             },
             1 => Self::Ecdsa {
-                curve: if value.curve == 0 { CertificateCurve::P256 } else { CertificateCurve::Other(value.curve) },
+                curve: if value.curve == 0 {
+                    CertificateCurve::P256
+                } else {
+                    CertificateCurve::Other(value.curve)
+                },
             },
             _ => unreachable!("pinned native generator returned an unknown default key parameter"),
         }

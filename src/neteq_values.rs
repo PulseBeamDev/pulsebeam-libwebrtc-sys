@@ -252,7 +252,9 @@ mod tests {
             max_waiting_time_ms: -13,
         };
         assert_eq!(
-            NetEqNetworkStatistics::from_native(ffi::neteq_network_statistics_round_trip(&value.to_native())),
+            NetEqNetworkStatistics::from_native(ffi::neteq_network_statistics_round_trip(
+                &value.to_native()
+            )),
             value
         );
         let value = NetEqLifetimeStatistics {
@@ -279,7 +281,9 @@ mod tests {
             total_interruption_duration_ms: i32::MIN + 21,
         };
         assert_eq!(
-            NetEqLifetimeStatistics::from_native(ffi::neteq_lifetime_statistics_round_trip(&value.to_native())),
+            NetEqLifetimeStatistics::from_native(ffi::neteq_lifetime_statistics_round_trip(
+                &value.to_native()
+            )),
             value
         );
         let value = NetEqOperationsAndState {
@@ -292,7 +296,9 @@ mod tests {
             next_packet_available: false,
         };
         assert_eq!(
-            NetEqOperationsAndState::from_native(ffi::neteq_operations_and_state_round_trip(&value.to_native())),
+            NetEqOperationsAndState::from_native(ffi::neteq_operations_and_state_round_trip(
+                &value.to_native()
+            )),
             value
         );
     }
@@ -319,7 +325,9 @@ mod tests {
             value
         );
         assert_eq!(
-            NetEqNetworkStatistics::from_native(ffi::neteq_network_statistics_round_trip(&value.to_native())),
+            NetEqNetworkStatistics::from_native(ffi::neteq_network_statistics_round_trip(
+                &value.to_native()
+            )),
             value
         );
     }
@@ -354,7 +362,9 @@ mod tests {
             value
         );
         assert_eq!(
-            NetEqLifetimeStatistics::from_native(ffi::neteq_lifetime_statistics_round_trip(&value.to_native())),
+            NetEqLifetimeStatistics::from_native(ffi::neteq_lifetime_statistics_round_trip(
+                &value.to_native()
+            )),
             value
         );
     }
@@ -375,7 +385,9 @@ mod tests {
             value
         );
         assert_eq!(
-            NetEqOperationsAndState::from_native(ffi::neteq_operations_and_state_round_trip(&value.to_native())),
+            NetEqOperationsAndState::from_native(ffi::neteq_operations_and_state_round_trip(
+                &value.to_native()
+            )),
             value
         );
     }
@@ -402,7 +414,10 @@ mod tests {
                 ..NetEqConfig::default()
             };
             assert!(!ffi::neteq_stock_config_safe(&config.to_native()));
-            assert_eq!(NetEqConfig::from_native(ffi::neteq_config_round_trip(&config.to_native())), config);
+            assert_eq!(
+                NetEqConfig::from_native(ffi::neteq_config_round_trip(&config.to_native())),
+                config
+            );
         }
         for size in [0, 1, i32::MAX as usize] {
             assert!(ffi::neteq_stock_payload_size_safe(size));
@@ -414,14 +429,23 @@ mod tests {
     #[test]
     fn stock_red_preflight_retains_inner_types_and_rejects_truncated_lengths() {
         let mut types = vec![99];
-        assert!(ffi::neteq_stock_red_payload_types(&[0xe0, 0, 0, 2, 97, 1, 2, 3], &mut types));
+        assert!(ffi::neteq_stock_red_payload_types(
+            &[0xe0, 0, 0, 2, 97, 1, 2, 3],
+            &mut types
+        ));
         assert_eq!(types, [96, 97]);
-        assert!(ffi::neteq_stock_red_payload_types(&[0xe0, 0, 0, 0, 97, 3], &mut types));
+        assert!(ffi::neteq_stock_red_payload_types(
+            &[0xe0, 0, 0, 0, 97, 3],
+            &mut types
+        ));
         assert_eq!(types, [97]);
         assert!(ffi::neteq_stock_red_payload_types(&[97], &mut types));
         assert!(types.is_empty());
         for malformed in [
-            &[][..], &[0xe0], &[0xe0, 0, 0], &[0xe0, 0, 0, 1],
+            &[][..],
+            &[0xe0],
+            &[0xe0, 0, 0],
+            &[0xe0, 0, 0, 1],
             &[0xe0, 0, 0, 3, 97, 1, 2],
         ] {
             types.push(99);
@@ -429,7 +453,9 @@ mod tests {
             assert!(types.is_empty());
         }
         let mut blocks = Vec::new();
-        for _ in 0..32 { blocks.extend_from_slice(&[0xe0, 0, 0, 1]); }
+        for _ in 0..32 {
+            blocks.extend_from_slice(&[0xe0, 0, 0, 1]);
+        }
         blocks.push(97);
         blocks.extend_from_slice(&[1; 33]);
         assert!(!ffi::neteq_stock_red_payload_types(&blocks, &mut types));
@@ -440,7 +466,9 @@ mod tests {
         // Reject on the 33rd nonempty redundant block, even before a primary
         // header. The temporary type vector must not grow with arbitrary input.
         let mut excess = Vec::new();
-        for _ in 0..33 { excess.extend_from_slice(&[0xe0, 0, 0, 1]); }
+        for _ in 0..33 {
+            excess.extend_from_slice(&[0xe0, 0, 0, 1]);
+        }
         assert!(!ffi::neteq_stock_red_payload_types(&excess, &mut types));
         assert!(types.is_empty());
     }
@@ -452,12 +480,20 @@ mod tests {
             crate::AudioDecoderFactory::builtin().unwrap(),
             crate::AudioDecoderFactory::builtin_opus().unwrap(),
         ] {
-            let before = factory.decoder_statistics().map(|value| value.decoder_creations);
-            assert!(ffi::neteq_decoder_handoff_contract(factory.native(), environment.native()));
+            let before = factory
+                .decoder_statistics()
+                .map(|value| value.decoder_creations);
+            assert!(ffi::neteq_decoder_handoff_contract(
+                factory.native(),
+                environment.native()
+            ));
             if let Some(before) = before {
                 // Seven explicit preparations, no implicit construction from
                 // unmatched, repeated, cancelled or expired factory requests.
-                assert_eq!(factory.decoder_statistics().unwrap().decoder_creations - before, 7);
+                assert_eq!(
+                    factory.decoder_statistics().unwrap().decoder_creations - before,
+                    7
+                );
             }
         }
     }

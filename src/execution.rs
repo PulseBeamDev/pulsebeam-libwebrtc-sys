@@ -73,7 +73,8 @@ impl ManualClock {
             crate::FiniteTimestamp::from_microseconds(0).expect("finite zero"),
             crate::FiniteTimestamp::from_microseconds(MAX_CONTROLLED_TIME.as_micros() as i64)
                 .expect("finite controlled upper bound"),
-        ).expect("ordered controlled bounds")
+        )
+        .expect("ordered controlled bounds")
     }
 
     pub fn advance(&self, delta: Duration) -> Result<(), BuildEnvironmentError> {
@@ -464,25 +465,39 @@ impl Environment {
 
     /// Own the exact SDK creation argument. Native shared owners retain its
     /// dependencies; no queue, clock or field-trial provider is substituted.
-    pub(crate) fn from_sdk(native: cxx::UniquePtr<ffi::NativeEnvironment>,
-        retention: Option<&Environment>) -> Self {
-        let bounds = ffi::environment_clock_time_bounds(native.as_ref().expect("retained SDK environment"));
+    pub(crate) fn from_sdk(
+        native: cxx::UniquePtr<ffi::NativeEnvironment>,
+        retention: Option<&Environment>,
+    ) -> Self {
+        let bounds =
+            ffi::environment_clock_time_bounds(native.as_ref().expect("retained SDK environment"));
         let clock_bounds = if bounds.known {
             crate::ClockTimeBounds::new(
-                crate::FiniteTimestamp::from_microseconds(bounds.minimum_us).expect("finite enforced lower bound"),
-                crate::FiniteTimestamp::from_microseconds(bounds.maximum_us).expect("finite enforced upper bound"),
-            ).expect("ordered enforced clock bounds")
-        } else { crate::ClockTimeBounds::all_finite() };
+                crate::FiniteTimestamp::from_microseconds(bounds.minimum_us)
+                    .expect("finite enforced lower bound"),
+                crate::FiniteTimestamp::from_microseconds(bounds.maximum_us)
+                    .expect("finite enforced upper bound"),
+            )
+            .expect("ordered enforced clock bounds")
+        } else {
+            crate::ClockTimeBounds::all_finite()
+        };
         let actual = native.as_ref().expect("retained SDK environment");
-        let selected_clock = retention.filter(|selected|
-            ffi::environment_clock_identity_matches(actual, selected.native()));
-        let selected_queue = retention.filter(|selected|
-            ffi::environment_queue_factory_identity_matches(actual, selected.native()));
-        Self { native, _clock: selected_clock.and_then(|selected| selected._clock.clone()),
-            _custom_clock: selected_clock.is_none_or(|selected| selected._custom_clock), clock_bounds,
-            _task_queue_factory: selected_queue.and_then(|selected| selected._task_queue_factory.clone()),
+        let selected_clock = retention
+            .filter(|selected| ffi::environment_clock_identity_matches(actual, selected.native()));
+        let selected_queue = retention.filter(|selected| {
+            ffi::environment_queue_factory_identity_matches(actual, selected.native())
+        });
+        Self {
+            native,
+            _clock: selected_clock.and_then(|selected| selected._clock.clone()),
+            _custom_clock: selected_clock.is_none_or(|selected| selected._custom_clock),
+            clock_bounds,
+            _task_queue_factory: selected_queue
+                .and_then(|selected| selected._task_queue_factory.clone()),
             // The process randomness lease is Rust-owned, not an SDK component.
-            _randomness: retention.and_then(|environment| environment._randomness.clone()) }
+            _randomness: retention.and_then(|environment| environment._randomness.clone()),
+        }
     }
 
     pub(crate) fn native(&self) -> &ffi::NativeEnvironment {
@@ -576,7 +591,10 @@ impl EnvironmentBuilder {
             .custom_clock
             .as_ref()
             .map_or(std::ptr::null(), |clock| clock.native() as *const _);
-        let clock_bounds = self.custom_clock.as_ref().map(crate::Clock::time_bounds)
+        let clock_bounds = self
+            .custom_clock
+            .as_ref()
+            .map(crate::Clock::time_bounds)
             .or_else(|| clock.as_ref().map(ManualClock::time_bounds))
             .unwrap_or_else(crate::ClockTimeBounds::system_time);
         // SAFETY: null clock pointers select upstream system time; otherwise
@@ -1050,9 +1068,11 @@ mod tests {
         let clock = ManualClock::new(Duration::from_micros(100)).unwrap();
         let selected = Environment::builder().clock(&clock).build().unwrap();
         let other = Environment::builder().build().unwrap();
-        let copied = Environment::from_sdk(ffi::clone_environment(selected.native()), Some(&selected));
+        let copied =
+            Environment::from_sdk(ffi::clone_environment(selected.native()), Some(&selected));
         assert!(copied.uses_controlled_clock(&clock));
-        let mismatched = Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));
+        let mismatched =
+            Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));
         assert!(!mismatched.uses_controlled_clock(&clock));
         drop(selected);
         clock.advance(Duration::from_micros(50)).unwrap();
@@ -1064,10 +1084,18 @@ mod tests {
         let minimum = crate::FiniteTimestamp::from_microseconds(-100).unwrap();
         let maximum = crate::FiniteTimestamp::from_microseconds(200).unwrap();
         let bounds = crate::ClockTimeBounds::new(minimum, maximum).unwrap();
-        let clock = crate::SimulatedClock::bounded(crate::Timestamp::from_microseconds(0).unwrap(), bounds).unwrap();
-        let environment = Environment::builder().clock_handle(clock.clock()).build().unwrap();
+        let clock =
+            crate::SimulatedClock::bounded(crate::Timestamp::from_microseconds(0).unwrap(), bounds)
+                .unwrap();
+        let environment = Environment::builder()
+            .clock_handle(clock.clock())
+            .build()
+            .unwrap();
         let other = Environment::builder().build().unwrap();
-        assert!(ffi::environment_context_retention_contract(environment.native(), other.native()));
+        assert!(ffi::environment_context_retention_contract(
+            environment.native(),
+            other.native()
+        ));
         let copied = environment.clone();
         let native = ffi::environment_clock_time_bounds(copied.native());
         assert!(native.known);

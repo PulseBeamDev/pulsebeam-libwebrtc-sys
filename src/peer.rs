@@ -50,26 +50,61 @@ pub struct SessionDescriptionBytes {
     pub sdp: Vec<u8>,
 }
 impl From<SessionDescription> for SessionDescriptionBytes {
-    fn from(value: SessionDescription) -> Self { Self { kind: value.kind, sdp: value.sdp.into_bytes() } }
+    fn from(value: SessionDescription) -> Self {
+        Self {
+            kind: value.kind,
+            sdp: value.sdp.into_bytes(),
+        }
+    }
 }
 impl TryFrom<SessionDescriptionBytes> for SessionDescription {
     type Error = std::string::FromUtf8Error;
     fn try_from(value: SessionDescriptionBytes) -> Result<Self, Self::Error> {
-        Ok(Self { kind: value.kind, sdp: String::from_utf8(value.sdp)? })
+        Ok(Self {
+            kind: value.kind,
+            sdp: String::from_utf8(value.sdp)?,
+        })
     }
 }
 /// Native legacy/standardized ICE state, separate from overall peer connection state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeerIceConnectionState {
-    New, Checking, Connected, Completed, Failed, Disconnected, Closed, Max,
+    New,
+    Checking,
+    Connected,
+    Completed,
+    Failed,
+    Disconnected,
+    Closed,
+    Max,
     Native(i32),
 }
 impl PeerIceConnectionState {
     pub fn from_raw(value: i32) -> Self {
-        match value { 0 => Self::New, 1 => Self::Checking, 2 => Self::Connected, 3 => Self::Completed, 4 => Self::Failed, 5 => Self::Disconnected, 6 => Self::Closed, 7 => Self::Max, value => Self::Native(value) }
+        match value {
+            0 => Self::New,
+            1 => Self::Checking,
+            2 => Self::Connected,
+            3 => Self::Completed,
+            4 => Self::Failed,
+            5 => Self::Disconnected,
+            6 => Self::Closed,
+            7 => Self::Max,
+            value => Self::Native(value),
+        }
     }
     pub fn raw(self) -> i32 {
-        match self { Self::New => 0, Self::Checking => 1, Self::Connected => 2, Self::Completed => 3, Self::Failed => 4, Self::Disconnected => 5, Self::Closed => 6, Self::Max => 7, Self::Native(value) => value }
+        match self {
+            Self::New => 0,
+            Self::Checking => 1,
+            Self::Connected => 2,
+            Self::Completed => 3,
+            Self::Failed => 4,
+            Self::Disconnected => 5,
+            Self::Closed => 6,
+            Self::Max => 7,
+            Self::Native(value) => value,
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,11 +226,23 @@ pub struct IceCandidateBytes {
     pub candidate: Vec<u8>,
 }
 impl From<IceCandidate> for IceCandidateBytes {
-    fn from(value: IceCandidate) -> Self { Self { sdp_mid: value.sdp_mid.into_bytes(), sdp_mline_index: value.sdp_mline_index, candidate: value.candidate.into_bytes() } }
+    fn from(value: IceCandidate) -> Self {
+        Self {
+            sdp_mid: value.sdp_mid.into_bytes(),
+            sdp_mline_index: value.sdp_mline_index,
+            candidate: value.candidate.into_bytes(),
+        }
+    }
 }
 impl TryFrom<IceCandidateBytes> for IceCandidate {
     type Error = std::string::FromUtf8Error;
-    fn try_from(value: IceCandidateBytes) -> Result<Self, Self::Error> { Ok(Self { sdp_mid: String::from_utf8(value.sdp_mid)?, sdp_mline_index: value.sdp_mline_index, candidate: String::from_utf8(value.candidate)? }) }
+    fn try_from(value: IceCandidateBytes) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sdp_mid: String::from_utf8(value.sdp_mid)?,
+            sdp_mline_index: value.sdp_mline_index,
+            candidate: String::from_utf8(value.candidate)?,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,9 +295,14 @@ pub enum PeerErrorKind {
 
 /// Exact owned native error bytes when text projection is unavailable.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PeerErrorBytes { pub kind: PeerErrorKind, pub message: Vec<u8> }
+pub struct PeerErrorBytes {
+    pub kind: PeerErrorKind,
+    pub message: Vec<u8>,
+}
 impl fmt::Display for PeerErrorBytes {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{:?}: {:?}", self.kind, self.message) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}: {:?}", self.kind, self.message)
+    }
 }
 impl std::error::Error for PeerErrorBytes {}
 
@@ -390,8 +442,14 @@ pub enum PeerConnectionEvent {
     OperationComplete(OperationCompletion),
     /// One successful native SDP completion whose bytes are not UTF-8. This is
     /// the same terminal operation, not an additional event or native failure.
-    OperationCompleteBytes { operation_id: OperationId, description: SessionDescriptionBytes },
-    OperationFailedBytes { operation_id: OperationId, error: PeerErrorBytes },
+    OperationCompleteBytes {
+        operation_id: OperationId,
+        description: SessionDescriptionBytes,
+    },
+    OperationFailedBytes {
+        operation_id: OperationId,
+        error: PeerErrorBytes,
+    },
     IceCandidate(IceCandidate),
     IceCandidateBytes(IceCandidateBytes),
     IceCandidateRemoved(IceCandidate),
@@ -413,7 +471,13 @@ pub enum PeerConnectionEvent {
         error_code: i32,
         message: String,
     },
-    IceCandidateErrorBytes { address: String, port: i32, url: String, error_code: i32, message: Vec<u8> },
+    IceCandidateErrorBytes {
+        address: String,
+        port: i32,
+        url: String,
+        error_code: i32,
+        message: Vec<u8>,
+    },
     DataChannel(DataChannel),
     Track(RtpTransceiver),
     TrackRemoved(RtpReceiver),
@@ -521,22 +585,36 @@ impl PeerConnectionFactoryBuilder {
         self.network_controller_factory = Some(factory.clone());
         self
     }
-    pub fn network_controller_provider(self, provider: impl crate::NetworkControllerFactoryProvider) -> Self {
+    pub fn network_controller_provider(
+        self,
+        provider: impl crate::NetworkControllerFactoryProvider,
+    ) -> Self {
         self.network_controller_factory(&crate::NetworkControllerFactory::from_provider(provider))
     }
     pub fn fec_controller_factory(mut self, factory: &crate::FecControllerFactory) -> Self {
         self.fec_factory = Some(factory.clone());
         self
     }
-    pub fn fec_controller_provider(self, provider: impl crate::FecControllerFactoryProvider) -> Self {
+    pub fn fec_controller_provider(
+        self,
+        provider: impl crate::FecControllerFactoryProvider,
+    ) -> Self {
         self.fec_controller_factory(&crate::FecControllerFactory::from_provider(provider))
     }
-    pub fn network_state_predictor_factory(mut self, factory: &crate::NetworkStatePredictorFactory) -> Self {
+    pub fn network_state_predictor_factory(
+        mut self,
+        factory: &crate::NetworkStatePredictorFactory,
+    ) -> Self {
         self.network_predictor_factory = Some(factory.clone());
         self
     }
-    pub fn network_state_predictor_provider(self, provider: impl crate::NetworkStatePredictorFactoryProvider) -> Self {
-        self.network_state_predictor_factory(&crate::NetworkStatePredictorFactory::from_provider(provider))
+    pub fn network_state_predictor_provider(
+        self,
+        provider: impl crate::NetworkStatePredictorFactoryProvider,
+    ) -> Self {
+        self.network_state_predictor_factory(&crate::NetworkStatePredictorFactory::from_provider(
+            provider,
+        ))
     }
     /// Use an owned encode metronome with native worker-sequence tick delivery.
     /// Controlled execution requires a caller-driven provider, without timer
@@ -565,7 +643,10 @@ impl PeerConnectionFactoryBuilder {
         self.network_monitor_factory = Some(std::sync::Arc::new(factory));
         self
     }
-    pub(crate) fn shared_network_monitor_factory(mut self, factory: std::sync::Arc<dyn crate::NetworkMonitorFactory>) -> Self {
+    pub(crate) fn shared_network_monitor_factory(
+        mut self,
+        factory: std::sync::Arc<dyn crate::NetworkMonitorFactory>,
+    ) -> Self {
         self.network_monitor_factory = Some(factory);
         self
     }
@@ -578,7 +659,10 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    pub(crate) fn shared_event_log_factory(mut self, factory: std::sync::Arc<dyn crate::RtcEventLogFactory>) -> Self {
+    pub(crate) fn shared_event_log_factory(
+        mut self,
+        factory: std::sync::Arc<dyn crate::RtcEventLogFactory>,
+    ) -> Self {
         self.event_log_factory = Some(factory);
         self
     }
@@ -681,10 +765,16 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    pub fn video_encoder_provider(self, provider: impl crate::VideoEncoderFactoryProvider) -> Result<Self, crate::CodecError> {
+    pub fn video_encoder_provider(
+        self,
+        provider: impl crate::VideoEncoderFactoryProvider,
+    ) -> Result<Self, crate::CodecError> {
         Ok(self.video_encoder_factory(VideoEncoderFactoryHandle::from_provider(provider)?))
     }
-    pub fn video_decoder_provider(self, provider: impl crate::VideoDecoderFactoryProvider) -> Result<Self, crate::CodecError> {
+    pub fn video_decoder_provider(
+        self,
+        provider: impl crate::VideoDecoderFactoryProvider,
+    ) -> Result<Self, crate::CodecError> {
         Ok(self.video_decoder_factory(VideoDecoderFactoryHandle::from_provider(provider)?))
     }
     pub fn video_encoder_factory(mut self, factory: VideoEncoderFactoryHandle) -> Self {
@@ -702,7 +792,10 @@ impl PeerConnectionFactoryBuilder {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter,
                 message: "network manager and network monitor factory are mutually exclusive native dependencies".into() });
         }
-        if self.event_logging && self.event_log_factory.is_none() && self.controlled_driver.is_some() {
+        if self.event_logging
+            && self.event_log_factory.is_none()
+            && self.controlled_driver.is_some()
+        {
             return Err(PeerError {
                 kind: PeerErrorKind::UnsupportedOperation,
                 message: "built-in peer event logging waits synchronously for its output queue during stop and close; caller-pumped queues cannot progress during that wait".into(),
@@ -776,7 +869,9 @@ impl PeerConnectionFactoryBuilder {
             Some(environment) => environment,
             None => Environment::builder().build().map_err(native_build_error)?,
         };
-        if self.network_controller_factory.is_some() && !ffi::network_controller_injection_enabled(environment.native()) {
+        if self.network_controller_factory.is_some()
+            && !ffi::network_controller_injection_enabled(environment.native())
+        {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter, message: "injected network controllers require WebRTC-Bwe-InjectedCongestionController enabled in the factory environment".into() });
         }
         if let Some(driver) = &self.controlled_driver {
@@ -838,7 +933,9 @@ impl PeerConnectionFactoryBuilder {
         // SAFETY: native construction copies the readiness shared owner. Every
         // other non-null pointer is retained in FactoryInner and its
         // native factory is destroyed before those dependencies are dropped.
-        let event_log_factory = self.event_log_factory.map(|factory| ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory))));
+        let event_log_factory = self.event_log_factory.map(|factory| {
+            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory)))
+        });
         let native = unsafe {
             ffi::new_peer_connection_factory(
                 environment.native(),
@@ -846,10 +943,16 @@ impl PeerConnectionFactoryBuilder {
                 worker_thread.native(),
                 signaling_thread.native(),
                 optional_ptr(self.network_manager.as_ref().map(|value| value.native())),
-                Box::new(crate::RustNetworkMonitorFactory(self.network_monitor_factory)),
-                Box::new(crate::RustNetworkStatePredictorFactory(self.network_predictor_factory)),
+                Box::new(crate::RustNetworkMonitorFactory(
+                    self.network_monitor_factory,
+                )),
+                Box::new(crate::RustNetworkStatePredictorFactory(
+                    self.network_predictor_factory,
+                )),
                 Box::new(crate::RustFecControllerFactory(self.fec_factory)),
-                Box::new(crate::RustNetworkControllerFactory(self.network_controller_factory)),
+                Box::new(crate::RustNetworkControllerFactory(
+                    self.network_controller_factory,
+                )),
                 optional_ptr(
                     self.packet_socket_factory
                         .as_ref()
@@ -862,9 +965,17 @@ impl PeerConnectionFactoryBuilder {
                 Box::new(crate::RustVideoFactoryEnvironment(environment.clone())),
                 self.native_audio,
                 self.event_logging,
-                optional_ptr(event_log_factory.as_ref().and_then(|factory| factory.as_ref())),
-                self.encode_metronome.as_ref().map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
-                self.decode_metronome.as_ref().map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
+                optional_ptr(
+                    event_log_factory
+                        .as_ref()
+                        .and_then(|factory| factory.as_ref()),
+                ),
+                self.encode_metronome
+                    .as_ref()
+                    .map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
+                self.decode_metronome
+                    .as_ref()
+                    .map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
                 optional_ptr(readiness.as_ref().and_then(|value| value.as_ref())),
                 &self.audio_processing.map_or(
                     ffi::FfiAudioProcessingConfig {
@@ -1012,13 +1123,21 @@ impl PeerConnectionFactory {
     /// Entire synchronous SDK sender capabilities, with no live peer needed.
     /// Includes codecs, complete extension capabilities and FEC metadata.
     pub fn get_rtp_sender_capabilities(&self, kind: crate::MediaType) -> crate::RtpCapabilities {
-        crate::RtpCapabilities::from_native(ffi::factory_rtp_capabilities_value(self.native(), kind.to_native(), true))
+        crate::RtpCapabilities::from_native(ffi::factory_rtp_capabilities_value(
+            self.native(),
+            kind.to_native(),
+            true,
+        ))
     }
 
     /// Entire synchronous SDK receiver capabilities through the signaling thread.
     /// Unknown/data kinds retain the concrete SDK's empty-value result.
     pub fn get_rtp_receiver_capabilities(&self, kind: crate::MediaType) -> crate::RtpCapabilities {
-        crate::RtpCapabilities::from_native(ffi::factory_rtp_capabilities_value(self.native(), kind.to_native(), false))
+        crate::RtpCapabilities::from_native(ffi::factory_rtp_capabilities_value(
+            self.native(),
+            kind.to_native(),
+            false,
+        ))
     }
 
     /// Read WebRTC's factory-wide audio processing state. Unknown status and
@@ -1110,7 +1229,10 @@ impl PeerConnectionFactory {
         &self,
         configuration: crate::RtcConfiguration,
     ) -> Result<PeerConnection, PeerError> {
-        self.create_peer_connection_with_dependencies(configuration, crate::PeerConnectionDependencies::default())
+        self.create_peer_connection_with_dependencies(
+            configuration,
+            crate::PeerConnectionDependencies::default(),
+        )
     }
 
     /// Create a peer with owned executable dependencies. Per-peer field trials
@@ -1145,10 +1267,18 @@ impl PeerConnectionFactory {
             config.as_ref().expect("owned native configuration"),
             Box::new(crate::RustFieldTrials(dependencies.field_trials)),
             crate::RustTlsCertificateVerifier::new(dependencies.tls_certificate_verifier),
-            crate::RustLocalNetworkPermissionFactory::new(dependencies.local_network_permission_factory),
-            Box::new(crate::RustCertificateGenerator(dependencies.certificate_generator)),
-            Box::new(crate::RustAsyncDnsFactory(dependencies.async_dns_resolver_factory)),
-            Box::new(crate::RustVideoBitrateAllocatorFactory(dependencies.video_bitrate_allocator_factory)),
+            crate::RustLocalNetworkPermissionFactory::new(
+                dependencies.local_network_permission_factory,
+            ),
+            Box::new(crate::RustCertificateGenerator(
+                dependencies.certificate_generator,
+            )),
+            Box::new(crate::RustAsyncDnsFactory(
+                dependencies.async_dns_resolver_factory,
+            )),
+            Box::new(crate::RustVideoBitrateAllocatorFactory(
+                dependencies.video_bitrate_allocator_factory,
+            )),
             &mut native_error_kind,
             &mut message,
         );
@@ -1482,8 +1612,10 @@ pub(crate) struct PeerInner {
     pub(crate) closed: Cell<bool>,
     pub(crate) sender_tracks: RefCell<HashMap<String, VideoTrack>>,
     pub(crate) audio_sender_tracks: RefCell<HashMap<String, AudioTrack>>,
-    pub(crate) sender_observers: RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::SenderObserverInner>>>,
-    pub(crate) receiver_observers: RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::ReceiverObserverInner>>>,
+    pub(crate) sender_observers:
+        RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::SenderObserverInner>>>,
+    pub(crate) receiver_observers:
+        RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::ReceiverObserverInner>>>,
     pub(crate) dtmf_senders: RefCell<HashMap<String, std::rc::Weak<crate::dtmf::DtmfInner>>>,
     pub(crate) dtls_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::DtlsInner>>>,
     pub(crate) sctp_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::SctpInner>>>,
@@ -1493,7 +1625,10 @@ impl PeerConnection {
     /// Native owning SCTP transport, absent before one is created. Repeated
     /// getters and its DTLS associations share native observer registrations.
     pub fn sctp_transport(&self) -> Option<crate::SctpTransport> {
-        crate::SctpTransport::from_native(ffi::peer_sctp_transport(self.inner.native()), self.inner.clone())
+        crate::SctpTransport::from_native(
+            ffi::peer_sctp_transport(self.inner.native()),
+            self.inner.clone(),
+        )
     }
 
     /// Owned effective native configuration, including retained certificates.
@@ -1584,7 +1719,9 @@ impl PeerConnection {
             });
         }
         ffi::peer_video_codec_capabilities(self.inner.factory_native(), true)
-            .into_iter().map(VideoCodecCapability::from_ffi).collect()
+            .into_iter()
+            .map(VideoCodecCapability::from_ffi)
+            .collect()
     }
 
     /// Video RTP codecs available for receiving on this peer.
@@ -1596,7 +1733,9 @@ impl PeerConnection {
             });
         }
         ffi::peer_video_codec_capabilities(self.inner.factory_native(), false)
-            .into_iter().map(VideoCodecCapability::from_ffi).collect()
+            .into_iter()
+            .map(VideoCodecCapability::from_ffi)
+            .collect()
     }
 
     /// Returns a stable snapshot of this peer's video transceivers.
@@ -1946,11 +2085,21 @@ impl PeerConnection {
     /// their native state observations while the owning handle is alive.
     pub fn ice_snapshot(&self) -> PeerIceSnapshot {
         let value = ffi::peer_ice_snapshot(self.native());
-        PeerIceSnapshot { legacy_state: PeerIceConnectionState::from_raw(value.legacy_state), standardized_state: PeerIceConnectionState::from_raw(value.standardized_state), can_trickle_ice_candidates: value.has_can_trickle.then_some(value.can_trickle) }
+        PeerIceSnapshot {
+            legacy_state: PeerIceConnectionState::from_raw(value.legacy_state),
+            standardized_state: PeerIceConnectionState::from_raw(value.standardized_state),
+            can_trickle_ice_candidates: value.has_can_trickle.then_some(value.can_trickle),
+        }
     }
-    pub fn ice_connection_state(&self) -> PeerIceConnectionState { self.ice_snapshot().legacy_state }
-    pub fn standardized_ice_connection_state(&self) -> PeerIceConnectionState { self.ice_snapshot().standardized_state }
-    pub fn can_trickle_ice_candidates(&self) -> Option<bool> { self.ice_snapshot().can_trickle_ice_candidates }
+    pub fn ice_connection_state(&self) -> PeerIceConnectionState {
+        self.ice_snapshot().legacy_state
+    }
+    pub fn standardized_ice_connection_state(&self) -> PeerIceConnectionState {
+        self.ice_snapshot().standardized_state
+    }
+    pub fn can_trickle_ice_candidates(&self) -> Option<bool> {
+        self.ice_snapshot().can_trickle_ice_candidates
+    }
 
     /// Current native signaling state sampled on its signaling role, not a
     /// reconstruction from queued observations or description text.
@@ -1970,11 +2119,21 @@ impl PeerConnection {
 
     pub fn descriptions(&self) -> Result<PeerDescriptions, PeerError> {
         let bytes = self.descriptions_bytes()?;
-        let project = |value: Option<SessionDescriptionBytes>| value.map(SessionDescription::try_from).transpose().map_err(|_| PeerError {
-            kind: PeerErrorKind::DescriptionNotUtf8,
-            message: "native SDP is not UTF-8; use descriptions_bytes".into(),
-        });
-        Ok(PeerDescriptions { current_local: project(bytes.current_local)?, current_remote: project(bytes.current_remote)?, pending_local: project(bytes.pending_local)?, pending_remote: project(bytes.pending_remote)? })
+        let project = |value: Option<SessionDescriptionBytes>| {
+            value
+                .map(SessionDescription::try_from)
+                .transpose()
+                .map_err(|_| PeerError {
+                    kind: PeerErrorKind::DescriptionNotUtf8,
+                    message: "native SDP is not UTF-8; use descriptions_bytes".into(),
+                })
+        };
+        Ok(PeerDescriptions {
+            current_local: project(bytes.current_local)?,
+            current_remote: project(bytes.current_remote)?,
+            pending_local: project(bytes.pending_local)?,
+            pending_remote: project(bytes.pending_remote)?,
+        })
     }
     pub fn descriptions_bytes(&self) -> Result<PeerDescriptionBytes, PeerError> {
         let mut native = Vec::new();
@@ -2021,10 +2180,16 @@ impl PeerConnection {
         )
     }
 
-    pub fn set_local_description(&self, description: SessionDescription) -> Result<OperationId, PeerError> {
+    pub fn set_local_description(
+        &self,
+        description: SessionDescription,
+    ) -> Result<OperationId, PeerError> {
         self.set_local_description_bytes(description.into())
     }
-    pub fn set_local_description_bytes(&self, description: SessionDescriptionBytes) -> Result<OperationId, PeerError> {
+    pub fn set_local_description_bytes(
+        &self,
+        description: SessionDescriptionBytes,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         let status = if self.controlled_media_sdp(&description) {
             ffi::peer_reject_controlled_media(self.native(), id.0)
@@ -2039,10 +2204,16 @@ impl PeerConnection {
         Self::operation_admission(id, status)
     }
 
-    pub fn set_remote_description(&self, description: SessionDescription) -> Result<OperationId, PeerError> {
+    pub fn set_remote_description(
+        &self,
+        description: SessionDescription,
+    ) -> Result<OperationId, PeerError> {
         self.set_remote_description_bytes(description.into())
     }
-    pub fn set_remote_description_bytes(&self, description: SessionDescriptionBytes) -> Result<OperationId, PeerError> {
+    pub fn set_remote_description_bytes(
+        &self,
+        description: SessionDescriptionBytes,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         let status = if self.controlled_media_sdp(&description) {
             ffi::peer_reject_controlled_media(self.native(), id.0)
@@ -2060,7 +2231,10 @@ impl PeerConnection {
     pub fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<OperationId, PeerError> {
         self.add_ice_candidate_bytes(candidate.into())
     }
-    pub fn add_ice_candidate_bytes(&self, candidate: IceCandidateBytes) -> Result<OperationId, PeerError> {
+    pub fn add_ice_candidate_bytes(
+        &self,
+        candidate: IceCandidateBytes,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         Self::operation_admission(
             id,
@@ -2094,17 +2268,41 @@ impl PeerConnection {
         self.modify_ice_candidate(candidate, true)
     }
 
-    pub fn add_ice_candidate_sync_bytes(&self, candidate: IceCandidateBytes) -> Result<IceCandidateDisposition, PeerErrorBytes> { self.modify_ice_candidate_bytes(candidate, false) }
-    pub fn remove_ice_candidate_bytes(&self, candidate: IceCandidateBytes) -> Result<IceCandidateDisposition, PeerErrorBytes> { self.modify_ice_candidate_bytes(candidate, true) }
-    fn modify_ice_candidate(&self, candidate: IceCandidate, remove: bool) -> Result<IceCandidateDisposition, PeerError> {
-        self.modify_ice_candidate_bytes(candidate.into(), remove).map_err(|error| {
-            match String::from_utf8(error.message) {
-                Ok(message) => PeerError { kind: error.kind, message },
-                Err(_) => PeerError { kind: PeerErrorKind::MessageNotUtf8, message: "native candidate error is not UTF-8; use byte candidate methods".into() },
-            }
-        })
+    pub fn add_ice_candidate_sync_bytes(
+        &self,
+        candidate: IceCandidateBytes,
+    ) -> Result<IceCandidateDisposition, PeerErrorBytes> {
+        self.modify_ice_candidate_bytes(candidate, false)
     }
-    fn modify_ice_candidate_bytes(&self, candidate: IceCandidateBytes, remove: bool) -> Result<IceCandidateDisposition, PeerErrorBytes> {
+    pub fn remove_ice_candidate_bytes(
+        &self,
+        candidate: IceCandidateBytes,
+    ) -> Result<IceCandidateDisposition, PeerErrorBytes> {
+        self.modify_ice_candidate_bytes(candidate, true)
+    }
+    fn modify_ice_candidate(
+        &self,
+        candidate: IceCandidate,
+        remove: bool,
+    ) -> Result<IceCandidateDisposition, PeerError> {
+        self.modify_ice_candidate_bytes(candidate.into(), remove)
+            .map_err(|error| match String::from_utf8(error.message) {
+                Ok(message) => PeerError {
+                    kind: error.kind,
+                    message,
+                },
+                Err(_) => PeerError {
+                    kind: PeerErrorKind::MessageNotUtf8,
+                    message: "native candidate error is not UTF-8; use byte candidate methods"
+                        .into(),
+                },
+            })
+    }
+    fn modify_ice_candidate_bytes(
+        &self,
+        candidate: IceCandidateBytes,
+        remove: bool,
+    ) -> Result<IceCandidateDisposition, PeerErrorBytes> {
         let mut message = Vec::new();
         match ffi::peer_modify_ice_candidate(
             self.native(),
@@ -2147,8 +2345,15 @@ impl PeerConnection {
         if self.inner.closed.get() {
             return Err(crate::EventLogError::Closed);
         }
-        let milliseconds = period.map(crate::EventLogOutputPeriod::milliseconds).transpose()?;
-        match ffi::peer_start_event_log(self.native(), output.into_native(), milliseconds.is_some(), milliseconds.unwrap_or(0)) {
+        let milliseconds = period
+            .map(crate::EventLogOutputPeriod::milliseconds)
+            .transpose()?;
+        match ffi::peer_start_event_log(
+            self.native(),
+            output.into_native(),
+            milliseconds.is_some(),
+            milliseconds.unwrap_or(0),
+        ) {
             0 => Ok(()),
             1 => Err(crate::EventLogError::Closed),
             2 => Err(crate::EventLogError::InactiveOutput),
@@ -2442,29 +2647,60 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
             if event.error_type != 0 {
                 let kind = error_kind(event.error_type);
                 return match String::from_utf8(event.message) {
-                    Ok(message) => Some(PeerConnectionEvent::OperationComplete(OperationCompletion { operation_id, result: Err(PeerError { kind, message }) })),
-                    Err(error) => Some(PeerConnectionEvent::OperationFailedBytes { operation_id, error: PeerErrorBytes { kind, message: error.into_bytes() } }),
+                    Ok(message) => Some(PeerConnectionEvent::OperationComplete(
+                        OperationCompletion {
+                            operation_id,
+                            result: Err(PeerError { kind, message }),
+                        },
+                    )),
+                    Err(error) => Some(PeerConnectionEvent::OperationFailedBytes {
+                        operation_id,
+                        error: PeerErrorBytes {
+                            kind,
+                            message: error.into_bytes(),
+                        },
+                    }),
                 };
             }
             if !event.has_description {
-                return Some(PeerConnectionEvent::OperationComplete(OperationCompletion { operation_id, result: Ok(None) }));
+                return Some(PeerConnectionEvent::OperationComplete(
+                    OperationCompletion {
+                        operation_id,
+                        result: Ok(None),
+                    },
+                ));
             }
             let kind = sdp_type(event.sdp_type);
             match String::from_utf8(event.sdp) {
-                Ok(sdp) => Some(PeerConnectionEvent::OperationComplete(OperationCompletion { operation_id, result: Ok(Some(SessionDescription { kind, sdp })) })),
-                Err(error) => Some(PeerConnectionEvent::OperationCompleteBytes { operation_id, description: SessionDescriptionBytes { kind, sdp: error.into_bytes() } }),
+                Ok(sdp) => Some(PeerConnectionEvent::OperationComplete(
+                    OperationCompletion {
+                        operation_id,
+                        result: Ok(Some(SessionDescription { kind, sdp })),
+                    },
+                )),
+                Err(error) => Some(PeerConnectionEvent::OperationCompleteBytes {
+                    operation_id,
+                    description: SessionDescriptionBytes {
+                        kind,
+                        sdp: error.into_bytes(),
+                    },
+                }),
             }
-        },
+        }
         2 | 15 => {
             let removed = event.kind == 15;
-            let bytes = IceCandidateBytes { sdp_mid: event.sdp_mid, sdp_mline_index: event.sdp_mline_index, candidate: event.candidate };
+            let bytes = IceCandidateBytes {
+                sdp_mid: event.sdp_mid,
+                sdp_mline_index: event.sdp_mline_index,
+                candidate: event.candidate,
+            };
             Some(match IceCandidate::try_from(bytes.clone()) {
                 Ok(value) if removed => PeerConnectionEvent::IceCandidateRemoved(value),
                 Ok(value) => PeerConnectionEvent::IceCandidate(value),
                 Err(_) if removed => PeerConnectionEvent::IceCandidateRemovedBytes(bytes),
                 Err(_) => PeerConnectionEvent::IceCandidateBytes(bytes),
             })
-        },
+        }
         3 => Some(PeerConnectionEvent::ConnectionStateChanged(
             connection_state(event.state),
         )),
@@ -2474,14 +2710,30 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
         5 => Some(PeerConnectionEvent::IceGatheringStateChanged(
             gathering_state(event.state),
         )),
-        13 => Some(PeerConnectionEvent::IceConnectionStateChanged(PeerIceConnectionState::from_raw(event.ice_state))),
-        14 => Some(PeerConnectionEvent::StandardizedIceConnectionStateChanged(PeerIceConnectionState::from_raw(event.ice_state))),
+        13 => Some(PeerConnectionEvent::IceConnectionStateChanged(
+            PeerIceConnectionState::from_raw(event.ice_state),
+        )),
+        14 => Some(PeerConnectionEvent::StandardizedIceConnectionStateChanged(
+            PeerIceConnectionState::from_raw(event.ice_state),
+        )),
         6 => Some(PeerConnectionEvent::NegotiationNeeded {
             event_id: event.event_id,
         }),
         7 => match String::from_utf8(event.message) {
-            Ok(message) => Some(PeerConnectionEvent::IceCandidateError { address: event.address, port: event.port, url: event.url, error_code: event.error_code, message }),
-            Err(error) => Some(PeerConnectionEvent::IceCandidateErrorBytes { address: event.address, port: event.port, url: event.url, error_code: event.error_code, message: error.into_bytes() }),
+            Ok(message) => Some(PeerConnectionEvent::IceCandidateError {
+                address: event.address,
+                port: event.port,
+                url: event.url,
+                error_code: event.error_code,
+                message,
+            }),
+            Err(error) => Some(PeerConnectionEvent::IceCandidateErrorBytes {
+                address: event.address,
+                port: event.port,
+                url: event.url,
+                error_code: event.error_code,
+                message: error.into_bytes(),
+            }),
         },
         8 => Some(PeerConnectionEvent::Closed),
         9 => {
@@ -2524,12 +2776,21 @@ mod retention_tests {
     #[test]
     fn candidate_arrival_and_removal_keep_native_bytes_and_index_normalization() {
         let factory = PeerConnectionFactory::builder().build().unwrap();
-        let mut peer = factory.create_peer_connection(PeerConfiguration::default()).unwrap();
+        let mut peer = factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
         let mid = [0xff, 0];
-        let mut sdp = b"candidate:".to_vec(); sdp.push(0xfe);
+        let mut sdp = b"candidate:".to_vec();
+        sdp.push(0xfe);
         sdp.extend_from_slice(b" 1 udp 123 127.0.0.1 10000 typ host");
         for removed in [false, true] {
-            assert!(ffi::test_peer_candidate_observation(peer.native(), &mid, i32::MAX, &sdp, removed));
+            assert!(ffi::test_peer_candidate_observation(
+                peer.native(),
+                &mid,
+                i32::MAX,
+                &sdp,
+                removed
+            ));
             let bytes = match peer.try_next_event().unwrap() {
                 PeerConnectionEvent::IceCandidateBytes(bytes) if !removed => bytes,
                 PeerConnectionEvent::IceCandidateRemovedBytes(bytes) if removed => bytes,
@@ -2545,15 +2806,27 @@ mod retention_tests {
     #[test]
     fn ice_callbacks_are_distinct_callback_time_controls_with_existing_bounds() {
         let factory = PeerConnectionFactory::builder().build().unwrap();
-        let mut peer = factory.create_peer_connection(PeerConfiguration::default()).unwrap();
+        let mut peer = factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
         assert!(ffi::test_peer_ice_observations(peer.native(), 2, 3, 200));
         let observation = peer.event_observation();
         assert_eq!(observation.retained_control_events, 128);
         assert_eq!(observation.dropped_control_events, 272);
         assert_eq!(peer.ice_connection_state(), PeerIceConnectionState::New);
         for _ in 0..64 {
-            assert!(matches!(peer.try_next_event(), Some(PeerConnectionEvent::IceConnectionStateChanged(PeerIceConnectionState::Connected))));
-            assert!(matches!(peer.try_next_event(), Some(PeerConnectionEvent::StandardizedIceConnectionStateChanged(PeerIceConnectionState::Completed))));
+            assert!(matches!(
+                peer.try_next_event(),
+                Some(PeerConnectionEvent::IceConnectionStateChanged(
+                    PeerIceConnectionState::Connected
+                ))
+            ));
+            assert!(matches!(
+                peer.try_next_event(),
+                Some(PeerConnectionEvent::StandardizedIceConnectionStateChanged(
+                    PeerIceConnectionState::Completed
+                ))
+            ));
         }
         assert!(peer.try_next_event().is_none());
         assert_eq!(peer.event_observation().retained_control_events, 0);

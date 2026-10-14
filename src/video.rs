@@ -1,8 +1,7 @@
 use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{
-    AudioCodecCapability, CodecError, VideoCodecFormat, VideoFrame,
-    VideoResolution, ffi,
+    AudioCodecCapability, CodecError, VideoCodecFormat, VideoFrame, VideoResolution, ffi,
     peer::{FactoryInner, PeerError, PeerErrorKind, PeerInner, error_kind},
 };
 
@@ -83,7 +82,11 @@ impl VideoCodecCapability {
             kind: crate::PeerErrorKind::UnrepresentableCodecCapability,
             message: format!("legacy capability projection failed: {error}; use get_rtp_sender_capabilities/get_rtp_receiver_capabilities"),
         })?;
-        let scalability_modes = format.scalability_modes.iter().map(|mode| mode.as_str().to_owned()).collect();
+        let scalability_modes = format
+            .scalability_modes
+            .iter()
+            .map(|mode| mode.as_str().to_owned())
+            .collect();
         Ok(Self {
             format,
             clock_rate: u32::try_from(value.clock_rate).ok(),
@@ -737,7 +740,9 @@ pub enum RtpSenderOperationError {
     Native(crate::RtcError),
 }
 impl From<PeerError> for RtpSenderOperationError {
-    fn from(error: PeerError) -> Self { Self::Binding(error) }
+    fn from(error: PeerError) -> Self {
+        Self::Binding(error)
+    }
 }
 impl std::fmt::Display for RtpSenderOperationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -749,7 +754,10 @@ impl std::fmt::Display for RtpSenderOperationError {
 }
 impl std::error::Error for RtpSenderOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Binding(error) => Some(error), Self::Native(error) => Some(error) }
+        match self {
+            Self::Binding(error) => Some(error),
+            Self::Native(error) => Some(error),
+        }
     }
 }
 
@@ -797,8 +805,12 @@ impl MediaType {
     }
     pub(crate) fn to_native(self) -> i32 {
         match self {
-            Self::Audio => 0, Self::Video => 1, Self::Data => 2,
-            Self::Unsupported => 3, Self::Any => 4, Self::Other(value) => value,
+            Self::Audio => 0,
+            Self::Video => 1,
+            Self::Data => 2,
+            Self::Unsupported => 3,
+            Self::Any => 4,
+            Self::Other(value) => value,
         }
     }
 
@@ -820,12 +832,20 @@ impl RtpSender {
     /// SDK creation can change the owning transceiver and request negotiation
     /// even when it returns an error. The selected stock SDK does not implement
     /// the encryption pipeline; errors are returned without fake handles.
-    pub fn create_sframe_encrypter(&self, init: &crate::SframeEncrypterInit) -> Result<crate::SframeEncrypter, crate::SframeCreateError> {
+    pub fn create_sframe_encrypter(
+        &self,
+        init: &crate::SframeEncrypterInit,
+    ) -> Result<crate::SframeEncrypter, crate::SframeCreateError> {
         crate::SframeEncrypter::from_creation(
-            ffi::rtp_sender_create_sframe(self.native(), self.peer.native(), init.native()), self.peer.clone())
+            ffi::rtp_sender_create_sframe(self.native(), self.peer.native(), init.native()),
+            self.peer.clone(),
+        )
     }
     pub fn dtls_transport(&self) -> Option<crate::DtlsTransport> {
-        crate::DtlsTransport::from_native(ffi::rtp_sender_dtls(self.native(), self.peer.native()), self.peer.clone())
+        crate::DtlsTransport::from_native(
+            ffi::rtp_sender_dtls(self.native(), self.peer.native()),
+            self.peer.clone(),
+        )
     }
 
     /// Complete native initial encoding values, copied through the signaling
@@ -833,7 +853,11 @@ impl RtpSender {
     pub fn init_send_encodings(&self) -> Vec<crate::RtpEncodingParameters> {
         let list = ffi::rtp_sender_initial_encodings(self.native());
         let list = list.as_ref().unwrap();
-        (0..ffi::rtp_encoding_list_len(list)).map(|index| crate::RtpEncodingParameters::from_native(ffi::rtp_encoding_list_get(list, index))).collect()
+        (0..ffi::rtp_encoding_list_len(list))
+            .map(|index| {
+                crate::RtpEncodingParameters::from_native(ffi::rtp_encoding_list_get(list, index))
+            })
+            .collect()
     }
 
     /// Primary native SSRC; zero preserves the native not-yet-determined value.
@@ -869,7 +893,10 @@ impl RtpSender {
 
     /// Shared owning SDK first-packet-sent observer slot with a bounded queue.
     pub fn packet_observer(&self) -> crate::RtpSenderObserver {
-        crate::RtpSenderObserver::from_native(ffi::rtp_sender_observer(self.native()), self.peer.clone())
+        crate::RtpSenderObserver::from_native(
+            ffi::rtp_sender_observer(self.native()),
+            self.peer.clone(),
+        )
     }
 
     /// Native DTMF access for audio RTP senders. Video senders return `None`.
@@ -888,7 +915,10 @@ impl RtpSender {
             return None;
         }
         let sender = crate::DtmfSender::from_native(native, self.peer.clone());
-        self.peer.dtmf_senders.borrow_mut().insert(id, Rc::downgrade(&sender.0));
+        self.peer
+            .dtmf_senders
+            .borrow_mut()
+            .insert(id, Rc::downgrade(&sender.0));
         Some(sender)
     }
 
@@ -976,13 +1006,24 @@ impl RtpSender {
     /// stopped/unconfigured video preserves the SDK's successful no-op before
     /// RID validation. Success is not proof that an encoder produced a frame.
     pub fn generate_keyframe(&self, rids: &[Vec<u8>]) -> Result<(), RtpSenderOperationError> {
-        let rids: Vec<_> = rids.iter().map(|rid| ffi::FfiRtpByteString { bytes: rid.clone() }).collect();
+        let rids: Vec<_> = rids
+            .iter()
+            .map(|rid| ffi::FfiRtpByteString { bytes: rid.clone() })
+            .collect();
         let native = ffi::rtp_sender_generate_keyframe(self.native(), self.peer.native(), &rids);
         if native.is_null() {
-            return Err(PeerError { kind: PeerErrorKind::InvalidState, message: "sender peer is unavailable".into() }.into());
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "sender peer is unavailable".into(),
+            }
+            .into());
         }
         let error = crate::RtcError::from_native(native);
-        if error.is_ok() { Ok(()) } else { Err(RtpSenderOperationError::Native(error)) }
+        if error.is_ok() {
+            Ok(())
+        } else {
+            Err(RtpSenderOperationError::Native(error))
+        }
     }
 
     /// Ask the active video sender to produce a keyframe for the listed RIDs.
@@ -1157,7 +1198,9 @@ impl RtpSender {
             {
                 // SDK video encoder configuration converts this double to int.
                 // Truncation is representable below the exclusive MAX + 1 bound.
-                return Err(invalid("maximum framerate is outside safe SDK integer conversion"));
+                return Err(invalid(
+                    "maximum framerate is outside safe SDK integer conversion",
+                ));
             }
             if encoding
                 .scale_resolution_down_by
@@ -1174,7 +1217,9 @@ impl RtpSender {
             }) {
                 // Downstream layer selection calls SDK Resolution::PixelCount,
                 // whose signed-int product must remain representable.
-                return Err(invalid("target resolution is outside safe SDK PixelCount consumption"));
+                return Err(invalid(
+                    "target resolution is outside safe SDK PixelCount consumption",
+                ));
             }
             if encoding.scalability_mode.as_deref() == Some("") {
                 return Err(invalid("scalability mode must not be empty"));
@@ -1217,7 +1262,9 @@ impl RtpSender {
     /// Install or clear the SDK's refcounted frame encryptor. This is additional
     /// frame encryption, not a replacement for native SRTP authentication.
     pub fn set_frame_encryptor(&self, encryptor: Option<&crate::FrameEncryptor>) {
-        let value = encryptor.map(|value| value.native() as *const _).unwrap_or(std::ptr::null());
+        let value = encryptor
+            .map(|value| value.native() as *const _)
+            .unwrap_or(std::ptr::null());
         // SAFETY: the optional pointer is borrowed for this synchronous proxy
         // call; the SDK retains its own reference before the borrow ends.
         unsafe { ffi::rtp_sender_set_frame_encryptor(self.native(), value) };
@@ -1267,39 +1314,63 @@ impl fmt::Display for RtpReceiverOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Binding(error) => error.fmt(f),
-            Self::UnsafeDelayNaN => f.write_str("native jitter-buffer delay conversion cannot consume NaN"),
+            Self::UnsafeDelayNaN => {
+                f.write_str("native jitter-buffer delay conversion cannot consume NaN")
+            }
         }
     }
 }
 impl std::error::Error for RtpReceiverOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Binding(error) => Some(error), Self::UnsafeDelayNaN => None }
+        match self {
+            Self::Binding(error) => Some(error),
+            Self::UnsafeDelayNaN => None,
+        }
     }
 }
 impl From<PeerError> for RtpReceiverOperationError {
-    fn from(error: PeerError) -> Self { Self::Binding(error) }
+    fn from(error: PeerError) -> Self {
+        Self::Binding(error)
+    }
 }
 
 impl RtpReceiver {
     /// Preserve native error and transceiver/negotiation side effects. SFrame
     /// key management is distinct from the legacy frame decryptor provider.
-    pub fn create_sframe_decrypter(&self, suite: crate::SframeCipherSuite) -> Result<crate::SframeDecrypter, crate::SframeCreateError> {
+    pub fn create_sframe_decrypter(
+        &self,
+        suite: crate::SframeCipherSuite,
+    ) -> Result<crate::SframeDecrypter, crate::SframeCreateError> {
         crate::SframeDecrypter::from_creation(
-            ffi::rtp_receiver_create_sframe(self.native(), self.peer.native(), suite.raw()), self.peer.clone())
+            ffi::rtp_receiver_create_sframe(self.native(), self.peer.native(), suite.raw()),
+            self.peer.clone(),
+        )
     }
     /// Construct a decryptor bound permanently to this native receiver.
-    pub fn create_frame_decryptor(&self, provider: impl crate::FrameDecryptorProvider) -> crate::FrameDecryptor {
+    pub fn create_frame_decryptor(
+        &self,
+        provider: impl crate::FrameDecryptorProvider,
+    ) -> crate::FrameDecryptor {
         crate::FrameDecryptor::new(self.native(), self.peer.clone(), provider)
     }
-    pub fn set_frame_decryptor(&self, decryptor: Option<&crate::FrameDecryptor>) -> Result<(), crate::FrameDecryptorInstallError> {
-        let value = decryptor.map(|value| value.native() as *const _).unwrap_or(std::ptr::null());
+    pub fn set_frame_decryptor(
+        &self,
+        decryptor: Option<&crate::FrameDecryptor>,
+    ) -> Result<(), crate::FrameDecryptorInstallError> {
+        let value = decryptor
+            .map(|value| value.native() as *const _)
+            .unwrap_or(std::ptr::null());
         // SAFETY: the native wrapper checks exact receiver identity before
         // installation. The SDK retains its reference during the proxy call.
         unsafe { ffi::rtp_receiver_set_frame_decryptor(self.native(), value) }
-            .then_some(()).ok_or(crate::FrameDecryptorInstallError::WrongReceiver)
+            .then_some(())
+            .ok_or(crate::FrameDecryptorInstallError::WrongReceiver)
     }
     pub fn frame_decryptor(&self) -> Option<crate::FrameDecryptor> {
-        crate::FrameDecryptor::from_native(ffi::rtp_receiver_frame_decryptor(self.native()), self.peer.clone())
+        crate::FrameDecryptor::from_native(
+            ffi::rtp_receiver_frame_decryptor(self.native()),
+            self.peer.clone(),
+        )
     }
 
     /// Copies the SDK's current SSRC and CSRC observations, including native
@@ -1337,19 +1408,29 @@ impl RtpReceiver {
         seconds: Option<f64>,
     ) -> Result<(), RtpReceiverOperationError> {
         ffi::rtp_receiver_set_jitter_buffer_minimum_delay(
-            self.native(), seconds.is_some(), seconds.unwrap_or(0.0),
-        ).then_some(()).ok_or(RtpReceiverOperationError::UnsafeDelayNaN)
+            self.native(),
+            seconds.is_some(),
+            seconds.unwrap_or(0.0),
+        )
+        .then_some(())
+        .ok_or(RtpReceiverOperationError::UnsafeDelayNaN)
     }
 
     /// Shared owning SDK first-packet/receptive-change observer slot.
     /// First-packet notification can fan out to all same-kind receivers and
     /// does not establish delivery to this receiver's SSRC.
     pub fn packet_observer(&self) -> crate::RtpReceiverObserver {
-        crate::RtpReceiverObserver::from_native(ffi::rtp_receiver_observer(self.native()), self.peer.clone())
+        crate::RtpReceiverObserver::from_native(
+            ffi::rtp_receiver_observer(self.native()),
+            self.peer.clone(),
+        )
     }
 
     pub fn dtls_transport(&self) -> Option<crate::DtlsTransport> {
-        crate::DtlsTransport::from_native(ffi::rtp_receiver_dtls(self.native(), self.peer.native()), self.peer.clone())
+        crate::DtlsTransport::from_native(
+            ffi::rtp_receiver_dtls(self.native(), self.peer.native()),
+            self.peer.clone(),
+        )
     }
 
     pub(crate) fn from_native(
@@ -1611,9 +1692,13 @@ impl RtpTransceiver {
         MediaType::from_native(ffi::rtp_transceiver_media_type(self.native()))
     }
 
-    pub fn stopping(&self) -> bool { ffi::rtp_transceiver_stopping(self.native()) }
+    pub fn stopping(&self) -> bool {
+        ffi::rtp_transceiver_stopping(self.native())
+    }
 
-    pub fn receptive(&self) -> bool { ffi::rtp_transceiver_receptive(self.native()) }
+    pub fn receptive(&self) -> bool {
+        ffi::rtp_transceiver_receptive(self.native())
+    }
 
     /// Public SDK Chromium-oriented fired-direction metadata, without
     /// conflating absence with any raw signed enum value.
@@ -1632,9 +1717,9 @@ impl RtpTransceiver {
     /// Full signed SDK direction metadata, including Stopped and unknown values.
     /// This does not change the closed legacy set_direction consumer contract.
     pub fn direction_value(&self) -> crate::RtpTransceiverDirectionValue {
-        crate::RtpTransceiverDirectionValue::from_raw(
-            ffi::rtp_transceiver_direction_value(self.native()),
-        )
+        crate::RtpTransceiverDirectionValue::from_raw(ffi::rtp_transceiver_direction_value(
+            self.native(),
+        ))
     }
 
     /// Exact SDK optional current direction. Native absence is separate from
@@ -1650,19 +1735,27 @@ impl RtpTransceiver {
     /// Unknown raw directions remain metadata, but are rejected here because
     /// later native offer codec selection CHECKs after the SDK accepts them.
     pub fn set_direction_value(
-        &self, direction: crate::RtpTransceiverDirectionValue,
+        &self,
+        direction: crate::RtpTransceiverDirectionValue,
     ) -> Result<(), crate::RtpTransceiverOperationError> {
-        self.check_capability_peer_open().map_err(crate::RtpTransceiverOperationError::Binding)?;
+        self.check_capability_peer_open()
+            .map_err(crate::RtpTransceiverOperationError::Binding)?;
         let mut safe = false;
-        let native = ffi::rtp_transceiver_set_direction_value(self.native(), direction.raw(), &mut safe);
-        if !safe { return Err(crate::RtpTransceiverOperationError::UnsafeDirection(direction.raw())); }
+        let native =
+            ffi::rtp_transceiver_set_direction_value(self.native(), direction.raw(), &mut safe);
+        if !safe {
+            return Err(crate::RtpTransceiverOperationError::UnsafeDirection(
+                direction.raw(),
+            ));
+        }
         Self::capability_install_result(native)
     }
 
     /// The public synchronous SDK stop operation, preserving native RTCError
     /// and idempotent already-stopping behavior. This is not StopInternal.
     pub fn stop_standard(&self) -> Result<(), crate::RtpTransceiverOperationError> {
-        self.check_capability_peer_open().map_err(crate::RtpTransceiverOperationError::Binding)?;
+        self.check_capability_peer_open()
+            .map_err(crate::RtpTransceiverOperationError::Binding)?;
         Self::capability_install_result(ffi::rtp_transceiver_stop_standard(self.native()))
     }
 
@@ -1687,9 +1780,12 @@ impl RtpTransceiver {
     /// Empty means no override; this does not synthesize factory defaults.
     pub fn rtp_codec_preferences(&self) -> Result<Vec<crate::RtpCodecCapability>, PeerError> {
         self.check_capability_peer_open()?;
-        Ok(crate::RtpCapabilities::from_native(
-            ffi::rtp_transceiver_codec_preferences_value(self.native()),
-        ).codecs())
+        Ok(
+            crate::RtpCapabilities::from_native(ffi::rtp_transceiver_codec_preferences_value(
+                self.native(),
+            ))
+            .codecs(),
+        )
     }
 
     /// Complete configured SDK header-extension values for the next negotiation.
@@ -1714,9 +1810,13 @@ impl RtpTransceiver {
         negotiated: bool,
     ) -> Result<Vec<crate::RtpHeaderExtensionCapabilityValue>, PeerError> {
         self.check_capability_peer_open()?;
-        Ok(crate::RtpCapabilities::from_native(
-            ffi::rtp_transceiver_header_capabilities_value(self.native(), negotiated),
-        ).header_extensions())
+        Ok(
+            crate::RtpCapabilities::from_native(ffi::rtp_transceiver_header_capabilities_value(
+                self.native(),
+                negotiated,
+            ))
+            .header_extensions(),
+        )
     }
 
     /// Pass complete codec values to the SDK, including all inherited metadata.
@@ -1727,11 +1827,13 @@ impl RtpTransceiver {
         &self,
         codecs: &[crate::RtpCodecCapability],
     ) -> Result<(), crate::RtpCapabilityInstallError> {
-        self.check_capability_peer_open().map_err(crate::RtpCapabilityInstallError::Binding)?;
+        self.check_capability_peer_open()
+            .map_err(crate::RtpCapabilityInstallError::Binding)?;
         let mut values = crate::RtpCapabilities::default();
         values.set_codecs(codecs);
         Self::capability_install_result(ffi::rtp_transceiver_set_codec_preferences_value(
-            self.native(), values.native(),
+            self.native(),
+            values.native(),
         ))
     }
 
@@ -1744,11 +1846,13 @@ impl RtpTransceiver {
         &self,
         extensions: &[crate::RtpHeaderExtensionCapabilityValue],
     ) -> Result<(), crate::RtpCapabilityInstallError> {
-        self.check_capability_peer_open().map_err(crate::RtpCapabilityInstallError::Binding)?;
+        self.check_capability_peer_open()
+            .map_err(crate::RtpCapabilityInstallError::Binding)?;
         let mut values = crate::RtpCapabilities::default();
         values.set_header_extensions(extensions);
         Self::capability_install_result(ffi::rtp_transceiver_set_header_capabilities_value(
-            self.native(), values.native(),
+            self.native(),
+            values.native(),
         ))
     }
 
@@ -1756,7 +1860,11 @@ impl RtpTransceiver {
         native: cxx::UniquePtr<ffi::NativeRtcError>,
     ) -> Result<(), crate::RtpCapabilityInstallError> {
         let error = crate::RtcError::from_native(native);
-        if error.is_ok() { Ok(()) } else { Err(crate::RtpCapabilityInstallError::Native(error)) }
+        if error.is_ok() {
+            Ok(())
+        } else {
+            Err(crate::RtpCapabilityInstallError::Native(error))
+        }
     }
 
     fn check_capability_peer_open(&self) -> Result<(), PeerError> {

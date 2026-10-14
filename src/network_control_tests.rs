@@ -522,8 +522,12 @@ fn native_full_graph_ownership_and_presence() {
     let trials = environment.field_trials();
     drop(environment);
     let retained = observations.environment.lock().unwrap().take().unwrap();
-    assert_eq!(retained.field_trials().lookup("WebRTC-Pacer-DynamicPadding"),
-        trials.lookup("WebRTC-Pacer-DynamicPadding"));
+    assert_eq!(
+        retained
+            .field_trials()
+            .lookup("WebRTC-Pacer-DynamicPadding"),
+        trials.lookup("WebRTC-Pacer-DynamicPadding")
+    );
     assert!(retained.timestamp().is_finite());
 }
 #[test]
@@ -545,8 +549,14 @@ fn native_factory_product_interval_and_drop_panics_are_contained() {
             Behavior::InvalidUpdate,
             NetworkControllerFailure::InvalidUpdate,
         ),
-        (Behavior::ZeroProbeSize, NetworkControllerFailure::InvalidUpdate),
-        (Behavior::PerProbeOvershoot, NetworkControllerFailure::InvalidUpdate),
+        (
+            Behavior::ZeroProbeSize,
+            NetworkControllerFailure::InvalidUpdate,
+        ),
+        (
+            Behavior::PerProbeOvershoot,
+            NetworkControllerFailure::InvalidUpdate,
+        ),
     ] {
         let observations = Arc::new(Observations::default());
         let (replies, failure) = invoke(
@@ -620,12 +630,17 @@ fn unsafe_probe_timestamp_span_rejects_before_native_expiry_subtraction() {
     );
     assert_eq!(failure, Some(NetworkControllerFailure::InvalidUpdate));
     assert_eq!(replies.len(), 3);
-    assert_eq!(replies[0].probe_cluster_configs[0].at_time,
-        Timestamp::from_native_microsecond_bits(i64::MAX - 1));
+    assert_eq!(
+        replies[0].probe_cluster_configs[0].at_time,
+        Timestamp::from_native_microsecond_bits(i64::MAX - 1)
+    );
     for reply in &replies[1..] {
         assert!(reply.probe_cluster_configs.is_empty());
         assert!(reply.pacer_config.is_none());
-        assert_eq!(reply.target_rate.as_ref().unwrap().target_rate, DataRate::BitsPerSecond(0));
+        assert_eq!(
+            reply.target_rate.as_ref().unwrap().target_rate,
+            DataRate::BitsPerSecond(0)
+        );
     }
     assert_eq!(observations.calls.lock().unwrap().len(), 2);
     assert_eq!(observations.product_drops.load(Ordering::Relaxed), 1);

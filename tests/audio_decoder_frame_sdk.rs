@@ -155,10 +155,17 @@ fn setup(mode: Mode) -> (CallerDecodableAudioFrame, Arc<Evidence>) {
     let environment = Environment::builder().clock(&clock).build().unwrap();
     let format = SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1);
     let factory = AudioEncoderFactory::builtin().unwrap();
-    let encoder = factory.create(&environment, &format, &pulsebeam_webrtc_sys::AudioEncoderOptions {
-        payload_type: 200,
-        codec_pair_id: None,
-    }).unwrap().unwrap();
+    let encoder = factory
+        .create(
+            &environment,
+            &format,
+            &pulsebeam_webrtc_sys::AudioEncoderOptions {
+                payload_type: 200,
+                codec_pair_id: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
     // Pinned G711 SdpToConfig defaults to 20 ms; EncodeImpl accumulates two
     // 10-ms blocks before emitting. Do not confuse sample coding with packet size.
     assert_eq!(encoder.frames_in_next_packet(), 2);

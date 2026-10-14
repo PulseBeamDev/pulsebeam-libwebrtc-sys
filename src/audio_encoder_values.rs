@@ -15,7 +15,10 @@ impl AudioEncoderCodecType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AudioEncoderApplication { Speech, Audio }
+pub enum AudioEncoderApplication {
+    Speech,
+    Audio,
+}
 
 /// Metadata for one contiguous encoding within an appended payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,16 +32,27 @@ pub struct AudioEncodedInfoLeaf {
 }
 impl Default for AudioEncodedInfoLeaf {
     fn default() -> Self {
-        Self { encoded_bytes: 0, encoded_timestamp: 0, payload_type: 0,
-            send_even_if_empty: false, speech: true, encoder_type: AudioEncoderCodecType::OTHER }
+        Self {
+            encoded_bytes: 0,
+            encoded_timestamp: 0,
+            payload_type: 0,
+            send_even_if_empty: false,
+            speech: true,
+            encoder_type: AudioEncoderCodecType::OTHER,
+        }
     }
 }
 
 impl AudioEncodedInfoLeaf {
     pub(crate) fn from_native(value: crate::ffi::FfiAudioEncodedInfoLeaf) -> Self {
-        Self { encoded_bytes: value.encoded_bytes, encoded_timestamp: value.encoded_timestamp,
-            payload_type: value.payload_type, send_even_if_empty: value.send_even_if_empty,
-            speech: value.speech, encoder_type: AudioEncoderCodecType(value.encoder_type) }
+        Self {
+            encoded_bytes: value.encoded_bytes,
+            encoded_timestamp: value.encoded_timestamp,
+            payload_type: value.payload_type,
+            send_even_if_empty: value.send_even_if_empty,
+            speech: value.speech,
+            encoder_type: AudioEncoderCodecType(value.encoder_type),
+        }
     }
 }
 
@@ -67,7 +81,12 @@ pub struct AudioEncoderOptions {
     pub codec_pair_id: Option<AudioCodecPairId>,
 }
 impl Default for AudioEncoderOptions {
-    fn default() -> Self { Self { payload_type: -1, codec_pair_id: None } }
+    fn default() -> Self {
+        Self {
+            payload_type: -1,
+            codec_pair_id: None,
+        }
+    }
 }
 
 /// All optional Audio Network Adaptation statistics. Absence means the
@@ -103,20 +122,30 @@ pub struct BitrateAllocationUpdate {
 }
 impl Default for BitrateAllocationUpdate {
     fn default() -> Self {
-        Self { target_bitrate: DataRate::BitsPerSecond(0), packet_loss_ratio: 0.0,
-            round_trip_time: TimeDelta::plus_infinity(), bwe_period: TimeDelta::plus_infinity(),
-            cwnd_reduce_ratio: 0.0 }
+        Self {
+            target_bitrate: DataRate::BitsPerSecond(0),
+            packet_loss_ratio: 0.0,
+            round_trip_time: TimeDelta::plus_infinity(),
+            bwe_period: TimeDelta::plus_infinity(),
+            cwnd_reduce_ratio: 0.0,
+        }
     }
 }
 impl BitrateAllocationUpdate {
     pub(crate) fn to_native(self) -> crate::ffi::FfiBitrateAllocationUpdate {
         let (target_bitrate, target_kind) = match self.target_bitrate {
             DataRate::BitsPerSecond(value) => (value, 0),
-            DataRate::PositiveInfinity => (0, 1), DataRate::NegativeInfinity => (0, -1),
+            DataRate::PositiveInfinity => (0, 1),
+            DataRate::NegativeInfinity => (0, -1),
         };
-        crate::ffi::FfiBitrateAllocationUpdate { target_bitrate, target_kind,
-            packet_loss_ratio: self.packet_loss_ratio, round_trip_time: self.round_trip_time.native_microsecond_bits(),
-            bwe_period: self.bwe_period.native_microsecond_bits(), cwnd_reduce_ratio: self.cwnd_reduce_ratio }
+        crate::ffi::FfiBitrateAllocationUpdate {
+            target_bitrate,
+            target_kind,
+            packet_loss_ratio: self.packet_loss_ratio,
+            round_trip_time: self.round_trip_time.native_microsecond_bits(),
+            bwe_period: self.bwe_period.native_microsecond_bits(),
+            cwnd_reduce_ratio: self.cwnd_reduce_ratio,
+        }
     }
 }
 
@@ -137,18 +166,28 @@ mod tests {
         assert_eq!(leaf.payload_type, 0);
         assert_eq!(AudioEncoderOptions::default().payload_type, -1);
         assert!(AudioEncoderOptions::default().codec_pair_id.is_none());
-        assert!(AudioNetworkAdaptationStatistics::default().uplink_packet_loss_fraction.is_none());
+        assert!(
+            AudioNetworkAdaptationStatistics::default()
+                .uplink_packet_loss_fraction
+                .is_none()
+        );
         assert_eq!(AudioEncoderOutput::default().info.primary, leaf);
     }
     #[test]
     fn options_retain_native_pair_identity() {
         let id = AudioCodecPairId::create();
-        let options = AudioEncoderOptions { payload_type: 111, codec_pair_id: Some(id.clone()) };
+        let options = AudioEncoderOptions {
+            payload_type: 111,
+            codec_pair_id: Some(id.clone()),
+        };
         assert_eq!(options.clone().codec_pair_id.unwrap(), id);
         let copied = id.copy_value();
         assert_eq!(copied, id);
         let numeric = copied.numeric_representation();
-        drop(options); drop(id);
-        std::thread::spawn(move || assert_eq!(copied.numeric_representation(), numeric)).join().unwrap();
+        drop(options);
+        drop(id);
+        std::thread::spawn(move || assert_eq!(copied.numeric_representation(), numeric))
+            .join()
+            .unwrap();
     }
 }

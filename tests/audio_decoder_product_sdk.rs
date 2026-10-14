@@ -190,10 +190,14 @@ fn setup(mode: Mode) -> (CallerAudioDecoder, Vec<u8>, Arc<Evidence>) {
     let format = SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1);
     let encoder_factory = AudioEncoderFactory::builtin().unwrap();
     let encoder = encoder_factory
-        .create(&environment, &format, &pulsebeam_webrtc_sys::AudioEncoderOptions {
-            payload_type: 200,
-            codec_pair_id: None,
-        })
+        .create(
+            &environment,
+            &format,
+            &pulsebeam_webrtc_sys::AudioEncoderOptions {
+                payload_type: 200,
+                codec_pair_id: None,
+            },
+        )
         .unwrap()
         .unwrap();
     assert_eq!(encoder.frames_in_next_packet(), 2);

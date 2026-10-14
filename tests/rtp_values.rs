@@ -27,8 +27,9 @@ fn native_resolution_value_domain_and_consumption_guard() {
 
 #[test]
 fn native_feedback_constructors_comparison_and_stringifiers() {
-    use pulsebeam_webrtc_sys::{RtcpFeedback, RtcpFeedbackType as T, RtcpFeedbackMessageType as M};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtcpFeedback>();
+    use pulsebeam_webrtc_sys::{RtcpFeedback, RtcpFeedbackMessageType as M, RtcpFeedbackType as T};
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtcpFeedback>();
     let default = RtcpFeedback::default();
     assert_eq!(default.feedback_type(), T::Ccm);
     assert_eq!(default.message_type(), None);
@@ -45,7 +46,15 @@ fn native_feedback_constructors_comparison_and_stringifiers() {
     assert_eq!(value, copy);
     value.set_message_type(None);
     assert_eq!(value, typed);
-    for (kind, text) in [(T::None,"NONE"), (T::Ccm,"CCM"), (T::Lntf,"LNTF"), (T::Nack,"NACK"), (T::Remb,"REMB"), (T::TransportCc,"TRANSPORT_CC"), (T::Ccfb,"CCFB")] {
+    for (kind, text) in [
+        (T::None, "NONE"),
+        (T::Ccm, "CCM"),
+        (T::Lntf, "LNTF"),
+        (T::Nack, "NACK"),
+        (T::Remb, "REMB"),
+        (T::TransportCc, "TRANSPORT_CC"),
+        (T::Ccfb, "CCFB"),
+    ] {
         assert_eq!(kind.native_string(), text);
         assert_eq!(T::optional_native_string(Some(kind)), text);
     }
@@ -57,13 +66,20 @@ fn native_feedback_constructors_comparison_and_stringifiers() {
 
 #[test]
 fn native_codec_preserves_bytes_collections_and_harmless_metadata() {
-    use pulsebeam_webrtc_sys::{RtpCodec, RtpCodecParameter as P, MediaType, RtcpFeedback, RtcpFeedbackType, RtcpFeedbackMessageType};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpCodec>();
+    use pulsebeam_webrtc_sys::{
+        MediaType, RtcpFeedback, RtcpFeedbackMessageType, RtcpFeedbackType, RtpCodec,
+        RtpCodecParameter as P,
+    };
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpCodec>();
     let mut codec = RtpCodec::default();
     assert_eq!(codec.kind(), MediaType::Audio);
     assert_eq!(codec.clock_rate(), None);
     assert_eq!(codec.num_channels(), None);
-    assert_eq!(codec.mime_type_bytes().as_deref(), Some(b"audio/".as_slice()));
+    assert_eq!(
+        codec.mime_type_bytes().as_deref(),
+        Some(b"audio/".as_slice())
+    );
     codec.set_name(b"x\xff\0y");
     codec.set_kind(MediaType::Video);
     codec.set_clock_rate(Some(i32::MIN));
@@ -71,15 +87,49 @@ fn native_codec_preserves_bytes_collections_and_harmless_metadata() {
     assert_eq!(codec.name_bytes(), b"x\xff\0y");
     assert_eq!(codec.clock_rate(), Some(i32::MIN));
     assert_eq!(codec.num_channels(), Some(-7));
-    assert_eq!(codec.mime_type_bytes().as_deref(), Some(b"video/x\xff\0y".as_slice()));
-    codec.set_parameters(&[P { key: vec![0xff, 0], value: vec![0xfe, 0] }, P { key: b"a".to_vec(), value: b"old".to_vec() }, P { key: b"a".to_vec(), value: b"new".to_vec() }]);
-    assert_eq!(codec.parameters(), vec![P { key: b"a".to_vec(), value: b"new".to_vec() }, P { key: vec![0xff, 0], value: vec![0xfe, 0] }]);
+    assert_eq!(
+        codec.mime_type_bytes().as_deref(),
+        Some(b"video/x\xff\0y".as_slice())
+    );
+    codec.set_parameters(&[
+        P {
+            key: vec![0xff, 0],
+            value: vec![0xfe, 0],
+        },
+        P {
+            key: b"a".to_vec(),
+            value: b"old".to_vec(),
+        },
+        P {
+            key: b"a".to_vec(),
+            value: b"new".to_vec(),
+        },
+    ]);
+    assert_eq!(
+        codec.parameters(),
+        vec![
+            P {
+                key: b"a".to_vec(),
+                value: b"new".to_vec()
+            },
+            P {
+                key: vec![0xff, 0],
+                value: vec![0xfe, 0]
+            }
+        ]
+    );
     let feedback = RtcpFeedback::new(RtcpFeedbackType::Nack, RtcpFeedbackMessageType::Pli);
     codec.set_rtcp_feedback(&[feedback.clone()]);
     assert_eq!(codec.rtcp_feedback(), vec![feedback]);
     let copy = codec.clone();
     assert_eq!(copy, codec);
-    assert!(codec.native_string_bytes().unwrap().windows(4).any(|bytes| bytes == b"x\xff\0y"));
+    assert!(
+        codec
+            .native_string_bytes()
+            .unwrap()
+            .windows(4)
+            .any(|bytes| bytes == b"x\xff\0y")
+    );
     codec.set_parameters(&[]);
     assert_ne!(copy, codec);
     codec.clone_from(&copy);
@@ -105,18 +155,44 @@ fn native_codec_fmtp_helpers_use_native_map_and_builder() {
     let mut output = StringBuilder::new("prefix:");
     assert!(!codec.write_fmtp_parameters(&mut output));
     assert_eq!(output.as_bytes(), b"prefix:");
-    codec.set_parameters(&[P { key: b"a".to_vec(), value: b"1".to_vec() }, P { key: b"ptime".to_vec(), value: b"20".to_vec() }]);
+    codec.set_parameters(&[
+        P {
+            key: b"a".to_vec(),
+            value: b"1".to_vec(),
+        },
+        P {
+            key: b"ptime".to_vec(),
+            value: b"20".to_vec(),
+        },
+    ]);
     assert!(codec.write_fmtp_parameters(&mut output));
     assert_eq!(output.as_bytes(), b"prefix:a=1");
     let error = codec.parse_fmtp_parameter_set("b=2;a=3");
     assert!(error.is_ok());
-    assert_eq!(codec.parameters(), vec![P { key: b"a".to_vec(), value: b"3".to_vec() }, P { key: b"b".to_vec(), value: b"2".to_vec() }, P { key: b"ptime".to_vec(), value: b"20".to_vec() }]);
+    assert_eq!(
+        codec.parameters(),
+        vec![
+            P {
+                key: b"a".to_vec(),
+                value: b"3".to_vec()
+            },
+            P {
+                key: b"b".to_vec(),
+                value: b"2".to_vec()
+            },
+            P {
+                key: b"ptime".to_vec(),
+                value: b"20".to_vec()
+            }
+        ]
+    );
 }
 
 #[test]
 fn full_native_encoding_fields_and_copy_semantics() {
-    use pulsebeam_webrtc_sys::{RtpEncodingParameters, Priority, RtpCodec, MediaType};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpEncodingParameters>();
+    use pulsebeam_webrtc_sys::{MediaType, Priority, RtpCodec, RtpEncodingParameters};
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpEncodingParameters>();
     let mut value = RtpEncodingParameters::default();
     assert_eq!(value.ssrc(), None);
     assert_eq!(value.csrcs(), None);
@@ -170,7 +246,10 @@ fn full_native_encoding_fields_and_copy_semantics() {
     assert_ne!(value, copy);
     value.clone_from(&copy);
     assert_eq!(value, copy);
-    assert_eq!(value.scalability_mode_bytes(), copy.scalability_mode_bytes());
+    assert_eq!(
+        value.scalability_mode_bytes(),
+        copy.scalability_mode_bytes()
+    );
     assert_eq!(value.request_key_frame(), copy.request_key_frame());
     let mut child = value.codec().unwrap();
     child.set_name("changed");
@@ -179,7 +258,7 @@ fn full_native_encoding_fields_and_copy_semantics() {
 
 #[test]
 fn native_encoding_equality_and_formatting_are_not_field_derived() {
-    use pulsebeam_webrtc_sys::{RtpEncodingParameters, RtpCodec, MediaType};
+    use pulsebeam_webrtc_sys::{MediaType, RtpCodec, RtpEncodingParameters};
     let value = RtpEncodingParameters::default();
     let mut changed = value.clone();
     changed.set_request_key_frame(true);
@@ -208,10 +287,19 @@ fn native_encoding_equality_and_formatting_are_not_field_derived() {
 
 #[test]
 fn native_priority_value_strong_alias_members_and_conversion() {
-    use pulsebeam_webrtc_sys::{PriorityValue, Priority};
-    fn send_sync<T: Send + Sync>() {} send_sync::<PriorityValue>();
-    for (kind, expected) in [(Priority::VeryLow,128), (Priority::Low,256), (Priority::Medium,512), (Priority::High,1024)] {
-        assert_eq!(PriorityValue::from_priority(kind).unwrap().value(), expected);
+    use pulsebeam_webrtc_sys::{Priority, PriorityValue};
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<PriorityValue>();
+    for (kind, expected) in [
+        (Priority::VeryLow, 128),
+        (Priority::Low, 256),
+        (Priority::Medium, 512),
+        (Priority::High, 1024),
+    ] {
+        assert_eq!(
+            PriorityValue::from_priority(kind).unwrap().value(),
+            expected
+        );
     }
     assert!(PriorityValue::from_priority(Priority::Other(-9)).is_none());
     assert!(PriorityValue::from_priority(Priority::Other(i32::MAX)).is_none());
@@ -241,7 +329,10 @@ fn native_priority_value_strong_alias_members_and_conversion() {
 
 #[test]
 fn native_rtp_template_builder_and_consuming_error_streams() {
-    use pulsebeam_webrtc_sys::{RtpCodec, RtpEncodingParameters, StringBuilder, RtcError, RtcErrorType, RtcErrorDetailType, MediaType};
+    use pulsebeam_webrtc_sys::{
+        MediaType, RtcError, RtcErrorDetailType, RtcErrorType, RtpCodec, RtpEncodingParameters,
+        StringBuilder,
+    };
     let mut codec = RtpCodec::default();
     codec.set_name(b"x\xff\0y");
     codec.set_kind(MediaType::Video);
@@ -299,7 +390,7 @@ fn native_rtp_template_builder_and_consuming_error_streams() {
 
 #[test]
 fn native_rtp_enum_template_streams_preserve_safe_empty_unknown_output() {
-    use pulsebeam_webrtc_sys::{StringBuilder, RtcError, RtcpFeedbackType as T, MediaType};
+    use pulsebeam_webrtc_sys::{MediaType, RtcError, RtcpFeedbackType as T, StringBuilder};
     let mut output = StringBuilder::new("prefix:");
     output.append_feedback_type(T::Nack);
     output.append_feedback_type(T::Other(-9));
@@ -316,7 +407,8 @@ fn native_rtp_enum_template_streams_preserve_safe_empty_unknown_output() {
         .with_appended_optional_feedback_type(Some(T::Remb))
         .with_appended_optional_feedback_type(Some(T::Other(-9)))
         .with_appended_optional_feedback_type(None)
-        .with_appended_media_type(MediaType::Data).unwrap();
+        .with_appended_media_type(MediaType::Data)
+        .unwrap();
     assert_eq!(streamed.string_builder().as_bytes(), output.as_bytes());
     let mut borrowed = RtcError::network_error("prefix:");
     {
@@ -330,14 +422,20 @@ fn native_rtp_enum_template_streams_preserve_safe_empty_unknown_output() {
         assert!(!builder.append_media_type(MediaType::Unsupported));
     }
     assert_eq!(borrowed.string_builder().as_bytes(), output.as_bytes());
-    let mut rejected = streamed.with_appended_media_type(MediaType::Other(-9)).unwrap_err();
+    let mut rejected = streamed
+        .with_appended_media_type(MediaType::Other(-9))
+        .unwrap_err();
     assert_eq!(rejected.string_builder().as_bytes(), output.as_bytes());
 }
 
 #[test]
 fn native_codec_parameters_own_inherited_fields_and_preserve_signed_payloads() {
-    use pulsebeam_webrtc_sys::{RtpCodecParameters, RtpCodec, MediaType, RtcpFeedback, RtcpFeedbackType, RtcpFeedbackMessageType, StringBuilder, RtcError};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpCodecParameters>();
+    use pulsebeam_webrtc_sys::{
+        MediaType, RtcError, RtcpFeedback, RtcpFeedbackMessageType, RtcpFeedbackType, RtpCodec,
+        RtpCodecParameters, StringBuilder,
+    };
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpCodecParameters>();
     let mut value = RtpCodecParameters::default();
     assert_eq!(value.payload_type(), 0);
     assert_eq!(value.base_codec(), RtpCodec::default());
@@ -346,7 +444,10 @@ fn native_codec_parameters_own_inherited_fields_and_preserve_signed_payloads() {
     base.set_kind(MediaType::Video);
     base.set_clock_rate(Some(-9));
     base.set_num_channels(Some(i32::MIN));
-    base.set_rtcp_feedback(&[RtcpFeedback::new(RtcpFeedbackType::Nack, RtcpFeedbackMessageType::GenericNack)]);
+    base.set_rtcp_feedback(&[RtcpFeedback::new(
+        RtcpFeedbackType::Nack,
+        RtcpFeedbackMessageType::GenericNack,
+    )]);
     assert_eq!(value.base_codec(), RtpCodec::default());
     value.set_payload_type(i32::MIN);
     value.set_base_codec(&base);
@@ -365,7 +466,9 @@ fn native_codec_parameters_own_inherited_fields_and_preserve_signed_payloads() {
     let mut output = StringBuilder::default();
     assert!(output.append_codec_parameters(&value));
     assert_eq!(output.as_bytes(), text);
-    let mut error = RtcError::network_error("").with_appended_codec_parameters(&value).unwrap();
+    let mut error = RtcError::network_error("")
+        .with_appended_codec_parameters(&value)
+        .unwrap();
     assert_eq!(error.string_builder().as_bytes(), text);
     let mut borrowed = RtcError::network_error("");
     assert!(borrowed.string_builder().append_codec_parameters(&value));
@@ -388,14 +491,18 @@ fn native_codec_parameters_own_inherited_fields_and_preserve_signed_payloads() {
 
 #[test]
 fn native_rtcp_parameters_defaults_optional_zero_bytes_copy_and_template_streams() {
-    use pulsebeam_webrtc_sys::{RtcpParameters, StringBuilder, RtcError};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtcpParameters>();
+    use pulsebeam_webrtc_sys::{RtcError, RtcpParameters, StringBuilder};
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtcpParameters>();
     let mut value = RtcpParameters::default();
     assert_eq!(value.ssrc(), None);
     assert_eq!(value.cname_bytes(), b"");
     assert!(!value.reduced_size());
     assert!(value.mux());
-    assert_eq!(value.native_string_bytes(), b"{cname: '', reduced_size: false, mux: true}");
+    assert_eq!(
+        value.native_string_bytes(),
+        b"{cname: '', reduced_size: false, mux: true}"
+    );
     value.set_ssrc(Some(0));
     value.set_cname(b"c\xff\0n");
     value.set_reduced_size(true);
@@ -411,7 +518,10 @@ fn native_rtcp_parameters_defaults_optional_zero_bytes_copy_and_template_streams
     value.clone_from(&copy);
     assert_eq!(value, copy);
     let text = value.native_string_bytes();
-    assert_eq!(text, b"{ssrc: 0, cname: 'c\xff\0n', reduced_size: true, mux: false}");
+    assert_eq!(
+        text,
+        b"{ssrc: 0, cname: 'c\xff\0n', reduced_size: true, mux: false}"
+    );
     let mut output = StringBuilder::default();
     output.append_rtcp_parameters(&value);
     assert_eq!(output.as_bytes(), text);
@@ -428,7 +538,8 @@ fn native_rtcp_parameters_defaults_optional_zero_bytes_copy_and_template_streams
 #[test]
 fn native_header_extension_id_full_signed_domain_and_strong_alias_loans() {
     use pulsebeam_webrtc_sys::RtpHeaderExtensionId as Id;
-    fn send_sync<T: Send + Sync>() {} send_sync::<Id>();
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Id>();
     assert_eq!(Id::default(), Id::not_set());
     assert_eq!(Id::default().value(), 0);
     assert!(!Id::default().is_set());
@@ -473,7 +584,8 @@ fn native_header_extension_id_full_signed_domain_and_strong_alias_loans() {
 #[test]
 fn native_rtp_extension_constructors_fields_constants_and_sdk_formatters() {
     use pulsebeam_webrtc_sys::{RtpExtension as E, RtpHeaderExtensionId as Id};
-    fn send_sync<T: Send + Sync>() {} send_sync::<E>();
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<E>();
     let mut value = E::default();
     assert_eq!(value.uri_bytes(), b"");
     assert_eq!(value.id(), Id::not_set());
@@ -496,7 +608,9 @@ fn native_rtp_extension_constructors_fields_constants_and_sdk_formatters() {
     assert!(!E::is_supported_for_video(&uri));
     assert!(E::is_supported_for_video(E::timestamp_offset_uri()));
     assert!(!E::is_supported_for_audio(E::timestamp_offset_uri()));
-    assert!(!E::is_encryption_supported(E::encrypt_header_extensions_uri()));
+    assert!(!E::is_encryption_supported(
+        E::encrypt_header_extensions_uri()
+    ));
     assert!(E::is_encryption_supported(b"unknown\0\xff"));
     assert!(!E::is_supported_for_audio(b"unknown\0\xff"));
     assert!(!E::is_supported_for_video(b"unknown\0\xff"));
@@ -517,13 +631,26 @@ fn native_rtp_extension_constructors_fields_constants_and_sdk_formatters() {
     copy.clone_from(&plain);
     assert_eq!(copy, plain);
     let constants = [
-        E::encrypt_header_extensions_uri(), E::audio_level_uri(), E::timestamp_offset_uri(),
-        E::abs_send_time_uri(), E::absolute_capture_time_uri(), E::video_rotation_uri(),
-        E::video_content_type_uri(), E::video_timing_uri(), E::generic_frame_descriptor_uri_00(),
-        E::dependency_descriptor_uri(), E::video_layers_allocation_uri(),
-        E::transport_sequence_number_uri(), E::transport_sequence_number_v2_uri(),
-        E::playout_delay_uri(), E::color_space_uri(), E::mid_uri(), E::rid_uri(),
-        E::repaired_rid_uri(), E::video_frame_tracking_id_uri(), E::csrc_audio_levels_uri(),
+        E::encrypt_header_extensions_uri(),
+        E::audio_level_uri(),
+        E::timestamp_offset_uri(),
+        E::abs_send_time_uri(),
+        E::absolute_capture_time_uri(),
+        E::video_rotation_uri(),
+        E::video_content_type_uri(),
+        E::video_timing_uri(),
+        E::generic_frame_descriptor_uri_00(),
+        E::dependency_descriptor_uri(),
+        E::video_layers_allocation_uri(),
+        E::transport_sequence_number_uri(),
+        E::transport_sequence_number_v2_uri(),
+        E::playout_delay_uri(),
+        E::color_space_uri(),
+        E::mid_uri(),
+        E::rid_uri(),
+        E::repaired_rid_uri(),
+        E::video_frame_tracking_id_uri(),
+        E::csrc_audio_levels_uri(),
         E::corruption_detection_uri(),
     ];
     assert!(constants.iter().all(|uri| !uri.is_empty()));
@@ -531,25 +658,68 @@ fn native_rtp_extension_constructors_fields_constants_and_sdk_formatters() {
 
 #[test]
 fn native_header_extension_lookup_loans_and_dedup_are_sdk_operations() {
-    use pulsebeam_webrtc_sys::{RtpExtension as E, RtpExtensions, RtpExtensionFilter as F, RtpHeaderExtensionId as Id};
-    fn send_sync<T: Send + Sync>() {} send_sync::<RtpExtensions>();
+    use pulsebeam_webrtc_sys::{
+        RtpExtension as E, RtpExtensionFilter as F, RtpExtensions, RtpHeaderExtensionId as Id,
+    };
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RtpExtensions>();
     let mut values = RtpExtensions::default();
-    for (uri, id, encrypted) in [(b"z", 7, false), (b"z", 1, false), (b"z", 9, true), (b"a", 3, false), (b"a", 4, true)] {
+    for (uri, id, encrypted) in [
+        (b"z", 7, false),
+        (b"z", 1, false),
+        (b"z", 9, true),
+        (b"a", 3, false),
+        (b"a", 4, true),
+    ] {
         values.push(&E::new_encrypted(uri, &Id::new(id), encrypted).unwrap());
     }
     assert_eq!(values.len(), 5);
     assert!(values.get(5).is_none());
-    assert_eq!(values.find_by_uri(b"z", F::DiscardEncrypted).unwrap().unwrap().id().value(), 7);
-    let loan = values.find_by_uri(b"z", F::PreferEncrypted).unwrap().unwrap();
+    assert_eq!(
+        values
+            .find_by_uri(b"z", F::DiscardEncrypted)
+            .unwrap()
+            .unwrap()
+            .id()
+            .value(),
+        7
+    );
+    let loan = values
+        .find_by_uri(b"z", F::PreferEncrypted)
+        .unwrap()
+        .unwrap();
     assert_eq!(loan.uri_bytes(), b"z");
     assert_eq!(loan.id().value(), 9);
     assert!(loan.encrypt());
     assert_eq!(loan.native_string_bytes(), b"[9 z (encrypted)]");
     assert_eq!(loan.to_string_bytes(), b"{uri: z, id: 9, encrypt}");
-    assert_eq!(values.find_by_uri(b"z", F::RequireEncrypted).unwrap().unwrap().to_owned(), loan.to_owned());
-    assert_eq!(values.find_by_uri_and_encryption(b"z", false).unwrap().id().value(), 7);
-    assert!(values.find_by_uri(b"missing", F::PreferEncrypted).unwrap().is_none());
-    assert!(values.find_by_uri_and_encryption(b"missing", false).is_none());
+    assert_eq!(
+        values
+            .find_by_uri(b"z", F::RequireEncrypted)
+            .unwrap()
+            .unwrap()
+            .to_owned(),
+        loan.to_owned()
+    );
+    assert_eq!(
+        values
+            .find_by_uri_and_encryption(b"z", false)
+            .unwrap()
+            .id()
+            .value(),
+        7
+    );
+    assert!(
+        values
+            .find_by_uri(b"missing", F::PreferEncrypted)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        values
+            .find_by_uri_and_encryption(b"missing", false)
+            .is_none()
+    );
     assert!(values.find_by_uri(b"z", F::Other(3)).unwrap().is_none());
     assert!(values.find_by_uri(b"z", F::Other(-1)).is_err());
     assert!(values.deduplicate(F::Other(i32::MAX)).is_err());
@@ -581,7 +751,10 @@ fn native_header_extension_lookup_loans_and_dedup_are_sdk_operations() {
 
 #[test]
 fn native_header_extension_typed_streams_match_sdk_stringify() {
-    use pulsebeam_webrtc_sys::{RtpExtension, RtpExtensions, RtpExtensionFilter, RtpHeaderExtensionId, StringBuilder, RtcError, RtcErrorType};
+    use pulsebeam_webrtc_sys::{
+        RtcError, RtcErrorType, RtpExtension, RtpExtensionFilter, RtpExtensions,
+        RtpHeaderExtensionId, StringBuilder,
+    };
     let id = RtpHeaderExtensionId::new(-9);
     let mut extension = RtpExtension::default();
     extension.set_uri(b"x\0\xff");
@@ -589,7 +762,10 @@ fn native_header_extension_typed_streams_match_sdk_stringify() {
     extension.set_encrypt(true);
     let mut values = RtpExtensions::default();
     values.push(&extension);
-    let loan = values.find_by_uri(b"x\0\xff", RtpExtensionFilter::PreferEncrypted).unwrap().unwrap();
+    let loan = values
+        .find_by_uri(b"x\0\xff", RtpExtensionFilter::PreferEncrypted)
+        .unwrap()
+        .unwrap();
     let mut expected = id.native_string_bytes();
     expected.extend(extension.native_string_bytes());
     expected.extend(loan.native_string_bytes());
@@ -613,9 +789,3 @@ fn native_header_extension_typed_streams_match_sdk_stringify() {
     assert_eq!(error.message_bytes(), expected);
     assert_eq!(error.kind(), RtcErrorType::InvalidState);
 }
-
-
-
-
-
-

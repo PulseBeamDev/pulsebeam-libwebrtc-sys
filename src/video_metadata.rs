@@ -20,7 +20,9 @@ unsafe impl Sync for FrameInstrumentationData {}
 
 impl FrameInstrumentationData {
     pub fn new() -> Self {
-        Self { native: ffi::frame_instrumentation_new() }
+        Self {
+            native: ffi::frame_instrumentation_new(),
+        }
     }
 
     pub(crate) fn native(&self) -> &ffi::NativeFrameInstrumentationData {
@@ -100,12 +102,16 @@ impl FrameInstrumentationData {
 }
 
 impl Default for FrameInstrumentationData {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Clone for FrameInstrumentationData {
     fn clone(&self) -> Self {
-        Self { native: ffi::frame_instrumentation_clone(self.native()) }
+        Self {
+            native: ffi::frame_instrumentation_clone(self.native()),
+        }
     }
 }
 

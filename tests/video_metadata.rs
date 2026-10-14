@@ -12,8 +12,13 @@ fn native_defaults_and_convenience_methods() {
     assert!(value.is_sync_only());
     assert!(value.holds_upper_bits());
 
-    for (index, upper) in [(1, false), (127, false), (128, true),
-        (256, true), (16383, false)] {
+    for (index, upper) in [
+        (1, false),
+        (127, false),
+        (128, true),
+        (256, true),
+        (16383, false),
+    ] {
         assert!(value.set_sequence_index(index));
         assert_eq!(value.holds_upper_bits(), upper);
         value.set_droppable(true);
@@ -138,5 +143,7 @@ fn sdk_copy_assignment_is_independent_and_values_have_no_origin_role() {
         assigned.set_droppable(false);
         assert!(assigned.holds_upper_bits());
         // Final SDK vector destruction is independent of the creating thread.
-    }).join().unwrap();
+    })
+    .join()
+    .unwrap();
 }

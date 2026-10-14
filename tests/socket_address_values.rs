@@ -32,7 +32,10 @@ fn native_ip_value_families_and_interface_flags_are_lossless() {
     assert_eq!(mapped.overhead(), 40);
     assert_eq!(v4.truncate(-1), nil);
     assert_eq!(v4.truncate(0), IpAddress::from(Ipv4Addr::UNSPECIFIED));
-    assert_eq!(v4.truncate(24), IpAddress::from(Ipv4Addr::new(192,0,2,0)));
+    assert_eq!(
+        v4.truncate(24),
+        IpAddress::from(Ipv4Addr::new(192, 0, 2, 0))
+    );
     assert_eq!(v4.truncate(i32::MAX), v4);
     let mask = IpAddress::parse("ffff:ffff:ffff:ffff::").unwrap();
     assert_eq!(mask.count_mask_bits(), 64);
@@ -46,7 +49,10 @@ fn native_ip_value_families_and_interface_flags_are_lossless() {
         assert_eq!(interface.address, IpAddress::from(Ipv6Addr::LOCALHOST));
         assert_eq!(interface.ipv6_flags, flags);
         assert!(interface.to_text().starts_with(b"::1|flags:0x"));
-        assert_ne!(interface, InterfaceAddress::new(interface.address, flags ^ 1));
+        assert_ne!(
+            interface,
+            InterfaceAddress::new(interface.address, flags ^ 1)
+        );
     }
     let private = IpAddress::parse("192.168.1.2").unwrap();
     assert!(private.is_private_network());
@@ -55,7 +61,18 @@ fn native_ip_value_families_and_interface_flags_are_lossless() {
     assert!(shared.is_shared_network());
     let link = IpAddress::parse("fe80::1").unwrap();
     assert!(link.is_link_local());
-    let _ = (link.precedence(), link.is_6bone(), link.is_6to4(), link.is_isatap(), link.is_mac_based(), link.is_nat64(), link.is_site_local(), link.is_teredo(), link.is_ula(), link.is_v4_compatibility());
+    let _ = (
+        link.precedence(),
+        link.is_6bone(),
+        link.is_6to4(),
+        link.is_isatap(),
+        link.is_mac_based(),
+        link.is_nat64(),
+        link.is_site_local(),
+        link.is_teredo(),
+        link.is_ula(),
+        link.is_v4_compatibility(),
+    );
 }
 
 #[test]
@@ -97,7 +114,9 @@ fn native_socket_values_preserve_hostname_bytes_scope_and_clone_state() {
         assert_eq!(copy.host_as_sensitive_uri(), host);
         assert!(copy.is_loopback_ip());
         assert!(copy.is_private_ip());
-    }).join().unwrap();
+    })
+    .join()
+    .unwrap();
     address.clear();
     assert_eq!(address, nil);
     for family in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
@@ -110,9 +129,12 @@ fn native_socket_values_preserve_hostname_bytes_scope_and_clone_state() {
 
 #[test]
 fn native_socket_parse_checks_and_sockaddr_roundtrips_preserve_native_outcomes() {
-    let mut address = SocketAddress::new(Ipv4Addr::new(192,0,2,1), 443);
+    let mut address = SocketAddress::new(Ipv4Addr::new(192, 0, 2, 1), 443);
     assert_eq!(address.parse_into(""), Err(AddressParseError::EmptyInput));
-    assert_eq!(address.parse_into("example:65536"), Err(AddressParseError::PortOutOfRange));
+    assert_eq!(
+        address.parse_into("example:65536"),
+        Err(AddressParseError::PortOutOfRange)
+    );
     assert_eq!(address.port(), 443);
     assert!(!address.parse_into("no-colon").unwrap());
     assert!(address.parse_into("[missing-bracket").unwrap());
@@ -129,16 +151,32 @@ fn native_socket_parse_checks_and_sockaddr_roundtrips_preserve_native_outcomes()
         assert!(storage.written_size() > 0);
         let roundtrip = SocketAddress::from_sockaddr(&storage).unwrap();
         assert_eq!(value, roundtrip);
-        assert_eq!(roundtrip.scope_id(), if value.family() == AddressFamily::Ipv6 { -7 } else { 0 });
-        assert_eq!(IpAddress::from_address_info(Some(&storage)), Some(value.ip_address()));
+        assert_eq!(
+            roundtrip.scope_id(),
+            if value.family() == AddressFamily::Ipv6 {
+                -7
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            IpAddress::from_address_info(Some(&storage)),
+            Some(value.ip_address())
+        );
         let raw = NativeSockAddr::from_native_bytes(storage.as_bytes().to_vec(), false).unwrap();
         assert_eq!(SocketAddress::from_sockaddr(&raw).unwrap(), value);
         let dual = SocketAddress::from_sockaddr(&value.to_dual_stack_sockaddr_storage()).unwrap();
         assert_eq!(dual.family(), AddressFamily::Ipv6);
-        assert_eq!(dual.ip_address().normalized(), value.ip_address().normalized());
+        assert_eq!(
+            dual.ip_address().normalized(),
+            value.ip_address().normalized()
+        );
         let v4 = value.to_sockaddr_in();
-        if value.family() == AddressFamily::Ipv4 { assert_eq!(SocketAddress::from_sockaddr(&v4).unwrap(), value); }
-        else { assert!(SocketAddress::from_sockaddr(&v4).is_none()); }
+        if value.family() == AddressFamily::Ipv4 {
+            assert_eq!(SocketAddress::from_sockaddr(&v4).unwrap(), value);
+        } else {
+            assert!(SocketAddress::from_sockaddr(&v4).is_none());
+        }
     }
     let storage = SocketAddress::default().to_sockaddr_storage();
     assert_eq!(storage.written_size(), 0);

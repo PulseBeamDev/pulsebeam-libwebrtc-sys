@@ -1,5 +1,6 @@
-use pulsebeam_webrtc_sys::{DtlsTransportInformation, DtlsTransportState,
-    SctpTransportInformation, SctpTransportState};
+use pulsebeam_webrtc_sys::{
+    DtlsTransportInformation, DtlsTransportState, SctpTransportInformation, SctpTransportState,
+};
 
 #[test]
 fn native_information_defaults_and_state_only_constructors() {
@@ -32,9 +33,15 @@ fn native_information_defaults_and_state_only_constructors() {
 #[test]
 fn native_information_full_constructors_assignment_and_optional_presence() {
     use pulsebeam_webrtc_sys::{DtlsTransportRole, TlsCertificateChain};
-    let value = DtlsTransportInformation::from_parts(DtlsTransportState::Connected,
-        Some(DtlsTransportRole::Server), Some(0), Some(0), Some(0),
-        Some(TlsCertificateChain::default()), Some(0));
+    let value = DtlsTransportInformation::from_parts(
+        DtlsTransportState::Connected,
+        Some(DtlsTransportRole::Server),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(TlsCertificateChain::default()),
+        Some(0),
+    );
     assert_eq!(value.role(), Some(DtlsTransportRole::Server));
     assert_eq!(value.tls_version(), Some(0));
     assert_eq!(value.ssl_cipher_suite(), Some(0));
@@ -53,7 +60,12 @@ fn native_information_full_constructors_assignment_and_optional_presence() {
     assert_eq!(assigned.role(), Some(DtlsTransportRole::Server));
     assert!(assigned.remote_ssl_certificates().unwrap().is_empty());
 
-    let value = SctpTransportInformation::from_parts(SctpTransportState::Connected, None, Some(0.0), Some(0));
+    let value = SctpTransportInformation::from_parts(
+        SctpTransportState::Connected,
+        None,
+        Some(0.0),
+        Some(0),
+    );
     assert!(value.dtls_transport().is_none());
     assert_eq!(value.max_message_size(), Some(0.0));
     assert_eq!(value.max_channels(), Some(0));
@@ -62,6 +74,9 @@ fn native_information_full_constructors_assignment_and_optional_presence() {
     assert_eq!(assigned.max_message_size(), Some(0.0));
     assert_eq!(assigned.max_channels(), Some(0));
     assert_eq!(SctpTransportState::Connected.native_string(), "Connected");
-    assert_eq!(SctpTransportState::Other(-1).native_string(), "illegal state -1");
+    assert_eq!(
+        SctpTransportState::Other(-1).native_string(),
+        "illegal state -1"
+    );
     assert_eq!(assigned.native_string(), value.native_string());
 }

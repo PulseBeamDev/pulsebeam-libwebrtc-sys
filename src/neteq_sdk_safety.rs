@@ -51,9 +51,13 @@ mod tests {
     use crate::SdpAudioFormat;
 
     fn fields(rate: i32, channels: usize) -> AudioFrameFields {
-        AudioFrameFields { sample_rate_hz: rate, samples_per_channel: rate.max(0) as usize / 100,
-            num_channels: channels, speech_type: AudioFrameSpeechType::NORMAL_SPEECH,
-            ..Default::default() }
+        AudioFrameFields {
+            sample_rate_hz: rate,
+            samples_per_channel: rate.max(0) as usize / 100,
+            num_channels: channels,
+            speech_type: AudioFrameSpeechType::NORMAL_SPEECH,
+            ..Default::default()
+        }
     }
     #[test]
     fn resampler_limits_include_the_kernel_lower_bound_and_multichannel_domain() {
@@ -94,12 +98,20 @@ mod tests {
             assert!(!rtp_clock_rate_is_safe(rate));
         }
         for sample_rate in [i32::MIN, 0, 44100, 48000] {
-            let format = NetEqDecoderFormat { payload_type: i32::MAX, num_channels: i32::MIN,
-                sample_rate_hz: sample_rate, sdp_format: SdpAudioFormat::new(b"custom".to_vec(), maximum, usize::MAX) };
+            let format = NetEqDecoderFormat {
+                payload_type: i32::MAX,
+                num_channels: i32::MIN,
+                sample_rate_hz: sample_rate,
+                sdp_format: SdpAudioFormat::new(b"custom".to_vec(), maximum, usize::MAX),
+            };
             assert!(decoder_format_is_safe(&format));
         }
-        let format = NetEqDecoderFormat { payload_type: 0, num_channels: 1, sample_rate_hz: 48001,
-            sdp_format: SdpAudioFormat::new(b"custom".to_vec(), 48000, 1) };
+        let format = NetEqDecoderFormat {
+            payload_type: 0,
+            num_channels: 1,
+            sample_rate_hz: 48001,
+            sdp_format: SdpAudioFormat::new(b"custom".to_vec(), 48000, 1),
+        };
         assert!(!decoder_format_is_safe(&format));
     }
 }

@@ -122,12 +122,20 @@ fn received_audio_extension_profile(include_level: bool) {
         }
         while alice.try_next_event().is_some() {}
         while bob.try_next_event().is_some() {}
-        if received.is_none() { received = sink.try_next_frame(); }
+        if received.is_none() {
+            received = sink.try_next_frame();
+        }
         while let Some(event) = sent_observer.take_event() {
-            first_sent |= event == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(pulsebeam_webrtc_sys::MediaType::Audio);
+            first_sent |= event
+                == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(
+                    pulsebeam_webrtc_sys::MediaType::Audio,
+                );
         }
         while let Some(event) = received_observer.take_event() {
-            first_received |= event == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(pulsebeam_webrtc_sys::MediaType::Audio);
+            first_received |= event
+                == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(
+                    pulsebeam_webrtc_sys::MediaType::Audio,
+                );
         }
         if received.is_some() && first_sent && first_received {
             break;
@@ -135,7 +143,10 @@ fn received_audio_extension_profile(include_level: bool) {
         clock.advance(Duration::from_millis(1)).unwrap();
         thread::yield_now();
     }
-    assert!(first_sent && first_received, "actual SDK first-media notifications missing");
+    assert!(
+        first_sent && first_received,
+        "actual SDK first-media notifications missing"
+    );
     assert_eq!(sent_observer.take_dropped_events(), 0);
     assert_eq!(received_observer.take_dropped_events(), 0);
     // Retire through one alias and register through another. SDK stock proxies
@@ -148,8 +159,18 @@ fn received_audio_extension_profile(include_level: bool) {
     assert!(receiver_alias.same_resource(&received_observer));
     sender_alias.register_observer(1).unwrap();
     receiver_alias.register_observer(1).unwrap();
-    assert_eq!(sender_alias.take_event(), Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(pulsebeam_webrtc_sys::MediaType::Audio)));
-    assert_eq!(receiver_alias.take_event(), Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(pulsebeam_webrtc_sys::MediaType::Audio)));
+    assert_eq!(
+        sender_alias.take_event(),
+        Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(
+            pulsebeam_webrtc_sys::MediaType::Audio
+        ))
+    );
+    assert_eq!(
+        receiver_alias.take_event(),
+        Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(
+            pulsebeam_webrtc_sys::MediaType::Audio
+        ))
+    );
     sender_alias.unregister_observer();
     receiver_alias.unregister_observer();
     let received = received

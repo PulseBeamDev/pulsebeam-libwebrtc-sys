@@ -52,11 +52,17 @@ impl DtmfSender {
         native: cxx::UniquePtr<ffi::NativeDtmfSender>,
         peer: Rc<PeerInner>,
     ) -> Self {
-        Self(Rc::new(DtmfInner { native, _peer: peer }))
+        Self(Rc::new(DtmfInner {
+            native,
+            _peer: peer,
+        }))
     }
 
     fn native(&self) -> &ffi::NativeDtmfSender {
-        self.0.native.as_ref().expect("validated native DTMF sender")
+        self.0
+            .native
+            .as_ref()
+            .expect("validated native DTMF sender")
     }
 
     pub fn can_insert_tones(&self) -> bool {

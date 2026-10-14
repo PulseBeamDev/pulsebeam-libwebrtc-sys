@@ -9,16 +9,25 @@ use crate::{ClockTimeBounds, Timestamp};
 /// Minus infinity skips the native statistics calculation. Plus infinity
 /// reaches a non-finite TimeDelta::us() call and is never allowed for stock.
 pub(crate) fn receive_time_is_safe(bounds: ClockTimeBounds, receive_time: Timestamp) -> bool {
-    receive_time_bits_are_safe(bounds.minimum().microseconds(),
-        bounds.maximum().microseconds(), receive_time.native_microsecond_bits())
+    receive_time_bits_are_safe(
+        bounds.minimum().microseconds(),
+        bounds.maximum().microseconds(),
+        receive_time.native_microsecond_bits(),
+    )
 }
 
 // Shared with the guarded SDK product, so native virtual calls cannot bypass
 // the Rust facade's receive-time proof. No clock sampling or callbacks occur.
 pub(crate) fn receive_time_bits_are_safe(minimum: i64, maximum: i64, receive: i64) -> bool {
-    if minimum == i64::MIN || maximum == i64::MAX || minimum > maximum { return false; }
-    if receive == i64::MIN { return true; }
-    if receive == i64::MAX { return false; }
+    if minimum == i64::MIN || maximum == i64::MAX || minimum > maximum {
+        return false;
+    }
+    if receive == i64::MIN {
+        return true;
+    }
+    if receive == i64::MAX {
+        return false;
+    }
     let minimum_delta = i128::from(minimum) - i128::from(receive);
     let maximum_delta = i128::from(maximum) - i128::from(receive);
     minimum_delta > i128::from(i64::MIN) && maximum_delta < i128::from(i64::MAX)
@@ -33,17 +42,25 @@ mod tests {
         ClockTimeBounds::new(
             FiniteTimestamp::from_microseconds(minimum).unwrap(),
             FiniteTimestamp::from_microseconds(maximum).unwrap(),
-        ).unwrap()
+        )
+        .unwrap()
     }
-    fn timestamp(value: i64) -> Timestamp { Timestamp::from_microseconds(value).unwrap() }
+    fn timestamp(value: i64) -> Timestamp {
+        Timestamp::from_microseconds(value).unwrap()
+    }
 
     #[test]
     fn unrestricted_clock_allows_only_zero_or_absent_receive_time() {
         let bounds = ClockTimeBounds::all_finite();
         assert!(receive_time_is_safe(bounds, Timestamp::minus_infinity()));
         assert!(receive_time_is_safe(bounds, Timestamp::zero()));
-        for time in [Timestamp::plus_infinity(), timestamp(i64::MIN + 1),
-            timestamp(-1), timestamp(1), timestamp(i64::MAX - 1)] {
+        for time in [
+            Timestamp::plus_infinity(),
+            timestamp(i64::MIN + 1),
+            timestamp(-1),
+            timestamp(1),
+            timestamp(i64::MAX - 1),
+        ] {
             assert!(!receive_time_is_safe(bounds, time));
         }
     }
@@ -81,12 +98,25 @@ mod tests {
     #[test]
     fn endpoint_proof_matches_exhaustive_finite_domain_near_both_sentinels() {
         let ranges = [
-            bounds(-10, 10), bounds(-10, -5), bounds(5, 10),
+            bounds(-10, 10),
+            bounds(-10, -5),
+            bounds(5, 10),
             bounds(i64::MIN + 1, i64::MIN + 5),
             bounds(i64::MAX - 5, i64::MAX - 1),
         ];
-        let receives = [i64::MIN + 1, i64::MIN + 5, -11, -10, -1, 0, 1, 10, 11,
-            i64::MAX - 5, i64::MAX - 1];
+        let receives = [
+            i64::MIN + 1,
+            i64::MIN + 5,
+            -11,
+            -10,
+            -1,
+            0,
+            1,
+            10,
+            11,
+            i64::MAX - 5,
+            i64::MAX - 1,
+        ];
         for range in ranges {
             for receive in receives {
                 let all_safe = (range.minimum().microseconds()..=range.maximum().microseconds())

@@ -130,17 +130,37 @@ fn unique_product_invokes_all_native_methods_before_consuming_conversion() {
     let trace = Arc::new(Trace::default());
     let mut owned = OwnedVideoEncoderSelector::from_provider(Selector(trace.clone()));
     owned.on_current_encoder(&SdpVideoFormat::new("VP8"));
-    assert!(owned.on_available_bitrate(DataRate::BitsPerSecond(7)).unwrap().is_none());
-    assert!(owned.on_resolution_change(&RenderResolution::new(0, -1)).is_none());
-    assert_eq!(owned.on_encoder_broken().unwrap().fields().packetization, Some(vec![]));
+    assert!(
+        owned
+            .on_available_bitrate(DataRate::BitsPerSecond(7))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        owned
+            .on_resolution_change(&RenderResolution::new(0, -1))
+            .is_none()
+    );
+    assert_eq!(
+        owned.on_encoder_broken().unwrap().fields().packetization,
+        Some(vec![])
+    );
     assert_eq!(trace.current.lock().unwrap().len(), 1);
-    assert_eq!(*trace.rates.lock().unwrap(), vec![DataRate::BitsPerSecond(7)]);
+    assert_eq!(
+        *trace.rates.lock().unwrap(),
+        vec![DataRate::BitsPerSecond(7)]
+    );
     assert_eq!(*trace.resolutions.lock().unwrap(), vec![(0, -1)]);
     // Release artifacts preserve finite negative native rates. DCHECK-enabled
     // artifacts report only the actual reached one-sided constructor assertion.
     match owned.on_available_bitrate(DataRate::BitsPerSecond(-1)) {
-        Ok(None) => assert_eq!(trace.rates.lock().unwrap().last(), Some(&DataRate::BitsPerSecond(-1))),
-        Err(VideoEncoderSelectorInputError::NativeNegativeRateAssertion) => assert_eq!(trace.rates.lock().unwrap().len(), 1),
+        Ok(None) => assert_eq!(
+            trace.rates.lock().unwrap().last(),
+            Some(&DataRate::BitsPerSecond(-1))
+        ),
+        Err(VideoEncoderSelectorInputError::NativeNegativeRateAssertion) => {
+            assert_eq!(trace.rates.lock().unwrap().len(), 1)
+        }
         outcome => panic!("unexpected finite negative native rate outcome: {outcome:?}"),
     }
     let shared = owned.into_shared();

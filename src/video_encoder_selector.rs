@@ -249,17 +249,25 @@ impl OwnedVideoEncoderSelector {
     fn native(&self) -> &ffi::NativeOwnedVideoEncoderSelector {
         self.native.as_ref().expect("owning unique SDK selector")
     }
-    pub fn failure(&self) -> Option<VideoEncoderSelectorFailure> { self.failure.failure() }
+    pub fn failure(&self) -> Option<VideoEncoderSelectorFailure> {
+        self.failure.failure()
+    }
     pub fn on_current_encoder(&mut self, format: &SdpVideoFormat) {
         ffi::video_selector_owned_current(self.native(), format.native());
     }
-    pub fn on_available_bitrate(&mut self, rate: DataRate) -> Result<Option<SdpVideoFormat>, VideoEncoderSelectorInputError> {
+    pub fn on_available_bitrate(
+        &mut self,
+        rate: DataRate,
+    ) -> Result<Option<SdpVideoFormat>, VideoEncoderSelectorInputError> {
         let (bits, kind) = rate_parts(rate);
         let mut status = 0;
         let result = ffi::video_selector_owned_bitrate(self.native(), bits, kind, &mut status);
         rate_result(result, status)
     }
-    pub fn on_resolution_change(&mut self, resolution: &RenderResolution) -> Option<SdpVideoFormat> {
+    pub fn on_resolution_change(
+        &mut self,
+        resolution: &RenderResolution,
+    ) -> Option<SdpVideoFormat> {
         let result = ffi::video_selector_owned_resolution(self.native(), resolution.native());
         (!result.is_null()).then(|| SdpVideoFormat::from_native(result))
     }
@@ -298,9 +306,16 @@ impl fmt::Display for VideoEncoderSelectorInputError {
 }
 impl std::error::Error for VideoEncoderSelectorInputError {}
 fn rate_parts(rate: DataRate) -> (i64, i8) {
-    match rate { DataRate::BitsPerSecond(bits) => (bits, 0), DataRate::PositiveInfinity => (0, 1), DataRate::NegativeInfinity => (0, -1) }
+    match rate {
+        DataRate::BitsPerSecond(bits) => (bits, 0),
+        DataRate::PositiveInfinity => (0, 1),
+        DataRate::NegativeInfinity => (0, -1),
+    }
 }
-fn rate_result(result: cxx::UniquePtr<ffi::NativeSdpVideoFormat>, status: i32) -> Result<Option<SdpVideoFormat>, VideoEncoderSelectorInputError> {
+fn rate_result(
+    result: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
+    status: i32,
+) -> Result<Option<SdpVideoFormat>, VideoEncoderSelectorInputError> {
     match status {
         0 => Ok((!result.is_null()).then(|| SdpVideoFormat::from_native(result))),
         1 => Err(VideoEncoderSelectorInputError::FiniteRateSentinel),

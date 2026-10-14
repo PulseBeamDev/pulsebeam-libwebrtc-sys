@@ -18,7 +18,7 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "7281836b761b74386ba98cbaa7af2ecf6507482a728803a095376608f40a2be5";
+    "3e0005d205f075c149980081be40ad0edc3dd8bfb940ef2bc7866e29fbaddaa8";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
     "631b11bc33f55c5fd0b9ab9cd8aaf051a391b2040dc0b75235a860b5e5af45e9";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
@@ -28,24 +28,72 @@ const GENERATED_BRIDGE_SOURCE_SHA256: &str =
 // bytes supports offline Rust-only consumers without running a native compiler.
 const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("Justfile", include_bytes!("../Justfile")),
-    ("tools/native_cc_wrapper.py", include_bytes!("../tools/native_cc_wrapper.py")),
+    (
+        "tools/native_cc_wrapper.py",
+        include_bytes!("../tools/native_cc_wrapper.py"),
+    ),
     ("native/audio.cc", include_bytes!("../native/audio.cc")),
     ("native/audio.h", include_bytes!("../native/audio.h")),
-    ("native/frame_callback_slot.h", include_bytes!("../native/frame_callback_slot.h")),
-    ("native/audio_frame_values.cc", include_bytes!("../native/audio_frame_values.cc")),
-    ("native/audio_frame_values.h", include_bytes!("../native/audio_frame_values.h")),
-    ("native/certificate_generator.cc", include_bytes!("../native/certificate_generator.cc")),
-    ("native/certificate_generator.h", include_bytes!("../native/certificate_generator.h")),
-    ("native/async_dns.cc", include_bytes!("../native/async_dns.cc")),
-    ("native/async_dns.h", include_bytes!("../native/async_dns.h")),
-    ("native/video_bitrate.cc", include_bytes!("../native/video_bitrate.cc")),
-    ("native/video_bitrate.h", include_bytes!("../native/video_bitrate.h")),
-    ("native/video_metadata.cc", include_bytes!("../native/video_metadata.cc")),
-    ("native/video_metadata.h", include_bytes!("../native/video_metadata.h")),
-    ("native/network_control.cc", include_bytes!("../native/network_control.cc")),
-    ("native/network_control.h", include_bytes!("../native/network_control.h")),
-    ("native/network_predictor.cc", include_bytes!("../native/network_predictor.cc")),
-    ("native/network_predictor.h", include_bytes!("../native/network_predictor.h")),
+    (
+        "native/frame_callback_slot.h",
+        include_bytes!("../native/frame_callback_slot.h"),
+    ),
+    (
+        "native/audio_frame_values.cc",
+        include_bytes!("../native/audio_frame_values.cc"),
+    ),
+    (
+        "native/audio_frame_values.h",
+        include_bytes!("../native/audio_frame_values.h"),
+    ),
+    (
+        "native/certificate_generator.cc",
+        include_bytes!("../native/certificate_generator.cc"),
+    ),
+    (
+        "native/certificate_generator.h",
+        include_bytes!("../native/certificate_generator.h"),
+    ),
+    (
+        "native/async_dns.cc",
+        include_bytes!("../native/async_dns.cc"),
+    ),
+    (
+        "native/async_dns.h",
+        include_bytes!("../native/async_dns.h"),
+    ),
+    (
+        "native/video_bitrate.cc",
+        include_bytes!("../native/video_bitrate.cc"),
+    ),
+    (
+        "native/video_bitrate.h",
+        include_bytes!("../native/video_bitrate.h"),
+    ),
+    (
+        "native/video_metadata.cc",
+        include_bytes!("../native/video_metadata.cc"),
+    ),
+    (
+        "native/video_metadata.h",
+        include_bytes!("../native/video_metadata.h"),
+    ),
+    (
+        "native/network_control.cc",
+        include_bytes!("../native/network_control.cc"),
+    ),
+    (
+        "native/network_control.h",
+        include_bytes!("../native/network_control.h"),
+    ),
+    (
+        "native/network_predictor.cc",
+        include_bytes!("../native/network_predictor.cc"),
+    ),
+    (
+        "native/network_predictor.h",
+        include_bytes!("../native/network_predictor.h"),
+    ),
     ("native/fec.cc", include_bytes!("../native/fec.cc")),
     ("native/fec.h", include_bytes!("../native/fec.h")),
     ("native/clock.cc", include_bytes!("../native/clock.cc")),
@@ -60,8 +108,14 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/data_channel.h",
         include_bytes!("../native/data_channel.h"),
     ),
-    ("native/event_log.cc", include_bytes!("../native/event_log.cc")),
-    ("native/event_log.h", include_bytes!("../native/event_log.h")),
+    (
+        "native/event_log.cc",
+        include_bytes!("../native/event_log.cc"),
+    ),
+    (
+        "native/event_log.h",
+        include_bytes!("../native/event_log.h"),
+    ),
     (
         "native/execution.cc",
         include_bytes!("../native/execution.cc"),
@@ -70,12 +124,30 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/execution.h",
         include_bytes!("../native/execution.h"),
     ),
-    ("native/local_network_permission.cc", include_bytes!("../native/local_network_permission.cc")),
-    ("native/local_network_permission.h", include_bytes!("../native/local_network_permission.h")),
-    ("native/media_values.cc", include_bytes!("../native/media_values.cc")),
-    ("native/media_values.h", include_bytes!("../native/media_values.h")),
-    ("native/metronome.cc", include_bytes!("../native/metronome.cc")),
-    ("native/metronome.h", include_bytes!("../native/metronome.h")),
+    (
+        "native/local_network_permission.cc",
+        include_bytes!("../native/local_network_permission.cc"),
+    ),
+    (
+        "native/local_network_permission.h",
+        include_bytes!("../native/local_network_permission.h"),
+    ),
+    (
+        "native/media_values.cc",
+        include_bytes!("../native/media_values.cc"),
+    ),
+    (
+        "native/media_values.h",
+        include_bytes!("../native/media_values.h"),
+    ),
+    (
+        "native/metronome.cc",
+        include_bytes!("../native/metronome.cc"),
+    ),
+    (
+        "native/metronome.h",
+        include_bytes!("../native/metronome.h"),
+    ),
     ("native/network.cc", include_bytes!("../native/network.cc")),
     ("native/network.h", include_bytes!("../native/network.h")),
     (
@@ -86,28 +158,82 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("native/peer.h", include_bytes!("../native/peer.h")),
     ("native/probe.cc", include_bytes!("../native/probe.cc")),
     ("native/probe.h", include_bytes!("../native/probe.h")),
-    ("native/socket_address.cc", include_bytes!("../native/socket_address.cc")),
-    ("native/socket_address.h", include_bytes!("../native/socket_address.h")),
-    ("native/task_queue_provider.cc", include_bytes!("../native/task_queue_provider.cc")),
-    ("native/task_queue_provider.h", include_bytes!("../native/task_queue_provider.h")),
+    (
+        "native/socket_address.cc",
+        include_bytes!("../native/socket_address.cc"),
+    ),
+    (
+        "native/socket_address.h",
+        include_bytes!("../native/socket_address.h"),
+    ),
+    (
+        "native/task_queue_provider.cc",
+        include_bytes!("../native/task_queue_provider.cc"),
+    ),
+    (
+        "native/task_queue_provider.h",
+        include_bytes!("../native/task_queue_provider.h"),
+    ),
     ("native/tls.cc", include_bytes!("../native/tls.cc")),
     ("native/tls.h", include_bytes!("../native/tls.h")),
     ("native/video.cc", include_bytes!("../native/video.cc")),
     ("native/video.h", include_bytes!("../native/video.h")),
-    ("native/frame_transformer.cc", include_bytes!("../native/frame_transformer.cc")),
-    ("native/frame_transformer.h", include_bytes!("../native/frame_transformer.h")),
-    ("native/rtc_error.cc", include_bytes!("../native/rtc_error.cc")),
-    ("native/rtc_error.h", include_bytes!("../native/rtc_error.h")),
-    ("native/rtp_values.cc", include_bytes!("../native/rtp_values.cc")),
-    ("native/rtp_values.h", include_bytes!("../native/rtp_values.h")),
-    ("native/string_builder.cc", include_bytes!("../native/string_builder.cc")),
-    ("native/string_builder.h", include_bytes!("../native/string_builder.h")),
-    ("native/transport.cc", include_bytes!("../native/transport.cc")),
-    ("native/transport.h", include_bytes!("../native/transport.h")),
-    ("native/video_codec_values.cc", include_bytes!("../native/video_codec_values.cc")),
-    ("native/video_codec_values.h", include_bytes!("../native/video_codec_values.h")),
-    ("native/video_encoder_selector.cc", include_bytes!("../native/video_encoder_selector.cc")),
-    ("native/video_encoder_selector.h", include_bytes!("../native/video_encoder_selector.h")),
+    (
+        "native/frame_transformer.cc",
+        include_bytes!("../native/frame_transformer.cc"),
+    ),
+    (
+        "native/frame_transformer.h",
+        include_bytes!("../native/frame_transformer.h"),
+    ),
+    (
+        "native/rtc_error.cc",
+        include_bytes!("../native/rtc_error.cc"),
+    ),
+    (
+        "native/rtc_error.h",
+        include_bytes!("../native/rtc_error.h"),
+    ),
+    (
+        "native/rtp_values.cc",
+        include_bytes!("../native/rtp_values.cc"),
+    ),
+    (
+        "native/rtp_values.h",
+        include_bytes!("../native/rtp_values.h"),
+    ),
+    (
+        "native/string_builder.cc",
+        include_bytes!("../native/string_builder.cc"),
+    ),
+    (
+        "native/string_builder.h",
+        include_bytes!("../native/string_builder.h"),
+    ),
+    (
+        "native/transport.cc",
+        include_bytes!("../native/transport.cc"),
+    ),
+    (
+        "native/transport.h",
+        include_bytes!("../native/transport.h"),
+    ),
+    (
+        "native/video_codec_values.cc",
+        include_bytes!("../native/video_codec_values.cc"),
+    ),
+    (
+        "native/video_codec_values.h",
+        include_bytes!("../native/video_codec_values.h"),
+    ),
+    (
+        "native/video_encoder_selector.cc",
+        include_bytes!("../native/video_encoder_selector.cc"),
+    ),
+    (
+        "native/video_encoder_selector.h",
+        include_bytes!("../native/video_encoder_selector.h"),
+    ),
 ];
 
 fn native_adapter_digest() -> String {
@@ -276,7 +402,8 @@ impl ArtifactManifest {
         // Source-only FFI edits can change layouts/call signatures without
         // changing a native adapter file. Never accept an older pin merely
         // because its archived manifest matches the still-recorded constants.
-        let current_bridge_source = format!("{:x}", Sha256::digest(include_bytes!("../src/lib.rs")));
+        let current_bridge_source =
+            format!("{:x}", Sha256::digest(include_bytes!("../src/lib.rs")));
         if current_bridge_source != BRIDGE_SOURCE_SHA256 {
             return Err("recorded bridge source pin is stale for this Rust FFI; regenerate bridge provenance and build a matching native artifact".to_owned());
         }
@@ -493,7 +620,10 @@ mod tests {
     #[test]
     fn adapter_inventory_covers_all_native_sources_headers_and_build_recipe() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut expected = vec!["Justfile".to_owned(), "tools/native_cc_wrapper.py".to_owned()];
+        let mut expected = vec![
+            "Justfile".to_owned(),
+            "tools/native_cc_wrapper.py".to_owned(),
+        ];
         for entry in std::fs::read_dir(root.join("native")).unwrap() {
             let path = entry.unwrap().path();
             if path.is_file()

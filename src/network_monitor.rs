@@ -1,5 +1,12 @@
-use std::{marker::PhantomData, net::{IpAddr, Ipv4Addr, Ipv6Addr}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
-use crate::{ffi, FieldTrialsSnapshot};
+use crate::{FieldTrialsSnapshot, ffi};
+use std::{
+    marker::PhantomData,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(i32)]
@@ -58,7 +65,9 @@ pub struct NetworkSocket<'a> {
     _borrow: PhantomData<&'a ()>,
 }
 impl NetworkSocket<'_> {
-    pub fn raw_handle(&self) -> i32 { self.handle }
+    pub fn raw_handle(&self) -> i32 {
+        self.handle
+    }
     #[cfg(unix)]
     pub fn borrowed_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         // SAFETY: the native socket remains open throughout its synchronous
@@ -96,17 +105,37 @@ pub trait NetworkMonitor: Send + Sync + 'static {
     fn start(&self);
     fn stop(&self);
     fn interface_info(&self, interface_name: &[u8]) -> NetworkInterfaceInfo;
-    fn supports_socket_binding(&self) -> bool { false }
-    fn bind_socket(&self, _socket: NetworkSocket<'_>, _address: IpAddr, _interface_name: &[u8]) -> NetworkBindingResult {
+    fn supports_socket_binding(&self) -> bool {
+        false
+    }
+    fn bind_socket(
+        &self,
+        _socket: NetworkSocket<'_>,
+        _address: IpAddr,
+        _interface_name: &[u8],
+    ) -> NetworkBindingResult {
         NetworkBindingResult::NotImplemented
     }
 }
 impl<T: NetworkMonitor + ?Sized> NetworkMonitor for Arc<T> {
-    fn start(&self) { (**self).start(); }
-    fn stop(&self) { (**self).stop(); }
-    fn interface_info(&self, name: &[u8]) -> NetworkInterfaceInfo { (**self).interface_info(name) }
-    fn supports_socket_binding(&self) -> bool { (**self).supports_socket_binding() }
-    fn bind_socket(&self, socket: NetworkSocket<'_>, address: IpAddr, name: &[u8]) -> NetworkBindingResult {
+    fn start(&self) {
+        (**self).start();
+    }
+    fn stop(&self) {
+        (**self).stop();
+    }
+    fn interface_info(&self, name: &[u8]) -> NetworkInterfaceInfo {
+        (**self).interface_info(name)
+    }
+    fn supports_socket_binding(&self) -> bool {
+        (**self).supports_socket_binding()
+    }
+    fn bind_socket(
+        &self,
+        socket: NetworkSocket<'_>,
+        address: IpAddr,
+        name: &[u8],
+    ) -> NetworkBindingResult {
         (**self).bind_socket(socket, address, name)
     }
 }
@@ -115,10 +144,18 @@ impl<T: NetworkMonitor + ?Sized> NetworkMonitor for Arc<T> {
 /// None selects the native no-monitor fallback for that manager. A creation
 /// panic also selects that fallback; provider destructors must not panic.
 pub trait NetworkMonitorFactory: Send + Sync + 'static {
-    fn create(&self, trials: FieldTrialsSnapshot, changes: NetworkChangeNotifier) -> Option<Box<dyn NetworkMonitor>>;
+    fn create(
+        &self,
+        trials: FieldTrialsSnapshot,
+        changes: NetworkChangeNotifier,
+    ) -> Option<Box<dyn NetworkMonitor>>;
 }
 impl<T: NetworkMonitorFactory + ?Sized> NetworkMonitorFactory for Arc<T> {
-    fn create(&self, trials: FieldTrialsSnapshot, changes: NetworkChangeNotifier) -> Option<Box<dyn NetworkMonitor>> {
+    fn create(
+        &self,
+        trials: FieldTrialsSnapshot,
+        changes: NetworkChangeNotifier,
+    ) -> Option<Box<dyn NetworkMonitor>> {
         (**self).create(trials, changes)
     }
 }
@@ -130,23 +167,54 @@ pub(crate) struct RustNetworkMonitor {
 }
 impl RustNetworkMonitor {
     fn call<T>(&self, fallback: T, operation: impl FnOnce(&dyn NetworkMonitor) -> T) -> T {
-        if self.failed.load(Ordering::Acquire) { return fallback; }
-        let Some(monitor) = &self.monitor else { return fallback; };
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(monitor.as_ref()))) {
+        if self.failed.load(Ordering::Acquire) {
+            return fallback;
+        }
+        let Some(monitor) = &self.monitor else {
+            return fallback;
+        };
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(monitor.as_ref())))
+        {
             Ok(value) => value,
-            Err(_) => { self.failed.store(true, Ordering::Release); fallback }
+            Err(_) => {
+                self.failed.store(true, Ordering::Release);
+                fallback
+            }
         }
     }
 }
-pub(crate) fn network_monitor_factory_present(factory: &RustNetworkMonitorFactory) -> bool { factory.0.is_some() }
-pub(crate) fn network_monitor_create(factory: &RustNetworkMonitorFactory, trials: cxx::UniquePtr<ffi::NativeFieldTrials>, changes: cxx::SharedPtr<ffi::NativeNetworkChange>) -> Box<RustNetworkMonitor> {
-    let monitor = factory.0.as_ref().and_then(|factory| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        factory.create(FieldTrialsSnapshot::from_native(trials), NetworkChangeNotifier { native: changes })
-    })).ok().flatten());
-    Box::new(RustNetworkMonitor { monitor, failed: AtomicBool::new(false) })
+pub(crate) fn network_monitor_factory_present(factory: &RustNetworkMonitorFactory) -> bool {
+    factory.0.is_some()
 }
-pub(crate) fn network_monitor_present(monitor: &RustNetworkMonitor) -> bool { monitor.monitor.is_some() }
-pub(crate) fn network_monitor_start(monitor: &RustNetworkMonitor) -> bool { monitor.call(false, |value| { value.start(); true }) }
+pub(crate) fn network_monitor_create(
+    factory: &RustNetworkMonitorFactory,
+    trials: cxx::UniquePtr<ffi::NativeFieldTrials>,
+    changes: cxx::SharedPtr<ffi::NativeNetworkChange>,
+) -> Box<RustNetworkMonitor> {
+    let monitor = factory.0.as_ref().and_then(|factory| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            factory.create(
+                FieldTrialsSnapshot::from_native(trials),
+                NetworkChangeNotifier { native: changes },
+            )
+        }))
+        .ok()
+        .flatten()
+    });
+    Box::new(RustNetworkMonitor {
+        monitor,
+        failed: AtomicBool::new(false),
+    })
+}
+pub(crate) fn network_monitor_present(monitor: &RustNetworkMonitor) -> bool {
+    monitor.monitor.is_some()
+}
+pub(crate) fn network_monitor_start(monitor: &RustNetworkMonitor) -> bool {
+    monitor.call(false, |value| {
+        value.start();
+        true
+    })
+}
 pub(crate) fn network_monitor_stop(monitor: &RustNetworkMonitor) {
     // Cleanup remains attempted even after a preceding callback panic.
     if let Some(value) = &monitor.monitor {
@@ -155,24 +223,54 @@ pub(crate) fn network_monitor_stop(monitor: &RustNetworkMonitor) {
         }
     }
 }
-pub(crate) fn network_monitor_info(monitor: &RustNetworkMonitor, name: &[u8]) -> ffi::FfiNetworkInterfaceInfo {
-    let value = monitor.call(NetworkInterfaceInfo::default(), |monitor| monitor.interface_info(name));
-    ffi::FfiNetworkInterfaceInfo { adapter_type: value.adapter_type as i32,
+pub(crate) fn network_monitor_info(
+    monitor: &RustNetworkMonitor,
+    name: &[u8],
+) -> ffi::FfiNetworkInterfaceInfo {
+    let value = monitor.call(NetworkInterfaceInfo::default(), |monitor| {
+        monitor.interface_info(name)
+    });
+    ffi::FfiNetworkInterfaceInfo {
+        adapter_type: value.adapter_type as i32,
         underlying_type_for_vpn: value.underlying_type_for_vpn as i32,
-        preference: value.preference as i32, available: value.available, slice: value.slice as i32 }
+        preference: value.preference as i32,
+        available: value.available,
+        slice: value.slice as i32,
+    }
 }
 pub(crate) fn network_monitor_supports_binding(monitor: &RustNetworkMonitor) -> bool {
     monitor.call(false, |monitor| monitor.supports_socket_binding())
 }
-pub(crate) fn network_monitor_bind(monitor: &RustNetworkMonitor, socket: i32, address: &[u8], name: &[u8]) -> i32 {
-    if socket < 0 { return NetworkBindingResult::Failure as i32; }
+pub(crate) fn network_monitor_bind(
+    monitor: &RustNetworkMonitor,
+    socket: i32,
+    address: &[u8],
+    name: &[u8],
+) -> i32 {
+    if socket < 0 {
+        return NetworkBindingResult::Failure as i32;
+    }
     let address = match address.len() {
-        4 => IpAddr::V4(Ipv4Addr::new(address[0], address[1], address[2], address[3])),
-        16 => { let mut octets = [0; 16]; octets.copy_from_slice(address); IpAddr::V6(Ipv6Addr::from(octets)) },
+        4 => IpAddr::V4(Ipv4Addr::new(
+            address[0], address[1], address[2], address[3],
+        )),
+        16 => {
+            let mut octets = [0; 16];
+            octets.copy_from_slice(address);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
         _ => return NetworkBindingResult::AddressNotFound as i32,
     };
-    monitor.call(NetworkBindingResult::Failure, |monitor| monitor.bind_socket(
-        NetworkSocket { handle: socket, _borrow: PhantomData }, address, name)) as i32
+    monitor.call(NetworkBindingResult::Failure, |monitor| {
+        monitor.bind_socket(
+            NetworkSocket {
+                handle: socket,
+                _borrow: PhantomData,
+            },
+            address,
+            name,
+        )
+    }) as i32
 }
 
 #[cfg(test)]
@@ -184,16 +282,27 @@ mod tests {
         fn stop(&self) {}
         fn interface_info(&self, name: &[u8]) -> NetworkInterfaceInfo {
             assert_eq!(name, b"\xff\0if");
-            NetworkInterfaceInfo { adapter_type: NetworkAdapterType::Vpn,
+            NetworkInterfaceInfo {
+                adapter_type: NetworkAdapterType::Vpn,
                 underlying_type_for_vpn: NetworkAdapterType::Cellular5G,
-                preference: NetworkPreference::NotPreferred, available: true,
-                slice: NetworkSlice::UnifiedCommunications }
+                preference: NetworkPreference::NotPreferred,
+                available: true,
+                slice: NetworkSlice::UnifiedCommunications,
+            }
         }
-        fn supports_socket_binding(&self) -> bool { true }
-        fn bind_socket(&self, socket: NetworkSocket<'_>, address: IpAddr, name: &[u8]) -> NetworkBindingResult {
+        fn supports_socket_binding(&self) -> bool {
+            true
+        }
+        fn bind_socket(
+            &self,
+            socket: NetworkSocket<'_>,
+            address: IpAddr,
+            name: &[u8],
+        ) -> NetworkBindingResult {
             assert_eq!(name, b"\xff\0if");
             assert_eq!(address, IpAddr::V6(Ipv6Addr::LOCALHOST));
-            #[cfg(unix)] {
+            #[cfg(unix)]
+            {
                 use std::os::fd::AsRawFd;
                 assert_eq!(socket.raw_handle(), socket.borrowed_fd().as_raw_fd());
             }
@@ -201,14 +310,20 @@ mod tests {
         }
     }
     fn wrap(monitor: impl NetworkMonitor) -> RustNetworkMonitor {
-        RustNetworkMonitor { monitor: Some(Box::new(monitor)), failed: AtomicBool::new(false) }
+        RustNetworkMonitor {
+            monitor: Some(Box::new(monitor)),
+            failed: AtomicBool::new(false),
+        }
     }
     #[test]
     fn metadata_preserves_all_fields_and_non_utf8_interface_names() {
         let monitor = wrap(Info);
         let info = network_monitor_info(&monitor, b"\xff\0if");
         assert_eq!(info.adapter_type, NetworkAdapterType::Vpn as i32);
-        assert_eq!(info.underlying_type_for_vpn, NetworkAdapterType::Cellular5G as i32);
+        assert_eq!(
+            info.underlying_type_for_vpn,
+            NetworkAdapterType::Cellular5G as i32
+        );
         assert_eq!(info.preference, -1);
         assert!(info.available);
         assert_eq!(info.slice, 1);
@@ -221,15 +336,31 @@ mod tests {
     fn binding_borrows_native_socket_and_preserves_ipv6_and_result() {
         use std::os::fd::AsRawFd;
         let socket = std::os::unix::net::UnixDatagram::unbound().unwrap();
-        assert_eq!(network_monitor_bind(&wrap(Info), socket.as_raw_fd(),
-            &Ipv6Addr::LOCALHOST.octets(), b"\xff\0if"), -4);
-        assert!(socket.local_addr().is_ok(), "callback must not close its borrowed socket");
+        assert_eq!(
+            network_monitor_bind(
+                &wrap(Info),
+                socket.as_raw_fd(),
+                &Ipv6Addr::LOCALHOST.octets(),
+                b"\xff\0if"
+            ),
+            -4
+        );
+        assert!(
+            socket.local_addr().is_ok(),
+            "callback must not close its borrowed socket"
+        );
     }
     struct Panic(Arc<std::sync::atomic::AtomicUsize>);
     impl NetworkMonitor for Panic {
-        fn start(&self) { panic!("provider failure"); }
-        fn stop(&self) { self.0.fetch_add(1, Ordering::SeqCst); }
-        fn interface_info(&self, _name: &[u8]) -> NetworkInterfaceInfo { panic!("must not be called after failure"); }
+        fn start(&self) {
+            panic!("provider failure");
+        }
+        fn stop(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn interface_info(&self, _name: &[u8]) -> NetworkInterfaceInfo {
+            panic!("must not be called after failure");
+        }
     }
     #[test]
     fn callback_failure_is_contained_without_suppressing_stop_cleanup() {

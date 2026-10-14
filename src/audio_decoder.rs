@@ -34,10 +34,13 @@ impl AudioCodecPairId {
     /// Independent SDK value copy of this identity, without consuming another
     /// process-global generated ID. Useful for owning callback option copies.
     pub fn copy_value(&self) -> Self {
-        Self::from_native(ffi::audio_codec_pair_id_copy(self.0.native.as_ref().unwrap()))
+        Self::from_native(ffi::audio_codec_pair_id_copy(
+            self.0.native.as_ref().unwrap(),
+        ))
     }
     pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeAudioCodecPairId>) -> Self {
-        let numeric = ffi::audio_codec_pair_id_numeric(native.as_ref().expect("owned codec pair ID"));
+        let numeric =
+            ffi::audio_codec_pair_id_numeric(native.as_ref().expect("owned codec pair ID"));
         Self(Arc::new(AudioCodecPairIdInner { native, numeric }))
     }
     pub fn numeric_representation(&self) -> u64 {
@@ -149,17 +152,24 @@ pub(crate) struct AudioDecoderTransfer {
 // and frame lifetime operations share the original decoder-state mutex.
 unsafe impl Send for AudioDecoderTransfer {}
 unsafe impl Sync for AudioDecoderTransfer {}
-pub(crate) fn audio_decoder_transfer_native(source: &AudioDecoderTransfer) -> &ffi::NativeAudioDecoder {
+pub(crate) fn audio_decoder_transfer_native(
+    source: &AudioDecoderTransfer,
+) -> &ffi::NativeAudioDecoder {
     source.native.as_ref().expect("owned decoder handoff")
 }
 impl AudioDecoder {
     pub(crate) fn try_into_factory_transfer(self) -> Result<AudioDecoderTransfer, Self> {
         match Arc::try_unwrap(self.0) {
             Ok(inner) => {
-                if !ffi::audio_decoder_factory_transfer_ready(inner.native.as_ref().expect("owning decoder")) {
+                if !ffi::audio_decoder_factory_transfer_ready(
+                    inner.native.as_ref().expect("owning decoder"),
+                ) {
                     return Err(Self(Arc::new(inner)));
                 }
-                Ok(AudioDecoderTransfer { native: inner.native, environment: inner._environment })
+                Ok(AudioDecoderTransfer {
+                    native: inner.native,
+                    environment: inner._environment,
+                })
             }
             Err(inner) => Err(Self(inner)),
         }

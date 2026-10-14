@@ -51,15 +51,32 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
     let other = build(&endpoint_b);
     let capabilities = factory.get_rtp_sender_capabilities(pulsebeam_webrtc_sys::MediaType::Audio);
     assert!(!capabilities.codecs().is_empty());
-    assert!(capabilities.codecs().iter().all(|codec| codec.base_codec().kind() == pulsebeam_webrtc_sys::MediaType::Audio));
-    let receiver_capabilities = factory.get_rtp_receiver_capabilities(pulsebeam_webrtc_sys::MediaType::Audio);
+    assert!(
+        capabilities
+            .codecs()
+            .iter()
+            .all(|codec| codec.base_codec().kind() == pulsebeam_webrtc_sys::MediaType::Audio)
+    );
+    let receiver_capabilities =
+        factory.get_rtp_receiver_capabilities(pulsebeam_webrtc_sys::MediaType::Audio);
     assert!(!receiver_capabilities.codecs().is_empty());
-    for kind in [pulsebeam_webrtc_sys::MediaType::Data, pulsebeam_webrtc_sys::MediaType::Unsupported,
-        pulsebeam_webrtc_sys::MediaType::Any, pulsebeam_webrtc_sys::MediaType::Other(i32::MIN)] {
-        assert_eq!(factory.get_rtp_sender_capabilities(kind), pulsebeam_webrtc_sys::RtpCapabilities::default());
-        assert_eq!(factory.get_rtp_receiver_capabilities(kind), pulsebeam_webrtc_sys::RtpCapabilities::default());
+    for kind in [
+        pulsebeam_webrtc_sys::MediaType::Data,
+        pulsebeam_webrtc_sys::MediaType::Unsupported,
+        pulsebeam_webrtc_sys::MediaType::Any,
+        pulsebeam_webrtc_sys::MediaType::Other(i32::MIN),
+    ] {
+        assert_eq!(
+            factory.get_rtp_sender_capabilities(kind),
+            pulsebeam_webrtc_sys::RtpCapabilities::default()
+        );
+        assert_eq!(
+            factory.get_rtp_receiver_capabilities(kind),
+            pulsebeam_webrtc_sys::RtpCapabilities::default()
+        );
     }
-    let retained_capabilities = factory.get_rtp_sender_capabilities(pulsebeam_webrtc_sys::MediaType::Audio);
+    let retained_capabilities =
+        factory.get_rtp_sender_capabilities(pulsebeam_webrtc_sys::MediaType::Audio);
     let mut changed_capabilities = capabilities.clone();
     changed_capabilities.set_codecs(&[]);
     assert_eq!(retained_capabilities, capabilities);
@@ -112,9 +129,15 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
     let observer = sender.packet_observer();
     let alias = transceiver.sender().packet_observer();
     assert!(observer.same_resource(&alias));
-    assert_eq!(observer.register_observer(0), Err(pulsebeam_webrtc_sys::RtpObserverError::ZeroCapacity));
+    assert_eq!(
+        observer.register_observer(0),
+        Err(pulsebeam_webrtc_sys::RtpObserverError::ZeroCapacity)
+    );
     observer.register_observer(2).unwrap();
-    assert_eq!(alias.register_observer(1), Err(pulsebeam_webrtc_sys::RtpObserverError::AlreadyRegistered));
+    assert_eq!(
+        alias.register_observer(1),
+        Err(pulsebeam_webrtc_sys::RtpObserverError::AlreadyRegistered)
+    );
     assert!(alias.take_event().is_none());
     alias.unregister_observer();
     observer.register_observer(1).unwrap();
@@ -127,11 +150,20 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
     assert_eq!(sender.media_type(), pulsebeam_webrtc_sys::MediaType::Audio);
     assert_eq!(sender.ssrc(), 0);
     let keyframe_error = sender.generate_keyframe(&[vec![0xff, 0]]).unwrap_err();
-    let pulsebeam_webrtc_sys::RtpSenderOperationError::Native(keyframe_error) = keyframe_error else { panic!("actual audio SDK error required") };
-    assert_eq!(keyframe_error.kind(), pulsebeam_webrtc_sys::RtcErrorType::UnsupportedOperation);
+    let pulsebeam_webrtc_sys::RtpSenderOperationError::Native(keyframe_error) = keyframe_error
+    else {
+        panic!("actual audio SDK error required")
+    };
+    assert_eq!(
+        keyframe_error.kind(),
+        pulsebeam_webrtc_sys::RtcErrorType::UnsupportedOperation
+    );
     assert!(!keyframe_error.message_bytes().is_empty());
     let mut initial = sender.init_send_encodings();
-    assert_eq!(initial, vec![pulsebeam_webrtc_sys::RtpEncodingParameters::default()]);
+    assert_eq!(
+        initial,
+        vec![pulsebeam_webrtc_sys::RtpEncodingParameters::default()]
+    );
     initial[0].set_min_bitrate_bps(Some(-7));
     assert_eq!(sender.init_send_encodings()[0].min_bitrate_bps(), None);
     let mut parameters = sender.get_parameters();
@@ -150,10 +182,16 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
     assert!(peer.sctp_transport().is_none());
     sender.set_streams(&["first".into(), "".into(), "first".into(), "second".into()]);
     assert_eq!(sender.stream_ids(), vec!["first", "", "second"]);
-    assert_eq!(sender.stream_id_bytes(), vec![b"first".to_vec(), vec![], b"second".to_vec()]);
+    assert_eq!(
+        sender.stream_id_bytes(),
+        vec![b"first".to_vec(), vec![], b"second".to_vec()]
+    );
     sender.set_streams(&[]);
     assert!(sender.stream_ids().is_empty());
-    let dtmf = transceiver.sender().dtmf_sender().expect("audio native DTMF proxy");
+    let dtmf = transceiver
+        .sender()
+        .dtmf_sender()
+        .expect("audio native DTMF proxy");
     let same_dtmf = transceiver.sender().dtmf_sender().unwrap();
     assert_eq!(dtmf.tones(), "");
     assert_eq!(dtmf.duration_ms(), 100);
@@ -167,11 +205,16 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
     assert_eq!(same_dtmf.take_dropped_tone_changes(), 0);
     assert_eq!(dtmf.insert_tones("1", 39, i32::MAX), Ok(false));
     assert_eq!(dtmf.insert_tones("1", 40, i32::MAX - 40), Ok(false));
-    assert_eq!(dtmf.insert_tones("1", 40, i32::MAX - 39),
-        Err(pulsebeam_webrtc_sys::DtmfInsertError::DelayOverflow));
+    assert_eq!(
+        dtmf.insert_tones("1", 40, i32::MAX - 39),
+        Err(pulsebeam_webrtc_sys::DtmfInsertError::DelayOverflow)
+    );
     // No non-comma tone consumes duration + gap in these inputs.
     assert_eq!(dtmf.insert_tones("x,", 40, i32::MAX), Ok(false));
-    assert_eq!(dtmf.insert_tones_with_comma_delay("1", 40, i32::MAX, 29), Ok(false));
+    assert_eq!(
+        dtmf.insert_tones_with_comma_delay("1", 40, i32::MAX, 29),
+        Ok(false)
+    );
     same_dtmf.unregister_observer();
     assert!(dtmf.register_observer(capacity));
     dtmf.unregister_observer();
@@ -254,25 +297,40 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
     );
     let receivers = bob.audio_receivers().unwrap();
     assert_eq!(receivers.len(), 1);
-    assert_eq!(receivers[0].media_type(), pulsebeam_webrtc_sys::MediaType::Audio);
+    assert_eq!(
+        receivers[0].media_type(),
+        pulsebeam_webrtc_sys::MediaType::Audio
+    );
     assert_eq!(receivers[0].stream_ids(), vec!["voice-stream"]);
     let receiver_snapshot = receivers[0].get_parameters();
     assert!(!receiver_snapshot.codecs().is_empty());
     assert!(!receivers[0].set_parameters(&receiver_snapshot));
     let mut unsupported = receiver_snapshot.clone();
     unsupported.set_transaction_id(b"receiver-tx\xff\0");
-    unsupported.set_degradation_preference(Some(pulsebeam_webrtc_sys::DegradationPreference::Other(i32::MIN)));
+    unsupported.set_degradation_preference(Some(
+        pulsebeam_webrtc_sys::DegradationPreference::Other(i32::MIN),
+    ));
     let mut encodings = unsupported.encodings();
-    for encoding in &mut encodings { encoding.set_bitrate_priority(f64::NAN); }
+    for encoding in &mut encodings {
+        encoding.set_bitrate_priority(f64::NAN);
+    }
     unsupported.set_encodings(&encodings);
     assert!(!receivers[0].set_parameters(&unsupported));
     assert_eq!(receivers[0].get_parameters(), receiver_snapshot);
-    for delay in [Some(0.0), Some(-1.0), Some(f64::INFINITY),
-        Some(f64::NEG_INFINITY), Some(f64::MAX), None] {
+    for delay in [
+        Some(0.0),
+        Some(-1.0),
+        Some(f64::INFINITY),
+        Some(f64::NEG_INFINITY),
+        Some(f64::MAX),
+        None,
+    ] {
         receivers[0].set_jitter_buffer_minimum_delay(delay).unwrap();
     }
-    assert_eq!(receivers[0].set_jitter_buffer_minimum_delay(Some(f64::NAN)),
-        Err(pulsebeam_webrtc_sys::RtpReceiverOperationError::UnsafeDelayNaN));
+    assert_eq!(
+        receivers[0].set_jitter_buffer_minimum_delay(Some(f64::NAN)),
+        Err(pulsebeam_webrtc_sys::RtpReceiverOperationError::UnsafeDelayNaN)
+    );
     // Rejected NaN must not poison the receiver's cached delay or later media.
     assert_ne!(sender.ssrc(), 0);
     let mut sink = receivers[0].attach_audio_sink().unwrap();
@@ -329,9 +387,9 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
         )
     });
     let receiver_sources = receivers[0].get_sources();
-    assert!(receiver_sources.iter().any(|source|
-        source.source_type() == pulsebeam_webrtc_sys::RtpSourceType::Ssrc
-            && source.source_id() == sender.ssrc()));
+    assert!(receiver_sources.iter().any(|source| source.source_type()
+        == pulsebeam_webrtc_sys::RtpSourceType::Ssrc
+        && source.source_id() == sender.ssrc()));
     assert_eq!(received.channels, 1);
     assert_eq!(received.sample_rate_hz, 48_000);
     assert_eq!(
@@ -339,14 +397,29 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
         received.samples_per_channel as usize
     );
     let dtls = sender.dtls_transport().unwrap();
-    let alias = alice.audio_transceivers().unwrap()[0].sender().dtls_transport().unwrap();
+    let alias = alice.audio_transceivers().unwrap()[0]
+        .sender()
+        .dtls_transport()
+        .unwrap();
     assert!(dtls.same_resource(&alias));
-    assert_eq!(dtls.information().state(), pulsebeam_webrtc_sys::DtlsTransportState::Connected);
-    assert_eq!(receivers[0].dtls_transport().unwrap().information().state(), pulsebeam_webrtc_sys::DtlsTransportState::Connected);
-    let dtmf = alice.audio_transceivers().unwrap()[0].sender().dtmf_sender().unwrap();
+    assert_eq!(
+        dtls.information().state(),
+        pulsebeam_webrtc_sys::DtlsTransportState::Connected
+    );
+    assert_eq!(
+        receivers[0].dtls_transport().unwrap().information().state(),
+        pulsebeam_webrtc_sys::DtlsTransportState::Connected
+    );
+    let dtmf = alice.audio_transceivers().unwrap()[0]
+        .sender()
+        .dtmf_sender()
+        .unwrap();
     assert!(dtmf.can_insert_tones());
     assert!(dtmf.register_observer(std::num::NonZeroUsize::new(16).unwrap()));
-    assert_eq!(dtmf.insert_tones_with_comma_delay("a,x#", 40, 30, 30), Ok(true));
+    assert_eq!(
+        dtmf.insert_tones_with_comma_delay("a,x#", 40, 30, 30),
+        Ok(true)
+    );
     assert_eq!(dtmf.duration_ms(), 40);
     assert_eq!(dtmf.inter_tone_gap_ms(), 30);
     assert_eq!(dtmf.comma_delay_ms(), 30);
@@ -361,12 +434,19 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
         }
         thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(tones, vec![
-        ("a".into(), Some(",x#".into())), ("a".into(), None),
-        (",".into(), Some("x#".into())), (",".into(), None),
-        ("#".into(), Some("".into())), ("#".into(), None),
-        ("".into(), Some("".into())), ("".into(), None),
-    ]);
+    assert_eq!(
+        tones,
+        vec![
+            ("a".into(), Some(",x#".into())),
+            ("a".into(), None),
+            (",".into(), Some("x#".into())),
+            (",".into(), None),
+            ("#".into(), Some("".into())),
+            ("#".into(), None),
+            ("".into(), Some("".into())),
+            ("".into(), None),
+        ]
+    );
     assert_eq!(dtmf.tones(), "");
     assert_eq!(dtmf.take_dropped_tone_changes(), 0);
     dtmf.unregister_observer();
@@ -380,9 +460,13 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
         thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(dropped, 1);
-    assert_eq!(dtmf.take_tone_change().unwrap(), pulsebeam_webrtc_sys::DtmfToneChange {
-        tone: "".into(), remaining_tones: None,
-    });
+    assert_eq!(
+        dtmf.take_tone_change().unwrap(),
+        pulsebeam_webrtc_sys::DtmfToneChange {
+            tone: "".into(),
+            remaining_tones: None,
+        }
+    );
     assert_eq!(dtmf.take_dropped_tone_changes(), 0);
     dtmf.unregister_observer();
     drop(dtmf);

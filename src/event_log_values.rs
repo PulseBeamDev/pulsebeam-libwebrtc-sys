@@ -77,16 +77,30 @@ pub struct RtcEventStreamConfig {
 impl From<ffi::FfiRtcEventStreamConfig> for RtcEventStreamConfig {
     fn from(value: ffi::FfiRtcEventStreamConfig) -> Self {
         Self {
-            local_ssrc: value.local_ssrc, remote_ssrc: value.remote_ssrc,
-            rtx_ssrc: value.rtx_ssrc, rsid: value.rsid, remb: value.remb,
-            rtp_extensions: value.extensions.into_iter().map(|extension| RtcEventRtpExtension {
-                uri: extension.uri, id: extension.preferred_id, encrypted: extension.preferred_encrypt,
-            }).collect(),
+            local_ssrc: value.local_ssrc,
+            remote_ssrc: value.remote_ssrc,
+            rtx_ssrc: value.rtx_ssrc,
+            rsid: value.rsid,
+            remb: value.remb,
+            rtp_extensions: value
+                .extensions
+                .into_iter()
+                .map(|extension| RtcEventRtpExtension {
+                    uri: extension.uri,
+                    id: extension.preferred_id,
+                    encrypted: extension.preferred_encrypt,
+                })
+                .collect(),
             rtcp_mode: value.rtcp_mode.into(),
-            codecs: value.codecs.into_iter().map(|codec| RtcEventStreamCodec {
-                payload_name: codec.payload_name, payload_type: codec.payload_type,
-                rtx_payload_type: codec.rtx_payload_type,
-            }).collect(),
+            codecs: value
+                .codecs
+                .into_iter()
+                .map(|codec| RtcEventStreamCodec {
+                    payload_name: codec.payload_name,
+                    payload_type: codec.payload_type,
+                    rtx_payload_type: codec.rtx_payload_type,
+                })
+                .collect(),
         }
     }
 }
@@ -125,34 +139,89 @@ pub struct RtcEventRtpPacket {
 /// event's UTC constructor value has no public accessor in the pinned header.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RtcEventData {
-    AlrState { in_alr: bool },
-    RouteChange { connected: bool, overhead: u32 },
-    RemoteEstimate { link_capacity_lower: RtcEventDataRate, link_capacity_upper: RtcEventDataRate },
+    AlrState {
+        in_alr: bool,
+    },
+    RouteChange {
+        connected: bool,
+        overhead: u32,
+    },
+    RemoteEstimate {
+        link_capacity_lower: RtcEventDataRate,
+        link_capacity_upper: RtcEventDataRate,
+    },
     AudioNetworkAdaptation(RtcEventAudioAdaptation),
-    AudioPlayout { ssrc: u32 },
+    AudioPlayout {
+        ssrc: u32,
+    },
     AudioReceiveStreamConfig(RtcEventStreamConfig),
     AudioSendStreamConfig(RtcEventStreamConfig),
-    BweUpdateDelayBased { bitrate_bps: i32, detector_state: RtcEventBandwidthUsage },
-    BweUpdateLossBased { bitrate_bps: i32, fraction_loss: u8, total_packets: i32 },
+    BweUpdateDelayBased {
+        bitrate_bps: i32,
+        detector_state: RtcEventBandwidthUsage,
+    },
+    BweUpdateLossBased {
+        bitrate_bps: i32,
+        fraction_loss: u8,
+        total_packets: i32,
+    },
     BweUpdateScream {
-        ref_window_bytes: u32, data_in_flight_bytes: u32, target_rate_kbps: u32,
-        smoothed_rtt_ms: u32, avg_queue_delay_ms: u32, l4s_marked_permille: u32,
+        ref_window_bytes: u32,
+        data_in_flight_bytes: u32,
+        target_rate_kbps: u32,
+        smoothed_rtt_ms: u32,
+        avg_queue_delay_ms: u32,
+        l4s_marked_permille: u32,
     },
     DtlsTransportState(RtcEventDtlsState),
-    DtlsWritableState { writable: bool },
-    IceCandidatePairConfig { kind: RtcEventIceConfigType, candidate_pair_id: u32, description: RtcEventIcePairDescription },
-    IceCandidatePair { kind: RtcEventIcePairType, candidate_pair_id: u32, transaction_id: u32 },
-    ProbeClusterCreated { id: i32, bitrate_bps: i32, min_probes: u32, min_bytes: u32 },
-    ProbeResultFailure { id: i32, reason: RtcEventProbeFailure },
-    ProbeResultSuccess { id: i32, bitrate_bps: i32 },
+    DtlsWritableState {
+        writable: bool,
+    },
+    IceCandidatePairConfig {
+        kind: RtcEventIceConfigType,
+        candidate_pair_id: u32,
+        description: RtcEventIcePairDescription,
+    },
+    IceCandidatePair {
+        kind: RtcEventIcePairType,
+        candidate_pair_id: u32,
+        transaction_id: u32,
+    },
+    ProbeClusterCreated {
+        id: i32,
+        bitrate_bps: i32,
+        min_probes: u32,
+        min_bytes: u32,
+    },
+    ProbeResultFailure {
+        id: i32,
+        reason: RtcEventProbeFailure,
+    },
+    ProbeResultSuccess {
+        id: i32,
+        bitrate_bps: i32,
+    },
     RtcpPacketIncoming(Vec<u8>),
     RtcpPacketOutgoing(Vec<u8>),
     RtpPacketIncoming(RtcEventRtpPacket),
-    RtpPacketOutgoing { packet: RtcEventRtpPacket, probe_cluster_id: i32 },
+    RtpPacketOutgoing {
+        packet: RtcEventRtpPacket,
+        probe_cluster_id: i32,
+    },
     VideoReceiveStreamConfig(RtcEventStreamConfig),
     VideoSendStreamConfig(RtcEventStreamConfig),
-    FrameDecoded { render_time_ms: i64, ssrc: u32, width: i32, height: i32, codec: RtcEventVideoCodec, qp: u8 },
-    NetEqSetMinimumDelay { remote_ssrc: u32, minimum_delay_ms: i32 },
+    FrameDecoded {
+        render_time_ms: i64,
+        ssrc: u32,
+        width: i32,
+        height: i32,
+        codec: RtcEventVideoCodec,
+        qp: u8,
+    },
+    NetEqSetMinimumDelay {
+        remote_ssrc: u32,
+        minimum_delay_ms: i32,
+    },
     BeginLog,
     EndLog,
     Unknown(u32),
@@ -162,61 +231,133 @@ impl RtcEventData {
     pub(crate) fn from_native(kind: RtcEventKind, value: ffi::FfiRtcEventPayload) -> Self {
         match kind {
             RtcEventKind::AlrState => Self::AlrState { in_alr: value.flag },
-            RtcEventKind::RouteChange => Self::RouteChange { connected: value.flag, overhead: value.overhead },
-            RtcEventKind::RemoteEstimate => Self::RemoteEstimate {
-                link_capacity_lower: RtcEventDataRate::from_native(value.lower_rate_bps, value.lower_rate_kind),
-                link_capacity_upper: RtcEventDataRate::from_native(value.upper_rate_bps, value.upper_rate_kind),
+            RtcEventKind::RouteChange => Self::RouteChange {
+                connected: value.flag,
+                overhead: value.overhead,
             },
-            RtcEventKind::AudioNetworkAdaptation => Self::AudioNetworkAdaptation(RtcEventAudioAdaptation {
-                bitrate_bps: (value.adaptation_present & 1 != 0).then_some(value.bitrate_bps),
-                frame_length_ms: (value.adaptation_present & 2 != 0).then_some(value.frame_length_ms),
-                uplink_packet_loss_fraction: (value.adaptation_present & 4 != 0).then_some(value.uplink_packet_loss),
-                enable_fec: (value.adaptation_present & 8 != 0).then_some(value.enable_fec),
-                enable_dtx: (value.adaptation_present & 16 != 0).then_some(value.enable_dtx),
-                channels: (value.adaptation_present & 32 != 0).then_some(value.channels),
-            }),
+            RtcEventKind::RemoteEstimate => Self::RemoteEstimate {
+                link_capacity_lower: RtcEventDataRate::from_native(
+                    value.lower_rate_bps,
+                    value.lower_rate_kind,
+                ),
+                link_capacity_upper: RtcEventDataRate::from_native(
+                    value.upper_rate_bps,
+                    value.upper_rate_kind,
+                ),
+            },
+            RtcEventKind::AudioNetworkAdaptation => {
+                Self::AudioNetworkAdaptation(RtcEventAudioAdaptation {
+                    bitrate_bps: (value.adaptation_present & 1 != 0).then_some(value.bitrate_bps),
+                    frame_length_ms: (value.adaptation_present & 2 != 0)
+                        .then_some(value.frame_length_ms),
+                    uplink_packet_loss_fraction: (value.adaptation_present & 4 != 0)
+                        .then_some(value.uplink_packet_loss),
+                    enable_fec: (value.adaptation_present & 8 != 0).then_some(value.enable_fec),
+                    enable_dtx: (value.adaptation_present & 16 != 0).then_some(value.enable_dtx),
+                    channels: (value.adaptation_present & 32 != 0).then_some(value.channels),
+                })
+            }
             RtcEventKind::AudioPlayout => Self::AudioPlayout { ssrc: value.ssrc },
-            RtcEventKind::AudioReceiveStreamConfig => Self::AudioReceiveStreamConfig(value.stream.into()),
+            RtcEventKind::AudioReceiveStreamConfig => {
+                Self::AudioReceiveStreamConfig(value.stream.into())
+            }
             RtcEventKind::AudioSendStreamConfig => Self::AudioSendStreamConfig(value.stream.into()),
-            RtcEventKind::VideoReceiveStreamConfig => Self::VideoReceiveStreamConfig(value.stream.into()),
+            RtcEventKind::VideoReceiveStreamConfig => {
+                Self::VideoReceiveStreamConfig(value.stream.into())
+            }
             RtcEventKind::VideoSendStreamConfig => Self::VideoSendStreamConfig(value.stream.into()),
-            RtcEventKind::BweUpdateDelayBased => Self::BweUpdateDelayBased { bitrate_bps: value.bitrate_bps, detector_state: value.detector_state.into() },
-            RtcEventKind::BweUpdateLossBased => Self::BweUpdateLossBased { bitrate_bps: value.bitrate_bps, fraction_loss: value.fraction_loss, total_packets: value.total_packets },
+            RtcEventKind::BweUpdateDelayBased => Self::BweUpdateDelayBased {
+                bitrate_bps: value.bitrate_bps,
+                detector_state: value.detector_state.into(),
+            },
+            RtcEventKind::BweUpdateLossBased => Self::BweUpdateLossBased {
+                bitrate_bps: value.bitrate_bps,
+                fraction_loss: value.fraction_loss,
+                total_packets: value.total_packets,
+            },
             RtcEventKind::BweUpdateScream => Self::BweUpdateScream {
-                ref_window_bytes: value.ref_window_bytes, data_in_flight_bytes: value.data_in_flight_bytes,
-                target_rate_kbps: value.target_rate_kbps, smoothed_rtt_ms: value.smoothed_rtt_ms,
-                avg_queue_delay_ms: value.avg_queue_delay_ms, l4s_marked_permille: value.l4s_marked_permille,
+                ref_window_bytes: value.ref_window_bytes,
+                data_in_flight_bytes: value.data_in_flight_bytes,
+                target_rate_kbps: value.target_rate_kbps,
+                smoothed_rtt_ms: value.smoothed_rtt_ms,
+                avg_queue_delay_ms: value.avg_queue_delay_ms,
+                l4s_marked_permille: value.l4s_marked_permille,
             },
             RtcEventKind::DtlsTransportState => Self::DtlsTransportState(value.dtls_state.into()),
-            RtcEventKind::DtlsWritableState => Self::DtlsWritableState { writable: value.flag },
+            RtcEventKind::DtlsWritableState => Self::DtlsWritableState {
+                writable: value.flag,
+            },
             RtcEventKind::IceCandidatePairConfig => Self::IceCandidatePairConfig {
-                kind: value.ice_type.into(), candidate_pair_id: value.candidate_pair_id,
+                kind: value.ice_type.into(),
+                candidate_pair_id: value.candidate_pair_id,
                 description: RtcEventIcePairDescription {
-                    local_candidate_type: value.local_candidate_type.into(), local_relay_protocol: value.local_relay_protocol.into(),
-                    local_network_type: value.local_network_type.into(), local_address_family: value.local_address_family.into(),
-                    remote_candidate_type: value.remote_candidate_type.into(), remote_address_family: value.remote_address_family.into(),
+                    local_candidate_type: value.local_candidate_type.into(),
+                    local_relay_protocol: value.local_relay_protocol.into(),
+                    local_network_type: value.local_network_type.into(),
+                    local_address_family: value.local_address_family.into(),
+                    remote_candidate_type: value.remote_candidate_type.into(),
+                    remote_address_family: value.remote_address_family.into(),
                     candidate_pair_protocol: value.candidate_pair_protocol.into(),
                 },
             },
-            RtcEventKind::IceCandidatePair => Self::IceCandidatePair { kind: value.ice_type.into(), candidate_pair_id: value.candidate_pair_id, transaction_id: value.transaction_id },
-            RtcEventKind::ProbeClusterCreated => Self::ProbeClusterCreated { id: value.probe_id, bitrate_bps: value.bitrate_bps, min_probes: value.min_probes, min_bytes: value.min_bytes },
-            RtcEventKind::ProbeResultFailure => Self::ProbeResultFailure { id: value.probe_id, reason: value.failure_reason.into() },
-            RtcEventKind::ProbeResultSuccess => Self::ProbeResultSuccess { id: value.probe_id, bitrate_bps: value.bitrate_bps },
+            RtcEventKind::IceCandidatePair => Self::IceCandidatePair {
+                kind: value.ice_type.into(),
+                candidate_pair_id: value.candidate_pair_id,
+                transaction_id: value.transaction_id,
+            },
+            RtcEventKind::ProbeClusterCreated => Self::ProbeClusterCreated {
+                id: value.probe_id,
+                bitrate_bps: value.bitrate_bps,
+                min_probes: value.min_probes,
+                min_bytes: value.min_bytes,
+            },
+            RtcEventKind::ProbeResultFailure => Self::ProbeResultFailure {
+                id: value.probe_id,
+                reason: value.failure_reason.into(),
+            },
+            RtcEventKind::ProbeResultSuccess => Self::ProbeResultSuccess {
+                id: value.probe_id,
+                bitrate_bps: value.bitrate_bps,
+            },
             RtcEventKind::RtcpPacketIncoming => Self::RtcpPacketIncoming(value.bytes),
             RtcEventKind::RtcpPacketOutgoing => Self::RtcpPacketOutgoing(value.bytes),
             RtcEventKind::RtpPacketIncoming | RtcEventKind::RtpPacketOutgoing => {
                 let packet = RtcEventRtpPacket {
-                    raw_header: value.bytes, packet_length: value.packet_length, header_length: value.header_length,
-                    payload_length: value.payload_length, padding_length: value.padding_length,
-                    ssrc: value.ssrc, timestamp: value.rtp_timestamp, sequence_number: value.sequence_number,
-                    payload_type: value.payload_type, marker: value.marker,
-                    rtx_original_sequence_number: value.has_rtx_sequence_number.then_some(value.rtx_sequence_number),
+                    raw_header: value.bytes,
+                    packet_length: value.packet_length,
+                    header_length: value.header_length,
+                    payload_length: value.payload_length,
+                    padding_length: value.padding_length,
+                    ssrc: value.ssrc,
+                    timestamp: value.rtp_timestamp,
+                    sequence_number: value.sequence_number,
+                    payload_type: value.payload_type,
+                    marker: value.marker,
+                    rtx_original_sequence_number: value
+                        .has_rtx_sequence_number
+                        .then_some(value.rtx_sequence_number),
                 };
-                if kind == RtcEventKind::RtpPacketIncoming { Self::RtpPacketIncoming(packet) }
-                else { Self::RtpPacketOutgoing { packet, probe_cluster_id: value.probe_cluster_id } }
+                if kind == RtcEventKind::RtpPacketIncoming {
+                    Self::RtpPacketIncoming(packet)
+                } else {
+                    Self::RtpPacketOutgoing {
+                        packet,
+                        probe_cluster_id: value.probe_cluster_id,
+                    }
+                }
             }
-            RtcEventKind::FrameDecoded => Self::FrameDecoded { render_time_ms: value.render_time_ms, ssrc: value.ssrc, width: value.width, height: value.height, codec: value.video_codec.into(), qp: value.qp },
-            RtcEventKind::NetEqSetMinimumDelay => Self::NetEqSetMinimumDelay { remote_ssrc: value.ssrc, minimum_delay_ms: value.minimum_delay_ms },
+            RtcEventKind::FrameDecoded => Self::FrameDecoded {
+                render_time_ms: value.render_time_ms,
+                ssrc: value.ssrc,
+                width: value.width,
+                height: value.height,
+                codec: value.video_codec.into(),
+                qp: value.qp,
+            },
+            RtcEventKind::NetEqSetMinimumDelay => Self::NetEqSetMinimumDelay {
+                remote_ssrc: value.ssrc,
+                minimum_delay_ms: value.minimum_delay_ms,
+            },
             RtcEventKind::BeginLog => Self::BeginLog,
             RtcEventKind::EndLog => Self::EndLog,
             RtcEventKind::Unknown(value) => Self::Unknown(value),

@@ -5,7 +5,10 @@ use std::{
     num::NonZeroUsize,
     panic::AssertUnwindSafe,
     path::Path,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -106,7 +109,10 @@ impl EventLogOutput {
     pub fn from_sink(sink: impl EventLogOutputSink) -> Self {
         Self {
             native: ffi::event_log_output_from_sink(Box::new(RustEventLogOutput {
-                state: Mutex::new(OutputState { sink: Box::new(sink), failed: false }),
+                state: Mutex::new(OutputState {
+                    sink: Box::new(sink),
+                    failed: false,
+                }),
             })),
             _exclusive: PhantomData,
         }
@@ -114,8 +120,14 @@ impl EventLogOutput {
 
     /// Use the pinned engine's file output and size-limit semantics. `None`
     /// means unlimited output; a nonzero limit is checked by native writes.
-    pub fn file(path: impl AsRef<Path>, maximum_bytes: Option<NonZeroUsize>) -> Result<Self, EventLogError> {
-        let path = path.as_ref().to_str().ok_or(EventLogError::InvalidFileName)?;
+    pub fn file(
+        path: impl AsRef<Path>,
+        maximum_bytes: Option<NonZeroUsize>,
+    ) -> Result<Self, EventLogError> {
+        let path = path
+            .as_ref()
+            .to_str()
+            .ok_or(EventLogError::InvalidFileName)?;
         if path.as_bytes().contains(&0) {
             return Err(EventLogError::InvalidFileName);
         }
@@ -123,27 +135,39 @@ impl EventLogOutput {
         if native.is_null() {
             return Err(EventLogError::InactiveOutput);
         }
-        Ok(Self { native, _exclusive: PhantomData })
+        Ok(Self {
+            native,
+            _exclusive: PhantomData,
+        })
     }
 
     /// Inspect native activity. A consumed or failed native output is inactive.
     pub fn is_active(&self) -> bool {
-        self.native.as_ref().is_some_and(ffi::event_log_output_native_active)
+        self.native
+            .as_ref()
+            .is_some_and(ffi::event_log_output_native_active)
     }
 
     /// Forward bytes through the actual native output, including native file
     /// size-limit handling and Rust sink failure containment.
     pub fn write(&mut self, bytes: &[u8]) -> bool {
-        if self.native.is_null() { return false; }
+        if self.native.is_null() {
+            return false;
+        }
         ffi::event_log_output_native_write(self.native.pin_mut(), bytes)
     }
 
     pub fn flush(&mut self) {
-        if !self.native.is_null() { ffi::event_log_output_native_flush(self.native.pin_mut()); }
+        if !self.native.is_null() {
+            ffi::event_log_output_native_flush(self.native.pin_mut());
+        }
     }
 
     pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeEventLogOutput>) -> Self {
-        Self { native, _exclusive: PhantomData }
+        Self {
+            native,
+            _exclusive: PhantomData,
+        }
     }
 
     pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeEventLogOutput> {
@@ -155,13 +179,33 @@ impl EventLogOutput {
 /// values remain intact, including test-only kinds not instantiated by peers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RtcEventKind {
-    AlrState, RouteChange, RemoteEstimate, AudioNetworkAdaptation, AudioPlayout,
-    AudioReceiveStreamConfig, AudioSendStreamConfig, BweUpdateDelayBased,
-    BweUpdateLossBased, BweUpdateScream, DtlsTransportState, DtlsWritableState,
-    IceCandidatePairConfig, IceCandidatePair, ProbeClusterCreated,
-    ProbeResultFailure, ProbeResultSuccess, RtcpPacketIncoming, RtcpPacketOutgoing,
-    RtpPacketIncoming, RtpPacketOutgoing, VideoReceiveStreamConfig,
-    VideoSendStreamConfig, FrameDecoded, NetEqSetMinimumDelay, BeginLog, EndLog,
+    AlrState,
+    RouteChange,
+    RemoteEstimate,
+    AudioNetworkAdaptation,
+    AudioPlayout,
+    AudioReceiveStreamConfig,
+    AudioSendStreamConfig,
+    BweUpdateDelayBased,
+    BweUpdateLossBased,
+    BweUpdateScream,
+    DtlsTransportState,
+    DtlsWritableState,
+    IceCandidatePairConfig,
+    IceCandidatePair,
+    ProbeClusterCreated,
+    ProbeResultFailure,
+    ProbeResultSuccess,
+    RtcpPacketIncoming,
+    RtcpPacketOutgoing,
+    RtpPacketIncoming,
+    RtpPacketOutgoing,
+    VideoReceiveStreamConfig,
+    VideoSendStreamConfig,
+    FrameDecoded,
+    NetEqSetMinimumDelay,
+    BeginLog,
+    EndLog,
     Unknown(u32),
 }
 
@@ -178,34 +222,55 @@ unsafe impl Send for RtcEvent {}
 unsafe impl Sync for RtcEvent {}
 
 impl RtcEvent {
-    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self { Self { native } }
-    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent { self.native.as_ref().expect("owned native event") }
+    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self {
+        Self { native }
+    }
+    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent {
+        self.native.as_ref().expect("owned native event")
+    }
 
     /// Use the pinned concrete class's public `Copy` or copy constructor,
     /// preserving native ownership. Begin/end and unknown event classes have
     /// no public copy operation and return `UnsupportedEventKind`.
     pub fn try_clone(&self) -> Result<Self, EventLogError> {
         let native = ffi::rtc_event_copy(self.native());
-        if native.is_null() { Err(EventLogError::UnsupportedEventKind) }
-        else { Ok(Self { native }) }
+        if native.is_null() {
+            Err(EventLogError::UnsupportedEventKind)
+        } else {
+            Ok(Self { native })
+        }
     }
 
     pub fn kind(&self) -> RtcEventKind {
         match ffi::rtc_event_kind(self.native()) {
-            0 => RtcEventKind::AlrState, 1 => RtcEventKind::RouteChange,
-            2 => RtcEventKind::RemoteEstimate, 3 => RtcEventKind::AudioNetworkAdaptation,
-            4 => RtcEventKind::AudioPlayout, 5 => RtcEventKind::AudioReceiveStreamConfig,
-            6 => RtcEventKind::AudioSendStreamConfig, 7 => RtcEventKind::BweUpdateDelayBased,
-            8 => RtcEventKind::BweUpdateLossBased, 9 => RtcEventKind::BweUpdateScream,
-            10 => RtcEventKind::DtlsTransportState, 11 => RtcEventKind::DtlsWritableState,
-            12 => RtcEventKind::IceCandidatePairConfig, 13 => RtcEventKind::IceCandidatePair,
-            14 => RtcEventKind::ProbeClusterCreated, 15 => RtcEventKind::ProbeResultFailure,
-            16 => RtcEventKind::ProbeResultSuccess, 17 => RtcEventKind::RtcpPacketIncoming,
-            18 => RtcEventKind::RtcpPacketOutgoing, 19 => RtcEventKind::RtpPacketIncoming,
-            20 => RtcEventKind::RtpPacketOutgoing, 21 => RtcEventKind::VideoReceiveStreamConfig,
-            22 => RtcEventKind::VideoSendStreamConfig, 23 => RtcEventKind::FrameDecoded,
-            24 => RtcEventKind::NetEqSetMinimumDelay, 0x2501580 => RtcEventKind::BeginLog,
-            0x2501581 => RtcEventKind::EndLog, other => RtcEventKind::Unknown(other),
+            0 => RtcEventKind::AlrState,
+            1 => RtcEventKind::RouteChange,
+            2 => RtcEventKind::RemoteEstimate,
+            3 => RtcEventKind::AudioNetworkAdaptation,
+            4 => RtcEventKind::AudioPlayout,
+            5 => RtcEventKind::AudioReceiveStreamConfig,
+            6 => RtcEventKind::AudioSendStreamConfig,
+            7 => RtcEventKind::BweUpdateDelayBased,
+            8 => RtcEventKind::BweUpdateLossBased,
+            9 => RtcEventKind::BweUpdateScream,
+            10 => RtcEventKind::DtlsTransportState,
+            11 => RtcEventKind::DtlsWritableState,
+            12 => RtcEventKind::IceCandidatePairConfig,
+            13 => RtcEventKind::IceCandidatePair,
+            14 => RtcEventKind::ProbeClusterCreated,
+            15 => RtcEventKind::ProbeResultFailure,
+            16 => RtcEventKind::ProbeResultSuccess,
+            17 => RtcEventKind::RtcpPacketIncoming,
+            18 => RtcEventKind::RtcpPacketOutgoing,
+            19 => RtcEventKind::RtpPacketIncoming,
+            20 => RtcEventKind::RtpPacketOutgoing,
+            21 => RtcEventKind::VideoReceiveStreamConfig,
+            22 => RtcEventKind::VideoSendStreamConfig,
+            23 => RtcEventKind::FrameDecoded,
+            24 => RtcEventKind::NetEqSetMinimumDelay,
+            0x2501580 => RtcEventKind::BeginLog,
+            0x2501581 => RtcEventKind::EndLog,
+            other => RtcEventKind::Unknown(other),
         }
     }
     /// Copy the event's scalar/configuration/byte payload accessors. RTP values
@@ -215,12 +280,22 @@ impl RtcEvent {
         crate::RtcEventData::from_native(self.kind(), ffi::rtc_event_payload(self.native()))
     }
 
-    pub fn timestamp_us(&self) -> i64 { ffi::rtc_event_timestamp_us(self.native()) }
-    pub fn timestamp_ms(&self) -> i64 { self.timestamp_us() / 1000 }
-    pub fn is_config_event(&self) -> bool { ffi::rtc_event_is_config(self.native()) }
-    pub fn group_key(&self) -> u32 { ffi::rtc_event_group_key(self.native()) }
+    pub fn timestamp_us(&self) -> i64 {
+        ffi::rtc_event_timestamp_us(self.native())
+    }
+    pub fn timestamp_ms(&self) -> i64 {
+        self.timestamp_us() / 1000
+    }
+    pub fn is_config_event(&self) -> bool {
+        ffi::rtc_event_is_config(self.native())
+    }
+    pub fn group_key(&self) -> u32 {
+        ffi::rtc_event_group_key(self.native())
+    }
     pub fn set_timestamp_us(&mut self, timestamp_us: i64) -> Result<(), EventLogError> {
-        if timestamp_us == i64::MIN || timestamp_us == i64::MAX { return Err(EventLogError::InvalidTimestamp); }
+        if timestamp_us == i64::MIN || timestamp_us == i64::MAX {
+            return Err(EventLogError::InvalidTimestamp);
+        }
         ffi::rtc_event_set_timestamp(self.native.pin_mut(), timestamp_us);
         Ok(())
     }
@@ -237,16 +312,22 @@ pub struct EventLogEnvironment {
 unsafe impl Send for EventLogEnvironment {}
 unsafe impl Sync for EventLogEnvironment {}
 impl EventLogEnvironment {
-    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeEnvironment>) -> Self { Self { native } }
+    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeEnvironment>) -> Self {
+        Self { native }
+    }
     pub fn time_us(&self) -> i64 {
         ffi::environment_time_us(self.native.as_ref().expect("provider environment"))
     }
     /// Exact native CurrentTime, independent of the legacy microsecond query.
     pub fn timestamp(&self) -> crate::Timestamp {
-        crate::Timestamp::from_native_microsecond_bits(ffi::environment_timestamp(self.native.as_ref().expect("provider environment")))
+        crate::Timestamp::from_native_microsecond_bits(ffi::environment_timestamp(
+            self.native.as_ref().expect("provider environment"),
+        ))
     }
     pub fn field_trials(&self) -> crate::FieldTrialsSnapshot {
-        crate::FieldTrialsSnapshot::from_native(ffi::environment_field_trials(self.native.as_ref().expect("provider environment")))
+        crate::FieldTrialsSnapshot::from_native(ffi::environment_field_trials(
+            self.native.as_ref().expect("provider environment"),
+        ))
     }
 }
 
@@ -262,7 +343,9 @@ pub struct EventLogStopCompletion {
 // RtcEventLog's async contract permits completion on an output execution queue.
 unsafe impl Send for EventLogStopCompletion {}
 impl EventLogStopCompletion {
-    pub fn complete(self) { ffi::event_log_stop_complete(self.native); }
+    pub fn complete(self) {
+        ffi::event_log_stop_complete(self.native);
+    }
 }
 
 /// Thread-safe, retained implementation of native RTC event logging.
@@ -293,19 +376,37 @@ pub trait RtcEventLogFactory: Send + Sync + 'static {
 }
 
 impl<T: RtcEventLogger + ?Sized> RtcEventLogger for Arc<T> {
-    fn start(&self, output: EventLogOutput, period: EventLogOutputPeriod) -> bool { (**self).start(output, period) }
-    fn stop(&self) { (**self).stop(); }
-    fn stop_async(&self, completion: EventLogStopCompletion) { (**self).stop_async(completion); }
-    fn log(&self, event: RtcEvent) { (**self).log(event); }
+    fn start(&self, output: EventLogOutput, period: EventLogOutputPeriod) -> bool {
+        (**self).start(output, period)
+    }
+    fn stop(&self) {
+        (**self).stop();
+    }
+    fn stop_async(&self, completion: EventLogStopCompletion) {
+        (**self).stop_async(completion);
+    }
+    fn log(&self, event: RtcEvent) {
+        (**self).log(event);
+    }
 }
 impl<T: RtcEventLogger + ?Sized> RtcEventLogger for Box<T> {
-    fn start(&self, output: EventLogOutput, period: EventLogOutputPeriod) -> bool { (**self).start(output, period) }
-    fn stop(&self) { (**self).stop(); }
-    fn stop_async(&self, completion: EventLogStopCompletion) { (**self).stop_async(completion); }
-    fn log(&self, event: RtcEvent) { (**self).log(event); }
+    fn start(&self, output: EventLogOutput, period: EventLogOutputPeriod) -> bool {
+        (**self).start(output, period)
+    }
+    fn stop(&self) {
+        (**self).stop();
+    }
+    fn stop_async(&self, completion: EventLogStopCompletion) {
+        (**self).stop_async(completion);
+    }
+    fn log(&self, event: RtcEvent) {
+        (**self).log(event);
+    }
 }
 impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
-    fn create(&self, environment: EventLogEnvironment) -> Box<dyn RtcEventLogger> { (**self).create(environment) }
+    fn create(&self, environment: EventLogEnvironment) -> Box<dyn RtcEventLogger> {
+        (**self).create(environment)
+    }
 }
 
 pub(crate) struct RustRtcEventLogFactory(pub Arc<dyn RtcEventLogFactory>);
@@ -315,36 +416,99 @@ pub(crate) struct RustRtcEventLog {
 }
 impl RustRtcEventLog {
     pub(crate) fn from_logger(logger: Option<Box<dyn RtcEventLogger>>) -> Box<Self> {
-        Box::new(Self { logger, failed: AtomicBool::new(false) })
+        Box::new(Self {
+            logger,
+            failed: AtomicBool::new(false),
+        })
     }
 }
-pub(crate) fn rust_event_log_create(factory: &RustRtcEventLogFactory, environment: cxx::UniquePtr<ffi::NativeEnvironment>) -> Box<RustRtcEventLog> {
-    let logger = std::panic::catch_unwind(AssertUnwindSafe(|| factory.0.create(EventLogEnvironment { native: environment }))).ok();
-    Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(false) })
+pub(crate) fn rust_event_log_create(
+    factory: &RustRtcEventLogFactory,
+    environment: cxx::UniquePtr<ffi::NativeEnvironment>,
+) -> Box<RustRtcEventLog> {
+    let logger = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        factory.0.create(EventLogEnvironment {
+            native: environment,
+        })
+    }))
+    .ok();
+    Box::new(RustRtcEventLog {
+        logger,
+        failed: AtomicBool::new(false),
+    })
 }
-pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool { logger.logger.is_some() }
-pub(crate) fn rust_event_log_start(logger: &RustRtcEventLog, output: cxx::UniquePtr<ffi::NativeEventLogOutput>, period_ms: i64) -> bool {
-    if logger.failed.load(Ordering::Acquire) || period_ms < 0 { return false; }
-    let period = if period_ms == 0 { EventLogOutputPeriod::Immediate } else { EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64)) };
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| logger.logger.as_ref().is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period))));
-    match result { Ok(result) => result, Err(_) => { logger.failed.store(true, Ordering::Release); false } }
+pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool {
+    logger.logger.is_some()
+}
+pub(crate) fn rust_event_log_start(
+    logger: &RustRtcEventLog,
+    output: cxx::UniquePtr<ffi::NativeEventLogOutput>,
+    period_ms: i64,
+) -> bool {
+    if logger.failed.load(Ordering::Acquire) || period_ms < 0 {
+        return false;
+    }
+    let period = if period_ms == 0 {
+        EventLogOutputPeriod::Immediate
+    } else {
+        EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64))
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        logger
+            .logger
+            .as_ref()
+            .is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period))
+    }));
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            logger.failed.store(true, Ordering::Release);
+            false
+        }
+    }
 }
 pub(crate) fn rust_event_log_stop(logger: &RustRtcEventLog) {
-    if std::panic::catch_unwind(AssertUnwindSafe(|| { if let Some(logger) = &logger.logger { logger.stop(); } })).is_err() {
+    if std::panic::catch_unwind(AssertUnwindSafe(|| {
+        if let Some(logger) = &logger.logger {
+            logger.stop();
+        }
+    }))
+    .is_err()
+    {
         logger.failed.store(true, Ordering::Release);
     }
 }
-pub(crate) fn rust_event_log_stop_async(logger: &RustRtcEventLog, completion: cxx::UniquePtr<ffi::NativeEventLogStop>) {
+pub(crate) fn rust_event_log_stop_async(
+    logger: &RustRtcEventLog,
+    completion: cxx::UniquePtr<ffi::NativeEventLogStop>,
+) {
     if std::panic::catch_unwind(AssertUnwindSafe(|| {
         let completion = EventLogStopCompletion { native: completion };
-        if let Some(logger) = &logger.logger { logger.stop_async(completion); }
-    })).is_err() { logger.failed.store(true, Ordering::Release); }
+        if let Some(logger) = &logger.logger {
+            logger.stop_async(completion);
+        }
+    }))
+    .is_err()
+    {
+        logger.failed.store(true, Ordering::Release);
+    }
 }
-pub(crate) fn rust_event_log_log(logger: &RustRtcEventLog, event: cxx::UniquePtr<ffi::NativeRtcEvent>) {
-    if logger.failed.load(Ordering::Acquire) { return; }
+pub(crate) fn rust_event_log_log(
+    logger: &RustRtcEventLog,
+    event: cxx::UniquePtr<ffi::NativeRtcEvent>,
+) {
+    if logger.failed.load(Ordering::Acquire) {
+        return;
+    }
     if std::panic::catch_unwind(AssertUnwindSafe(|| {
-        if let Some(logger) = &logger.logger { logger.log(RtcEvent { native: event }); }
-    })).is_err() { logger.failed.store(true, Ordering::Release); }
+        if let Some(logger) = &logger.logger {
+            logger.log(RtcEvent { native: event });
+        }
+    }))
+    .is_err()
+    {
+        logger.failed.store(true, Ordering::Release);
+    }
 }
 
 struct OutputState {
@@ -357,30 +521,43 @@ pub(crate) struct RustEventLogOutput {
 }
 
 pub(crate) fn event_log_output_active(output: &RustEventLogOutput) -> bool {
-    let mut state = output.state.lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = output
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if state.failed {
         return false;
     }
     match std::panic::catch_unwind(AssertUnwindSafe(|| state.sink.is_active())) {
         Ok(true) => true,
-        _ => { state.failed = true; false }
+        _ => {
+            state.failed = true;
+            false
+        }
     }
 }
 
 pub(crate) fn event_log_output_write(output: &RustEventLogOutput, bytes: &[u8]) -> bool {
-    let mut state = output.state.lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = output
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if state.failed {
         return false;
     }
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         state.sink.is_active() && state.sink.write(bytes)
-    })).unwrap_or(false);
+    }))
+    .unwrap_or(false);
     state.failed = !result;
     result
 }
 
 pub(crate) fn event_log_output_flush(output: &RustEventLogOutput) {
-    let mut state = output.state.lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = output
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if !state.failed && std::panic::catch_unwind(AssertUnwindSafe(|| state.sink.flush())).is_err() {
         state.failed = true;
     }

@@ -433,7 +433,9 @@ fn bad_turn_credentials_fail_without_relay_candidates() {
 
 #[test]
 fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
-    use pulsebeam_webrtc_sys::{PeerConnectionDependencies, TlsCertificate, TlsCertificateChain, TlsCertificateVerifier};
+    use pulsebeam_webrtc_sys::{
+        PeerConnectionDependencies, TlsCertificate, TlsCertificateChain, TlsCertificateVerifier,
+    };
     use std::sync::{Arc, Mutex};
     struct Verify {
         expected: Vec<u8>,
@@ -445,38 +447,74 @@ fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
         fn verify_chain(&self, chain: &TlsCertificateChain) -> bool {
             self.observed.lock().unwrap().push(chain.clone());
             assert!(!self.panic, "intentional verifier callback panic");
-            self.permit && chain.get(0).is_some_and(|leaf| leaf.to_der() == self.expected)
+            self.permit
+                && chain
+                    .get(0)
+                    .is_some_and(|leaf| leaf.to_der() == self.expected)
         }
     }
-    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout).unwrap().trim().to_owned();
+    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
     let fixture = FixtureCertificate::new(&hostname);
-    let expected = TlsCertificate::from_pem(&std::fs::read_to_string(&fixture.cert).unwrap()).unwrap().to_der();
+    let expected = TlsCertificate::from_pem(&std::fs::read_to_string(&fixture.cert).unwrap())
+        .unwrap()
+        .to_der();
     let (_server, _ip, port) = TurnServer::start_with_tls(Some((&fixture.cert, &fixture.key)));
     let factory = PeerConnectionFactory::builder().build().unwrap();
     for (permit, panic) in [(true, false), (false, false), (true, true)] {
         let observed = Arc::new(Mutex::new(Vec::new()));
-        let provider = Arc::new(Verify { expected: expected.clone(), observed: observed.clone(), permit, panic });
+        let provider = Arc::new(Verify {
+            expected: expected.clone(),
+            observed: observed.clone(),
+            permit,
+            panic,
+        });
         let weak = Arc::downgrade(&provider);
-        let mut peer = factory.create_peer_connection_with_dependencies(PeerConfiguration {
-            ice_servers: vec![IceServer {
-                urls: vec![format!("turns:{hostname}:{port}?transport=tcp")],
-                username: "alice".into(),
-                password: "secret".into(),
-            }],
-            ice_transport_policy: IceTransportPolicy::RelayOnly,
-            ..PeerConfiguration::default()
-        }.into(), PeerConnectionDependencies::default().tls_certificate_verifier(provider.clone())).unwrap();
+        let mut peer = factory
+            .create_peer_connection_with_dependencies(
+                PeerConfiguration {
+                    ice_servers: vec![IceServer {
+                        urls: vec![format!("turns:{hostname}:{port}?transport=tcp")],
+                        username: "alice".into(),
+                        password: "secret".into(),
+                    }],
+                    ice_transport_policy: IceTransportPolicy::RelayOnly,
+                    ..PeerConfiguration::default()
+                }
+                .into(),
+                PeerConnectionDependencies::default().tls_certificate_verifier(provider.clone()),
+            )
+            .unwrap();
         drop(provider);
-        assert!(weak.upgrade().is_some(), "native peer must retain its provider");
+        assert!(
+            weak.upgrade().is_some(),
+            "native peer must retain its provider"
+        );
         let mut events = Vec::new();
         let offer = succeeded(&peer, peer.create_offer().unwrap(), &mut events).unwrap();
-        succeeded(&peer, peer.set_local_description(offer).unwrap(), &mut events);
+        succeeded(
+            &peer,
+            peer.set_local_description(offer).unwrap(),
+            &mut events,
+        );
         let description = gathered(&peer, &mut events);
-        assert_eq!(description.sdp.contains("typ relay"), permit && !panic, "{description:?}");
-        assert!(!observed.lock().unwrap().is_empty(), "native TLS must invoke the verifier");
+        assert_eq!(
+            description.sdp.contains("typ relay"),
+            permit && !panic,
+            "{description:?}"
+        );
+        assert!(
+            !observed.lock().unwrap().is_empty(),
+            "native TLS must invoke the verifier"
+        );
         peer.close().unwrap();
         drop(peer);
-        assert!(weak.upgrade().is_none(), "retired peer must release its provider");
+        assert!(
+            weak.upgrade().is_none(),
+            "retired peer must release its provider"
+        );
         let chains = std::mem::take(&mut *observed.lock().unwrap());
         let expected = expected.clone();
         std::thread::spawn(move || {
@@ -484,7 +522,9 @@ fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
                 assert_eq!(chain.get(0).unwrap().to_der(), expected);
                 assert!(chain.stats().is_some());
             }
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
     }
 }
 

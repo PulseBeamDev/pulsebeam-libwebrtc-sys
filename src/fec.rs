@@ -529,8 +529,12 @@ mod tests {
     use std::sync::{Barrier, atomic::AtomicUsize};
     #[derive(Debug, PartialEq)]
     enum Call {
-        Callback(bool), Method(bool, bool), Encoding(FecEncodingData),
-        Encoded(usize, FecEncodedFrameType), Rates(FecRateUpdate), Mask,
+        Callback(bool),
+        Method(bool, bool),
+        Encoding(FecEncodingData),
+        Encoded(usize, FecEncodedFrameType),
+        Rates(FecRateUpdate),
+        Mask,
     }
     #[derive(Default)]
     struct Observations {
@@ -544,47 +548,105 @@ mod tests {
     }
     struct Factory(Arc<Observations>, std::cell::Cell<usize>);
     impl FecControllerFactoryProvider for Factory {
-        fn create_fec_controller(&mut self, environment: FecControllerEnvironment) -> FecControllerCreation {
+        fn create_fec_controller(
+            &mut self,
+            environment: FecControllerEnvironment,
+        ) -> FecControllerCreation {
             self.1.set(self.1.get() + 1);
             *self.0.environment.lock().unwrap() = Some(environment);
             FecControllerCreation::Provider(Box::new(Observe(self.0.clone())))
         }
     }
     impl Drop for Factory {
-        fn drop(&mut self) { self.0.factory_drops.fetch_add(1, Ordering::SeqCst); }
+        fn drop(&mut self) {
+            self.0.factory_drops.fetch_add(1, Ordering::SeqCst);
+        }
     }
     struct Observe(Arc<Observations>);
     fn params(rate: i32, frames: i32, mask: FecMaskType) -> FecProtectionParams {
-        FecProtectionParams { fec_rate: rate, max_fec_frames: frames, fec_mask_type: mask }
+        FecProtectionParams {
+            fec_rate: rate,
+            max_fec_frames: frames,
+            fec_mask_type: mask,
+        }
     }
     impl FecController for Observe {
         fn set_protection_callback(&self, callback: Option<FecProtectionCallback>) {
-            self.0.calls.lock().unwrap().push(Call::Callback(callback.is_some()));
+            self.0
+                .calls
+                .lock()
+                .unwrap()
+                .push(Call::Callback(callback.is_some()));
             if let Some(callback) = &callback {
-                callback.set_retransmission_mode(FecRetransmissionMode::from_bits_retain(-17)).unwrap();
-                *self.0.response.lock().unwrap() = Some(callback.request(params(200, 31, FecMaskType::Random), params(7, -3, FecMaskType::Bursty)).unwrap());
-                assert_eq!(callback.request(params(256, 1, FecMaskType::Random), FecProtectionParams::default()), Err(FecProtectionCallbackError::InvalidParameters));
-                assert_eq!(callback.request_async(FecProtectionParams::default(), FecProtectionParams::default()).try_take(), Some(Err(FecProtectionCallbackError::WrongSequence)));
+                callback
+                    .set_retransmission_mode(FecRetransmissionMode::from_bits_retain(-17))
+                    .unwrap();
+                *self.0.response.lock().unwrap() = Some(
+                    callback
+                        .request(
+                            params(200, 31, FecMaskType::Random),
+                            params(7, -3, FecMaskType::Bursty),
+                        )
+                        .unwrap(),
+                );
+                assert_eq!(
+                    callback.request(
+                        params(256, 1, FecMaskType::Random),
+                        FecProtectionParams::default()
+                    ),
+                    Err(FecProtectionCallbackError::InvalidParameters)
+                );
+                assert_eq!(
+                    callback
+                        .request_async(
+                            FecProtectionParams::default(),
+                            FecProtectionParams::default()
+                        )
+                        .try_take(),
+                    Some(Err(FecProtectionCallbackError::WrongSequence))
+                );
             }
             *self.0.callback.lock().unwrap() = callback;
         }
-        fn set_protection_method(&self, fec: bool, nack: bool) { self.0.calls.lock().unwrap().push(Call::Method(fec, nack)); }
-        fn set_encoding_data(&self, data: FecEncodingData) { self.0.calls.lock().unwrap().push(Call::Encoding(data)); }
+        fn set_protection_method(&self, fec: bool, nack: bool) {
+            self.0.calls.lock().unwrap().push(Call::Method(fec, nack));
+        }
+        fn set_encoding_data(&self, data: FecEncodingData) {
+            self.0.calls.lock().unwrap().push(Call::Encoding(data));
+        }
         fn update_fec_rates(&self, update: FecRateUpdate) -> u32 {
             assert_eq!(self.0.factory_drops.load(Ordering::SeqCst), 1);
             let callback = self.0.callback.lock().unwrap().clone().unwrap();
-            assert_eq!(callback.set_retransmission_mode(FecRetransmissionMode::ALL_LAYERS), Err(FecProtectionCallbackError::ReentrantNativeLock));
+            assert_eq!(
+                callback.set_retransmission_mode(FecRetransmissionMode::ALL_LAYERS),
+                Err(FecProtectionCallbackError::ReentrantNativeLock)
+            );
             self.0.calls.lock().unwrap().push(Call::Rates(update));
             73_212
         }
-        fn update_with_encoded_data(&self, length: usize, frame_type: FecEncodedFrameType) { self.0.calls.lock().unwrap().push(Call::Encoded(length, frame_type)); }
-        fn use_loss_vector_mask(&self) -> bool { self.0.calls.lock().unwrap().push(Call::Mask); true }
+        fn update_with_encoded_data(&self, length: usize, frame_type: FecEncodedFrameType) {
+            self.0
+                .calls
+                .lock()
+                .unwrap()
+                .push(Call::Encoded(length, frame_type));
+        }
+        fn use_loss_vector_mask(&self) -> bool {
+            self.0.calls.lock().unwrap().push(Call::Mask);
+            true
+        }
     }
     impl Drop for Observe {
         fn drop(&mut self) {
             let callback = self.0.callback.lock().unwrap().clone();
             if let Some(callback) = callback {
-                self.0.retired_in_drop.store(callback.request(FecProtectionParams::default(), FecProtectionParams::default()) == Err(FecProtectionCallbackError::Retired), Ordering::SeqCst);
+                self.0.retired_in_drop.store(
+                    callback.request(
+                        FecProtectionParams::default(),
+                        FecProtectionParams::default(),
+                    ) == Err(FecProtectionCallbackError::Retired),
+                    Ordering::SeqCst,
+                );
             }
             self.0.product_drops.fetch_add(1, Ordering::SeqCst);
         }
@@ -593,44 +655,117 @@ mod tests {
     fn native_product_outlives_factory_and_preserves_all_calls_and_callback_outputs() {
         let environment = crate::Environment::builder().build().unwrap();
         let observations = Arc::new(Observations::default());
-        let registration = FecControllerFactory::from_provider(Factory(observations.clone(), std::cell::Cell::new(0)));
-        assert_eq!(ffi::fec_native_probe(environment.native(), Box::new(RustFecControllerFactory(Some(registration)))), 73_212);
-        assert_eq!(*observations.response.lock().unwrap(), Some(FecProtectionResponse { native_result: -17, sent_video_rate_bps: 200, sent_nack_rate_bps: (-3i32) as u32, sent_fec_rate_bps: 1 }));
-        assert_eq!(*observations.calls.lock().unwrap(), vec![
-            Call::Callback(true), Call::Method(true, false),
-            Call::Encoding(FecEncodingData { width: 640, height: 360, num_temporal_layers: 3, max_payload_size: 1234 }),
-            Call::Encoded(71, FecEncodedFrameType::Key), Call::Encoded(0, FecEncodedFrameType::Empty),
-            Call::Encoded(89, FecEncodedFrameType::Unknown(-19)), Call::Mask,
-            Call::Rates(FecRateUpdate { estimated_bitrate_bps: 123456, actual_framerate: -7, fraction_lost: 255, loss_mask: vec![true, false, true], round_trip_time_ms: i64::MIN }),
-        ]);
+        let registration = FecControllerFactory::from_provider(Factory(
+            observations.clone(),
+            std::cell::Cell::new(0),
+        ));
+        assert_eq!(
+            ffi::fec_native_probe(
+                environment.native(),
+                Box::new(RustFecControllerFactory(Some(registration)))
+            ),
+            73_212
+        );
+        assert_eq!(
+            *observations.response.lock().unwrap(),
+            Some(FecProtectionResponse {
+                native_result: -17,
+                sent_video_rate_bps: 200,
+                sent_nack_rate_bps: (-3i32) as u32,
+                sent_fec_rate_bps: 1
+            })
+        );
+        assert_eq!(
+            *observations.calls.lock().unwrap(),
+            vec![
+                Call::Callback(true),
+                Call::Method(true, false),
+                Call::Encoding(FecEncodingData {
+                    width: 640,
+                    height: 360,
+                    num_temporal_layers: 3,
+                    max_payload_size: 1234
+                }),
+                Call::Encoded(71, FecEncodedFrameType::Key),
+                Call::Encoded(0, FecEncodedFrameType::Empty),
+                Call::Encoded(89, FecEncodedFrameType::Unknown(-19)),
+                Call::Mask,
+                Call::Rates(FecRateUpdate {
+                    estimated_bitrate_bps: 123456,
+                    actual_framerate: -7,
+                    fraction_lost: 255,
+                    loss_mask: vec![true, false, true],
+                    round_trip_time_ms: i64::MIN
+                }),
+            ]
+        );
         assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 1);
         assert_eq!(observations.product_drops.load(Ordering::SeqCst), 1);
         assert!(observations.retired_in_drop.load(Ordering::SeqCst));
         let retained = observations.callback.lock().unwrap().take().unwrap();
         drop(environment);
-        assert_eq!(retained.request(FecProtectionParams::default(), FecProtectionParams::default()), Err(FecProtectionCallbackError::Retired));
-        assert_eq!(retained.set_retransmission_mode(FecRetransmissionMode::OFF), Err(FecProtectionCallbackError::Retired));
-        assert_eq!(retained.set_retransmission_mode_async(FecRetransmissionMode::OFF).try_take(), Some(Err(FecProtectionCallbackError::Retired)));
+        assert_eq!(
+            retained.request(
+                FecProtectionParams::default(),
+                FecProtectionParams::default()
+            ),
+            Err(FecProtectionCallbackError::Retired)
+        );
+        assert_eq!(
+            retained.set_retransmission_mode(FecRetransmissionMode::OFF),
+            Err(FecProtectionCallbackError::Retired)
+        );
+        assert_eq!(
+            retained
+                .set_retransmission_mode_async(FecRetransmissionMode::OFF)
+                .try_take(),
+            Some(Err(FecProtectionCallbackError::Retired))
+        );
         let environment = observations.environment.lock().unwrap().take().unwrap();
         let _ = environment.timestamp();
         let _ = environment.field_trials();
-        std::thread::spawn(move || { let _ = environment.time_us(); }).join().unwrap();
+        std::thread::spawn(move || {
+            let _ = environment.time_us();
+        })
+        .join()
+        .unwrap();
     }
-    struct Concurrent { entered: Arc<Barrier>, released: Arc<Barrier> }
+    struct Concurrent {
+        entered: Arc<Barrier>,
+        released: Arc<Barrier>,
+    }
     impl FecController for Concurrent {
         fn set_protection_callback(&self, _: Option<FecProtectionCallback>) {}
         fn set_protection_method(&self, _: bool, _: bool) {}
         fn set_encoding_data(&self, _: FecEncodingData) {}
-        fn update_fec_rates(&self, _: FecRateUpdate) -> u32 { self.entered.wait(); self.released.wait(); 99 }
+        fn update_fec_rates(&self, _: FecRateUpdate) -> u32 {
+            self.entered.wait();
+            self.released.wait();
+            99
+        }
         fn update_with_encoded_data(&self, _: usize, _: FecEncodedFrameType) {}
-        fn use_loss_vector_mask(&self) -> bool { panic!("product failure") }
+        fn use_loss_vector_mask(&self) -> bool {
+            panic!("product failure")
+        }
     }
     #[test]
     fn concurrent_failure_discards_late_product_results_without_serializing_callbacks() {
         let entered = Arc::new(Barrier::new(2));
         let released = Arc::new(Barrier::new(2));
-        let source = Arc::new(RustFecController { provider: Some(Box::new(Concurrent { entered: entered.clone(), released: released.clone() })), builtin: false, failed: AtomicBool::new(false) });
-        let worker = { let source = source.clone(); std::thread::spawn(move || fec_controller_update_rates(&source, u32::MAX, i32::MIN, u8::MAX, &[0, 1], i64::MIN)) };
+        let source = Arc::new(RustFecController {
+            provider: Some(Box::new(Concurrent {
+                entered: entered.clone(),
+                released: released.clone(),
+            })),
+            builtin: false,
+            failed: AtomicBool::new(false),
+        });
+        let worker = {
+            let source = source.clone();
+            std::thread::spawn(move || {
+                fec_controller_update_rates(&source, u32::MAX, i32::MIN, u8::MAX, &[0, 1], i64::MIN)
+            })
+        };
         entered.wait();
         assert!(!fec_controller_use_mask(&source));
         released.wait();
@@ -640,7 +775,10 @@ mod tests {
     }
     struct PanicFactory(Arc<AtomicUsize>);
     impl FecControllerFactoryProvider for PanicFactory {
-        fn create_fec_controller(&mut self, _: FecControllerEnvironment) -> FecControllerCreation { self.0.fetch_add(1, Ordering::SeqCst); panic!("factory failure") }
+        fn create_fec_controller(&mut self, _: FecControllerEnvironment) -> FecControllerCreation {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("factory failure")
+        }
     }
     #[test]
     fn factory_failure_latches_and_never_selects_builtin_success() {
@@ -648,7 +786,13 @@ mod tests {
         let factory = FecControllerFactory::from_provider(PanicFactory(calls.clone()));
         let environment = crate::Environment::builder().build().unwrap();
         for _ in 0..2 {
-            assert_eq!(ffi::fec_native_probe(environment.native(), Box::new(RustFecControllerFactory(Some(factory.clone())))), 0);
+            assert_eq!(
+                ffi::fec_native_probe(
+                    environment.native(),
+                    Box::new(RustFecControllerFactory(Some(factory.clone())))
+                ),
+                0
+            );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(factory.has_failed());
@@ -657,23 +801,51 @@ mod tests {
     fn registration_and_pending_outcomes_are_actor_safe_and_exactly_once() {
         fn shared<T: Send + Sync>() {}
         fn send<T: Send>() {}
-        shared::<FecControllerFactory>(); shared::<FecControllerEnvironment>(); shared::<FecProtectionCallback>();
-        send::<FecCallbackOperation<FecProtectionResponse>>(); send::<FecCallbackOperation<()>>();
-        assert_eq!((FecRetransmissionMode::BASE_LAYER | FecRetransmissionMode::HIGHER_LAYERS).bits(), FecRetransmissionMode::ALL_LAYERS.bits());
+        shared::<FecControllerFactory>();
+        shared::<FecControllerEnvironment>();
+        shared::<FecProtectionCallback>();
+        send::<FecCallbackOperation<FecProtectionResponse>>();
+        send::<FecCallbackOperation<()>>();
+        assert_eq!(
+            (FecRetransmissionMode::BASE_LAYER | FecRetransmissionMode::HIGHER_LAYERS).bits(),
+            FecRetransmissionMode::ALL_LAYERS.bits()
+        );
         assert_eq!(FecEncodedFrameType::from(4), FecEncodedFrameType::Delta);
         assert!(!fec_factory_present(&RustFecControllerFactory(None)));
         let (mut operation, completion) = FecCallbackOperation::new(|value| value.map(|_| ()));
         assert_eq!(operation.try_take(), None);
         drop(completion);
-        assert_eq!(operation.try_take(), Some(Err(FecProtectionCallbackError::Cancelled)));
+        assert_eq!(
+            operation.try_take(),
+            Some(Err(FecProtectionCallbackError::Cancelled))
+        );
         let (mut operation, completion) = FecCallbackOperation::new(|value| value);
-        fec_async_complete(&completion, ffi::FfiFecProtectionResult { status: 0, native_result: i32::MIN, video_bps: u32::MAX, nack_bps: 0, fec_bps: 9 });
+        fec_async_complete(
+            &completion,
+            ffi::FfiFecProtectionResult {
+                status: 0,
+                native_result: i32::MIN,
+                video_bps: u32::MAX,
+                nack_bps: 0,
+                fec_bps: 9,
+            },
+        );
         drop(completion);
-        assert_eq!(operation.try_take(), Some(Ok(FecProtectionResponse { native_result: i32::MIN, sent_video_rate_bps: u32::MAX, sent_nack_rate_bps: 0, sent_fec_rate_bps: 9 })));
+        assert_eq!(
+            operation.try_take(),
+            Some(Ok(FecProtectionResponse {
+                native_result: i32::MIN,
+                sent_video_rate_bps: u32::MAX,
+                sent_nack_rate_bps: 0,
+                sent_fec_rate_bps: 9
+            }))
+        );
         assert_eq!(operation.try_take(), None);
         let environment = crate::Environment::builder().build().unwrap();
-        let builtin = fec_controller_create(&RustFecControllerFactory(Some(FecControllerFactory::builtin())), ffi::clone_environment(environment.native()));
+        let builtin = fec_controller_create(
+            &RustFecControllerFactory(Some(FecControllerFactory::builtin())),
+            ffi::clone_environment(environment.native()),
+        );
         assert!(fec_controller_builtin(&builtin));
     }
 }
-

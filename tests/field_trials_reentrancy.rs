@@ -28,7 +28,9 @@ impl FieldTrialsView for NestedLookup {
 fn immutable_nested_lookup_does_not_hold_the_native_cache_lock() {
     let target = Arc::new(Mutex::new(Weak::new()));
     let environment = Environment::builder()
-        .field_trials(NestedLookup { snapshot: target.clone() })
+        .field_trials(NestedLookup {
+            snapshot: target.clone(),
+        })
         .build()
         .unwrap();
     let snapshot = Arc::new(environment.field_trials());

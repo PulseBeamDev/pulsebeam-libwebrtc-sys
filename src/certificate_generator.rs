@@ -2,7 +2,10 @@ use crate::{Certificate, CertificateKeyParams, ffi};
 use std::{
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Owned executable native certificate generator. Requests enter on signaling;
@@ -32,7 +35,9 @@ impl CertificateGenerator {
             failed: AtomicBool::new(false),
         }))
     }
-    pub fn has_failed(&self) -> bool { self.0.failed.load(Ordering::Acquire) }
+    pub fn has_failed(&self) -> bool {
+        self.0.failed.load(Ordering::Acquire)
+    }
 }
 
 /// Move-only native callback ticket, independent of its generator's lifetime.
@@ -41,13 +46,18 @@ impl CertificateGenerator {
 /// unfinished ticket discards its callback on signaling without invoking it.
 /// The factory invalidates remaining tickets before releasing signaling.
 pub struct CertificateCompletion(Arc<CompletionInner>);
-struct CompletionInner { native: cxx::UniquePtr<ffi::NativeCertificateCompletion> }
+struct CompletionInner {
+    native: cxx::UniquePtr<ffi::NativeCertificateCompletion>,
+}
 // SAFETY: the opaque native state synchronizes completion/posting/retirement;
 // no native callback executes or loses captures on this Rust thread.
 unsafe impl Send for CompletionInner {}
 unsafe impl Sync for CompletionInner {}
 impl CertificateCompletion {
-    pub fn complete(self, certificate: Option<&Certificate>) -> Result<(), CertificateCompletionError> {
+    pub fn complete(
+        self,
+        certificate: Option<&Certificate>,
+    ) -> Result<(), CertificateCompletionError> {
         match self.0.complete(certificate) {
             0 => Ok(()),
             1 => Err(CertificateCompletionError::Retired),
@@ -87,7 +97,9 @@ impl Drop for RustCertificateGenerator {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(handle)));
     }
 }
-pub(crate) fn certificate_generator_present(source: &RustCertificateGenerator) -> bool { source.0.is_some() }
+pub(crate) fn certificate_generator_present(source: &RustCertificateGenerator) -> bool {
+    source.0.is_some()
+}
 pub(crate) fn certificate_generator_generate(
     source: &RustCertificateGenerator,
     params: ffi::FfiCertificateKeyParams,
@@ -96,8 +108,14 @@ pub(crate) fn certificate_generator_generate(
     native: cxx::UniquePtr<ffi::NativeCertificateCompletion>,
 ) {
     let completion = Arc::new(CompletionInner { native });
-    let Some(handle) = &source.0 else { completion.complete(None); return; };
-    if handle.has_failed() { completion.complete(None); return; }
+    let Some(handle) = &source.0 else {
+        completion.complete(None);
+        return;
+    };
+    if handle.has_failed() {
+        completion.complete(None);
+        return;
+    }
     let Ok(mut provider) = handle.0.provider.lock() else {
         handle.0.failed.store(true, Ordering::Release);
         completion.complete(None);
@@ -106,11 +124,15 @@ pub(crate) fn certificate_generator_generate(
     // This internal shared owner survives provider panic or ticket drop. It is
     // not a public cloneable completion ticket. A panic completes with failure
     // unless the provider already submitted a native result.
-    if catch_unwind(AssertUnwindSafe(|| provider.generate_certificate_async(
-        CertificateKeyParams::from_native(params),
-        has_expires.then_some(expires_ms),
-        CertificateCompletion(completion.clone()),
-    ))).is_err() {
+    if catch_unwind(AssertUnwindSafe(|| {
+        provider.generate_certificate_async(
+            CertificateKeyParams::from_native(params),
+            has_expires.then_some(expires_ms),
+            CertificateCompletion(completion.clone()),
+        )
+    }))
+    .is_err()
+    {
         handle.0.failed.store(true, Ordering::Release);
         completion.complete(None);
     }

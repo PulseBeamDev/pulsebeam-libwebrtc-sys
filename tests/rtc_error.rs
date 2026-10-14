@@ -1,4 +1,4 @@
-use pulsebeam_webrtc_sys::{RtcError, RtcErrorType, RtcErrorDetailType};
+use pulsebeam_webrtc_sys::{RtcError, RtcErrorDetailType, RtcErrorType};
 
 #[test]
 fn native_rtc_error_factories_fields_and_assignment() {
@@ -8,17 +8,50 @@ fn native_rtc_error_factories_fields_and_assignment() {
     assert!(RtcError::success().is_ok());
     assert_eq!(RtcError::new(RtcErrorType::SyntaxError).message(), "");
     let factories: [(fn(&str) -> RtcError, RtcErrorType); 11] = [
-        (|message| RtcError::invalid_parameter(message), RtcErrorType::InvalidParameter),
-        (|message| RtcError::invalid_state(message), RtcErrorType::InvalidState),
-        (|message| RtcError::invalid_modification(message), RtcErrorType::InvalidModification),
-        (|message| RtcError::unsupported_operation(message), RtcErrorType::UnsupportedOperation),
-        (|message| RtcError::unsupported_parameter(message), RtcErrorType::UnsupportedParameter),
-        (|message| RtcError::invalid_range(message), RtcErrorType::InvalidRange),
-        (|message| RtcError::syntax_error(message), RtcErrorType::SyntaxError),
-        (|message| RtcError::network_error(message), RtcErrorType::NetworkError),
-        (|message| RtcError::resource_exhausted(message), RtcErrorType::ResourceExhausted),
-        (|message| RtcError::internal_error(message), RtcErrorType::InternalError),
-        (|message| RtcError::operation_error_with_data(message), RtcErrorType::OperationErrorWithData),
+        (
+            |message| RtcError::invalid_parameter(message),
+            RtcErrorType::InvalidParameter,
+        ),
+        (
+            |message| RtcError::invalid_state(message),
+            RtcErrorType::InvalidState,
+        ),
+        (
+            |message| RtcError::invalid_modification(message),
+            RtcErrorType::InvalidModification,
+        ),
+        (
+            |message| RtcError::unsupported_operation(message),
+            RtcErrorType::UnsupportedOperation,
+        ),
+        (
+            |message| RtcError::unsupported_parameter(message),
+            RtcErrorType::UnsupportedParameter,
+        ),
+        (
+            |message| RtcError::invalid_range(message),
+            RtcErrorType::InvalidRange,
+        ),
+        (
+            |message| RtcError::syntax_error(message),
+            RtcErrorType::SyntaxError,
+        ),
+        (
+            |message| RtcError::network_error(message),
+            RtcErrorType::NetworkError,
+        ),
+        (
+            |message| RtcError::resource_exhausted(message),
+            RtcErrorType::ResourceExhausted,
+        ),
+        (
+            |message| RtcError::internal_error(message),
+            RtcErrorType::InternalError,
+        ),
+        (
+            |message| RtcError::operation_error_with_data(message),
+            RtcErrorType::OperationErrorWithData,
+        ),
     ];
     for (factory, kind) in factories {
         let error = factory("exact message");
@@ -27,7 +60,13 @@ fn native_rtc_error_factories_fields_and_assignment() {
         assert!(!error.is_ok());
         assert_eq!(error.error_detail(), RtcErrorDetailType::None);
         assert_eq!(error.sctp_cause_code(), None);
-        assert_eq!(error.native_string(), Some(format!("{} with message: \"exact message\"", kind.native_name().unwrap())));
+        assert_eq!(
+            error.native_string(),
+            Some(format!(
+                "{} with message: \"exact message\"",
+                kind.native_name().unwrap()
+            ))
+        );
     }
     let mut error = RtcError::with_message(RtcErrorType::OperationErrorWithData, "before");
     error.set_error_detail(RtcErrorDetailType::SctpFailure);
@@ -48,7 +87,10 @@ fn native_rtc_error_factories_fields_and_assignment() {
     assert_eq!(error.message(), "after append rvalue");
     assert_eq!(error.error_detail(), RtcErrorDetailType::SctpFailure);
     assert_eq!(error.sctp_cause_code(), Some(0));
-    assert_eq!(RtcErrorDetailType::SctpFailure.native_name(), Some("SCTP_FAILURE".into()));
+    assert_eq!(
+        RtcErrorDetailType::SctpFailure.native_name(),
+        Some("SCTP_FAILURE".into())
+    );
 }
 
 #[test]
@@ -66,7 +108,10 @@ fn unknown_error_discriminants_preserved_without_unsafe_string_conversion() {
     error.set_kind(RtcErrorType::NetworkError);
     // Native RTCError AbslStringify consumes type only, not error_detail. An
     // unknown detail need not reject this safe native formatting operation.
-    assert_eq!(error.native_string(), Some("NETWORK_ERROR with message: \"kept\"".into()));
+    assert_eq!(
+        error.native_string(),
+        Some("NETWORK_ERROR with message: \"kept\"".into())
+    );
     assert_eq!(error.error_detail(), RtcErrorDetailType::Other(i32::MAX));
 }
 
@@ -94,9 +139,15 @@ fn native_borrowed_message_builder_and_non_utf8_bytes() {
         builder.append_f32(1.5);
         builder.append_byte(b' ');
         builder.append_f64(2.5);
-        assert_eq!(builder.as_bytes(), b"native -7 8 -9223372036854775808 18446744073709551615 -9 10 1.5 2.5");
+        assert_eq!(
+            builder.as_bytes(),
+            b"native -7 8 -9223372036854775808 18446744073709551615 -9 10 1.5 2.5"
+        );
         let released = builder.release();
-        assert_eq!(released, b"native -7 8 -9223372036854775808 18446744073709551615 -9 10 1.5 2.5");
+        assert_eq!(
+            released,
+            b"native -7 8 -9223372036854775808 18446744073709551615 -9 10 1.5 2.5"
+        );
         // Do not impose reset semantics on native moved-from storage.
         assert_eq!(builder.len(), builder.as_bytes().len());
         builder.clear();
@@ -113,7 +164,10 @@ fn native_borrowed_message_builder_and_non_utf8_bytes() {
     }
     assert_eq!(error.message_bytes(), vec![0xff]);
     assert_eq!(error.message(), "\u{fffd}");
-    assert_eq!(error.native_string_bytes(), Some(b"NETWORK_ERROR with message: \"\xff\0after NUL\"".to_vec()));
+    assert_eq!(
+        error.native_string_bytes(),
+        Some(b"NETWORK_ERROR with message: \"\xff\0after NUL\"".to_vec())
+    );
     assert_eq!(error.clone().message_bytes(), vec![0xff]);
     let owned = error.string_builder().to_owned();
     error.set_message("replaced");
@@ -127,19 +181,34 @@ fn native_rvalue_scalar_streams_retain_error_metadata() {
     let mut error = RtcError::operation_error_with_data(b"start");
     error.set_error_detail(RtcErrorDetailType::Other(-9));
     error.set_sctp_cause_code(7);
-    let mut error = error.with_appended_i32(-1).with_appended_byte(b' ')
-        .with_appended_u32(2).with_appended_byte(b' ')
-        .with_appended_i64(-3).with_appended_byte(b' ')
-        .with_appended_u64(4).with_appended_byte(b' ')
-        .with_appended_native_long(-5).unwrap().with_appended_byte(b' ')
-        .with_appended_native_unsigned_long(6).unwrap().with_appended_byte(b' ')
-        .with_appended_f32(1.5).with_appended_byte(b' ')
-        .with_appended_f64(2.5).with_appended_byte(b' ')
-        .with_appended_bool(true).with_appended_byte(0xff);
+    let mut error = error
+        .with_appended_i32(-1)
+        .with_appended_byte(b' ')
+        .with_appended_u32(2)
+        .with_appended_byte(b' ')
+        .with_appended_i64(-3)
+        .with_appended_byte(b' ')
+        .with_appended_u64(4)
+        .with_appended_byte(b' ')
+        .with_appended_native_long(-5)
+        .unwrap()
+        .with_appended_byte(b' ')
+        .with_appended_native_unsigned_long(6)
+        .unwrap()
+        .with_appended_byte(b' ')
+        .with_appended_f32(1.5)
+        .with_appended_byte(b' ')
+        .with_appended_f64(2.5)
+        .with_appended_byte(b' ')
+        .with_appended_bool(true)
+        .with_appended_byte(0xff);
     assert_eq!(error.kind(), RtcErrorType::OperationErrorWithData);
     assert_eq!(error.error_detail(), RtcErrorDetailType::Other(-9));
     assert_eq!(error.sctp_cause_code(), Some(7));
-    assert_eq!(error.string_builder().as_bytes(), b"start-1 2 -3 4 -5 6 1.5 2.5 1\xff");
+    assert_eq!(
+        error.string_builder().as_bytes(),
+        b"start-1 2 -3 4 -5 6 1.5 2.5 1\xff"
+    );
 }
 
 #[test]
@@ -180,7 +249,12 @@ fn native_owned_string_builder_construction_and_assignment() {
     let raw = RtcError::invalid_state(b"\xfe\0extra");
     assert_eq!(raw.message_bytes(), vec![0xfe]);
     let streamed = raw.with_appended_bytes(b"\xff");
-    assert!(streamed.native_string_bytes().unwrap().ends_with(b"\xfe\0extra\xff\""));
+    assert!(
+        streamed
+            .native_string_bytes()
+            .unwrap()
+            .ends_with(b"\xfe\0extra\xff\"")
+    );
 }
 
 #[test]
@@ -188,5 +262,8 @@ fn native_c_string_message_accessor_does_not_invent_full_length_semantics() {
     let error = RtcError::with_message(RtcErrorType::NetworkError, "left\0right");
     assert_eq!(error.message(), "left");
     assert_eq!(error.clone().message(), "left");
-    assert_eq!(error.native_string(), Some("NETWORK_ERROR with message: \"left\0right\"".into()));
+    assert_eq!(
+        error.native_string(),
+        Some("NETWORK_ERROR with message: \"left\0right\"".into())
+    );
 }

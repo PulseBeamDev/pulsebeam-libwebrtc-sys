@@ -9,8 +9,8 @@ use pulsebeam_webrtc_sys::{
 };
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -177,11 +177,13 @@ fn default_controls_keep_native_absence_and_bandwidth_delegation() {
     assert_eq!(product.set_dtx(true), Ok(false));
     assert_eq!(product.dtx(), Ok(false));
     assert_eq!(product.enable_audio_network_adaptor(b"\xff\0"), Ok(false));
-    assert!(product
-        .network_adaptation_statistics()
-        .unwrap()
-        .bitrate_action_counter
-        .is_none());
+    assert!(
+        product
+            .network_adaptation_statistics()
+            .unwrap()
+            .bitrate_action_counter
+            .is_none()
+    );
     product.on_received_target_audio_bitrate(-1).unwrap();
     product
         .on_received_uplink_allocation(BitrateAllocationUpdate {

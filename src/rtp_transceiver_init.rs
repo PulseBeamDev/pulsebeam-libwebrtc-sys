@@ -1,5 +1,5 @@
 //! Complete owning SDK transceiver initialization metadata.
-use crate::{ffi, RtpEncodingParameters, RtpTransceiverDirectionValue};
+use crate::{RtpEncodingParameters, RtpTransceiverDirectionValue, ffi};
 
 /// An actual SDK RtpTransceiverInit value with all three public fields.
 ///
@@ -8,17 +8,23 @@ use crate::{ffi, RtpEncodingParameters, RtpTransceiverDirectionValue};
 /// does not install it, validate it, or configure a sender. Generic init
 /// installation still requires a separate consuming-path safety audit.
 /// The SDK declares no equality or formatting operation for this struct.
-pub struct RtpTransceiverInit { native: cxx::UniquePtr<ffi::NativeRtpTransceiverInit> }
+pub struct RtpTransceiverInit {
+    native: cxx::UniquePtr<ffi::NativeRtpTransceiverInit>,
+}
 // SAFETY: The native value owns only an enum, byte strings and full encoding
 // values. No retained origin, handles, callbacks, lazy state or thread-affine
 // destruction. Shared methods only read/copy; mutations require &mut self.
 unsafe impl Send for RtpTransceiverInit {}
 unsafe impl Sync for RtpTransceiverInit {}
 impl Default for RtpTransceiverInit {
-    fn default() -> Self { Self::from_native(ffi::rtp_transceiver_init_default()) }
+    fn default() -> Self {
+        Self::from_native(ffi::rtp_transceiver_init_default())
+    }
 }
 impl Clone for RtpTransceiverInit {
-    fn clone(&self) -> Self { Self::from_native(ffi::rtp_transceiver_init_clone(self.native())) }
+    fn clone(&self) -> Self {
+        Self::from_native(ffi::rtp_transceiver_init_clone(self.native()))
+    }
     fn clone_from(&mut self, source: &Self) {
         ffi::rtp_transceiver_init_assign(self.native.pin_mut(), source.native());
     }
@@ -28,7 +34,9 @@ impl RtpTransceiverInit {
         assert!(!native.is_null());
         Self { native }
     }
-    fn native(&self) -> &ffi::NativeRtpTransceiverInit { self.native.as_ref().unwrap() }
+    fn native(&self) -> &ffi::NativeRtpTransceiverInit {
+        self.native.as_ref().unwrap()
+    }
     pub fn direction(&self) -> RtpTransceiverDirectionValue {
         RtpTransceiverDirectionValue::from_raw(ffi::rtp_transceiver_init_direction(self.native()))
     }
@@ -44,13 +52,18 @@ impl RtpTransceiverInit {
     /// and order. Strings are not narrowed through UTF-8 or C-string decoding.
     pub fn set_stream_ids(&mut self, ids: &[Vec<u8>]) {
         ffi::rtp_transceiver_init_stream_ids_clear(self.native.pin_mut());
-        for id in ids { ffi::rtp_transceiver_init_stream_id_add(self.native.pin_mut(), id); }
+        for id in ids {
+            ffi::rtp_transceiver_init_stream_id_add(self.native.pin_mut(), id);
+        }
     }
     pub fn send_encodings(&self) -> Vec<RtpEncodingParameters> {
         (0..ffi::rtp_transceiver_init_encodings_len(self.native()))
-            .map(|index| RtpEncodingParameters::from_native(
-                ffi::rtp_transceiver_init_encoding_get(self.native(), index),
-            ))
+            .map(|index| {
+                RtpEncodingParameters::from_native(ffi::rtp_transceiver_init_encoding_get(
+                    self.native(),
+                    index,
+                ))
+            })
             .collect()
     }
     /// Replace full encoding values without installing, normalizing, sorting
@@ -65,8 +78,10 @@ impl RtpTransceiverInit {
 impl std::fmt::Debug for RtpTransceiverInit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Rust metadata diagnostics only, not a claimed native stringify contract.
-        f.debug_struct("RtpTransceiverInit").field("direction", &self.direction())
-            .field("stream_ids", &self.stream_ids()).field("send_encodings", &self.send_encodings())
+        f.debug_struct("RtpTransceiverInit")
+            .field("direction", &self.direction())
+            .field("stream_ids", &self.stream_ids())
+            .field("send_encodings", &self.send_encodings())
             .finish()
     }
 }

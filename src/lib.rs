@@ -26,9 +26,15 @@ mod codec;
 mod video_factory_values;
 #[cfg(test)]
 mod video_factory_values_tests;
-pub use video_factory_values::{VideoCodecCreationContext, VideoDecoderFactoryProvider, VideoEncoderFactoryProvider, VideoFactoryFailureObserver, VideoFactoryQueryError};
-pub(crate) use video_factory_values::{RustVideoFactoryEnvironment, video_factory_environment_clone, video_factory_environment_native, video_factory_environment_from_sdk};
-pub(crate) use codec::{encoder_factory_clone, decoder_factory_clone};
+pub(crate) use codec::{decoder_factory_clone, encoder_factory_clone};
+pub(crate) use video_factory_values::{
+    RustVideoFactoryEnvironment, video_factory_environment_clone,
+    video_factory_environment_from_sdk, video_factory_environment_native,
+};
+pub use video_factory_values::{
+    VideoCodecCreationContext, VideoDecoderFactoryProvider, VideoEncoderFactoryProvider,
+    VideoFactoryFailureObserver, VideoFactoryQueryError,
+};
 mod fec;
 pub use fec::{
     FecCallbackOperation, FecController, FecControllerCreation, FecControllerEnvironment,
@@ -53,9 +59,9 @@ pub(crate) use network_control::{
     network_controller_invalid, network_controller_update,
 };
 mod network_control_values;
-pub use network_control_values::*;
 /// Network-controller input, distinct from a received simulated socket packet.
 pub use network_control_values::ReceivedPacket as NetworkControlReceivedPacket;
+pub use network_control_values::*;
 mod network_predictor;
 pub use network_predictor::{
     BandwidthUsage, NetworkStatePredictor, NetworkStatePredictorFactory,
@@ -154,22 +160,25 @@ mod audio_codec_values;
 pub use audio_codec_values::{AudioCodecInfo, AudioCodecSpec, SdpAudioFormat};
 mod audio_encoder_factory_sdk;
 pub use audio_encoder_factory_sdk::CallerAudioEncoderFactory;
-pub(crate) use audio_encoder_factory_sdk::{RustAudioEncoderFactoryCall, audio_caller_encoder_environment,
-    audio_caller_encoder_formats_callback, audio_caller_encoder_query_callback,
-    audio_caller_encoder_create_callback, audio_caller_encoder_transfer_failed};
+pub(crate) use audio_encoder_factory_sdk::{
+    RustAudioEncoderFactoryCall, audio_caller_encoder_create_callback,
+    audio_caller_encoder_environment, audio_caller_encoder_formats_callback,
+    audio_caller_encoder_query_callback, audio_caller_encoder_transfer_failed,
+};
 mod audio_decoder_factory_sdk;
 pub use audio_decoder_factory_sdk::CallerAudioDecoderFactory;
-pub(crate) use audio_decoder_factory_sdk::{RustAudioDecoderFactoryCall,
+pub(crate) use audio_decoder_factory_sdk::{
+    RustAudioDecoderFactoryCall, audio_caller_decoder_create_callback,
     audio_caller_decoder_environment, audio_caller_decoder_formats_callback,
-    audio_caller_decoder_supported_callback, audio_caller_decoder_create_callback,
-    audio_caller_decoder_transfer_failed};
-mod audio_factory_provider;
-#[cfg(test)]
-mod audio_factory_transfer_tests;
+    audio_caller_decoder_supported_callback, audio_caller_decoder_transfer_failed,
+};
 #[cfg(test)]
 mod audio_decoder_forwarding_tests;
 #[cfg(test)]
 mod audio_encoder_forwarding_tests;
+mod audio_factory_provider;
+#[cfg(test)]
+mod audio_factory_transfer_tests;
 pub use audio_factory_provider::{
     AudioDecoderCreationContext, AudioDecoderFactoryProvider, AudioDecoderFactoryRegistration,
     AudioEncoderCreationContext, AudioEncoderFactoryProvider, AudioEncoderFactoryRegistration,
@@ -189,35 +198,44 @@ pub use audio_encoder::{AudioEncoder, AudioEncoderError};
 pub(crate) use audio_encoder::{AudioEncoderTransfer, audio_encoder_transfer_native};
 mod audio_decoder_product_sdk;
 pub use audio_decoder_product_sdk::CallerAudioDecoderSdk;
-pub(crate) use audio_decoder_product_sdk::{RustCallerAudioDecoderCall, RustCallerParsedFrame,
-    audio_caller_decoder_scalar_callback, audio_caller_decoder_channels_callback,
-    audio_caller_decoder_reset_callback, audio_caller_decoder_packet_duration_callback,
+pub(crate) use audio_decoder_product_sdk::{
+    RustCallerAudioDecoderCall, RustCallerParsedFrame, audio_caller_decoder_channels_callback,
+    audio_caller_decoder_compatibility_refused, audio_caller_decoder_packet_duration_callback,
     audio_caller_decoder_packet_fec_callback, audio_caller_decoder_parse_callback,
-    audio_caller_parsed_frame_present, audio_caller_parsed_frame_bind,
-    audio_caller_parsed_frame_from_sdk, audio_caller_parsed_frame_null,
     audio_caller_decoder_plc_callback, audio_caller_decoder_plc_capacity,
-    audio_caller_decoder_compatibility_refused, audio_caller_decoder_plc_invalid};
+    audio_caller_decoder_plc_invalid, audio_caller_decoder_reset_callback,
+    audio_caller_decoder_scalar_callback, audio_caller_parsed_frame_bind,
+    audio_caller_parsed_frame_from_sdk, audio_caller_parsed_frame_null,
+    audio_caller_parsed_frame_present,
+};
 mod audio_decoder_frame_sdk;
 pub use audio_decoder_frame_sdk::AudioDecoderFrameDecodeResult;
-pub(crate) use audio_decoder_frame_sdk::{RustCallerAudioFrameCall,
-    audio_caller_frame_duration_callback, audio_caller_frame_dtx_callback,
-    audio_caller_frame_decode_callback, audio_caller_frame_guard_error};
+pub(crate) use audio_decoder_frame_sdk::{
+    RustCallerAudioFrameCall, audio_caller_frame_decode_callback, audio_caller_frame_dtx_callback,
+    audio_caller_frame_duration_callback, audio_caller_frame_guard_error,
+};
 mod audio_decoder_provider;
-pub use audio_decoder_provider::{AudioDecoderProvider, AudioDecoderFrameProvider, AudioDecoderFrameProduct,
-    AudioDecoderProviderParseResult, CallerAudioDecoder, CallerParsedAudioFrame, CallerDecodableAudioFrame,
-    AudioDecoderProductOperation, AudioDecoderProductFailureKind, AudioDecoderProductError,
-    AudioDecoderProductFailureObserver};
+pub use audio_decoder_provider::{
+    AudioDecoderFrameProduct, AudioDecoderFrameProvider, AudioDecoderProductError,
+    AudioDecoderProductFailureKind, AudioDecoderProductFailureObserver,
+    AudioDecoderProductOperation, AudioDecoderProvider, AudioDecoderProviderParseResult,
+    CallerAudioDecoder, CallerDecodableAudioFrame, CallerParsedAudioFrame,
+};
 mod audio_encoder_provider;
-pub use audio_encoder_provider::{AudioEncoderProvider, CallerAudioEncoder, AudioEncoderProductError,
-    AudioEncoderProductFailureKind, AudioEncoderProductFailureObserver, AudioEncoderProductOperation};
+pub use audio_encoder_provider::{
+    AudioEncoderProductError, AudioEncoderProductFailureKind, AudioEncoderProductFailureObserver,
+    AudioEncoderProductOperation, AudioEncoderProvider, CallerAudioEncoder,
+};
 mod audio_encoder_sdk_failure;
-pub use audio_encoder_sdk_failure::{AudioEncoderSdkFailure, AudioEncoderSdkFailureObserver, AudioEncoderSdkOperation};
+pub use audio_encoder_sdk_failure::{
+    AudioEncoderSdkFailure, AudioEncoderSdkFailureObserver, AudioEncoderSdkOperation,
+};
 mod audio_decoder;
-pub(crate) use audio_decoder::{AudioDecoderTransfer, audio_decoder_transfer_native};
 pub use audio_decoder::{
     AudioCodecPairId, AudioDecoder, AudioDecoderError, AudioPacketInfo, AudioSpeechType,
     DecodableAudioFrame, DecodedAudio, ParsedAudioFrame,
 };
+pub(crate) use audio_decoder::{AudioDecoderTransfer, audio_decoder_transfer_native};
 mod configuration;
 mod crypto;
 mod data_channel;
@@ -227,14 +245,27 @@ pub use sframe::{
     SframeMode,
 };
 mod video_encoder_selector;
-pub use video_encoder_selector::{OwnedVideoEncoderSelector, VideoEncoderSelector, VideoEncoderSelectorFailure, VideoEncoderSelectorFailureObserver, VideoEncoderSelectorInputError, VideoEncoderSelectorProvider};
-pub(crate) use video_encoder_selector::{RustVideoEncoderSelector, video_selector_provider_current, video_selector_provider_bitrate, video_selector_provider_resolution, video_selector_provider_broken};
+pub use video_encoder_selector::{
+    OwnedVideoEncoderSelector, VideoEncoderSelector, VideoEncoderSelectorFailure,
+    VideoEncoderSelectorFailureObserver, VideoEncoderSelectorInputError,
+    VideoEncoderSelectorProvider,
+};
+pub(crate) use video_encoder_selector::{
+    RustVideoEncoderSelector, video_selector_provider_bitrate, video_selector_provider_broken,
+    video_selector_provider_current, video_selector_provider_resolution,
+};
 mod video_decoder_product;
 pub use video_decoder_product::{OwnedVideoDecoder, VideoDecoderCreationError};
 mod video_decoder_values;
-pub use video_decoder_values::{OwnedVideoDecoderSettings, OwnedVideoDecoderInfo, VideoDecoderSettingsFields, VideoDecoderSettingsValueError, VideoDecoderInfoFields};
+pub use video_decoder_values::{
+    OwnedVideoDecoderInfo, OwnedVideoDecoderSettings, VideoDecoderInfoFields,
+    VideoDecoderSettingsFields, VideoDecoderSettingsValueError,
+};
 mod video_codec_values;
-pub use video_codec_values::{RenderResolution, SdpVideoFormat, SdpVideoFormatError, SdpVideoFormatFields, WellKnownSdpVideoFormat};
+pub use video_codec_values::{
+    RenderResolution, SdpVideoFormat, SdpVideoFormatError, SdpVideoFormatFields,
+    WellKnownSdpVideoFormat,
+};
 mod frame_transformer;
 pub use frame_transformer::{
     TransformableAudioFrame, TransformableAudioFrameType, TransformableFrame,
@@ -373,9 +404,8 @@ pub(crate) use codec::{
     decoder_configure, decoder_decode, decoder_factory_create, decoder_factory_formats,
     decoder_factory_query, decoder_get_info, decoder_is_valid, decoder_register_callback,
     decoder_release, encoder_encode, encoder_factory_create, encoder_factory_formats,
-    encoder_factory_implementations,
-    encoder_factory_query, encoder_get_info, encoder_init, encoder_is_valid,
-    encoder_register_callback, encoder_release, encoder_set_rates,
+    encoder_factory_implementations, encoder_factory_query, encoder_get_info, encoder_init,
+    encoder_is_valid, encoder_register_callback, encoder_release, encoder_set_rates,
 };
 pub use event_log::{
     EventLogEnvironment, EventLogStopCompletion, RtcEvent, RtcEventKind, RtcEventLogFactory,
@@ -428,8 +458,8 @@ pub use crypto::{
 pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelError,
     DataChannelErrorDetail, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
-    DataChannelPriority, DataChannelSendCompletion, DataChannelSendError, DataChannelSendId,
-    DataChannelReceiveQueueLimits, DataChannelSendResult, DataChannelState,
+    DataChannelPriority, DataChannelReceiveQueueLimits, DataChannelSendCompletion,
+    DataChannelSendError, DataChannelSendId, DataChannelSendResult, DataChannelState,
 };
 pub use encoded_video::{
     EncodedH264Input, EncodedH264Source, EncodedVideoAccessUnit, EncodedVideoInput,
@@ -447,12 +477,14 @@ pub use network::{
     ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
-    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceCandidateBytes, IceCandidateDisposition,
-    IceGatheringState, IceServer, IceTransportPolicy, InboundRtpStats, OfferAnswerOptions,
-    OperationCompletion, OperationId, OutboundRtpStats, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDescriptions,
-    PeerError, PeerErrorBytes, PeerErrorKind, PeerEventObservation, PeerStatsRecord, PeerStatsSnapshot,
-    SessionDescription, SessionDescriptionBytes, PeerDescriptionBytes, PeerIceConnectionState, PeerIceSnapshot, SessionDescriptionType, SignalingState, TransportStats,
+    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceCandidateBytes,
+    IceCandidateDisposition, IceGatheringState, IceServer, IceTransportPolicy, InboundRtpStats,
+    OfferAnswerOptions, OperationCompletion, OperationId, OutboundRtpStats, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder,
+    PeerDescriptionBytes, PeerDescriptions, PeerError, PeerErrorBytes, PeerErrorKind,
+    PeerEventObservation, PeerIceConnectionState, PeerIceSnapshot, PeerStatsRecord,
+    PeerStatsSnapshot, SessionDescription, SessionDescriptionBytes, SessionDescriptionType,
+    SignalingState, TransportStats,
 };
 pub use peer_configuration::{
     BundlePolicy, CandidateNetworkPolicy, ContinualGatheringPolicy, NativeTimeDelta, NetworkMask,
@@ -474,9 +506,8 @@ pub use video::{
     DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, MediaType,
     ReceivedVideoFrame, RtpHeaderExtensionCapability, RtpHeaderExtensionDirection, RtpReceiver,
     RtpReceiverOperationError, RtpSender, RtpSenderEncoding, RtpSenderOperationError,
-    RtpSenderParameters, RtpTransceiver,
-    RtpTransceiverDirection, VideoCodecCapability, VideoSink, VideoSource, VideoSourceState,
-    VideoTrack, VideoTrackState,
+    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability, VideoSink,
+    VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -2077,40 +2108,92 @@ mod ffi {
     extern "Rust" {
         type RustCallerAudioDecoderCall;
         type RustCallerParsedFrame;
-        fn audio_caller_decoder_scalar_callback(source: &RustCallerAudioDecoderCall, kind: u8) -> i32;
+        fn audio_caller_decoder_scalar_callback(
+            source: &RustCallerAudioDecoderCall,
+            kind: u8,
+        ) -> i32;
         fn audio_caller_decoder_channels_callback(source: &RustCallerAudioDecoderCall) -> usize;
         fn audio_caller_decoder_reset_callback(source: &RustCallerAudioDecoderCall);
-        fn audio_caller_decoder_packet_duration_callback(source: &RustCallerAudioDecoderCall, encoded: &[u8], redundant: bool) -> i32;
-        fn audio_caller_decoder_packet_fec_callback(source: &RustCallerAudioDecoderCall, encoded: &[u8]) -> bool;
-        fn audio_caller_decoder_parse_callback(source: &RustCallerAudioDecoderCall, encoded: Vec<u8>, timestamp: u32) -> Vec<FfiCallerParsedAudioFrame>;
+        fn audio_caller_decoder_packet_duration_callback(
+            source: &RustCallerAudioDecoderCall,
+            encoded: &[u8],
+            redundant: bool,
+        ) -> i32;
+        fn audio_caller_decoder_packet_fec_callback(
+            source: &RustCallerAudioDecoderCall,
+            encoded: &[u8],
+        ) -> bool;
+        fn audio_caller_decoder_parse_callback(
+            source: &RustCallerAudioDecoderCall,
+            encoded: Vec<u8>,
+            timestamp: u32,
+        ) -> Vec<FfiCallerParsedAudioFrame>;
         fn audio_caller_parsed_frame_present(source: &RustCallerParsedFrame) -> bool;
-        fn audio_caller_parsed_frame_bind(source: Box<RustCallerParsedFrame>) -> Box<RustCallerAudioFrameCall>;
-        fn audio_caller_parsed_frame_from_sdk(source: Box<RustCallerAudioFrameCall>) -> Box<RustCallerParsedFrame>;
-        fn audio_caller_parsed_frame_null(source: &RustCallerAudioDecoderCall) -> Box<RustCallerParsedFrame>;
-        fn audio_caller_decoder_plc_callback(source: &RustCallerAudioDecoderCall, requested: usize, prefix: &[i16]) -> FfiAudioPlc;
+        fn audio_caller_parsed_frame_bind(
+            source: Box<RustCallerParsedFrame>,
+        ) -> Box<RustCallerAudioFrameCall>;
+        fn audio_caller_parsed_frame_from_sdk(
+            source: Box<RustCallerAudioFrameCall>,
+        ) -> Box<RustCallerParsedFrame>;
+        fn audio_caller_parsed_frame_null(
+            source: &RustCallerAudioDecoderCall,
+        ) -> Box<RustCallerParsedFrame>;
+        fn audio_caller_decoder_plc_callback(
+            source: &RustCallerAudioDecoderCall,
+            requested: usize,
+            prefix: &[i16],
+        ) -> FfiAudioPlc;
         fn audio_caller_decoder_plc_capacity(source: &RustCallerAudioDecoderCall) -> usize;
         fn audio_caller_decoder_compatibility_refused(source: &RustCallerAudioDecoderCall);
         fn audio_caller_decoder_plc_invalid(source: &RustCallerAudioDecoderCall);
         type RustCallerAudioFrameCall;
         fn audio_caller_frame_duration_callback(source: &RustCallerAudioFrameCall) -> usize;
         fn audio_caller_frame_dtx_callback(source: &RustCallerAudioFrameCall) -> bool;
-        fn audio_caller_frame_decode_callback(source: &RustCallerAudioFrameCall, capacity: usize) -> FfiDecodedAudio;
+        fn audio_caller_frame_decode_callback(
+            source: &RustCallerAudioFrameCall,
+            capacity: usize,
+        ) -> FfiDecodedAudio;
         fn audio_caller_frame_guard_error(source: &RustCallerAudioFrameCall, kind: u8);
         type RustAudioEncoderFactoryCall;
-        fn audio_caller_encoder_environment(source: &RustAudioEncoderFactoryCall) -> UniquePtr<NativeEnvironment>;
-        fn audio_caller_encoder_formats_callback(source: &RustAudioEncoderFactoryCall) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_encoder_query_callback(source: &RustAudioEncoderFactoryCall, format: FfiSdpAudioFormat) -> FfiAudioEncoderQuery;
-        fn audio_caller_encoder_create_callback(source: &RustAudioEncoderFactoryCall, environment: UniquePtr<NativeEnvironment>,
-            format: FfiSdpAudioFormat, options: UniquePtr<NativeAudioEncoderOptions>) -> UniquePtr<NativeAudioEncoder>;
+        fn audio_caller_encoder_environment(
+            source: &RustAudioEncoderFactoryCall,
+        ) -> UniquePtr<NativeEnvironment>;
+        fn audio_caller_encoder_formats_callback(
+            source: &RustAudioEncoderFactoryCall,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_encoder_query_callback(
+            source: &RustAudioEncoderFactoryCall,
+            format: FfiSdpAudioFormat,
+        ) -> FfiAudioEncoderQuery;
+        fn audio_caller_encoder_create_callback(
+            source: &RustAudioEncoderFactoryCall,
+            environment: UniquePtr<NativeEnvironment>,
+            format: FfiSdpAudioFormat,
+            options: UniquePtr<NativeAudioEncoderOptions>,
+        ) -> UniquePtr<NativeAudioEncoder>;
         fn audio_caller_encoder_transfer_failed(source: &RustAudioEncoderFactoryCall);
         type RustAudioDecoderFactoryCall;
-        fn audio_caller_decoder_environment(source: &RustAudioDecoderFactoryCall) -> UniquePtr<NativeEnvironment>;
-        fn audio_caller_decoder_formats_callback(source: &RustAudioDecoderFactoryCall) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_decoder_supported_callback(source: &RustAudioDecoderFactoryCall, format: FfiSdpAudioFormat) -> bool;
-        fn audio_caller_decoder_create_callback(source: &RustAudioDecoderFactoryCall,
-            environment: UniquePtr<NativeEnvironment>, format: FfiSdpAudioFormat,
-            compatibility: bool, pair: UniquePtr<NativeAudioCodecPairId>) -> UniquePtr<NativeAudioDecoder>;
-        fn audio_caller_decoder_transfer_failed(source: &RustAudioDecoderFactoryCall, compatibility: bool);
+        fn audio_caller_decoder_environment(
+            source: &RustAudioDecoderFactoryCall,
+        ) -> UniquePtr<NativeEnvironment>;
+        fn audio_caller_decoder_formats_callback(
+            source: &RustAudioDecoderFactoryCall,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_decoder_supported_callback(
+            source: &RustAudioDecoderFactoryCall,
+            format: FfiSdpAudioFormat,
+        ) -> bool;
+        fn audio_caller_decoder_create_callback(
+            source: &RustAudioDecoderFactoryCall,
+            environment: UniquePtr<NativeEnvironment>,
+            format: FfiSdpAudioFormat,
+            compatibility: bool,
+            pair: UniquePtr<NativeAudioCodecPairId>,
+        ) -> UniquePtr<NativeAudioDecoder>;
+        fn audio_caller_decoder_transfer_failed(
+            source: &RustAudioDecoderFactoryCall,
+            compatibility: bool,
+        );
         type AudioEncoderTransfer;
         fn audio_encoder_transfer_native(source: &AudioEncoderTransfer) -> &NativeAudioEncoder;
         type AudioDecoderTransfer;
@@ -2471,23 +2554,45 @@ mod ffi {
         type RustVideoEncoderFactory;
         type RustVideoDecoderFactory;
         type RustVideoFactoryEnvironment;
-        fn video_factory_environment_clone(source: &RustVideoFactoryEnvironment) -> Box<RustVideoFactoryEnvironment>;
-        fn video_factory_environment_native(source: &RustVideoFactoryEnvironment) -> UniquePtr<NativeEnvironment>;
-        fn video_factory_environment_from_sdk(source: UniquePtr<NativeEnvironment>) -> Box<RustVideoFactoryEnvironment>;
+        fn video_factory_environment_clone(
+            source: &RustVideoFactoryEnvironment,
+        ) -> Box<RustVideoFactoryEnvironment>;
+        fn video_factory_environment_native(
+            source: &RustVideoFactoryEnvironment,
+        ) -> UniquePtr<NativeEnvironment>;
+        fn video_factory_environment_from_sdk(
+            source: UniquePtr<NativeEnvironment>,
+        ) -> Box<RustVideoFactoryEnvironment>;
         fn encoder_factory_clone(source: &RustVideoEncoderFactory) -> Box<RustVideoEncoderFactory>;
         fn decoder_factory_clone(source: &RustVideoDecoderFactory) -> Box<RustVideoDecoderFactory>;
         type RustVideoEncoderSelector;
-        fn video_selector_provider_current(provider: &RustVideoEncoderSelector, format: UniquePtr<NativeSdpVideoFormat>);
-        fn video_selector_provider_bitrate(provider: &RustVideoEncoderSelector, bits: i64, kind: i8) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_provider_resolution(provider: &RustVideoEncoderSelector, resolution: UniquePtr<NativeRenderResolution>) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_provider_broken(provider: &RustVideoEncoderSelector) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_provider_current(
+            provider: &RustVideoEncoderSelector,
+            format: UniquePtr<NativeSdpVideoFormat>,
+        );
+        fn video_selector_provider_bitrate(
+            provider: &RustVideoEncoderSelector,
+            bits: i64,
+            kind: i8,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_provider_resolution(
+            provider: &RustVideoEncoderSelector,
+            resolution: UniquePtr<NativeRenderResolution>,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_provider_broken(
+            provider: &RustVideoEncoderSelector,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
         type RustVideoEncoder;
         type RustVideoDecoder;
 
         fn run_task(task: Box<RustTask>);
 
-        fn encoder_factory_formats(factory: &RustVideoEncoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
-        fn encoder_factory_implementations(factory: &RustVideoEncoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn encoder_factory_formats(
+            factory: &RustVideoEncoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn encoder_factory_implementations(
+            factory: &RustVideoEncoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
         fn encoder_factory_query(
             factory: &RustVideoEncoderFactory,
             format: UniquePtr<NativeSdpVideoFormat>,
@@ -2515,7 +2620,9 @@ mod ffi {
         fn encoder_release(encoder: &mut RustVideoEncoder) -> i32;
         fn encoder_get_info(encoder: &RustVideoEncoder) -> FfiEncoderInfo;
 
-        fn decoder_factory_formats(factory: &RustVideoDecoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn decoder_factory_formats(
+            factory: &RustVideoDecoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
         fn decoder_factory_query(
             factory: &RustVideoDecoderFactory,
             format: UniquePtr<NativeSdpVideoFormat>,
@@ -2972,9 +3079,19 @@ mod ffi {
         type NativeVideoEncoderFactory;
         type NativeVideoDecoderFactory;
         type NativeVideoDecoderProduct;
-        fn video_decoder_create_product(factory: &NativeVideoDecoderFactory, environment: &NativeEnvironment, retention: Box<RustVideoFactoryEnvironment>, format: &NativeSdpVideoFormat, status: &mut i32) -> UniquePtr<NativeVideoDecoderProduct>;
-        fn video_decoder_product_info(product: &NativeVideoDecoderProduct) -> UniquePtr<NativeVideoDecoderInfo>;
-        fn video_decoder_product_implementation_name(product: &NativeVideoDecoderProduct) -> Vec<u8>;
+        fn video_decoder_create_product(
+            factory: &NativeVideoDecoderFactory,
+            environment: &NativeEnvironment,
+            retention: Box<RustVideoFactoryEnvironment>,
+            format: &NativeSdpVideoFormat,
+            status: &mut i32,
+        ) -> UniquePtr<NativeVideoDecoderProduct>;
+        fn video_decoder_product_info(
+            product: &NativeVideoDecoderProduct,
+        ) -> UniquePtr<NativeVideoDecoderInfo>;
+        fn video_decoder_product_implementation_name(
+            product: &NativeVideoDecoderProduct,
+        ) -> Vec<u8>;
         fn video_decoder_product_release(product: Pin<&mut NativeVideoDecoderProduct>) -> i32;
         type NativeAudioEncoderFactory;
         type NativeAudioEncoder;
@@ -2982,29 +3099,67 @@ mod ffi {
         type NativeAudioDecoder;
         fn audio_decoder_factory_transfer_ready(decoder: &NativeAudioDecoder) -> bool;
         fn audio_decoder_forwarded_frame_count(decoder: &NativeAudioDecoder) -> usize;
-        fn audio_decoder_forward_product(owner: Box<AudioDecoderTransfer>) -> UniquePtr<NativeAudioDecoder>;
+        fn audio_decoder_forward_product(
+            owner: Box<AudioDecoderTransfer>,
+        ) -> UniquePtr<NativeAudioDecoder>;
         type NativeCallerAudioDecoderFactory;
-        fn audio_caller_decoder_factory_new(owner: Box<RustAudioDecoderFactoryCall>) -> UniquePtr<NativeCallerAudioDecoderFactory>;
-        fn audio_caller_decoder_factory_formats(handle: &NativeCallerAudioDecoderFactory, call: &RustAudioDecoderFactoryCall) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_decoder_factory_supported(handle: &NativeCallerAudioDecoderFactory, call: &RustAudioDecoderFactoryCall, format: &FfiSdpAudioFormat) -> bool;
-        fn audio_caller_decoder_factory_create(handle: &NativeCallerAudioDecoderFactory, call: &RustAudioDecoderFactoryCall,
-            environment: &NativeEnvironment, format: &FfiSdpAudioFormat,
-            compatibility: bool, pair: &UniquePtr<NativeAudioCodecPairId>) -> UniquePtr<NativeAudioDecoder>;
-        fn audio_caller_decoder_formats(source: Box<RustAudioDecoderFactoryCall>) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_decoder_supported(source: Box<RustAudioDecoderFactoryCall>, format: &FfiSdpAudioFormat) -> bool;
-        fn audio_caller_decoder_create(source: Box<RustAudioDecoderFactoryCall>,
-            environment: &NativeEnvironment, format: &FfiSdpAudioFormat,
-            compatibility: bool, pair: &UniquePtr<NativeAudioCodecPairId>) -> UniquePtr<NativeAudioDecoder>;
+        fn audio_caller_decoder_factory_new(
+            owner: Box<RustAudioDecoderFactoryCall>,
+        ) -> UniquePtr<NativeCallerAudioDecoderFactory>;
+        fn audio_caller_decoder_factory_formats(
+            handle: &NativeCallerAudioDecoderFactory,
+            call: &RustAudioDecoderFactoryCall,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_decoder_factory_supported(
+            handle: &NativeCallerAudioDecoderFactory,
+            call: &RustAudioDecoderFactoryCall,
+            format: &FfiSdpAudioFormat,
+        ) -> bool;
+        fn audio_caller_decoder_factory_create(
+            handle: &NativeCallerAudioDecoderFactory,
+            call: &RustAudioDecoderFactoryCall,
+            environment: &NativeEnvironment,
+            format: &FfiSdpAudioFormat,
+            compatibility: bool,
+            pair: &UniquePtr<NativeAudioCodecPairId>,
+        ) -> UniquePtr<NativeAudioDecoder>;
+        fn audio_caller_decoder_formats(
+            source: Box<RustAudioDecoderFactoryCall>,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_decoder_supported(
+            source: Box<RustAudioDecoderFactoryCall>,
+            format: &FfiSdpAudioFormat,
+        ) -> bool;
+        fn audio_caller_decoder_create(
+            source: Box<RustAudioDecoderFactoryCall>,
+            environment: &NativeEnvironment,
+            format: &FfiSdpAudioFormat,
+            compatibility: bool,
+            pair: &UniquePtr<NativeAudioCodecPairId>,
+        ) -> UniquePtr<NativeAudioDecoder>;
         type NativeDecodableAudioFrame;
         type NativeAudioCodecPairId;
         type NativeAudioEncoderOptions;
         fn audio_encoder_options_default() -> UniquePtr<NativeAudioEncoderOptions>;
-        fn audio_encoder_options_copy(source: &NativeAudioEncoderOptions) -> UniquePtr<NativeAudioEncoderOptions>;
-        fn audio_encoder_options_assign(target: Pin<&mut NativeAudioEncoderOptions>, source: &NativeAudioEncoderOptions);
+        fn audio_encoder_options_copy(
+            source: &NativeAudioEncoderOptions,
+        ) -> UniquePtr<NativeAudioEncoderOptions>;
+        fn audio_encoder_options_assign(
+            target: Pin<&mut NativeAudioEncoderOptions>,
+            source: &NativeAudioEncoderOptions,
+        );
         fn audio_encoder_options_payload_type(source: &NativeAudioEncoderOptions) -> i32;
-        fn audio_encoder_options_set_payload_type(target: Pin<&mut NativeAudioEncoderOptions>, value: i32);
-        fn audio_encoder_options_pair_id(source: &NativeAudioEncoderOptions) -> UniquePtr<NativeAudioCodecPairId>;
-        fn audio_encoder_options_set_pair_id(target: Pin<&mut NativeAudioEncoderOptions>, pair: &UniquePtr<NativeAudioCodecPairId>);
+        fn audio_encoder_options_set_payload_type(
+            target: Pin<&mut NativeAudioEncoderOptions>,
+            value: i32,
+        );
+        fn audio_encoder_options_pair_id(
+            source: &NativeAudioEncoderOptions,
+        ) -> UniquePtr<NativeAudioCodecPairId>;
+        fn audio_encoder_options_set_pair_id(
+            target: Pin<&mut NativeAudioEncoderOptions>,
+            pair: &UniquePtr<NativeAudioCodecPairId>,
+        );
         type NativeNetEq;
         fn neteq_factory_create(
             source: Box<RustNetEqFactory>,
@@ -3119,7 +3274,9 @@ mod ffi {
         ) -> FfiNetEqOperationsAndState;
         fn neteq_decoder_format_round_trip(value: &FfiNetEqDecoderFormat) -> FfiNetEqDecoderFormat;
         fn audio_codec_pair_id_create() -> UniquePtr<NativeAudioCodecPairId>;
-        fn audio_codec_pair_id_copy(source: &NativeAudioCodecPairId) -> UniquePtr<NativeAudioCodecPairId>;
+        fn audio_codec_pair_id_copy(
+            source: &NativeAudioCodecPairId,
+        ) -> UniquePtr<NativeAudioCodecPairId>;
         fn audio_codec_pair_id_numeric(id: &NativeAudioCodecPairId) -> u64;
         type NativeVideoFrame;
         type NativeEncodedVideoFrame;
@@ -3145,68 +3302,187 @@ mod ffi {
         type NativeVideoDecoderSettings;
         type NativeVideoDecoderInfo;
         fn video_decoder_settings_new() -> UniquePtr<NativeVideoDecoderSettings>;
-        fn video_decoder_settings_clone(source: &NativeVideoDecoderSettings) -> UniquePtr<NativeVideoDecoderSettings>;
-        fn video_decoder_settings_assign(target: Pin<&mut NativeVideoDecoderSettings>, source: &NativeVideoDecoderSettings);
-        fn video_decoder_settings_fields(source: &NativeVideoDecoderSettings) -> FfiOwnedVideoDecoderSettings;
-        fn video_decoder_settings_set_fields(target: Pin<&mut NativeVideoDecoderSettings>, fields: FfiOwnedVideoDecoderSettings) -> i32;
+        fn video_decoder_settings_clone(
+            source: &NativeVideoDecoderSettings,
+        ) -> UniquePtr<NativeVideoDecoderSettings>;
+        fn video_decoder_settings_assign(
+            target: Pin<&mut NativeVideoDecoderSettings>,
+            source: &NativeVideoDecoderSettings,
+        );
+        fn video_decoder_settings_fields(
+            source: &NativeVideoDecoderSettings,
+        ) -> FfiOwnedVideoDecoderSettings;
+        fn video_decoder_settings_set_fields(
+            target: Pin<&mut NativeVideoDecoderSettings>,
+            fields: FfiOwnedVideoDecoderSettings,
+        ) -> i32;
         fn video_decoder_info_new() -> UniquePtr<NativeVideoDecoderInfo>;
-        fn video_decoder_info_clone(source: &NativeVideoDecoderInfo) -> UniquePtr<NativeVideoDecoderInfo>;
-        fn video_decoder_info_assign(target: Pin<&mut NativeVideoDecoderInfo>, source: &NativeVideoDecoderInfo);
+        fn video_decoder_info_clone(
+            source: &NativeVideoDecoderInfo,
+        ) -> UniquePtr<NativeVideoDecoderInfo>;
+        fn video_decoder_info_assign(
+            target: Pin<&mut NativeVideoDecoderInfo>,
+            source: &NativeVideoDecoderInfo,
+        );
         fn video_decoder_info_fields(source: &NativeVideoDecoderInfo) -> FfiOwnedVideoDecoderInfo;
-        fn video_decoder_info_set_fields(target: Pin<&mut NativeVideoDecoderInfo>, fields: FfiOwnedVideoDecoderInfo);
-        fn video_decoder_info_equal(left: &NativeVideoDecoderInfo, right: &NativeVideoDecoderInfo) -> bool;
+        fn video_decoder_info_set_fields(
+            target: Pin<&mut NativeVideoDecoderInfo>,
+            fields: FfiOwnedVideoDecoderInfo,
+        );
+        fn video_decoder_info_equal(
+            left: &NativeVideoDecoderInfo,
+            right: &NativeVideoDecoderInfo,
+        ) -> bool;
         fn video_decoder_info_string(value: &NativeVideoDecoderInfo) -> Vec<u8>;
         type NativeSdpVideoFormat;
         type NativeSdpVideoFormatList;
         include!("pulsebeam-webrtc-sys/native/video_encoder_selector.h");
         type NativeOwnedVideoEncoderSelector;
         type NativeVideoEncoderSelector;
-        fn video_selector_owned_new(provider: Box<RustVideoEncoderSelector>) -> UniquePtr<NativeOwnedVideoEncoderSelector>;
-        fn video_selector_into_shared(owner: UniquePtr<NativeOwnedVideoEncoderSelector>) -> UniquePtr<NativeVideoEncoderSelector>;
-        fn video_selector_owned_current(value: &NativeOwnedVideoEncoderSelector, format: &NativeSdpVideoFormat);
-        fn video_selector_owned_bitrate(value: &NativeOwnedVideoEncoderSelector, bits: i64, kind: i8, status: &mut i32) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_owned_resolution(value: &NativeOwnedVideoEncoderSelector, resolution: &NativeRenderResolution) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_owned_broken(value: &NativeOwnedVideoEncoderSelector) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_clone(value: &NativeVideoEncoderSelector) -> UniquePtr<NativeVideoEncoderSelector>;
-        fn video_selector_same(a: &NativeVideoEncoderSelector, b: &NativeVideoEncoderSelector) -> bool;
-        fn video_selector_current(value: &NativeVideoEncoderSelector, format: &NativeSdpVideoFormat);
-        fn video_selector_bitrate(value: &NativeVideoEncoderSelector, bits: i64, kind: i8, status: &mut i32) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_resolution(value: &NativeVideoEncoderSelector, resolution: &NativeRenderResolution) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_selector_broken(value: &NativeVideoEncoderSelector) -> UniquePtr<NativeSdpVideoFormat>;
-        fn string_builder_append_sdp_video_format(target: Pin<&mut NativeStringBuilder>, value: &NativeSdpVideoFormat) -> bool;
-        fn rtc_error_builder_append_sdp_video_format(target: Pin<&mut NativeRtcError>, value: &NativeSdpVideoFormat) -> bool;
-        fn rtc_error_stream_sdp_video_format(target: UniquePtr<NativeRtcError>, value: &NativeSdpVideoFormat, valid: &mut bool) -> UniquePtr<NativeRtcError>;
+        fn video_selector_owned_new(
+            provider: Box<RustVideoEncoderSelector>,
+        ) -> UniquePtr<NativeOwnedVideoEncoderSelector>;
+        fn video_selector_into_shared(
+            owner: UniquePtr<NativeOwnedVideoEncoderSelector>,
+        ) -> UniquePtr<NativeVideoEncoderSelector>;
+        fn video_selector_owned_current(
+            value: &NativeOwnedVideoEncoderSelector,
+            format: &NativeSdpVideoFormat,
+        );
+        fn video_selector_owned_bitrate(
+            value: &NativeOwnedVideoEncoderSelector,
+            bits: i64,
+            kind: i8,
+            status: &mut i32,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_owned_resolution(
+            value: &NativeOwnedVideoEncoderSelector,
+            resolution: &NativeRenderResolution,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_owned_broken(
+            value: &NativeOwnedVideoEncoderSelector,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_clone(
+            value: &NativeVideoEncoderSelector,
+        ) -> UniquePtr<NativeVideoEncoderSelector>;
+        fn video_selector_same(
+            a: &NativeVideoEncoderSelector,
+            b: &NativeVideoEncoderSelector,
+        ) -> bool;
+        fn video_selector_current(
+            value: &NativeVideoEncoderSelector,
+            format: &NativeSdpVideoFormat,
+        );
+        fn video_selector_bitrate(
+            value: &NativeVideoEncoderSelector,
+            bits: i64,
+            kind: i8,
+            status: &mut i32,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_resolution(
+            value: &NativeVideoEncoderSelector,
+            resolution: &NativeRenderResolution,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_selector_broken(
+            value: &NativeVideoEncoderSelector,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn string_builder_append_sdp_video_format(
+            target: Pin<&mut NativeStringBuilder>,
+            value: &NativeSdpVideoFormat,
+        ) -> bool;
+        fn rtc_error_builder_append_sdp_video_format(
+            target: Pin<&mut NativeRtcError>,
+            value: &NativeSdpVideoFormat,
+        ) -> bool;
+        fn rtc_error_stream_sdp_video_format(
+            target: UniquePtr<NativeRtcError>,
+            value: &NativeSdpVideoFormat,
+            valid: &mut bool,
+        ) -> UniquePtr<NativeRtcError>;
         fn sdp_video_format_new(name: &[u8]) -> UniquePtr<NativeSdpVideoFormat>;
-        fn sdp_video_format_with_parameters(name: &[u8], parameters: &[FfiRtpCodecParameter], modes: &[u8], with_modes: bool) -> UniquePtr<NativeSdpVideoFormat>;
-        fn sdp_video_format_with_modes(source: &NativeSdpVideoFormat, modes: &[u8]) -> UniquePtr<NativeSdpVideoFormat>;
-        fn sdp_video_format_clone(source: &NativeSdpVideoFormat) -> UniquePtr<NativeSdpVideoFormat>;
-        fn sdp_video_format_move(source: UniquePtr<NativeSdpVideoFormat>) -> UniquePtr<NativeSdpVideoFormat>;
-        fn sdp_video_format_assign(target: Pin<&mut NativeSdpVideoFormat>, source: &NativeSdpVideoFormat);
-        fn sdp_video_format_move_assign(target: Pin<&mut NativeSdpVideoFormat>, source: UniquePtr<NativeSdpVideoFormat>);
+        fn sdp_video_format_with_parameters(
+            name: &[u8],
+            parameters: &[FfiRtpCodecParameter],
+            modes: &[u8],
+            with_modes: bool,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_with_modes(
+            source: &NativeSdpVideoFormat,
+            modes: &[u8],
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_clone(source: &NativeSdpVideoFormat)
+        -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_move(
+            source: UniquePtr<NativeSdpVideoFormat>,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_assign(
+            target: Pin<&mut NativeSdpVideoFormat>,
+            source: &NativeSdpVideoFormat,
+        );
+        fn sdp_video_format_move_assign(
+            target: Pin<&mut NativeSdpVideoFormat>,
+            source: UniquePtr<NativeSdpVideoFormat>,
+        );
         fn sdp_video_format_fields(value: &NativeSdpVideoFormat) -> FfiSdpVideoFormatFields;
-        fn sdp_video_format_set_fields(value: Pin<&mut NativeSdpVideoFormat>, fields: FfiSdpVideoFormatFields);
-        fn sdp_video_format_equal(left: &NativeSdpVideoFormat, right: &NativeSdpVideoFormat) -> bool;
-        fn sdp_video_format_same_codec(left: &NativeSdpVideoFormat, right: &NativeSdpVideoFormat) -> bool;
+        fn sdp_video_format_set_fields(
+            value: Pin<&mut NativeSdpVideoFormat>,
+            fields: FfiSdpVideoFormatFields,
+        );
+        fn sdp_video_format_equal(
+            left: &NativeSdpVideoFormat,
+            right: &NativeSdpVideoFormat,
+        ) -> bool;
+        fn sdp_video_format_same_codec(
+            left: &NativeSdpVideoFormat,
+            right: &NativeSdpVideoFormat,
+        ) -> bool;
         fn sdp_video_format_string(value: &NativeSdpVideoFormat, valid: &mut bool) -> Vec<u8>;
         fn sdp_video_format_named(kind: u8) -> UniquePtr<NativeSdpVideoFormat>;
         fn sdp_video_format_list_new() -> UniquePtr<NativeSdpVideoFormatList>;
         fn sdp_video_format_list_len(list: &NativeSdpVideoFormatList) -> usize;
-        fn sdp_video_format_list_get(list: &NativeSdpVideoFormatList, index: usize) -> UniquePtr<NativeSdpVideoFormat>;
-        fn video_encoder_formats_value(factory: &NativeVideoEncoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
-        fn video_encoder_implementations_value(factory: &NativeVideoEncoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
-        fn video_decoder_formats_value(factory: &NativeVideoDecoderFactory) -> UniquePtr<NativeSdpVideoFormatList>;
-        fn sdp_video_format_list_add(list: Pin<&mut NativeSdpVideoFormatList>, value: &NativeSdpVideoFormat);
-        fn sdp_video_format_in_list(value: &NativeSdpVideoFormat, list: &NativeSdpVideoFormatList) -> bool;
-        fn sdp_video_format_fuzzy_match(list: &NativeSdpVideoFormatList, request: &NativeSdpVideoFormat, status: &mut i32) -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_list_get(
+            list: &NativeSdpVideoFormatList,
+            index: usize,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
+        fn video_encoder_formats_value(
+            factory: &NativeVideoEncoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn video_encoder_implementations_value(
+            factory: &NativeVideoEncoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn video_decoder_formats_value(
+            factory: &NativeVideoDecoderFactory,
+        ) -> UniquePtr<NativeSdpVideoFormatList>;
+        fn sdp_video_format_list_add(
+            list: Pin<&mut NativeSdpVideoFormatList>,
+            value: &NativeSdpVideoFormat,
+        );
+        fn sdp_video_format_in_list(
+            value: &NativeSdpVideoFormat,
+            list: &NativeSdpVideoFormatList,
+        ) -> bool;
+        fn sdp_video_format_fuzzy_match(
+            list: &NativeSdpVideoFormatList,
+            request: &NativeSdpVideoFormat,
+            status: &mut i32,
+        ) -> UniquePtr<NativeSdpVideoFormat>;
         type NativeRenderResolution;
         fn render_resolution_default() -> UniquePtr<NativeRenderResolution>;
         fn render_resolution_new(width: i32, height: i32) -> UniquePtr<NativeRenderResolution>;
-        fn render_resolution_clone(value: &NativeRenderResolution) -> UniquePtr<NativeRenderResolution>;
-        fn render_resolution_assign(target: Pin<&mut NativeRenderResolution>, source: &NativeRenderResolution);
+        fn render_resolution_clone(
+            value: &NativeRenderResolution,
+        ) -> UniquePtr<NativeRenderResolution>;
+        fn render_resolution_assign(
+            target: Pin<&mut NativeRenderResolution>,
+            source: &NativeRenderResolution,
+        );
         fn render_resolution_width(value: &NativeRenderResolution) -> i32;
         fn render_resolution_height(value: &NativeRenderResolution) -> i32;
         fn render_resolution_valid(value: &NativeRenderResolution) -> bool;
-        fn render_resolution_equal(left: &NativeRenderResolution, right: &NativeRenderResolution) -> bool;
+        fn render_resolution_equal(
+            left: &NativeRenderResolution,
+            right: &NativeRenderResolution,
+        ) -> bool;
         include!("pulsebeam-webrtc-sys/native/frame_transformer.h");
         type NativeTransformableFrame;
         fn transformable_frame_is_audio(value: &NativeTransformableFrame) -> bool;
@@ -3214,25 +3490,56 @@ mod ffi {
         fn transformable_frame_set_data(value: Pin<&mut NativeTransformableFrame>, data: &[u8]);
         fn transformable_frame_payload_type(value: &NativeTransformableFrame) -> u8;
         fn transformable_frame_can_set_payload_type(value: &NativeTransformableFrame) -> bool;
-        fn transformable_frame_set_payload_type(value: Pin<&mut NativeTransformableFrame>, payload: u8) -> bool;
+        fn transformable_frame_set_payload_type(
+            value: Pin<&mut NativeTransformableFrame>,
+            payload: u8,
+        ) -> bool;
         fn transformable_frame_ssrc(value: &NativeTransformableFrame) -> u32;
         fn transformable_frame_timestamp(value: &NativeTransformableFrame) -> u32;
-        fn transformable_frame_set_timestamp(value: Pin<&mut NativeTransformableFrame>, timestamp: u32);
+        fn transformable_frame_set_timestamp(
+            value: Pin<&mut NativeTransformableFrame>,
+            timestamp: u32,
+        );
         fn transformable_frame_direction(value: &NativeTransformableFrame) -> i32;
         fn transformable_frame_mime(value: &NativeTransformableFrame, status: &mut i32) -> Vec<u8>;
-        fn transformable_frame_time(value: &NativeTransformableFrame, query: u8) -> FfiTransformableFrameTime;
+        fn transformable_frame_time(
+            value: &NativeTransformableFrame,
+            query: u8,
+        ) -> FfiTransformableFrameTime;
         fn transformable_frame_can_set_capture_time(value: &NativeTransformableFrame) -> bool;
-        fn transformable_frame_set_capture_time(value: Pin<&mut NativeTransformableFrame>, present: bool, bits: i64) -> i32;
-        fn transformable_frame_clone(value: Pin<&mut NativeTransformableFrame>, status: &mut i32) -> UniquePtr<NativeTransformableFrame>;
-        fn transformable_audio_fields(value: &NativeTransformableFrame) -> FfiTransformableAudioFields;
+        fn transformable_frame_set_capture_time(
+            value: Pin<&mut NativeTransformableFrame>,
+            present: bool,
+            bits: i64,
+        ) -> i32;
+        fn transformable_frame_clone(
+            value: Pin<&mut NativeTransformableFrame>,
+            status: &mut i32,
+        ) -> UniquePtr<NativeTransformableFrame>;
+        fn transformable_audio_fields(
+            value: &NativeTransformableFrame,
+        ) -> FfiTransformableAudioFields;
         fn transformable_audio_csrcs(value: &NativeTransformableFrame) -> Vec<u32>;
         fn transformable_audio_can_set_level(value: &NativeTransformableFrame) -> bool;
-        fn transformable_audio_set_level(value: Pin<&mut NativeTransformableFrame>, present: bool, level: u8) -> bool;
+        fn transformable_audio_set_level(
+            value: Pin<&mut NativeTransformableFrame>,
+            present: bool,
+            level: u8,
+        ) -> bool;
         fn transformable_video_is_key(value: &NativeTransformableFrame) -> bool;
-        fn transformable_video_rid(value: &NativeTransformableFrame, present: &mut bool) -> Vec<u8>;
-        fn transformable_video_metadata(value: &NativeTransformableFrame, status: &mut i32) -> UniquePtr<NativeVideoFrameMetadata>;
-        fn transformable_video_header(value: &NativeTransformableFrame) -> UniquePtr<NativeRtpVideoHeader>;
-        fn transformable_video_set_metadata(value: Pin<&mut NativeTransformableFrame>, metadata: &NativeVideoFrameMetadata) -> i32;
+        fn transformable_video_rid(value: &NativeTransformableFrame, present: &mut bool)
+        -> Vec<u8>;
+        fn transformable_video_metadata(
+            value: &NativeTransformableFrame,
+            status: &mut i32,
+        ) -> UniquePtr<NativeVideoFrameMetadata>;
+        fn transformable_video_header(
+            value: &NativeTransformableFrame,
+        ) -> UniquePtr<NativeRtpVideoHeader>;
+        fn transformable_video_set_metadata(
+            value: Pin<&mut NativeTransformableFrame>,
+            metadata: &NativeVideoFrameMetadata,
+        ) -> i32;
         type NativeVideoFrameMetadata;
         type NativeRtpVideoHeader;
         fn rtp_video_header_new() -> UniquePtr<NativeRtpVideoHeader>;
@@ -4580,8 +4887,14 @@ mod ffi {
             format: &FfiSdpAudioFormat,
             options: &NativeAudioEncoderOptions,
         ) -> FfiAudioEncoderCreation;
-        fn audio_encoder_default_allocation_arguments(target: i64, kind: i8, period: i64,
-            valid: &mut bool, bitrate: &mut i32, milliseconds: &mut i64);
+        fn audio_encoder_default_allocation_arguments(
+            target: i64,
+            kind: i8,
+            period: i64,
+            valid: &mut bool,
+            bitrate: &mut i32,
+            milliseconds: &mut i64,
+        );
         fn audio_encoder_adaptor_smoothing_inputs_safe(
             bitrate: i32,
             has_period: bool,
@@ -4632,21 +4945,55 @@ mod ffi {
             bytes: &[u8],
         ) -> u8;
         type NativeAudioEncoderFailureObserver;
-        fn audio_encoder_sdk_failure_observer(encoder: &NativeAudioEncoder) -> UniquePtr<NativeAudioEncoderFailureObserver>;
+        fn audio_encoder_sdk_failure_observer(
+            encoder: &NativeAudioEncoder,
+        ) -> UniquePtr<NativeAudioEncoderFailureObserver>;
         fn audio_encoder_sdk_failure(source: &NativeAudioEncoderFailureObserver) -> u32;
-        fn audio_encoder_sdk_failure_clone(source: &NativeAudioEncoderFailureObserver) -> UniquePtr<NativeAudioEncoderFailureObserver>;
-        fn audio_encoder_forward_product(source: Box<AudioEncoderTransfer>) -> UniquePtr<NativeAudioEncoder>;
+        fn audio_encoder_sdk_failure_clone(
+            source: &NativeAudioEncoderFailureObserver,
+        ) -> UniquePtr<NativeAudioEncoderFailureObserver>;
+        fn audio_encoder_forward_product(
+            source: Box<AudioEncoderTransfer>,
+        ) -> UniquePtr<NativeAudioEncoder>;
         type NativeCallerAudioEncoderFactory;
-        fn audio_caller_encoder_factory_new(owner: Box<RustAudioEncoderFactoryCall>) -> UniquePtr<NativeCallerAudioEncoderFactory>;
-        fn audio_caller_encoder_factory_formats(handle: &NativeCallerAudioEncoderFactory, call: &RustAudioEncoderFactoryCall) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_encoder_factory_query(handle: &NativeCallerAudioEncoderFactory, call: &RustAudioEncoderFactoryCall, format: &FfiSdpAudioFormat) -> FfiAudioEncoderQuery;
-        fn audio_caller_encoder_factory_create(handle: &NativeCallerAudioEncoderFactory, call: &RustAudioEncoderFactoryCall,
-            environment: &NativeEnvironment, format: &FfiSdpAudioFormat, options: &NativeAudioEncoderOptions) -> UniquePtr<NativeAudioEncoder>;
-        fn audio_caller_encoder_formats(source: Box<RustAudioEncoderFactoryCall>) -> Vec<FfiAudioCodecSpec>;
-        fn audio_caller_encoder_query(source: Box<RustAudioEncoderFactoryCall>, format: &FfiSdpAudioFormat) -> FfiAudioEncoderQuery;
-        fn audio_caller_encoder_create(source: Box<RustAudioEncoderFactoryCall>, environment: &NativeEnvironment,
-            format: &FfiSdpAudioFormat, options: &NativeAudioEncoderOptions) -> UniquePtr<NativeAudioEncoder>;
-        fn audio_encoder_forward_encode_sdk(source: &NativeAudioEncoder, timestamp: u32, audio: &[i16], prefix: &[u8]) -> FfiAudioEncoderOutput;
+        fn audio_caller_encoder_factory_new(
+            owner: Box<RustAudioEncoderFactoryCall>,
+        ) -> UniquePtr<NativeCallerAudioEncoderFactory>;
+        fn audio_caller_encoder_factory_formats(
+            handle: &NativeCallerAudioEncoderFactory,
+            call: &RustAudioEncoderFactoryCall,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_encoder_factory_query(
+            handle: &NativeCallerAudioEncoderFactory,
+            call: &RustAudioEncoderFactoryCall,
+            format: &FfiSdpAudioFormat,
+        ) -> FfiAudioEncoderQuery;
+        fn audio_caller_encoder_factory_create(
+            handle: &NativeCallerAudioEncoderFactory,
+            call: &RustAudioEncoderFactoryCall,
+            environment: &NativeEnvironment,
+            format: &FfiSdpAudioFormat,
+            options: &NativeAudioEncoderOptions,
+        ) -> UniquePtr<NativeAudioEncoder>;
+        fn audio_caller_encoder_formats(
+            source: Box<RustAudioEncoderFactoryCall>,
+        ) -> Vec<FfiAudioCodecSpec>;
+        fn audio_caller_encoder_query(
+            source: Box<RustAudioEncoderFactoryCall>,
+            format: &FfiSdpAudioFormat,
+        ) -> FfiAudioEncoderQuery;
+        fn audio_caller_encoder_create(
+            source: Box<RustAudioEncoderFactoryCall>,
+            environment: &NativeEnvironment,
+            format: &FfiSdpAudioFormat,
+            options: &NativeAudioEncoderOptions,
+        ) -> UniquePtr<NativeAudioEncoder>;
+        fn audio_encoder_forward_encode_sdk(
+            source: &NativeAudioEncoder,
+            timestamp: u32,
+            audio: &[i16],
+            prefix: &[u8],
+        ) -> FfiAudioEncoderOutput;
         fn audio_encoder_forward_target_sdk(source: &NativeAudioEncoder, bitrate: i32);
         fn audio_encoder_forward_loss_sdk(source: &NativeAudioEncoder, fraction: f32);
         fn audio_encoder_forward_adaptor_sdk(source: &NativeAudioEncoder, config: &[u8]) -> bool;
@@ -4730,35 +5077,109 @@ mod ffi {
         fn audio_frame_decode(frame: &NativeDecodableAudioFrame) -> FfiDecodedAudio;
         fn audio_caller_frame_sdk_duration(source: Box<RustCallerAudioFrameCall>) -> usize;
         fn audio_caller_frame_sdk_dtx(source: Box<RustCallerAudioFrameCall>) -> bool;
-        fn audio_caller_frame_sdk_decode(source: Box<RustCallerAudioFrameCall>, output: &mut [i16]) -> FfiAudioFrameDecodeInto;
+        fn audio_caller_frame_sdk_decode(
+            source: Box<RustCallerAudioFrameCall>,
+            output: &mut [i16],
+        ) -> FfiAudioFrameDecodeInto;
         type NativeCallerAudioDecoderProduct;
-        fn audio_caller_decoder_product_new(owner: Box<RustCallerAudioDecoderCall>) -> UniquePtr<NativeCallerAudioDecoderProduct>;
-        fn audio_caller_decoder_product_scalar(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall, kind: u8) -> i32;
-        fn audio_caller_decoder_product_channels(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall) -> usize;
-        fn audio_caller_decoder_product_reset(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall);
-        fn audio_caller_decoder_product_duration(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall, encoded: &[u8], redundant: bool) -> i32;
-        fn audio_caller_decoder_product_fec(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall, encoded: &[u8]) -> bool;
-        fn audio_caller_decoder_product_parse(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall, encoded: &[u8], timestamp: u32) -> Vec<FfiCallerParsedAudioFrame>;
-        fn audio_caller_decoder_product_plc(owner: &NativeCallerAudioDecoderProduct, call: &RustCallerAudioDecoderCall, requested: usize, prefix: &[i16]) -> FfiAudioPlc;
-        fn audio_caller_decoder_sdk_scalar(source: Box<RustCallerAudioDecoderCall>, kind: u8) -> i32;
+        fn audio_caller_decoder_product_new(
+            owner: Box<RustCallerAudioDecoderCall>,
+        ) -> UniquePtr<NativeCallerAudioDecoderProduct>;
+        fn audio_caller_decoder_product_scalar(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+            kind: u8,
+        ) -> i32;
+        fn audio_caller_decoder_product_channels(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+        ) -> usize;
+        fn audio_caller_decoder_product_reset(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+        );
+        fn audio_caller_decoder_product_duration(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+            encoded: &[u8],
+            redundant: bool,
+        ) -> i32;
+        fn audio_caller_decoder_product_fec(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+            encoded: &[u8],
+        ) -> bool;
+        fn audio_caller_decoder_product_parse(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+            encoded: &[u8],
+            timestamp: u32,
+        ) -> Vec<FfiCallerParsedAudioFrame>;
+        fn audio_caller_decoder_product_plc(
+            owner: &NativeCallerAudioDecoderProduct,
+            call: &RustCallerAudioDecoderCall,
+            requested: usize,
+            prefix: &[i16],
+        ) -> FfiAudioPlc;
+        fn audio_caller_decoder_sdk_scalar(
+            source: Box<RustCallerAudioDecoderCall>,
+            kind: u8,
+        ) -> i32;
         fn audio_caller_decoder_sdk_channels(source: Box<RustCallerAudioDecoderCall>) -> usize;
         fn audio_caller_decoder_sdk_reset(source: Box<RustCallerAudioDecoderCall>);
-        fn audio_caller_decoder_sdk_packet_duration(source: Box<RustCallerAudioDecoderCall>, encoded: &[u8], redundant: bool) -> i32;
-        fn audio_caller_decoder_sdk_packet_fec(source: Box<RustCallerAudioDecoderCall>, encoded: &[u8]) -> bool;
-        fn audio_caller_decoder_sdk_parse(source: Box<RustCallerAudioDecoderCall>, encoded: &[u8], timestamp: u32) -> Vec<FfiCallerParsedAudioFrame>;
-        fn audio_caller_decoder_sdk_plc(source: Box<RustCallerAudioDecoderCall>, requested: usize, prefix: &[i16]) -> FfiAudioPlc;
-        fn audio_caller_decoder_sdk_legacy_refusal(source: Box<RustCallerAudioDecoderCall>, redundant: bool, output: &mut [i16], speech: &mut i32) -> i32;
+        fn audio_caller_decoder_sdk_packet_duration(
+            source: Box<RustCallerAudioDecoderCall>,
+            encoded: &[u8],
+            redundant: bool,
+        ) -> i32;
+        fn audio_caller_decoder_sdk_packet_fec(
+            source: Box<RustCallerAudioDecoderCall>,
+            encoded: &[u8],
+        ) -> bool;
+        fn audio_caller_decoder_sdk_parse(
+            source: Box<RustCallerAudioDecoderCall>,
+            encoded: &[u8],
+            timestamp: u32,
+        ) -> Vec<FfiCallerParsedAudioFrame>;
+        fn audio_caller_decoder_sdk_plc(
+            source: Box<RustCallerAudioDecoderCall>,
+            requested: usize,
+            prefix: &[i16],
+        ) -> FfiAudioPlc;
+        fn audio_caller_decoder_sdk_legacy_refusal(
+            source: Box<RustCallerAudioDecoderCall>,
+            redundant: bool,
+            output: &mut [i16],
+            speech: &mut i32,
+        ) -> i32;
         fn audio_format_description(format: &FfiSdpAudioFormat) -> Vec<u8>;
         fn audio_codec_info_description(info: &FfiAudioCodecInfo) -> Vec<u8>;
         fn audio_codec_info_has_fixed_bitrate(info: &FfiAudioCodecInfo, valid: &mut bool) -> bool;
-        fn audio_codec_info_create(sample_rate_hz: i32, num_channels: usize,
-            default_bitrate_bps: i32, min_bitrate_bps: i32, max_bitrate_bps: i32,
-            use_range: bool, valid: &mut bool) -> FfiAudioCodecInfo;
+        fn audio_codec_info_create(
+            sample_rate_hz: i32,
+            num_channels: usize,
+            default_bitrate_bps: i32,
+            min_bitrate_bps: i32,
+            max_bitrate_bps: i32,
+            use_range: bool,
+            valid: &mut bool,
+        ) -> FfiAudioCodecInfo;
         fn audio_codec_spec_description(spec: &FfiAudioCodecSpec) -> Vec<u8>;
         fn native_codec_thread_token() -> u64;
         fn video_scalability_mode_valid(name: &str) -> bool;
-        unsafe fn video_encoder_query_value(factory: &NativeVideoEncoderFactory, format: &NativeSdpVideoFormat, has_mode: bool, mode: &[u8], resolution: *const NativeRtpResolution) -> FfiVideoFactorySupport;
-        unsafe fn video_decoder_query_value(factory: &NativeVideoDecoderFactory, format: &NativeSdpVideoFormat, reference_scaling: bool, resolution: *const NativeRtpResolution) -> FfiVideoFactorySupport;
+        unsafe fn video_encoder_query_value(
+            factory: &NativeVideoEncoderFactory,
+            format: &NativeSdpVideoFormat,
+            has_mode: bool,
+            mode: &[u8],
+            resolution: *const NativeRtpResolution,
+        ) -> FfiVideoFactorySupport;
+        unsafe fn video_decoder_query_value(
+            factory: &NativeVideoDecoderFactory,
+            format: &NativeSdpVideoFormat,
+            reference_scaling: bool,
+            resolution: *const NativeRtpResolution,
+        ) -> FfiVideoFactorySupport;
         fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
         fn video_encoder_query(
             factory: &NativeVideoEncoderFactory,
@@ -4994,8 +5415,19 @@ mod ffi {
         ) -> u8;
         fn peer_take_event(peer: &NativePeerConnection) -> FfiPeerEvent;
         fn peer_event_observation(peer: &NativePeerConnection) -> FfiPeerEventObservation;
-        fn test_peer_candidate_observation(peer: &NativePeerConnection, mid: &[u8], index: i32, sdp: &[u8], removed: bool) -> bool;
-        fn test_peer_ice_observations(peer: &NativePeerConnection, legacy: i32, standardized: i32, repetitions: u32) -> bool;
+        fn test_peer_candidate_observation(
+            peer: &NativePeerConnection,
+            mid: &[u8],
+            index: i32,
+            sdp: &[u8],
+            removed: bool,
+        ) -> bool;
+        fn test_peer_ice_observations(
+            peer: &NativePeerConnection,
+            legacy: i32,
+            standardized: i32,
+            repetitions: u32,
+        ) -> bool;
         fn test_peer_control_observations(
             peer: &NativePeerConnection,
             message_bytes: u32,
