@@ -442,6 +442,13 @@ impl VideoSource {
     }
 
     pub fn push_frame(&self, frame: &VideoFrame) -> Result<(), CodecError> {
+        if self.state() == VideoSourceState::Ended {
+            return Err(CodecError::Released);
+        }
+        let allocation_size = ffi::video_source_i420_allocation_size(frame.width, frame.height);
+        if allocation_size == 0 || allocation_size != frame.buffer.as_bytes().len() {
+            return Err(CodecError::InvalidFrame);
+        }
         ffi::video_source_push_frame(
             self.native(),
             frame.buffer.as_bytes(),
@@ -2316,5 +2323,35 @@ fn native_error(message: &str) -> PeerError {
     PeerError {
         kind: crate::PeerErrorKind::NativeConstruction,
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use crate::ffi;
+
+    #[test]
+    fn raw_source_preflight_matches_the_pinned_i420_allocator_int_bound() {
+        let limit = i32::MAX as u32;
+        // Exercise the actual helper called before I420Buffer::Create, without
+        // allocating multi-gigabyte fixtures or entering a native CHECK.
+        for (width, height) in [
+            (0, 1), (1, 0), (1, 1), (2, 2), (3, 3), (17, 9),
+            (1, limit / 2), (1, limit / 2 + 1),
+            (limit / 2, 1), (limit / 2 + 1, 1),
+            (2, limit / 3), (2, limit / 3 + 1),
+            (limit / 3, 2), (limit / 3 + 1, 2),
+            (65536, 65536), (limit, 1), (1, limit),
+            (limit, limit), (limit + 1, 1), (u32::MAX, u32::MAX),
+        ] {
+            let (w, h) = (u128::from(width), u128::from(height));
+            let size = w * h + 2 * w.div_ceil(2) * h.div_ceil(2);
+            let expected = if width != 0 && height != 0 && width <= limit
+                && height <= limit && size <= u128::from(limit) { size as usize } else { 0 };
+            assert_eq!(ffi::video_source_i420_allocation_size(width, height), expected,
+                "{width}x{height}");
+        }
+        assert_eq!(ffi::video_source_i420_allocation_size(1, limit / 2), limit as usize);
+        assert_eq!(ffi::video_source_i420_allocation_size(2, limit / 3), limit as usize - 1);
     }
 }

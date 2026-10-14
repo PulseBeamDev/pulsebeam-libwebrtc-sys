@@ -7581,6 +7581,7 @@ mod ffi {
             timestamp_us: i64,
             token: i64,
         ) -> bool;
+        fn video_source_i420_allocation_size(width: u32, height: u32) -> usize;
         fn video_source_push_frame(
             source: &NativeVideoSource,
             data: &[u8],

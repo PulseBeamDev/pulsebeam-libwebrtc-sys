@@ -299,6 +299,8 @@ bool video_source_push_encoded_trigger(
     const NativeVideoSource& source, std::uint32_t width,
     std::uint32_t height, std::int64_t timestamp_us,
     std::int64_t token) noexcept;
+std::size_t video_source_i420_allocation_size(std::uint32_t width,
+                                             std::uint32_t height) noexcept;
 bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,

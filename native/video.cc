@@ -1270,15 +1270,29 @@ bool video_source_push_encoded_trigger(
   return true;
 }
 
+std::size_t video_source_i420_allocation_size(std::uint32_t width,
+                                             std::uint32_t height) noexcept {
+  static_assert(std::numeric_limits<int>::max() == INT32_MAX);
+  if (width == 0 || height == 0 || width > INT32_MAX || height > INT32_MAX) return 0;
+  // I420Buffer::I420DataSize narrows this exact packed allocation to int.
+  // Widen first. For int32 dimensions the products and sum fit uint64_t.
+  const std::uint64_t w = width, h = height;
+  const auto size = w * h + 2 * ((w + 1) / 2) * ((h + 1) / 2);
+  if (size > INT32_MAX) return 0;
+  // This bound also proves width+1 and height+1 in the SDK constructors
+  // cannot overflow int, including their odd-dimension chroma rounding.
+  return static_cast<std::size_t>(size);
+}
+
 bool video_source_push_frame(const NativeVideoSource& source,
                              rust::Slice<const std::uint8_t> data,
                              std::uint32_t width, std::uint32_t height,
                              std::int64_t timestamp_us,
                              std::uint32_t rtp_timestamp,
                              std::uint16_t rotation) noexcept {
-  if (source.state()->closed.load() || width == 0 || height == 0 ||
-      width > static_cast<std::uint32_t>(INT32_MAX) ||
-      height > static_cast<std::uint32_t>(INT32_MAX) ||
+  const auto allocation_size = video_source_i420_allocation_size(width, height);
+  if (source.state()->closed.load() || allocation_size == 0 ||
+      data.size() != allocation_size ||
       (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) {
     return false;
   }
@@ -1286,9 +1300,6 @@ bool video_source_push_frame(const NativeVideoSource& source,
   const std::size_t chroma_height = (static_cast<std::size_t>(height) + 1) / 2;
   const std::size_t y_size = static_cast<std::size_t>(width) * height;
   const std::size_t chroma_size = chroma_width * chroma_height;
-  if (data.size() != y_size + 2 * chroma_size) {
-    return false;
-  }
   auto buffer = webrtc::I420Buffer::Create(static_cast<int>(width),
                                            static_cast<int>(height));
   std::memcpy(buffer->MutableDataY(), data.data(), y_size);

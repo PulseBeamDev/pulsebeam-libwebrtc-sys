@@ -21,7 +21,8 @@ use pulsebeam_webrtc_sys::{
     VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
     VideoEncoderSettings, VideoFrame, VideoFrameBuffer, VideoFrameType, VideoPlane,
-    VideoRateControl, VideoResolution, VideoRotation, VideoSimulcastStream, VideoTrackState,
+    VideoRateControl, VideoResolution, VideoRotation, VideoSimulcastStream, VideoSourceState,
+    VideoTrackState,
 };
 
 #[derive(Default)]
@@ -296,7 +297,6 @@ impl Pair {
     ) -> Self {
         Self::new_with_codec(counters, fail_encoder, encoder, h264())
     }
-
     fn new_with_codec(
         counters: Arc<Counters>,
         fail_encoder: bool,
@@ -766,6 +766,15 @@ fn video_sink_bounds_retention_and_reports_loss() {
         .create_video_track("bounded", &source)
         .unwrap();
     let mut sink = track.attach_sink().unwrap();
+    let mut invalid = VideoFrame::i420(2, 2, vec![0; 6], 0, 0).unwrap();
+    for (width, height) in [(65536, 65536), (i32::MAX as u32, 1), (1, u32::MAX)] {
+        invalid.width = width;
+        invalid.height = height;
+        assert_eq!(source.push_frame(&invalid), Err(CodecError::InvalidFrame));
+        assert_eq!(source.state(), VideoSourceState::Live);
+        assert_eq!(sink.try_next_frame(), None);
+        assert_eq!(sink.dropped_frames(), 0);
+    }
     for index in 0..6 {
         source
             .push_frame(&VideoFrame::i420(2, 2, vec![index as u8; 6], index, index as u32).unwrap())
@@ -1756,17 +1765,27 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
         .collect();
     transceiver.set_codec_preferences(&codecs).unwrap();
     drop(pair.negotiate());
-    source
-        .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
-        .unwrap();
-    // The pinned SDK's startup utilization factor is 1.2 for this one-frame
-    // encoder. SetRates receives the adjusted allocation, not the allocator's
-    // input echo: 123456 / 1.2 = 102880. Sparse zero/unset cells stay distinct.
-    let observed = (0..2_000_000).any(|_| {
-        pair.progress();
-        counters.encode.load(Ordering::SeqCst) > 0
-            && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
-                rates.target_bitrate_bps == 123_456
+    // A source's first frame can precede native encoder startup. Keep the
+    // same finite progress budget while requiring real selected-product encode
+    // work, rather than accepting only its pre-input rate callback.
+    let observed = (0..20).any(|index| {
+        source
+            .push_frame(
+                &VideoFrame::i420(
+                    16,
+                    16,
+                    synthetic_i420(16, 16),
+                    2_000_000 + i64::from(index) * 33_333,
+                    90_000 + index * 3_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        (0..100_000).any(|_| {
+            pair.progress();
+            counters.encode.load(Ordering::SeqCst) > 0
+                && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
+                    rates.target_bitrate_bps == 123_456
                     && rates.target_layer_bitrates_bps[0][0] == Some(123_456)
                     && rates.target_layer_bitrates_bps[0][1] == Some(0)
                     && rates.target_layer_bitrates_bps[0][2].is_none()
@@ -1779,7 +1798,8 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
                     && rates.layer_bitrates_bps[0][0] == Some(rates.bitrate_bps)
                     && rates.layer_bitrates_bps[0][1] == Some(0)
                     && rates.layer_bitrates_bps[0][2].is_none()
-            })
+                })
+        })
     });
     assert!(
         observed,
