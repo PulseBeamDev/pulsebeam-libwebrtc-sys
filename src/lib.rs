@@ -3,7 +3,10 @@
 mod async_dns;
 mod audio;
 mod audio_source_options;
-pub use audio_source_options::{AudioProcessingMode, AudioSourceOptions, AudioSourceState, AudioTrackState, AudioTrackStatus};
+pub use audio_source_options::{
+    AudioProcessingMode, AudioSourceControlError, AudioSourceOptions, AudioSourceState,
+    AudioTrackState, AudioTrackStatus,
+};
 mod audio_processing;
 mod audio_processor_config;
 pub use audio_processor_config::{
@@ -7385,6 +7388,14 @@ mod ffi {
         fn audio_options_equal(a: &FfiAudioSourceOptions, b: &FfiAudioSourceOptions) -> bool;
         fn audio_options_set_all(value: &FfiAudioSourceOptions, changes: &FfiAudioSourceOptions) -> FfiAudioSourceOptions;
         fn audio_options_description(value: &FfiAudioSourceOptions) -> String;
+        fn audio_source_set_options(source: &NativeAudioSource, options: &FfiAudioSourceOptions) -> u8;
+        fn audio_source_set_volume(source: &NativeAudioSource, volume: f64) -> u8;
+        fn audio_track_set_volume(track: &NativeAudioTrack, volume: f64) -> u8;
+        fn rtp_sender_set_audio_track_volume(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+            volume: f64,
+        ) -> u8;
         fn audio_source_options(source: &NativeAudioSource) -> FfiAudioSourceOptions;
         fn audio_source_state(source: &NativeAudioSource) -> u8;
         fn audio_source_remote(source: &NativeAudioSource) -> bool;

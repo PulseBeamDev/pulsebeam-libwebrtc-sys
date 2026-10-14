@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <cmath>
 #include <deque>
 #include <limits>
 #include <list>
@@ -802,6 +803,38 @@ FfiAudioSourceOptions audio_options_set_all(const FfiAudioSourceOptions& value,
 }
 rust::String audio_options_description(const FfiAudioSourceOptions& value) noexcept {
   return rust::String(ReadAudioOptions(value).ToString());
+}
+std::uint8_t audio_source_set_options(const NativeAudioSource& source,
+                                      const FfiAudioSourceOptions& options) noexcept {
+  // Source options reach the send channel. Jitter options do not become
+  // receive-channel/NetEq settings through this path; preserve their values.
+  for (const auto& mode : {options.echo_cancellation_mode, options.auto_gain_control_mode,
+                          options.noise_suppression_mode, options.highpass_filter_mode}) {
+    if (mode.present && (mode.value < 0 || mode.value > 2)) return 1;
+  }
+  const auto native = ReadAudioOptions(options);
+  source.state()->signaling_thread->BlockingCall([&] { source.state()->source->SetOptions(native); });
+  return 0;  // Native SetOptions is void; this is invocation, not effective state.
+}
+std::uint8_t audio_source_set_volume(const NativeAudioSource& source, double volume) noexcept {
+  if (!std::isfinite(volume) || volume < 0 || volume > 10) return 2;
+  source.state()->signaling_thread->BlockingCall([&] { source.state()->source->SetVolume(volume); });
+  return 0;
+}
+std::uint8_t audio_track_set_volume(const NativeAudioTrack& track, double volume) noexcept {
+  if (!std::isfinite(volume) || volume < 0 || volume > 10) return 2;
+  track.state()->signaling_thread->BlockingCall([&] { track.state()->track->SetVolume(volume); });
+  return 0;
+}
+std::uint8_t rtp_sender_set_audio_track_volume(const NativePeerConnection& peer,
+                                             const NativeRtpSender& sender, double volume) noexcept {
+  if (!std::isfinite(volume) || volume < 0 || volume > 10) return 2;
+  return peer.signaling_thread()->BlockingCall([&]() -> std::uint8_t {
+    auto track = sender.sender()->track();
+    if (!track || track->kind() != webrtc::MediaStreamTrackInterface::kAudioKind) return 3;
+    static_cast<webrtc::AudioTrackInterface*>(track.get())->SetVolume(volume);
+    return 0;
+  });
 }
 FfiAudioSourceOptions audio_source_options(const NativeAudioSource& source) noexcept {
   return source.state()->signaling_thread->BlockingCall([&] {

@@ -12,6 +12,7 @@ struct Call {
     connected: [bool; 2],
     audio: Option<SessionReceiverId>,
     audio_arrivals: Vec<SessionReceiverId>,
+    all_audio: Vec<(usize, SessionReceiverId, SessionTransceiverId)>,
     video: Option<SessionReceiverId>,
 }
 impl Call {
@@ -23,16 +24,21 @@ impl Call {
                         self.operations
                             .insert((peer, done.operation_id), done.result.unwrap());
                     }
-                    SessionEvent::Track { receiver, .. } if index == 1 => {
-                        match session.receiver_media_type(receiver).unwrap() {
-                            MediaType::Audio => {
+                    SessionEvent::Track {
+                        receiver,
+                        transceiver,
+                    } => match session.receiver_media_type(receiver).unwrap() {
+                        MediaType::Audio => {
+                            self.all_audio.push((index, receiver, transceiver));
+                            if index == 1 {
                                 self.audio = Some(receiver);
                                 self.audio_arrivals.push(receiver);
                             }
-                            MediaType::Video => self.video = Some(receiver),
-                            kind => panic!("unexpected track kind: {kind:?}"),
                         }
-                    }
+                        MediaType::Video if index == 1 => self.video = Some(receiver),
+                        MediaType::Video => {}
+                        kind => panic!("unexpected track kind: {kind:?}"),
+                    },
                     SessionEvent::IceGatheringStateChanged(IceGatheringState::Complete) => {
                         self.gathered[index] = true
                     }
@@ -88,11 +94,35 @@ impl Call {
             .unwrap()
     }
     fn negotiate(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
+        let _ = self.negotiate_answer_source(session, peers, None);
+    }
+    fn negotiate_answer_source(
+        &mut self,
+        session: &mut ProductionSession,
+        peers: [SessionPeerId; 2],
+        answer_source: Option<SessionSourceId>,
+    ) -> Option<SessionSenderId> {
         let operation = session.create_offer(peers[0], false).unwrap();
         let offer = self.finish(session, peers, peers[0], operation).unwrap();
         let offer = self.gather(session, peers, 0, offer);
         let operation = session.set_remote_description(peers[1], offer).unwrap();
         self.finish(session, peers, peers[1], operation);
+        let answer_sender = answer_source.map(|source| {
+            let transceiver = self
+                .all_audio
+                .iter()
+                .find(|(index, _, _)| *index == 1)
+                .unwrap()
+                .2;
+            let sender = session.sender(transceiver).unwrap();
+            session
+                .replace_audio_source(sender, Some(source), "tone-1")
+                .unwrap();
+            session
+                .set_direction(transceiver, RtpTransceiverDirection::SendReceive)
+                .unwrap();
+            sender
+        });
         let operation = session.create_answer(peers[1]).unwrap();
         let answer = self.finish(session, peers, peers[1], operation).unwrap();
         let answer = self.gather(session, peers, 1, answer);
@@ -104,7 +134,223 @@ impl Call {
             assert!(Instant::now() < deadline, "native peers did not connect");
             thread::yield_now();
         }
+        answer_sender
     }
+}
+
+fn drive_pcm_tones(
+    session: &mut ProductionSession,
+    call: &mut Call,
+    peers: [SessionPeerId; 2],
+    sources: [SessionSourceId; 2],
+) -> Vec<DecodedAudioFrame> {
+    let tones = [1000, 1500].map(|frequency| {
+        let samples = (0..480)
+            .map(|index| {
+                if index * frequency * 2 / 48000 % 2 == 0 {
+                    12000
+                } else {
+                    -12000
+                }
+            })
+            .collect();
+        AudioPcmFrame::i16_interleaved(48000, 1, 0, samples).unwrap()
+    });
+    let periods = [48, 32];
+    let mut received = [false; 2];
+    let mut frames = Vec::new();
+    let start = Instant::now();
+    let mut next = Duration::ZERO;
+    while received != [true; 2] {
+        let elapsed = start.elapsed();
+        if elapsed >= next {
+            for index in 0..2 {
+                let capture = session.pcm_capture_time_now(sources[index]).unwrap();
+                session
+                    .push_pcm_at(sources[index], &tones[index], capture)
+                    .unwrap();
+            }
+            next = elapsed + Duration::from_millis(10);
+        }
+        call.drain(session, peers);
+        for &(peer_index, receiver, _) in &call.all_audio {
+            if let Some(frame) = session.try_pcm_frame(receiver).unwrap() {
+                let correlation = |lag: usize| {
+                    frame
+                        .samples
+                        .iter()
+                        .zip(frame.samples.iter().skip(lag))
+                        .fold((0i64, 0i64), |(dot, energy), (&a, &b)| {
+                            (
+                                dot + i64::from(a) * i64::from(b),
+                                energy + i64::from(a) * i64::from(a),
+                            )
+                        })
+                };
+                let period = periods[1 - peer_index];
+                let (dot, energy) = correlation(period);
+                let (opposite, half_energy) = correlation(period / 2);
+                if energy > 1_000_000 && dot > energy / 2 && opposite < -half_energy / 2 {
+                    assert_eq!(
+                        (
+                            frame.sample_rate_hz,
+                            frame.channels,
+                            frame.samples_per_channel
+                        ),
+                        (48000, 1, 480)
+                    );
+                    received[peer_index] = true;
+                    frames.push(frame);
+                }
+            }
+        }
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "bidirectional PCM missing: {received:?}"
+        );
+        thread::yield_now();
+    }
+    frames
+}
+
+#[test]
+fn source_options_reconfigure_active_bidirectional_pcm_without_false_volume_gain() {
+    let encoder = AudioEncoderFactory::builtin().unwrap();
+    let decoder = AudioDecoderFactory::builtin_opus().unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .audio_encoder_factory(&encoder)
+        .audio_decoder_factory(&decoder)
+        .build()
+        .unwrap();
+    let peers = [
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+    ];
+    let sources = [
+        session.create_pcm_source().unwrap(),
+        session.create_pcm_source().unwrap(),
+    ];
+    let transceiver = session
+        .publish_pcm(
+            peers[0],
+            sources[0],
+            "tone-0",
+            RtpTransceiverDirection::SendReceive,
+        )
+        .unwrap();
+    let first_sender = session.sender(transceiver).unwrap();
+    let (session, call, warm, senders) = thread::spawn(move || {
+        let mut session = session;
+        let mut call = Call::default();
+        let answer_sender = call
+            .negotiate_answer_source(&mut session, peers, Some(sources[1]))
+            .unwrap();
+        assert_eq!(call.all_audio.len(), 2);
+        for &(_, receiver, _) in &call.all_audio {
+            session.attach_pcm(receiver).unwrap();
+        }
+        let warm = drive_pcm_tones(&mut session, &mut call, peers, sources);
+        (session, call, warm, [first_sender, answer_sender])
+    })
+    .join()
+    .unwrap();
+    let (session, later) = thread::spawn(move || {
+        let mut session = session;
+        let mut call = call;
+        let options = AudioSourceOptions {
+            // Source options reach only the send channel, not NetEq. Preserve
+            // the full value rather than pretending to set receive capacity.
+            audio_jitter_buffer_max_packets: Some(i32::MAX),
+            audio_jitter_buffer_fast_accelerate: Some(false),
+            audio_jitter_buffer_min_delay_ms: Some(0),
+            stereo_swapping: Some(false),
+            audio_network_adaptor: Some(false),
+            audio_network_adaptor_config: Some(vec![0, 0xff, 0]),
+            init_recording_on_send: Some(false),
+            ..AudioSourceOptions::default()
+        };
+        for index in 0..2 {
+            session
+                .set_audio_source_options(sources[index], &options)
+                .unwrap();
+            assert_eq!(
+                session.audio_source_options(sources[index]).unwrap(),
+                options
+            );
+            let mut rejected = options.clone();
+            rejected.noise_suppression_mode = Some(AudioProcessingMode::Unknown(99));
+            rejected.stereo_swapping = Some(true);
+            assert!(
+                session
+                    .set_audio_source_options(sources[index], &rejected)
+                    .is_err()
+            );
+            assert_eq!(
+                session.audio_source_options(sources[index]).unwrap(),
+                options
+            );
+            assert!(
+                session
+                    .set_audio_source_volume(sources[index], f64::NAN)
+                    .is_err()
+            );
+            session
+                .set_audio_source_volume(sources[index], 0.0)
+                .unwrap();
+            session.set_audio_track_volume(senders[index], 0.0).unwrap();
+            assert_eq!(session.audio_source_volume(sources[index]).unwrap(), 1.0);
+            assert_eq!(
+                session
+                    .audio_track_status(senders[index])
+                    .unwrap()
+                    .unwrap()
+                    .volume,
+                1.0
+            );
+            // Native source notification alone does not notify an unchanged
+            // live track. Reattach through SetTrack so SetSend genuinely reads
+            // the new options on the actual send channel.
+            session
+                .replace_audio_source(
+                    senders[index],
+                    Some(sources[index]),
+                    &format!("retuned-{index}"),
+                )
+                .unwrap();
+        }
+        let later = drive_pcm_tones(&mut session, &mut call, peers, sources);
+        for source in sources {
+            session
+                .set_audio_source_options(source, &AudioSourceOptions::default())
+                .unwrap();
+            assert_eq!(
+                session.audio_source_options(source).unwrap(),
+                AudioSourceOptions::default()
+            );
+            session
+                .push_pcm(
+                    source,
+                    &AudioPcmFrame::i16_interleaved(48000, 1, 0, vec![99; 480]).unwrap(),
+                )
+                .unwrap();
+        }
+        (session, later)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        session.shutdown().unwrap();
+        drop(session);
+        assert!(!warm.is_empty() && !later.is_empty());
+        assert!(
+            warm.iter()
+                .chain(&later)
+                .all(|frame| frame.samples.iter().any(|&sample| sample != 0))
+        );
+    })
+    .join()
+    .unwrap();
 }
 
 fn receive_encoded_audio(

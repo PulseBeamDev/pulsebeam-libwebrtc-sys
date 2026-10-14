@@ -2,6 +2,39 @@
 
 use crate::ffi;
 
+/// Binding admission errors, not an invented result of the SDK's void setters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioSourceControlError {
+    UnknownProcessingMode,
+    InvalidVolume,
+    MissingAudioTrack,
+    UnknownStatus(u8),
+}
+impl AudioSourceControlError {
+    pub(crate) fn result(code: u8) -> Result<(), Self> {
+        match code {
+            0 => Ok(()),
+            1 => Err(Self::UnknownProcessingMode),
+            2 => Err(Self::InvalidVolume),
+            3 => Err(Self::MissingAudioTrack),
+            code => Err(Self::UnknownStatus(code)),
+        }
+    }
+}
+impl std::fmt::Display for AudioSourceControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownProcessingMode => {
+                f.write_str("processing mode is outside the pinned native enum")
+            }
+            Self::InvalidVolume => f.write_str("native volume must be finite and in 0..=10"),
+            Self::MissingAudioTrack => f.write_str("sender has no installed audio track"),
+            Self::UnknownStatus(code) => write!(f, "unknown native source control status {code}"),
+        }
+    }
+}
+impl std::error::Error for AudioSourceControlError {}
+
 /// Implementation choice for an enabled native processing component.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioProcessingMode {
@@ -167,6 +200,15 @@ impl AudioTrackStatus {
     }
 }
 impl crate::RtpSender {
+    /// Invoke the installed audio track's native void volume setter. Success
+    /// means the call returned, not that this source implements attenuation.
+    pub fn set_audio_track_volume(&self, volume: f64) -> Result<(), AudioSourceControlError> {
+        AudioSourceControlError::result(ffi::rtp_sender_set_audio_track_volume(
+            self.peer.native(),
+            self.native(),
+            volume,
+        ))
+    }
     pub fn audio_track_status(&self) -> Option<AudioTrackStatus> {
         AudioTrackStatus::from_native(ffi::rtp_sender_audio_track_status(
             self.peer.native(),

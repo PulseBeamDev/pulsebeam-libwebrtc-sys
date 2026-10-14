@@ -302,13 +302,28 @@ and `replace_audio_source` with the same contracts.
 optional processing modes and binary ANA configuration bytes. `set_all` uses
 native merge semantics: absent changes leave fields unchanged, while explicit
 false, zero and empty configuration remain present. Editing this value does not
-apply it to an engine. The existing track processing request is narrower;
-source options and the factory's effective processing state are distinct.
+apply it to an engine. `AudioSource::set_options` and session
+`set_audio_source_options` invoke native source mutation on signaling. Complete
+input admission precedes mutation. Jitter-buffer fields retain their full
+values here: source options reach the send channel, while this SDK applies
+jitter-buffer configuration only on the separate receive channel. Storing a
+source jitter option does not reconfigure NetEq.
+Successful invocation of this void setter does not promise that every channel
+accepted the options, or that its merge/default behavior cleared prior effects.
+A source-only notification does not notify an unchanged live track in this SDK;
+reattachment makes native SetSend consume updated source options. The existing
+track processing request explicitly notifies its track but is narrower; source
+options and the factory's effective processing state are distinct.
 Source state/remoteness/volume and track state/kind/volume/signal-level queries
 read the native objects. Missing signal-level support remains `None`, not zero.
 `AudioTrack::status` and `RtpSender::audio_track_status` return owning snapshots;
 a detached sender has no audio-track snapshot. `ProductionSession` exposes the
 same source queries and installed-track snapshots by its owning identifiers.
+Source/track volume setters preserve the native 0..=10 finite-input contract.
+The pinned caller-fed source implements volume as a no-op with a reported value
+of 1.0, even after requesting zero; no synthetic attenuation is applied to PCM
+or to the encoded adapter's carrier. Setter completion means native invocation,
+not a fabricated effective gain.
 
 A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. Audio sink close releases its reservation for reattachment

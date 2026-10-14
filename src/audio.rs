@@ -431,6 +431,27 @@ impl AudioSource {
     pub fn options(&self) -> crate::AudioSourceOptions {
         crate::AudioSourceOptions::from_native(ffi::audio_source_options(self.native()))
     }
+    /// Invoke native SetOptions on signaling. All input is admitted before
+    /// source mutation. Success means the void call returned, not that every
+    /// voice channel accepted it or that processing became effective. Use
+    /// `options()` for stored source state and factory processing diagnostics
+    /// for effective processing. Native channel merge/default behavior remains
+    /// distinct from the caller-fed source's replacement of its option value.
+    pub fn set_options(
+        &self,
+        options: &crate::AudioSourceOptions,
+    ) -> Result<(), crate::AudioSourceControlError> {
+        crate::AudioSourceControlError::result(ffi::audio_source_set_options(
+            self.native(),
+            &options.ffi(),
+        ))
+    }
+    /// Invoke the native void volume setter. The caller-fed source's pinned
+    /// implementation is a no-op: it still reports volume 1.0 and delivers
+    /// unchanged PCM. This does not synthesize sample attenuation.
+    pub fn set_volume(&self, volume: f64) -> Result<(), crate::AudioSourceControlError> {
+        crate::AudioSourceControlError::result(ffi::audio_source_set_volume(self.native(), volume))
+    }
     /// Native source volume. The caller-fed source uses the SDK default 1.0.
     pub fn volume(&self) -> f64 {
         ffi::audio_source_volume(self.native())
@@ -924,6 +945,11 @@ impl AudioTrack {
     }
     pub fn volume(&self) -> f64 {
         ffi::audio_track_volume(self.native())
+    }
+    /// Native void setter; successful invocation does not imply that the
+    /// underlying source implements gain or changed its reported volume.
+    pub fn set_volume(&self, volume: f64) -> Result<(), crate::AudioSourceControlError> {
+        crate::AudioSourceControlError::result(ffi::audio_track_set_volume(self.native(), volume))
     }
     pub fn status(&self) -> crate::AudioTrackStatus {
         crate::AudioTrackStatus::from_native(ffi::audio_track_status(self.native()))

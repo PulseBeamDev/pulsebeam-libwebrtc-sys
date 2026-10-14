@@ -1820,6 +1820,49 @@ impl ProductionSession {
         Ok(id)
     }
 
+    /// Invoke native source SetOptions. This reports admission/invocation, not
+    /// an atomic voice-engine reconfiguration or effective processing state.
+    pub fn set_audio_source_options(
+        &mut self,
+        source: SessionSourceId,
+        options: &crate::AudioSourceOptions,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .set_options(options)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    /// Native volume call, including native no-op source implementations.
+    pub fn set_audio_source_volume(
+        &mut self,
+        source: SessionSourceId,
+        volume: f64,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .set_volume(volume)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    pub fn set_audio_track_volume(
+        &mut self,
+        sender: SessionSenderId,
+        volume: f64,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .set_audio_track_volume(volume)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
     /// Actual native options on an owned PCM or encoded-Opus source.
     pub fn audio_source_options(
         &mut self,
