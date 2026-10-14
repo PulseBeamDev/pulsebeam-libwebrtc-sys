@@ -45,6 +45,9 @@ resource_id!(
     SessionPeerId,
     SessionChannelId,
     SessionSourceId,
+    SessionMediaStreamId,
+    SessionTrackId,
+    SessionMediaStreamObserverId,
     SessionAudioSourceViewId,
     SessionAudioProcessorId,
     SessionAudioObserverId,
@@ -106,6 +109,12 @@ pub struct ProductionSessionConfig {
     /// Optional direct encoded-video format. H.264 and VP8 are accepted.
     /// Reception is encoded-only; this does not advertise decoded H.264 output.
     pub video_format: Option<VideoCodecFormat>,
+}
+
+#[derive(Clone)]
+enum StreamTrack {
+    Audio(crate::AudioTrack),
+    Video(crate::VideoTrack),
 }
 
 struct Peer {
@@ -281,6 +290,9 @@ pub enum SessionEvent {
 pub struct ProductionSession {
     // Observers/transports retire before endpoints, peers and role threads.
     connectivity: connectivity::ConnectivityResources,
+    local_stream_observers: HashMap<SessionMediaStreamObserverId, crate::MediaStreamObserver>,
+    streams: HashMap<SessionMediaStreamId, crate::MediaStream>,
+    stream_tracks: HashMap<SessionTrackId, StreamTrack>,
     audio_observers: HashMap<SessionAudioObserverId, crate::AudioObserver>,
     audio_source_views: HashMap<SessionAudioSourceViewId, crate::AudioSourceView>,
     sframe_encrypters: HashMap<SessionSframeEncrypterId, Resource<crate::SframeEncrypter>>,
@@ -902,6 +914,9 @@ impl ProductionSession {
             audio_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
+            stream_observers: HashMap::new(),
+            streams: HashMap::new(),
+            stream_tracks: HashMap::new(),
             audio_processors: HashMap::new(),
             audio_observers: HashMap::new(),
             audio_source_views: HashMap::new(),
@@ -1776,7 +1791,6 @@ impl ProductionSession {
             .value
             .stop_event_log()
     }
-
     /// Forward native bandwidth-estimation constraints without a binding allocator.
     pub fn set_peer_bitrate(
         &mut self,
@@ -1825,6 +1839,257 @@ impl ProductionSession {
         let source = self.factory.create_video_source()?;
         self.sources.insert(id, Source::RawVideo(source));
         Ok(id)
+    }
+
+    /// Native container creation does not change SDP or synchronize receivers.
+    pub fn create_media_stream(&mut self, name: &str) -> Result<SessionMediaStreamId, PeerError> {
+        self.check_open()?;
+        let stream = self.factory.create_media_stream(name)?;
+        let id = SessionMediaStreamId(next_id()?);
+        self.streams.insert(id, stream);
+        Ok(id)
+    }
+    fn retain_stream_track(&mut self, track: StreamTrack) -> Result<SessionTrackId, PeerError> {
+        let id = SessionTrackId(next_id()?);
+        self.stream_tracks.insert(id, track);
+        Ok(id)
+    }
+    pub fn create_source_track(
+        &mut self,
+        source: SessionSourceId,
+        name: &str,
+    ) -> Result<SessionTrackId, PeerError> {
+        self.check_open()?;
+        let track = match self.sources.get(&source).ok_or_else(missing)? {
+            Source::Pcm(source) => {
+                StreamTrack::Audio(self.factory.create_audio_track(name, source)?)
+            }
+            Source::Opus(source) => {
+                StreamTrack::Audio(self.factory.create_encoded_audio_track(name, source)?)
+            }
+            source => StreamTrack::Video(source.video_track(&self.factory, name)?),
+        };
+        self.retain_stream_track(track)
+    }
+    pub fn sender_track(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<Option<SessionTrackId>, PeerError> {
+        self.check_open()?;
+        let sender = &self.senders.get(&sender).ok_or_else(missing)?.value;
+        let track = sender
+            .audio_track()
+            .map(StreamTrack::Audio)
+            .or_else(|| sender.track().map(StreamTrack::Video));
+        track
+            .map(|track| self.retain_stream_track(track))
+            .transpose()
+    }
+    pub fn receiver_track(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<SessionTrackId>, PeerError> {
+        self.check_open()?;
+        let receiver = &self.receivers.get(&receiver).ok_or_else(missing)?.value;
+        let track = receiver
+            .audio_track()
+            .map(StreamTrack::Audio)
+            .or_else(|| receiver.track().map(StreamTrack::Video));
+        track
+            .map(|track| self.retain_stream_track(track))
+            .transpose()
+    }
+    pub fn media_stream_id(&mut self, id: SessionMediaStreamId) -> Result<String, PeerError> {
+        Ok(self.streams.get(&id).ok_or_else(missing)?.id())
+    }
+    pub fn media_stream_audio_tracks(
+        &mut self,
+        id: SessionMediaStreamId,
+    ) -> Result<Vec<SessionTrackId>, PeerError> {
+        let tracks = self.streams.get(&id).ok_or_else(missing)?.audio_tracks();
+        tracks
+            .into_iter()
+            .map(|track| self.retain_stream_track(StreamTrack::Audio(track)))
+            .collect()
+    }
+    pub fn media_stream_video_tracks(
+        &mut self,
+        id: SessionMediaStreamId,
+    ) -> Result<Vec<SessionTrackId>, PeerError> {
+        let tracks = self.streams.get(&id).ok_or_else(missing)?.video_tracks();
+        tracks
+            .into_iter()
+            .map(|track| self.retain_stream_track(StreamTrack::Video(track)))
+            .collect()
+    }
+    pub fn find_media_stream_audio_track(
+        &mut self,
+        id: SessionMediaStreamId,
+        name: &str,
+    ) -> Result<Option<SessionTrackId>, PeerError> {
+        let track = self
+            .streams
+            .get(&id)
+            .ok_or_else(missing)?
+            .find_audio_track(name);
+        track
+            .map(|track| self.retain_stream_track(StreamTrack::Audio(track)))
+            .transpose()
+    }
+    pub fn find_media_stream_video_track(
+        &mut self,
+        id: SessionMediaStreamId,
+        name: &str,
+    ) -> Result<Option<SessionTrackId>, PeerError> {
+        let track = self
+            .streams
+            .get(&id)
+            .ok_or_else(missing)?
+            .find_video_track(name);
+        track
+            .map(|track| self.retain_stream_track(StreamTrack::Video(track)))
+            .transpose()
+    }
+    pub fn add_media_stream_track(
+        &mut self,
+        stream: SessionMediaStreamId,
+        track: SessionTrackId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        let stream = self.streams.get(&stream).ok_or_else(missing)?;
+        Ok(match self.stream_tracks.get(&track).ok_or_else(missing)? {
+            StreamTrack::Audio(track) => stream.add_audio_track(track),
+            StreamTrack::Video(track) => stream.add_video_track(track),
+        })
+    }
+    pub fn remove_media_stream_track(
+        &mut self,
+        stream: SessionMediaStreamId,
+        track: SessionTrackId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        let stream = self.streams.get(&stream).ok_or_else(missing)?;
+        Ok(match self.stream_tracks.get(&track).ok_or_else(missing)? {
+            StreamTrack::Audio(track) => stream.remove_audio_track(track),
+            StreamTrack::Video(track) => stream.remove_video_track(track),
+        })
+    }
+    pub fn media_stream_tracks_same(
+        &mut self,
+        a: SessionTrackId,
+        b: SessionTrackId,
+    ) -> Result<bool, PeerError> {
+        Ok(
+            match (
+                self.stream_tracks.get(&a).ok_or_else(missing)?,
+                self.stream_tracks.get(&b).ok_or_else(missing)?,
+            ) {
+                (StreamTrack::Audio(a), StreamTrack::Audio(b)) => a.same_resource(b),
+                (StreamTrack::Video(a), StreamTrack::Video(b)) => a.same_resource(b),
+                _ => false,
+            },
+        )
+    }
+    pub fn media_stream_track_id(&mut self, id: SessionTrackId) -> Result<String, PeerError> {
+        Ok(match self.stream_tracks.get(&id).ok_or_else(missing)? {
+            StreamTrack::Audio(track) => track.id(),
+            StreamTrack::Video(track) => track.id(),
+        })
+    }
+    pub fn media_stream_track_kind(
+        &mut self,
+        id: SessionTrackId,
+    ) -> Result<crate::MediaType, PeerError> {
+        Ok(match self.stream_tracks.get(&id).ok_or_else(missing)? {
+            StreamTrack::Audio(_) => crate::MediaType::Audio,
+            StreamTrack::Video(_) => crate::MediaType::Video,
+        })
+    }
+    pub fn media_stream_track_enabled(&mut self, id: SessionTrackId) -> Result<bool, PeerError> {
+        Ok(match self.stream_tracks.get(&id).ok_or_else(missing)? {
+            StreamTrack::Audio(track) => track.enabled(),
+            StreamTrack::Video(track) => track.enabled(),
+        })
+    }
+    pub fn set_media_stream_track_enabled(
+        &mut self,
+        id: SessionTrackId,
+        enabled: bool,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(match self.stream_tracks.get(&id).ok_or_else(missing)? {
+            StreamTrack::Audio(track) => track.set_enabled(enabled),
+            StreamTrack::Video(track) => track.set_enabled(enabled),
+        })
+    }
+    /// Replace using the actual owning track returned by a container/getter.
+    pub fn replace_sender_track(
+        &mut self,
+        sender: SessionSenderId,
+        track: Option<SessionTrackId>,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let sender = &self.senders.get(&sender).ok_or_else(missing)?.value;
+        match track
+            .map(|id| self.stream_tracks.get(&id).ok_or_else(missing))
+            .transpose()?
+        {
+            Some(StreamTrack::Audio(track)) => sender.set_audio_track(Some(track)),
+            Some(StreamTrack::Video(track)) => sender.set_track(Some(track)),
+            None if sender.media_type() == crate::MediaType::Audio => sender.set_audio_track(None),
+            None => sender.set_track(None),
+        }
+    }
+    pub fn observe_media_stream(
+        &mut self,
+        stream: SessionMediaStreamId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionMediaStreamObserverId, PeerError> {
+        self.check_open()?;
+        let observer = self
+            .streams
+            .get(&stream)
+            .ok_or_else(missing)?
+            .observe_changes(capacity)?;
+        let id = SessionMediaStreamObserverId(next_id()?);
+        self.stream_observers.insert(id, observer);
+        Ok(id)
+    }
+    pub fn try_media_stream_event(
+        &mut self,
+        id: SessionMediaStreamObserverId,
+    ) -> Result<Option<crate::MediaStreamEvent>, PeerError> {
+        Ok(self
+            .stream_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .try_next_event())
+    }
+    pub fn take_media_stream_dropped(
+        &mut self,
+        id: SessionMediaStreamObserverId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .stream_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .take_dropped_events())
+    }
+    pub fn close_media_stream_observer(
+        &mut self,
+        id: SessionMediaStreamObserverId,
+    ) -> Result<(), PeerError> {
+        self.stream_observers.get(&id).ok_or_else(missing)?.close();
+        Ok(())
+    }
+    pub fn release_media_stream_observer(&mut self, id: SessionMediaStreamObserverId) {
+        self.stream_observers.remove(&id);
+    }
+    pub fn release_media_stream_track(&mut self, id: SessionTrackId) {
+        self.stream_tracks.remove(&id);
+    }
+    pub fn release_media_stream(&mut self, id: SessionMediaStreamId) {
+        self.streams.remove(&id);
     }
 
     /// Capture an owning interface alias without creating another producer.
@@ -2125,7 +2390,6 @@ impl ProductionSession {
     pub fn release_audio_source_view(&mut self, id: SessionAudioSourceViewId) {
         self.audio_source_views.remove(&id);
     }
-
     /// Invoke native source SetOptions. This reports admission/invocation, not
     /// an atomic voice-engine reconfiguration or effective processing state.
     pub fn set_audio_source_options(
@@ -3025,7 +3289,6 @@ impl ProductionSession {
         };
         source.push_simulcast(frames).map_err(codec_error)
     }
-
     pub fn video_encoding_keyframe_requests(
         &mut self,
         source: SessionSourceId,
@@ -4467,6 +4730,9 @@ impl ProductionSession {
         }
         for source in self.sources.values_mut() {
             source.close()?;
+        }
+        for observer in self.stream_observers.values() {
+            observer.close();
         }
         for observer in self.audio_observers.values() {
             observer.close();

@@ -678,3 +678,32 @@ impl MediaObserver {
         ffi::media_observer_take_dropped(self.native.as_ref().unwrap())
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaStreamEvent {
+    Changed,
+}
+/// Bounded native change notifications. Closing synchronously unregisters;
+/// accepted events and overflow counts remain consumable after close.
+#[derive(Clone)]
+pub struct MediaStreamObserver {
+    inner: Rc<ObserverInner>,
+}
+struct ObserverInner {
+    native: cxx::UniquePtr<ffi::NativeMediaStreamObserver>,
+    _stream: MediaStream,
+}
+impl MediaStreamObserver {
+    pub fn try_next_event(&self) -> Option<MediaStreamEvent> {
+        ffi::media_stream_observer_take(self.native()).then_some(MediaStreamEvent::Changed)
+    }
+    pub fn take_dropped_events(&self) -> u64 {
+        ffi::media_stream_observer_take_dropped(self.native())
+    }
+    pub fn close(&self) {
+        ffi::media_stream_observer_close(self.native());
+    }
+    fn native(&self) -> &ffi::NativeMediaStreamObserver {
+        self.inner.native.as_ref().expect("owning stream observer")
+    }
+}

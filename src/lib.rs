@@ -241,6 +241,8 @@ mod rtp_sources;
 pub use rtp_sources::{RtpSource, RtpSourceExtensions, RtpSourceType};
 mod rtp_packet_values;
 pub use rtp_packet_values::{AbsoluteCaptureTime, RtpReceivedPacketInfo, RtpReceivedPacketInfos};
+mod media_stream;
+pub use media_stream::{MediaStream, MediaStreamEvent, MediaStreamObserver};
 mod audio_processor;
 pub use audio_processor::{AudioProcessingStats, AudioProcessor, AudioProcessorStatistics};
 mod pcm_view;
@@ -657,6 +659,7 @@ pub use production::{
     SessionPeerId, SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation,
     SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId,
     SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
+    SessionMediaStreamObserverId, SessionTrackId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -7613,6 +7616,34 @@ mod ffi {
             timestamp_us: i64,
             token: i64,
         ) -> bool;
+        type NativeMediaStream;
+        type NativeMediaStreamObserver;
+        fn create_media_stream(
+            factory: &NativePeerConnectionFactory,
+            id: &str,
+        ) -> UniquePtr<NativeMediaStream>;
+        fn media_stream_id(stream: &NativeMediaStream) -> String;
+        fn media_stream_track_keys(stream: &NativeMediaStream, audio: bool) -> Vec<usize>;
+        fn media_stream_find_track(stream: &NativeMediaStream, audio: bool, id: &str) -> usize;
+        fn audio_track_identity(track: &NativeAudioTrack) -> usize;
+        fn video_track_identity(track: &NativeVideoTrack) -> usize;
+        fn media_stream_audio_track(
+            stream: &NativeMediaStream,
+            track: &NativeAudioTrack,
+            add: bool,
+        ) -> bool;
+        fn media_stream_video_track(
+            stream: &NativeMediaStream,
+            track: &NativeVideoTrack,
+            add: bool,
+        ) -> bool;
+        fn media_stream_observe(
+            stream: &NativeMediaStream,
+            capacity: usize,
+        ) -> UniquePtr<NativeMediaStreamObserver>;
+        fn media_stream_observer_take(observer: &NativeMediaStreamObserver) -> bool;
+        fn media_stream_observer_take_dropped(observer: &NativeMediaStreamObserver) -> u64;
+        fn media_stream_observer_close(observer: &NativeMediaStreamObserver);
         fn video_source_i420_allocation_size(width: u32, height: u32) -> usize;
         fn video_source_push_frame(
             source: &NativeVideoSource,

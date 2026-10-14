@@ -313,13 +313,21 @@ fn source_options_reconfigure_active_bidirectional_pcm_without_false_volume_gain
             // Native source notification alone does not notify an unchanged
             // live track. Reattach through SetTrack so SetSend genuinely reads
             // the new options on the actual send channel.
-            session
-                .replace_audio_source(
-                    senders[index],
-                    Some(sources[index]),
-                    &format!("retuned-{index}"),
-                )
-                .unwrap();
+            if index == 0 {
+                session.replace_audio_source(senders[index], Some(sources[index]), "retuned-0").unwrap();
+            } else {
+                let stream = session.create_media_stream("retuning").unwrap();
+                let original = session.create_source_track(sources[index], "retuned-1").unwrap();
+                assert!(session.add_media_stream_track(stream, original).unwrap());
+                let alias = session.find_media_stream_audio_track(stream, "retuned-1").unwrap().unwrap();
+                session.release_media_stream_track(original);
+                session.release_media_stream(stream);
+                session.replace_sender_track(senders[index], Some(alias)).unwrap();
+                let installed = session.sender_track(senders[index]).unwrap().unwrap();
+                assert!(session.media_stream_tracks_same(alias, installed).unwrap());
+                session.release_media_stream_track(alias);
+                session.release_media_stream_track(installed);
+            }
         }
         let later = drive_pcm_tones(&mut session, &mut call, peers, sources);
         for source in sources {
@@ -410,6 +418,13 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         let installed = session.sender_audio_source_view(sender).unwrap().unwrap();
         assert!(session.audio_source_views_same(local, installed).unwrap());
         assert!(!session.audio_source_views_same(local, remote).unwrap());
+        let stream = session.create_media_stream("active-received-audio").unwrap();
+        let stream_observer = session.observe_media_stream(stream, std::num::NonZeroUsize::new(2).unwrap()).unwrap();
+        let original_track = session.receiver_track(receiver).unwrap().unwrap();
+        assert!(session.add_media_stream_track(stream, original_track).unwrap());
+        let retained_track = session.media_stream_audio_tracks(stream).unwrap()[0];
+        assert!(session.media_stream_tracks_same(original_track, retained_track).unwrap());
+        session.release_media_stream_track(original_track);
         let cap = std::num::NonZeroUsize::new(2).unwrap();
         let volume = session.observe_audio_source_volume(remote, cap).unwrap();
         let state = session.observe_audio_source_changes(remote, cap).unwrap();
@@ -420,7 +435,7 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         (
             session,
             call,
-            (alias, installed, volume, state, track, producer, receiver),
+            (alias, installed, volume, state, track, producer, receiver, stream, stream_observer, retained_track),
             warm,
         )
     })
@@ -428,7 +443,16 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
     .unwrap();
     let (session, later) = thread::spawn(move || {
         let mut session = session;
-        let (alias, installed, volume, _, track, producer, receiver) = retained;
+        let (alias, installed, volume, _, track, producer, receiver, stream, stream_observer, retained_track) = retained;
+        let fresh_track = session.receiver_track(receiver).unwrap().unwrap();
+        assert!(session.media_stream_tracks_same(fresh_track, retained_track).unwrap());
+        assert!(!session.add_media_stream_track(stream, fresh_track).unwrap());
+        assert!(session.remove_media_stream_track(stream, fresh_track).unwrap());
+        assert!(session.add_media_stream_track(stream, retained_track).unwrap());
+        assert_eq!(session.take_media_stream_dropped(stream_observer).unwrap(), 1);
+        session.close_media_stream_observer(stream_observer).unwrap();
+        session.release_media_stream_track(fresh_track);
+        session.release_media_stream(stream);
         assert_eq!(session.sender_audio_processor(sender).unwrap(), None);
         assert_eq!(session.receiver_audio_processor(receiver).unwrap(), None);
         for value in [0.0, 0.25, 0.5] {
@@ -477,7 +501,12 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
     .unwrap();
     thread::spawn(move || {
         let mut session = session;
-        let (_, _, volume, state, track, producer, _) = retained;
+        let (_, _, volume, state, track, producer, _, _, stream_observer, retained_track) = retained;
+        for _ in 0..2 {
+            assert_eq!(session.try_media_stream_event(stream_observer).unwrap(), Some(MediaStreamEvent::Changed));
+        }
+        assert_eq!(session.try_media_stream_event(stream_observer).unwrap(), None);
+        assert_eq!(session.media_stream_track_kind(retained_track).unwrap(), MediaType::Audio);
         assert_eq!(
             session.try_audio_observer_event(volume).unwrap(),
             Some(AudioObserverEvent::Volume(0.25))
@@ -505,6 +534,11 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         assert_eq!(session.try_audio_observer_event(producer).unwrap(), None);
         session.close_peer(peers[0]).unwrap();
         session.close_peer(peers[1]).unwrap();
+        // Stream ID retirement precedes actual continued media work, source
+        // retirement, migration and native peer close on this candidate.
+        assert!(!session.media_stream_track_id(retained_track).unwrap().is_empty());
+        session.release_media_stream_observer(stream_observer);
+        session.release_media_stream_track(retained_track);
         session.close_audio_observer(state).unwrap();
         assert_eq!(
             session.try_audio_observer_event(state).unwrap(),
@@ -912,6 +946,17 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session
             .replace_video_source(sender, Some(replacement), "replacement")
             .unwrap();
+        let stream = session.create_media_stream("video-replacement").unwrap();
+        let original = session.create_source_track(replacement, "container-replacement").unwrap();
+        assert!(session.add_media_stream_track(stream, original).unwrap());
+        let alias = session.media_stream_video_tracks(stream).unwrap()[0];
+        session.release_media_stream_track(original);
+        session.release_media_stream(stream);
+        session.replace_sender_track(sender, Some(alias)).unwrap();
+        let installed = session.sender_track(sender).unwrap().unwrap();
+        assert!(session.media_stream_tracks_same(alias, installed).unwrap());
+        session.release_media_stream_track(alias);
+        session.release_media_stream_track(installed);
         let replacement_pcm = session.create_pcm_source().unwrap();
         session
             .replace_audio_source(audio_sender, Some(replacement_pcm), "replacement-pcm")

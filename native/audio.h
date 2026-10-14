@@ -6,6 +6,8 @@
 
 #include "rust/cxx.h"
 
+namespace webrtc { class AudioTrackInterface; }
+
 namespace pulsebeam::webrtc_sys {
 
 class NativePeerConnectionFactory;
@@ -38,6 +40,10 @@ std::unique_ptr<NativeAudioProcessor> audio_track_processor(const NativeAudioTra
 bool audio_processors_same(const NativeAudioProcessor& a, const NativeAudioProcessor& b) noexcept;
 FfiAudioProcessorStatistics audio_processor_stats(const NativeAudioProcessor& processor, bool has_remote_tracks) noexcept;
 FfiAudioProcessorStatistics audio_processor_statistics_default() noexcept;
+
+// Internal synchronous SDK-handle access; never exported through CXX.
+webrtc::AudioTrackInterface* audio_track_sdk_handle(const NativeAudioTrack& track) noexcept;
+std::size_t audio_track_identity(const NativeAudioTrack& track) noexcept;
 
 class NativeAudioSourceView final {
  public:

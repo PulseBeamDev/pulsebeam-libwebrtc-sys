@@ -346,6 +346,18 @@ retirement. Releasing an outer view/producer identifier does not invalidate an
 observer or discard its queued callbacks. Polling notifications does not pump
 media or advance a controlled clock.
 
+`PeerConnectionFactory::create_media_stream` creates an owning native track
+container, not SDP routing or receive synchronization. Get/Find return the exact
+accepted track owners in native insertion order. Native Add rejects duplicate
+IDs per media kind; Remove matches by ID even when passed a different track.
+Successful membership retains each track's actual source/factory or received
+peer origin, including across factories. Track aliases do not retain the stream.
+Bounded stream change observers unregister synchronously on close and keep
+accepted notifications and overflow counts consumable. `ProductionSession`
+provides opaque stream/track/observer IDs, source/sender/receiver acquisition,
+Get/Find/Add/Remove and sender replacement through returned owning track aliases.
+Retiring IDs does not invalidate independently retained aliases or queued output.
+
 `AudioTrack::processor` queries the native per-track processor and returns an
 owning alias only when one exists. The pinned stock tracks return `None`, even
 when the shared voice-engine APM is processing audio; source options and peer

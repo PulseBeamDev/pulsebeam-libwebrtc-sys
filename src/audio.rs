@@ -955,6 +955,9 @@ impl AudioTrack {
     pub fn kind(&self) -> String {
         ffi::audio_track_kind(self.native())
     }
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::audio_tracks_same(self.native(), other.native())
+    }
     pub fn state(&self) -> crate::AudioTrackState {
         crate::AudioTrackState::from_native(ffi::audio_track_state(self.native()))
     }

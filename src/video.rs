@@ -588,6 +588,10 @@ impl VideoTrack {
         ffi::video_track_id(self.native())
     }
 
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::video_track_identity(self.native()) == ffi::video_track_identity(other.native())
+    }
+
     pub fn enabled(&self) -> bool {
         ffi::video_track_enabled(self.native())
     }
@@ -1072,7 +1076,10 @@ impl RtpSender {
             if self.peer._factory.uses_controlled_execution()
                 && (!self.peer._factory.controlled_media || !track.is_admitted_controlled_video())
             {
-                return Err(PeerError { kind: PeerErrorKind::UnsupportedOperation, message: "controlled replacement requires an admitted video source".into() });
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedOperation,
+                    message: "controlled replacement requires an admitted video source".into(),
+                });
             }
             if !Rc::ptr_eq(track.factory(), &self.peer._factory) {
                 return Err(PeerError {
@@ -2336,22 +2343,52 @@ mod allocation_tests {
         // Exercise the actual helper called before I420Buffer::Create, without
         // allocating multi-gigabyte fixtures or entering a native CHECK.
         for (width, height) in [
-            (0, 1), (1, 0), (1, 1), (2, 2), (3, 3), (17, 9),
-            (1, limit / 2), (1, limit / 2 + 1),
-            (limit / 2, 1), (limit / 2 + 1, 1),
-            (2, limit / 3), (2, limit / 3 + 1),
-            (limit / 3, 2), (limit / 3 + 1, 2),
-            (65536, 65536), (limit, 1), (1, limit),
-            (limit, limit), (limit + 1, 1), (u32::MAX, u32::MAX),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (17, 9),
+            (1, limit / 2),
+            (1, limit / 2 + 1),
+            (limit / 2, 1),
+            (limit / 2 + 1, 1),
+            (2, limit / 3),
+            (2, limit / 3 + 1),
+            (limit / 3, 2),
+            (limit / 3 + 1, 2),
+            (65536, 65536),
+            (limit, 1),
+            (1, limit),
+            (limit, limit),
+            (limit + 1, 1),
+            (u32::MAX, u32::MAX),
         ] {
             let (w, h) = (u128::from(width), u128::from(height));
             let size = w * h + 2 * w.div_ceil(2) * h.div_ceil(2);
-            let expected = if width != 0 && height != 0 && width <= limit
-                && height <= limit && size <= u128::from(limit) { size as usize } else { 0 };
-            assert_eq!(ffi::video_source_i420_allocation_size(width, height), expected,
-                "{width}x{height}");
+            let expected = if width != 0
+                && height != 0
+                && width <= limit
+                && height <= limit
+                && size <= u128::from(limit)
+            {
+                size as usize
+            } else {
+                0
+            };
+            assert_eq!(
+                ffi::video_source_i420_allocation_size(width, height),
+                expected,
+                "{width}x{height}"
+            );
         }
-        assert_eq!(ffi::video_source_i420_allocation_size(1, limit / 2), limit as usize);
-        assert_eq!(ffi::video_source_i420_allocation_size(2, limit / 3), limit as usize - 1);
+        assert_eq!(
+            ffi::video_source_i420_allocation_size(1, limit / 2),
+            limit as usize
+        );
+        assert_eq!(
+            ffi::video_source_i420_allocation_size(2, limit / 3),
+            limit as usize - 1
+        );
     }
 }

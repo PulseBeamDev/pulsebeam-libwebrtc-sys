@@ -1,5 +1,6 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
+#include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/rtc_error.h"
@@ -715,6 +716,111 @@ struct NativeVideoSource::State {
 struct NativeVideoTrack::State {
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
 };
+
+struct NativeMediaStream::State {
+  webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream;
+  webrtc::Thread* signaling = nullptr;
+};
+struct NativeMediaStreamObserver::State final : webrtc::ObserverInterface {
+  webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream;
+  webrtc::Thread* signaling = nullptr;
+  bool registered = false;  // signaling only
+  std::mutex mutex;
+  std::size_t capacity = 0;
+  std::size_t pending = 0;
+  std::uint64_t dropped = 0;
+  void OnChanged() override {
+    std::lock_guard lock(mutex);
+    if (pending < capacity) ++pending;
+    else if (dropped != UINT64_MAX) ++dropped;
+  }
+};
+NativeMediaStream::NativeMediaStream(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeMediaStream::~NativeMediaStream() {
+  state_->signaling->BlockingCall([&] { state_->stream = nullptr; });
+}
+const std::unique_ptr<NativeMediaStream::State>& NativeMediaStream::state() const noexcept { return state_; }
+std::unique_ptr<NativeMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
+  auto state = std::make_unique<NativeMediaStream::State>();
+  state->signaling = factory.signaling_thread();
+  if (!state->signaling) return nullptr;
+  state->signaling->BlockingCall([&] { state->stream = factory.factory()->CreateLocalMediaStream(std::string(id)); });
+  if (!state->stream) return nullptr;
+  return std::make_unique<NativeMediaStream>(std::move(state));
+}
+rust::String media_stream_id(const NativeMediaStream& stream) noexcept {
+  return stream.state()->signaling->BlockingCall([&] { return rust::String(stream.state()->stream->id()); });
+}
+rust::Vec<std::size_t> media_stream_track_keys(const NativeMediaStream& stream, bool audio) noexcept {
+  return stream.state()->signaling->BlockingCall([&] {
+    rust::Vec<std::size_t> keys;
+    if (audio) {
+      for (const auto& track : stream.state()->stream->GetAudioTracks()) keys.push_back(reinterpret_cast<std::size_t>(track.get()));
+    } else {
+      for (const auto& track : stream.state()->stream->GetVideoTracks()) keys.push_back(reinterpret_cast<std::size_t>(track.get()));
+    }
+    return keys;
+  });
+}
+std::size_t media_stream_find_track(const NativeMediaStream& stream, bool audio, rust::Str id) noexcept {
+  return stream.state()->signaling->BlockingCall([&] {
+    const auto name = std::string(id);
+    return audio ? reinterpret_cast<std::size_t>(stream.state()->stream->FindAudioTrack(name).get())
+                 : reinterpret_cast<std::size_t>(stream.state()->stream->FindVideoTrack(name).get());
+  });
+}
+std::size_t video_track_identity(const NativeVideoTrack& track) noexcept {
+  return reinterpret_cast<std::size_t>(track.state()->track.get());
+}
+bool media_stream_audio_track(const NativeMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept {
+  return stream.state()->signaling->BlockingCall([&] {
+    webrtc::scoped_refptr<webrtc::AudioTrackInterface> value(audio_track_sdk_handle(track));
+    return add ? stream.state()->stream->AddTrack(value) : stream.state()->stream->RemoveTrack(value);
+  });
+}
+bool media_stream_video_track(const NativeMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept {
+  return stream.state()->signaling->BlockingCall([&] {
+    return add ? stream.state()->stream->AddTrack(track.state()->track) : stream.state()->stream->RemoveTrack(track.state()->track);
+  });
+}
+NativeMediaStreamObserver::NativeMediaStreamObserver(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeMediaStreamObserver::~NativeMediaStreamObserver() {
+  media_stream_observer_close(*this);
+  state_->signaling->BlockingCall([&] { state_->stream = nullptr; });
+}
+const std::unique_ptr<NativeMediaStreamObserver::State>& NativeMediaStreamObserver::state() const noexcept { return state_; }
+std::unique_ptr<NativeMediaStreamObserver> media_stream_observe(const NativeMediaStream& stream, std::size_t capacity) noexcept {
+  if (!capacity) return nullptr;
+  auto state = std::make_unique<NativeMediaStreamObserver::State>();
+  state->signaling = stream.state()->signaling;
+  state->capacity = capacity;
+  state->signaling->BlockingCall([&] {
+    state->stream = stream.state()->stream;
+    state->stream->RegisterObserver(state.get());
+    state->registered = true;
+  });
+  return std::make_unique<NativeMediaStreamObserver>(std::move(state));
+}
+bool media_stream_observer_take(const NativeMediaStreamObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  if (!state.pending) return false;
+  --state.pending;
+  return true;
+}
+std::uint64_t media_stream_observer_take_dropped(const NativeMediaStreamObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  return std::exchange(state.dropped, 0);
+}
+void media_stream_observer_close(const NativeMediaStreamObserver& observer) noexcept {
+  auto& state = *observer.state();
+  state.signaling->BlockingCall([&] {
+    if (!state.registered) return;
+    state.stream->UnregisterObserver(&state);
+    state.registered = false;
+  });
+}
 
 struct NativeEncodedVideoSink::State {
   webrtc::scoped_refptr<EncodedFrameCollector> collector;

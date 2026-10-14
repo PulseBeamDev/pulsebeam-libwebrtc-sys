@@ -51,6 +51,38 @@ struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
 struct FfiRtpHeaderExtension;
 
+class NativeAudioTrack;
+class NativeVideoTrack;
+class NativeMediaStream final {
+ public:
+  struct State;
+  explicit NativeMediaStream(std::unique_ptr<State> state) noexcept;
+  ~NativeMediaStream();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+class NativeMediaStreamObserver final {
+ public:
+  struct State;
+  explicit NativeMediaStreamObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeMediaStreamObserver();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
+rust::String media_stream_id(const NativeMediaStream& stream) noexcept;
+rust::Vec<std::size_t> media_stream_track_keys(const NativeMediaStream& stream, bool audio) noexcept;
+std::size_t media_stream_find_track(const NativeMediaStream& stream, bool audio, rust::Str id) noexcept;
+std::size_t video_track_identity(const NativeVideoTrack& track) noexcept;
+bool media_stream_audio_track(const NativeMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept;
+bool media_stream_video_track(const NativeMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept;
+std::unique_ptr<NativeMediaStreamObserver> media_stream_observe(const NativeMediaStream& stream, std::size_t capacity) noexcept;
+bool media_stream_observer_take(const NativeMediaStreamObserver& observer) noexcept;
+std::uint64_t media_stream_observer_take_dropped(const NativeMediaStreamObserver& observer) noexcept;
+void media_stream_observer_close(const NativeMediaStreamObserver& observer) noexcept;
+
 class NativeScreenCapture final {
  public:
   struct State;

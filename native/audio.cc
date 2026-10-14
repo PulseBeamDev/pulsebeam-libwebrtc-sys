@@ -518,6 +518,13 @@ struct NativeAudioTrack::State {
   webrtc::Thread* signaling_thread = nullptr;
 };
 
+webrtc::AudioTrackInterface* audio_track_sdk_handle(const NativeAudioTrack& track) noexcept {
+  return track.state()->track.get();
+}
+std::size_t audio_track_identity(const NativeAudioTrack& track) noexcept {
+  return reinterpret_cast<std::size_t>(audio_track_sdk_handle(track));
+}
+
 struct NativeAudioProcessor::State {
   webrtc::scoped_refptr<webrtc::AudioProcessorInterface> processor;
   webrtc::Thread* signaling_thread = nullptr;
