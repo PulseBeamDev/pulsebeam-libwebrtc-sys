@@ -75,6 +75,37 @@ FfiRtcStatsAttribute Attribute(const webrtc::Attribute& value) {
 }
 std::unique_ptr<NativeRtcStats> Wrap(std::unique_ptr<webrtc::RTCStats> value) { return value ? std::make_unique<NativeRtcStats>(std::move(value)) : nullptr; }
 }
+std::int32_t legacy_stats_id_type(const NativeLegacyStatsId& v) noexcept { return static_cast<std::int32_t>(v.value->type()); }
+rust::Vec<std::uint8_t> legacy_stats_id_string(const NativeLegacyStatsId& v) noexcept { return Bytes(v.value->ToString()); }
+std::unique_ptr<NativeLegacyStatsId> legacy_stats_id_copy(const NativeLegacyStatsId& v) noexcept { return std::make_unique<NativeLegacyStatsId>(v.value); }
+bool legacy_stats_id_same(const NativeLegacyStatsId& a, const NativeLegacyStatsId& b) noexcept { return a.value.get() == b.value.get(); }
+bool legacy_stats_id_equal(const NativeLegacyStatsId& a, const NativeLegacyStatsId& b) noexcept { return a.value->Equals(b.value); }
+rust::Vec<FfiLegacyStatsReport> copy_legacy_stats(const webrtc::StatsReports& reports) noexcept {
+  rust::Vec<FfiLegacyStatsReport> out;
+  for (const auto* report : reports) {
+    FfiLegacyStatsReport r;
+    r.id = std::make_unique<NativeLegacyStatsId>(report->id());
+    r.timestamp_ms = report->timestamp(); r.native_type = Bytes(report->TypeToString());
+    for (const auto& [name, value] : report->values()) {
+      FfiLegacyStatsValue v{}; v.name = static_cast<std::int32_t>(name);
+      v.display_name = Bytes(value->display_name()); v.native_string = Bytes(value->ToString());
+      v.kind = static_cast<std::uint8_t>(value->type());
+      using V = webrtc::StatsReport::Value;
+      switch (value->type()) {
+        case V::kInt: v.integer = value->int_val(); break;
+        case V::kInt64: v.integer = value->int64_val(); break;
+        case V::kFloat: v.decimal = value->float_val(); break;
+        case V::kString: v.text = Bytes(value->string_val()); break;
+        case V::kStaticString: v.text = Bytes(value->static_string_val()); break;
+        case V::kBool: v.flag = value->bool_val(); break;
+        case V::kId: v.id = std::make_unique<NativeLegacyStatsId>(value->id_val()); break;
+      }
+      r.values.push_back(std::move(v));
+    }
+    out.push_back(std::move(r));
+  }
+  return out;
+}
 std::unique_ptr<NativeRtcStats> rtc_stats_new(std::uint8_t kind, rust::Slice<const std::uint8_t> id, std::int64_t timestamp) noexcept { return Wrap(NewStats(kind, String(id), Time(timestamp))); }
 std::unique_ptr<NativeRtcStats> rtc_stats_copy(const NativeRtcStats& value) noexcept { return Wrap(value.value().copy()); }
 std::unique_ptr<NativeRtcStats> rtc_stats_copy_as(const NativeRtcStats& value, std::uint8_t kind) noexcept { return Wrap(CopyAs(value.value(), kind)); }

@@ -119,6 +119,7 @@ enum Source {
 #[derive(Debug)]
 pub enum SessionEvent {
     Stats(PeerStatsSnapshot),
+    LegacyStats(crate::PeerLegacyStatsSnapshot),
     OperationComplete(OperationCompletion),
     OperationCompleteBytes {
         operation_id: OperationId,
@@ -782,18 +783,19 @@ impl ProductionSession {
         let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
         Self::submit_operation(peer, submit)
     }
-    fn submit_operation(
+    fn submit_operation<E: From<PeerError>>(
         peer: &mut Peer,
-        submit: impl FnOnce(&PeerConnection) -> Result<OperationId, PeerError>,
-    ) -> Result<OperationId, PeerError> {
+        submit: impl FnOnce(&PeerConnection) -> Result<OperationId, E>,
+    ) -> Result<OperationId, E> {
         if peer.value.inner.closed.get() {
-            return Err(error(PeerErrorKind::Closed, "peer is closed"));
+            return Err(error(PeerErrorKind::Closed, "peer is closed").into());
         }
         if peer.outstanding.len() >= MAX_OUTSTANDING_OPERATIONS {
             return Err(error(
                 PeerErrorKind::ResourceExhausted,
                 "consume operation outcomes before submitting more work (limit 64)",
-            ));
+            )
+            .into());
         }
         let id = submit(&peer.value)?;
         peer.outstanding.insert(id);
@@ -963,6 +965,15 @@ impl ProductionSession {
     pub fn request_stats(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::request_stats)
     }
+    pub fn request_legacy_stats(
+        &mut self,
+        peer: SessionPeerId,
+        level: crate::LegacyStatsOutputLevel,
+    ) -> Result<OperationId, crate::LegacyStatsRequestError> {
+        self.check_open()?;
+        let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| p.request_legacy_stats(level))
+    }
     pub fn request_sender_stats(
         &mut self,
         sender: SessionSenderId,
@@ -1129,6 +1140,10 @@ impl ProductionSession {
             return Ok(None);
         };
         let event = match event {
+            PeerConnectionEvent::LegacyStats(stats) => {
+                value.outstanding.remove(&stats.operation_id);
+                SessionEvent::LegacyStats(stats)
+            }
             PeerConnectionEvent::Stats(stats) => {
                 value.outstanding.remove(&stats.operation_id);
                 SessionEvent::Stats(stats)

@@ -93,6 +93,7 @@ enum EventKind : std::uint8_t {
   kLegacyIceConnectionState = 13,
   kStandardizedIceConnectionState = 14,
   kIceCandidateRemoved = 15,
+  kLegacyStatsReport = 16,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -204,6 +205,12 @@ struct EventState {
     return status;
   }
 
+  void RejectStats(std::uint64_t id) {
+    std::lock_guard lock(mutex);
+    pending.erase(id); admitted.erase(id);
+    if (stats_operation_id == id) stats_operation_id = 0;
+  }
+
   std::uint8_t BeginLocked(std::uint64_t operation_id) {
     if (closed) return 1;
     if (admitted.size() >= 64 || !admitted.insert(operation_id).second) return 2;
@@ -283,11 +290,11 @@ struct EventState {
     FfiPeerEvent event = std::move(events.front());
     events.pop_front();
     if (!Advisory(event.kind) && event.kind != kOperationComplete &&
-        event.kind != kStatsReport && event.kind != kClosed) {
+        event.kind != kStatsReport && event.kind != kLegacyStatsReport && event.kind != kClosed) {
       --retained_controls;
       retained_control_bytes -= ControlBytes(event);
     }
-    if (event.kind == kOperationComplete || event.kind == kStatsReport) {
+    if (event.kind == kOperationComplete || event.kind == kStatsReport || event.kind == kLegacyStatsReport) {
       admitted.erase(event.operation_id);
       if (event.operation_id == stats_operation_id) stats_operation_id = 0;
     }
@@ -394,7 +401,7 @@ struct EventState {
       // Arrival handles are discarded below. Do not leave events referring
       // to those handles, or expose new control deliveries through closed peer.
       std::erase_if(events, [](const auto& event) {
-        return event.kind != kOperationComplete && event.kind != kStatsReport;
+        return event.kind != kOperationComplete && event.kind != kStatsReport && event.kind != kLegacyStatsReport;
       });
       retained_controls = 0;
       retained_control_bytes = 0;
@@ -730,6 +737,21 @@ class StatsObserver : public webrtc::RTCStatsCollectorCallback {
  private:
   std::shared_ptr<EventState> state_;
   std::uint64_t operation_id_;
+};
+
+class LegacyStatsObserver : public webrtc::StatsObserver {
+ public:
+  LegacyStatsObserver(std::shared_ptr<EventState> events, std::uint64_t id) : events_(std::move(events)), id_(id) {}
+  void OnComplete(const webrtc::StatsReports& reports) override {
+    FfiPeerEvent event; event.kind = kLegacyStatsReport; event.operation_id = id_;
+    // Legacy Value references are sequence-bound. Copy every payload here;
+    // only immutable atomic-refcounted SDK IDs survive the callback.
+    event.legacy_stats_reports = copy_legacy_stats(reports);
+    events_->Complete(std::move(event));
+  }
+ private:
+  std::shared_ptr<EventState> events_;
+  std::uint64_t id_;
 };
 
 class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
@@ -2018,6 +2040,14 @@ std::uint8_t peer_request_stats(const NativePeerConnection& peer,
   return 0;
 }
 
+std::uint8_t peer_request_legacy_stats(const NativePeerConnection& peer, std::uint8_t level, std::uint64_t id) noexcept {
+  const auto& state = peer.state();
+  const auto status = state->events->BeginStats(id); if (status != 0) return status;
+  auto observer = webrtc::make_ref_counted<LegacyStatsObserver>(state->events, id);
+  const bool accepted = state->peer->GetStats(observer.get(), nullptr, static_cast<webrtc::PeerConnectionInterface::StatsOutputLevel>(level));
+  if (!accepted) { state->events->RejectStats(id); return 5; }
+  return 0;
+}
 std::uint8_t peer_request_sender_stats(const NativePeerConnection& peer, const NativeRtpSender& sender, std::uint64_t id) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->BeginStats(id); if (status != 0) return status;

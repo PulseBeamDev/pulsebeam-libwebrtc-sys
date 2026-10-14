@@ -7,8 +7,21 @@
 #include <string>
 #include "rust/cxx.h"
 #include "api/stats/rtc_stats_report.h"
+#include "api/legacy_stats_types.h"
 #include "api/stats/attribute.h"
 namespace pulsebeam::webrtc_sys {
+struct FfiLegacyStatsReport;
+class NativeLegacyStatsId final {
+ public:
+  explicit NativeLegacyStatsId(webrtc::StatsReport::Id id) : value(std::move(id)) {}
+  webrtc::StatsReport::Id value;
+};
+std::int32_t legacy_stats_id_type(const NativeLegacyStatsId&) noexcept;
+rust::Vec<std::uint8_t> legacy_stats_id_string(const NativeLegacyStatsId&) noexcept;
+std::unique_ptr<NativeLegacyStatsId> legacy_stats_id_copy(const NativeLegacyStatsId&) noexcept;
+bool legacy_stats_id_same(const NativeLegacyStatsId&, const NativeLegacyStatsId&) noexcept;
+bool legacy_stats_id_equal(const NativeLegacyStatsId&, const NativeLegacyStatsId&) noexcept;
+rust::Vec<FfiLegacyStatsReport> copy_legacy_stats(const webrtc::StatsReports&) noexcept;
 struct FfiRtcStatsValue;
 struct FfiRtcStatsAttribute;
 struct FfiRtcStatsData;

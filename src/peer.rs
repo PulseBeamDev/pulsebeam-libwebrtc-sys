@@ -450,6 +450,7 @@ pub struct PeerEventObservation {
 #[derive(Debug)]
 pub enum PeerConnectionEvent {
     Stats(PeerStatsSnapshot),
+    LegacyStats(crate::PeerLegacyStatsSnapshot),
     OperationComplete(OperationCompletion),
     /// One successful native SDP completion whose bytes are not UTF-8. This is
     /// the same terminal operation, not an additional event or native failure.
@@ -2385,6 +2386,19 @@ impl PeerConnection {
         };
         Self::operation_admission(id, status)
     }
+    /// Deprecated native all-track stats. Value references are copied on
+    /// signaling; this does not route through modern stats or reinterpret JSON.
+    pub fn request_legacy_stats(
+        &self,
+        level: crate::LegacyStatsOutputLevel,
+    ) -> Result<OperationId, crate::LegacyStatsRequestError> {
+        let id = self.next_operation();
+        let status = ffi::peer_request_legacy_stats(self.native(), level as u8, id.0);
+        if status == 5 {
+            return Err(crate::LegacyStatsRequestError::NativeRejected);
+        }
+        Self::operation_admission(id, status).map_err(Into::into)
+    }
     pub fn clear_stats_cache(&self) {
         ffi::peer_clear_stats_cache(self.native());
     }
@@ -2688,6 +2702,12 @@ fn stats_record_from_ffi(record: ffi::FfiStatsRecord) -> PeerStatsRecord {
 fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<PeerConnectionEvent> {
     match event.kind {
         0 => None,
+        16 => Some(PeerConnectionEvent::LegacyStats(
+            crate::PeerLegacyStatsSnapshot::from_native(
+                OperationId(event.operation_id),
+                event.legacy_stats_reports,
+            ),
+        )),
         12 => Some(PeerConnectionEvent::Stats(PeerStatsSnapshot {
             report: crate::RtcStatsReport::from_native(event.stats_report),
             operation_id: OperationId(event.operation_id),

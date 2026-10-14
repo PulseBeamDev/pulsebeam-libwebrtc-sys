@@ -163,7 +163,7 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
     let id = session.create_offer(peers[0], false).unwrap();
     let offer = events.finish(&mut session, peers, peers[0], id).unwrap();
     let offer = events.gather(&mut session, peers, peers[0], offer);
-    let report = thread::spawn(move || {
+    let (report, legacy) = thread::spawn(move || {
         let mut session = session;
         let id = session.set_remote_description(peers[1], offer).unwrap();
         events.finish(&mut session, peers, peers[1], id);
@@ -214,12 +214,30 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
         let RtcStatsValues::DataChannelStats(values) = native_channel.values() else { panic!() };
         assert_eq!(values.protocol.as_deref(), Some(protocol.as_slice()));
         assert_eq!(values.bytes_received, Some(3));
+        let operation = session.request_legacy_stats(peers[1], LegacyStatsOutputLevel::Debug).unwrap();
+        assert!(session.request_stats(peers[1]).is_err());
+        let legacy = loop {
+            match session.try_peer_event(peers[1]).unwrap() {
+                Some(SessionEvent::LegacyStats(value)) if value.operation_id == operation => break value,
+                Some(SessionEvent::OperationComplete(value)) if value.operation_id == operation => panic!("legacy request failed: {value:?}"),
+                _ => wait(&mut session),
+            }
+        };
+        let channel = legacy.reports.iter().find(|r| r.id.kind() == LegacyStatsType::DataChannel).unwrap();
+        assert_eq!(channel.find(LegacyStatsName::Label).unwrap().value, LegacyStatsValueData::String(expected_label.clone()));
+        assert!(legacy.reports.iter().flat_map(|r| &r.values).any(|v| matches!(&v.value, LegacyStatsValueData::Id(_))), "negotiated native transport links use retained SDK IDs");
         session.close_peer(peers[0]).unwrap();
         session.close_peer(peers[1]).unwrap();
         assert_eq!(session.channel_label(outgoing).unwrap(), expected_label);
         session.shutdown().unwrap();
-        snapshot.report
+        (snapshot.report, legacy)
     }).join().unwrap();
+    assert!(
+        legacy
+            .reports
+            .iter()
+            .all(|r| !r.id.to_native_string().is_empty())
+    );
     assert!(!report.is_empty());
     assert!(!report.of_class(RtcStatsClass::DataChannelStats).is_empty());
 }

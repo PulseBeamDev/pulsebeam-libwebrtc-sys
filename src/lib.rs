@@ -351,6 +351,8 @@ pub use task_queue_provider::{
 };
 mod stats;
 pub use stats::*;
+mod legacy_stats;
+pub use legacy_stats::*;
 mod timestamp;
 pub use timestamp::{FiniteTimestamp, TimeValueError, Timestamp};
 mod metronome;
@@ -1973,6 +1975,23 @@ mod ffi {
         sdp: Vec<u8>,
     }
 
+    struct FfiLegacyStatsValue {
+        name: i32,
+        display_name: Vec<u8>,
+        native_string: Vec<u8>,
+        kind: u8,
+        integer: i64,
+        decimal: f32,
+        flag: bool,
+        text: Vec<u8>,
+        id: UniquePtr<NativeLegacyStatsId>,
+    }
+    struct FfiLegacyStatsReport {
+        id: UniquePtr<NativeLegacyStatsId>,
+        timestamp_ms: f64,
+        native_type: Vec<u8>,
+        values: Vec<FfiLegacyStatsValue>,
+    }
     struct FfiRtcStatsBytes {
         value: Vec<u8>,
     }
@@ -2044,6 +2063,7 @@ mod ffi {
 
     struct FfiPeerEvent {
         ice_state: i32,
+        legacy_stats_reports: Vec<FfiLegacyStatsReport>,
         stats_report: UniquePtr<NativeRtcStatsReport>,
         stats_timestamp_us: i64,
         stats_records: Vec<FfiStatsRecord>,
@@ -4524,6 +4544,12 @@ mod ffi {
         );
 
         include!("pulsebeam-webrtc-sys/native/stats.h");
+        type NativeLegacyStatsId;
+        fn legacy_stats_id_type(value: &NativeLegacyStatsId) -> i32;
+        fn legacy_stats_id_string(value: &NativeLegacyStatsId) -> Vec<u8>;
+        fn legacy_stats_id_copy(value: &NativeLegacyStatsId) -> UniquePtr<NativeLegacyStatsId>;
+        fn legacy_stats_id_same(a: &NativeLegacyStatsId, b: &NativeLegacyStatsId) -> bool;
+        fn legacy_stats_id_equal(a: &NativeLegacyStatsId, b: &NativeLegacyStatsId) -> bool;
         type NativeRtcStats;
         type NativeRtcStatsAttribute;
         type NativeRtcStatsReport;
@@ -5535,6 +5561,11 @@ mod ffi {
         fn peer_request_stats_with_empty_selector(
             peer: &NativePeerConnection,
             receiver: bool,
+            operation_id: u64,
+        ) -> u8;
+        fn peer_request_legacy_stats(
+            peer: &NativePeerConnection,
+            level: u8,
             operation_id: u64,
         ) -> u8;
         fn peer_clear_stats_cache(peer: &NativePeerConnection);

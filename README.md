@@ -782,6 +782,16 @@ object timestamps. Reports and owned values remain readable after peer close
 and can move independently between caller threads. Upstream RTT/jitter values
 are seconds; available/target bitrates are bits per second.
 
+`request_legacy_stats(Standard | Debug)` on peers and `ProductionSession`
+uses the deprecated native collector and emits a separate `LegacyStats` result.
+It selects all tracks; the SDK's optional track-selector overload is not yet
+bound. Reports preserve native timestamps in milliseconds, report/metric names,
+all seven typed value variants, byte strings and native formatting. SDK Value
+references stay on signaling; copied payloads and retained immutable SDK IDs
+remain usable after peer teardown and caller-thread migration. ID equality uses
+the SDK comparison, not rendered strings. Legacy and modern requests share the
+one-pending-or-unconsumed-stats-result admission limit.
+
 `PeerConnection::video_transceivers()`, `video_senders()`, and
 `video_receivers()` return owned video-only handles from snapshots of upstream
 transceivers. `mid()` is absent before negotiation and
