@@ -572,8 +572,9 @@ pub(crate) use readiness::{RustReadiness, notify_readiness};
 pub use audio::AudioDevice;
 pub use audio::{
     AudioCodecCapability, AudioFrameError, AudioPcmFrame, AudioSampleFormat, AudioSink,
-    AudioSource, AudioTrack, DecodedAudioFrame, EncodedAudioFrame, EncodedAudioSink,
-    EncodedAudioSource, OpusAudioLevel, OpusInputError, OpusInputFrame, ReceivedAudioFrame,
+    AudioSource, AudioTrack, AudioTrackSink, DecodedAudioFrame, EncodedAudioFrame,
+    EncodedAudioSink, EncodedAudioSource, OpusAudioLevel, OpusInputError, OpusInputFrame,
+    ReceivedAudioFrame,
 };
 pub use audio_processing::{
     AudioProcessingConfig, AudioProcessingOptions, AudioProcessingState, GainControl,
@@ -3708,7 +3709,7 @@ mod ffi {
         channels: u8,
         samples_per_channel: u32,
         has_capture_time: bool,
-        capture_time_us: i64,
+        capture_time_ms: i64,
         samples: Vec<i16>,
     }
 
@@ -7333,10 +7334,13 @@ mod ffi {
             sample_rate_hz: u32,
             channels: u8,
             timestamp_us: i64,
+            capture_time_us: i64,
             failure: &mut u8,
             processing_error: &mut i32,
             wrapper_error: &mut u8,
         ) -> bool;
+        fn audio_track_attach_sink(track: &NativeAudioTrack) -> UniquePtr<NativeAudioSink>;
+        fn rtp_sender_set_audio_track(sender: &NativeRtpSender, track: &NativeAudioTrack) -> bool;
         fn create_microphone_track(
             factory: &NativePeerConnectionFactory,
             id: &str,

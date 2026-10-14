@@ -897,7 +897,6 @@ impl PeerConnectionFactoryBuilder {
         self.video_decoder = Some(factory);
         self
     }
-
     pub fn build(mut self) -> Result<PeerConnectionFactory, PeerError> {
         #[cfg(all(feature = "native", target_os = "linux"))]
         if self.audio_device_module.is_some() && self.worker_thread.is_some() {
@@ -1272,13 +1271,17 @@ impl FactoryInner {
     pub(crate) fn native(&self) -> &ffi::NativePeerConnectionFactory {
         self.native.as_ref().unwrap()
     }
+    pub(crate) fn uses_controlled_execution(&self) -> bool {
+        self._controlled_driver.is_some()
+    }
+
     pub(crate) fn encoded_video_receive_only(&self) -> bool {
         self._video_decoder
             .as_ref()
             .is_some_and(VideoDecoderFactoryHandle::is_encoded_receive_only)
     }
 
-    pub(crate) fn opus_capture_time(&self) -> Option<std::time::Duration> {
+    pub(crate) fn media_capture_time(&self) -> Option<std::time::Duration> {
         if self.controlled_media {
             self.controlled_time()
         } else if self._controlled_driver.is_none() && self._environment.uses_system_clock() {

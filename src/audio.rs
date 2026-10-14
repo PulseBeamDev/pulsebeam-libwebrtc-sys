@@ -1,7 +1,7 @@
 //! Owned, validated CPU audio frames for injected media.
 //!
-//! The initial input format is interleaved signed 16-bit PCM in 10 ms blocks.
-//! Unsupported rates, channels, or partial blocks are rejected before crossing
+//! Input is interleaved signed 16-bit PCM in native `rate / 100` sample blocks.
+//! Unsupported rates, layouts, or partial blocks are rejected before crossing
 //! the native bridge. Source-specific processing and device APIs are separate.
 
 use std::{cell::Cell, fmt, rc::Rc};
@@ -123,8 +123,10 @@ pub struct AudioPcmFrame {
 }
 
 impl AudioPcmFrame {
-    /// Constructs one 10 ms PCM block. Supported rates are 8, 16, 32, and
-    /// 48 kHz; mono and stereo are supported. No padding or truncation occurs.
+    /// Constructs one native PCM input block of `sample_rate_hz / 100`
+    /// samples per channel. Rates 100..=48000 Hz and native input layouts of
+    /// 1, 2, 4, 6 or 8 channels are supported. No sample padding or truncation
+    /// occurs, including for rates such as 44100 Hz.
     pub fn i16_interleaved(
         sample_rate_hz: u32,
         channels: u8,
@@ -149,10 +151,10 @@ impl AudioPcmFrame {
         timestamp_us: i64,
         sample_count: usize,
     ) -> Result<u32, AudioFrameError> {
-        if !matches!(sample_rate_hz, 8_000 | 16_000 | 32_000 | 48_000) {
+        if !(100..=48_000).contains(&sample_rate_hz) {
             return Err(AudioFrameError::InvalidSampleRate);
         }
-        if !matches!(channels, 1 | 2) {
+        if !matches!(channels, 1 | 2 | 4 | 6 | 8) {
             return Err(AudioFrameError::InvalidChannels);
         }
         if timestamp_us < 0 {
@@ -166,16 +168,37 @@ impl AudioPcmFrame {
     }
 }
 
-/// A decoded audio block received from an RTP audio track.
+/// An owning PCM block observed on a native audio track. Remote tracks supply
+/// decoded audio; local tracks expose their actual source handoff.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedAudioFrame {
     pub sample_rate_hz: u32,
     pub channels: u8,
     pub samples_per_channel: u32,
-    /// Absolute capture time on the upstream TimeMillis clock, if supplied.
+    /// Exact optional capture value from the native sink callback, in the
+    /// upstream TimeMillis domain. Zero and negative values remain present.
+    pub capture_time_ms: Option<i64>,
+    /// Microsecond projection, absent when native capture time is absent or
+    /// cannot be represented in this unit. `capture_time_ms` remains exact.
     pub capture_time_us: Option<i64>,
     /// Signed 16-bit, native-endian, interleaved samples.
     pub samples: Vec<i16>,
+}
+
+impl DecodedAudioFrame {
+    fn from_native(frame: ffi::FfiReceivedAudioFrame) -> Option<Self> {
+        frame.valid.then(|| Self {
+            sample_rate_hz: frame.sample_rate_hz,
+            channels: frame.channels,
+            samples_per_channel: frame.samples_per_channel,
+            capture_time_ms: frame.has_capture_time.then_some(frame.capture_time_ms),
+            capture_time_us: frame
+                .has_capture_time
+                .then_some(frame.capture_time_ms)
+                .and_then(|value| value.checked_mul(1000)),
+            samples: frame.samples,
+        })
+    }
 }
 
 /// Owned decoded PCM with its recipient and receiver identity. `observed_at`
@@ -226,14 +249,7 @@ impl AudioSink {
         if self._peer.closed.get() {
             return None;
         }
-        let frame = ffi::audio_sink_take_frame(self.native());
-        frame.valid.then_some(DecodedAudioFrame {
-            sample_rate_hz: frame.sample_rate_hz,
-            channels: frame.channels,
-            samples_per_channel: frame.samples_per_channel,
-            capture_time_us: frame.has_capture_time.then_some(frame.capture_time_us),
-            samples: frame.samples,
-        })
+        DecodedAudioFrame::from_native(ffi::audio_sink_take_frame(self.native()))
     }
 
     pub fn dropped_frames(&self) -> u64 {
@@ -254,6 +270,38 @@ impl AudioSink {
 
     fn native(&self) -> &ffi::NativeAudioSink {
         self.native.as_ref().expect("validated audio sink")
+    }
+}
+
+/// Bounded owning observation of a local audio track's actual native OnData.
+/// No headless playout or RTP receiver identity is invented for a local track.
+/// The track, its source and its factory outlive native sink detachment.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::AudioTrackSink>();
+/// ```
+pub struct AudioTrackSink {
+    native: cxx::UniquePtr<ffi::NativeAudioSink>,
+    _track: Rc<TrackInner>,
+}
+impl AudioTrackSink {
+    fn native(&self) -> &ffi::NativeAudioSink {
+        self.native.as_ref().expect("local native audio sink")
+    }
+    pub fn try_next_frame(&self) -> Option<DecodedAudioFrame> {
+        DecodedAudioFrame::from_native(ffi::audio_sink_take_frame(self.native()))
+    }
+    pub fn dropped_frames(&self) -> u64 {
+        ffi::audio_sink_dropped_frames(self.native())
+    }
+    pub fn close(&mut self) -> Result<(), PeerError> {
+        ffi::close_audio_sink(self.native())
+            .then_some(())
+            .ok_or_else(|| PeerError {
+                kind: PeerErrorKind::Internal,
+                message: "failed to detach local audio sink".into(),
+            })
     }
 }
 
@@ -372,16 +420,64 @@ impl AudioSource {
         }
     }
 
-    pub fn push_frame(&self, frame: &AudioPcmFrame) -> Result<(), AudioFrameError> {
+    /// Read the native capture timeline without advancing time or pumping work.
+    /// Custom non-controlled clocks have no established TimeMillis mapping.
+    pub fn capture_time_now(&self) -> Result<std::time::Duration, AudioFrameError> {
         if self.inner.closed.get() {
             return Err(AudioFrameError::Released);
         }
-        AudioPcmFrame::validate(
+        self.inner
+            ._factory
+            .media_capture_time()
+            .ok_or(AudioFrameError::InvalidTimestamp)
+    }
+
+    /// Preserve the legacy unstamped source handoff. `frame.timestamp_us` is
+    /// not interpreted as an absolute native capture clock.
+    pub fn push_frame(&self, frame: &AudioPcmFrame) -> Result<(), AudioFrameError> {
+        self.push_frame_with_capture_time(frame, None)
+    }
+
+    /// Supply the actual capture instant mapped to `capture_time_now`'s domain.
+    /// The native handoff has millisecond precision; wire timing and native
+    /// rejection remain engine-owned. No enqueue time is substituted.
+    pub fn push_frame_at(
+        &self,
+        frame: &AudioPcmFrame,
+        capture_time: std::time::Duration,
+    ) -> Result<(), AudioFrameError> {
+        self.capture_time_now()?;
+        self.push_frame_with_capture_time(frame, Some(capture_time))
+    }
+
+    fn push_frame_with_capture_time(
+        &self,
+        frame: &AudioPcmFrame,
+        capture_time: Option<std::time::Duration>,
+    ) -> Result<(), AudioFrameError> {
+        if self.inner.closed.get() {
+            return Err(AudioFrameError::Released);
+        }
+        let samples = AudioPcmFrame::validate(
             frame.sample_rate_hz,
             frame.channels,
             frame.timestamp_us,
             frame.samples.len(),
         )?;
+        if frame.samples_per_channel != samples {
+            return Err(AudioFrameError::InvalidSampleCount);
+        }
+        let capture_us = capture_time.map_or(Ok(-1), |value| {
+            let micros =
+                i64::try_from(value.as_micros()).map_err(|_| AudioFrameError::InvalidTimestamp)?;
+            // ChannelSend's resume path multiplies the difference between two
+            // capture milliseconds by up to 48000 before dividing. All admitted
+            // capture values must keep that reached signed product in range.
+            if micros / 1000 > i64::MAX / 48000 {
+                return Err(AudioFrameError::InvalidTimestamp);
+            }
+            Ok(micros)
+        })?;
         let (mut failure, mut processing_error, mut wrapper_error) = (0, 0, 0);
         if ffi::audio_source_push_pcm(
             self.native(),
@@ -389,6 +485,7 @@ impl AudioSource {
             frame.sample_rate_hz,
             frame.channels,
             frame.timestamp_us,
+            capture_us,
             &mut failure,
             &mut processing_error,
             &mut wrapper_error,
@@ -528,7 +625,7 @@ impl EncodedAudioSource {
         self.source
             .inner
             ._factory
-            .opus_capture_time()
+            .media_capture_time()
             .ok_or(OpusInputError::InvalidTimestamp)
     }
 
@@ -777,6 +874,28 @@ impl AudioTrack {
         Ok(())
     }
 
+    /// Observe actual source samples, rate, channel geometry and optional
+    /// capture milliseconds through an owning native sink queue.
+    pub fn attach_sink(&self) -> Result<AudioTrackSink, PeerError> {
+        if self.is_opus_frames() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "encoded Opus tracks do not expose their private carrier as PCM".into(),
+            });
+        }
+        let native = ffi::audio_track_attach_sink(self.native());
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "audio track has no live native sink attachment".into(),
+            });
+        }
+        Ok(AudioTrackSink {
+            native,
+            _track: self.inner.clone(),
+        })
+    }
+
     pub fn id(&self) -> String {
         ffi::audio_track_id(self.native())
     }
@@ -798,14 +917,92 @@ impl AudioTrack {
     }
 }
 
+impl crate::RtpSender {
+    /// Replace or detach the actual native audio track without rebuilding its
+    /// sender/transceiver. The accepted track retains its source and factory;
+    /// renegotiate separately if the remote track identity must change.
+    pub fn set_audio_track(&self, track: Option<&AudioTrack>) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if self.media_type() != crate::MediaType::Audio {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "sender is not audio".into(),
+            });
+        }
+        if let Some(track) = track {
+            if !track.belongs_to(&self.peer._factory) {
+                return Err(PeerError {
+                    kind: PeerErrorKind::InvalidParameter,
+                    message: "audio replacement track belongs to another factory".into(),
+                });
+            }
+            if self.peer._factory.uses_controlled_execution()
+                && (!self.peer._factory.controlled_media || !track.is_opus_frames())
+            {
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedOperation,
+                    message: "controlled audio replacement requires admitted Opus input".into(),
+                });
+            }
+        }
+        let accepted = match track {
+            Some(track) => ffi::rtp_sender_set_audio_track(self.native(), track.native()),
+            None => ffi::rtp_sender_clear_track(self.native()),
+        };
+        if !accepted {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "sender rejected the audio track change".into(),
+            });
+        }
+        let mut retained = self.peer.audio_sender_tracks.borrow_mut();
+        match track {
+            Some(track) => {
+                retained.insert(self.id(), track.clone());
+            }
+            None => {
+                retained.remove(&self.id());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn native_pcm_capture_milliseconds_preserve_the_full_signed_optional_domain() {
+        for capture in [None, Some(0), Some(-1), Some(i64::MIN), Some(i64::MAX)] {
+            let frame = DecodedAudioFrame::from_native(ffi::FfiReceivedAudioFrame {
+                valid: true,
+                sample_rate_hz: 8000,
+                channels: 1,
+                samples_per_channel: 1,
+                has_capture_time: capture.is_some(),
+                capture_time_ms: capture.unwrap_or(13),
+                samples: vec![7],
+            })
+            .unwrap();
+            assert_eq!(frame.capture_time_ms, capture);
+            assert_eq!(
+                frame.capture_time_us,
+                capture.and_then(|value| value.checked_mul(1000))
+            );
+            assert_eq!(frame.samples, [7]);
+        }
+    }
+
+    #[test]
     fn pcm_frame_requires_exact_ten_millisecond_interleaved_block() {
-        for rate in [8_000, 16_000, 32_000, 48_000] {
-            for channels in [1, 2] {
+        for rate in [100, 8_000, 16_000, 32_000, 44_100, 48_000] {
+            for channels in [1, 2, 4, 6, 8] {
                 let data = vec![0; (rate / 100 * channels as u32) as usize];
                 let frame =
                     AudioPcmFrame::i16_interleaved(rate, channels, 42, data.clone()).unwrap();
@@ -814,7 +1011,7 @@ mod tests {
             }
         }
         assert_eq!(
-            AudioPcmFrame::i16_interleaved(44_100, 1, 0, vec![]),
+            AudioPcmFrame::i16_interleaved(48_001, 1, 0, vec![]),
             Err(AudioFrameError::InvalidSampleRate)
         );
         assert_eq!(

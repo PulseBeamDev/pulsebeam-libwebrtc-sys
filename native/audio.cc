@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/audio/audio_frame.h"
 #include "api/frame_transformer_interface.h"
 #include "api/audio/audio_processing.h"
 #include "pulsebeam-webrtc-sys/native/frame_callback_slot.h"
@@ -333,8 +334,8 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
               size_t frames, std::optional<int64_t> capture_ms) override {
     std::lock_guard lock(mutex_);
     if (!active_) return;
-    if (!data || bits != 16 || rate <= 0 || channels < 1 || channels > 2 ||
-        frames == 0 || frames > 480 || channels * frames > 960) {
+    if (!data || bits != 16 || rate <= 0 || channels < 1 || channels > 16 ||
+        frames == 0 || frames > webrtc::AudioFrame::kMaxDataSizeSamples / channels) {
       if (dropped_ != std::numeric_limits<std::uint64_t>::max()) ++dropped_;
       return;
     }
@@ -342,10 +343,7 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
     frame.rate = static_cast<std::uint32_t>(rate);
     frame.channels = static_cast<std::uint8_t>(channels);
     frame.frames = static_cast<std::uint32_t>(frames);
-    if (capture_ms && *capture_ms >= 0 &&
-        *capture_ms <= std::numeric_limits<int64_t>::max() / 1000) {
-      frame.capture_us = *capture_ms * 1000;
-    }
+    frame.capture_ms = capture_ms;
     frame.samples.resize(channels * frames);
     std::memcpy(frame.samples.data(), data, frame.samples.size() * sizeof(int16_t));
     if (frames_.size() == 8) {
@@ -364,8 +362,8 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
     out.sample_rate_hz = frame.rate;
     out.channels = frame.channels;
     out.samples_per_channel = frame.frames;
-    out.has_capture_time = frame.capture_us.has_value();
-    out.capture_time_us = frame.capture_us.value_or(0);
+    out.has_capture_time = frame.capture_ms.has_value();
+    out.capture_time_ms = frame.capture_ms.value_or(0);
     for (auto sample : frame.samples) out.samples.push_back(sample);
     return out;
   }
@@ -385,7 +383,7 @@ class ReceivedAudioCollector final : public webrtc::AudioTrackSinkInterface {
     std::uint32_t rate = 0;
     std::uint8_t channels = 0;
     std::uint32_t frames = 0;
-    std::optional<std::int64_t> capture_us;
+    std::optional<std::int64_t> capture_ms;
   };
   mutable std::mutex mutex_;
   std::deque<Frame> frames_;
@@ -531,6 +529,7 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
                            std::int64_t timestamp_us,
+                           std::int64_t capture_time_us,
                            std::uint8_t& failure,
                            std::int32_t& processing_error,
                            std::uint8_t& wrapper_error) noexcept {
@@ -539,14 +538,17 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
   auto& state = *source.state();
   PcmCaptureScope caller_scope(&state);
   if (!caller_scope.admitted()) { failure = 3; return false; }
+  const auto capture_ms = capture_time_us < 0 ? std::nullopt
+      : std::optional<std::int64_t>(capture_time_us / 1000);
+  if (capture_time_us < -1 || capture_time_us / 1000 > std::numeric_limits<std::int64_t>::max() / 48000) return false;
   if (timestamp_us < 0 ||
-      (sample_rate_hz != 8000 && sample_rate_hz != 16000 &&
-       sample_rate_hz != 32000 && sample_rate_hz != 48000) ||
-      (channels != 1 && channels != 2) ||
+      sample_rate_hz < 100 || sample_rate_hz > 48000 ||
+      (channels != 1 && channels != 2 && channels != 4 && channels != 6 && channels != 8) ||
       samples.size() != (sample_rate_hz / 100) * channels) return false;
+  if (state.processing && ((sample_rate_hz != 8000 && sample_rate_hz != 16000 && sample_rate_hz != 32000 && sample_rate_hz != 48000) || (channels != 1 && channels != 2))) return false;
   if (!state.processing)
     return state.source->Push(samples.data(), static_cast<int>(sample_rate_hz),
-                              channels, sample_rate_hz / 100);
+                              channels, sample_rate_hz / 100, capture_ms);
   std::lock_guard lock(state.frame_mutex);
   // This is an owned input copy for in-place native processing, not initialized
   // output used to disguise a failed or partial processing result.
@@ -613,7 +615,7 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
   });
   if (failure) return false;
   return state.source->Push(processed.data(), static_cast<int>(sample_rate_hz),
-                            channels, sample_rate_hz / 100);
+                            channels, sample_rate_hz / 100, capture_ms);
 }
 bool audio_source_push_opus(const NativeAudioSource& source,
                             rust::Slice<const std::uint8_t> payload,
@@ -691,6 +693,20 @@ std::unique_ptr<NativeAudioTrack> create_audio_track(
 std::unique_ptr<NativeMediaTrack> audio_track_reference(const NativeAudioTrack& track) noexcept {
   return std::make_unique<NativeMediaTrack>(track.state()->track);
 }
+std::unique_ptr<NativeAudioSink> audio_track_attach_sink(const NativeAudioTrack& track) noexcept {
+  if (track.state()->opus_frames || !track.state()->signaling_thread || !track.state()->track ||
+      track.state()->track->state() != webrtc::MediaStreamTrackInterface::kLive)
+    return nullptr;
+  auto state = std::make_unique<NativeAudioSink::State>();
+  state->track = track.state()->track;
+  state->signaling_thread = track.state()->signaling_thread;
+  state->collector = std::make_unique<ReceivedAudioCollector>();
+  state->signaling_thread->BlockingCall([&] { state->track->AddSink(state->collector.get()); });
+  return std::make_unique<NativeAudioSink>(std::move(state));
+}
+bool rtp_sender_set_audio_track(const NativeRtpSender& sender, const NativeAudioTrack& track) noexcept {
+  return sender.sender()->SetTrack(track.state()->track.get());
+}
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept {
   return track.state()->track->id();
 }
@@ -760,7 +776,7 @@ FfiReceivedAudioFrame audio_sink_take_frame(const NativeAudioSink& sink) noexcep
       sink.state()->track->state() == webrtc::MediaStreamTrackInterface::kEnded)
     return {};
   auto frame = sink.state()->collector->Take();
-  if (!frame.valid && !sink.state()->closed.load() &&
+  if (!frame.valid && !sink.state()->closed.load() && sink.state()->peer &&
       pump_headless_audio(*sink.state()->peer)) {
     frame = sink.state()->collector->Take();
   }
@@ -776,7 +792,7 @@ bool close_audio_sink(const NativeAudioSink& sink) noexcept {
   state.signaling_thread->BlockingCall([&] {
     state.track->RemoveSink(state.collector.get());
   });
-  state.peer->release_audio_receiver(state.receiver_id);
+  if (state.peer) state.peer->release_audio_receiver(state.receiver_id);
   return true;
 }
 std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(

@@ -11,6 +11,7 @@ class NativePeerConnectionFactory;
 class NativePeerConnection;
 class NativeRtpTransceiver;
 class NativeRtpReceiver;
+class NativeRtpSender;
 struct FfiReceivedAudioFrame;
 struct FfiEncodedAudioFrame;
 struct FfiAudioCodecCapability;
@@ -81,6 +82,7 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
                            std::int64_t timestamp_us,
+                           std::int64_t capture_time_us,
                            std::uint8_t& failure,
                            std::int32_t& processing_error, std::uint8_t& wrapper_error) noexcept;
 bool audio_source_push_opus(const NativeAudioSource& source,
@@ -103,6 +105,8 @@ std::unique_ptr<NativeAudioTrack> create_microphone_track(
 std::unique_ptr<NativeAudioTrack> create_audio_track(
     const NativePeerConnectionFactory& factory, const NativeAudioSource& source,
     rust::Str id) noexcept;
+std::unique_ptr<NativeAudioSink> audio_track_attach_sink(const NativeAudioTrack& track) noexcept;
+bool rtp_sender_set_audio_track(const NativeRtpSender& sender, const NativeAudioTrack& track) noexcept;
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept;
 bool audio_track_enabled(const NativeAudioTrack& track) noexcept;
 bool audio_track_set_enabled(const NativeAudioTrack& track, bool enabled) noexcept;

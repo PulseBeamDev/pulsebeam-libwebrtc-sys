@@ -1813,6 +1813,36 @@ impl ProductionSession {
         Ok(id)
     }
 
+    /// Read the native PCM capture timeline without pumping engine work.
+    pub fn pcm_capture_time_now(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<std::time::Duration, PeerError> {
+        self.check_open()?;
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .capture_time_now()
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
+    /// Submit PCM with an actual capture instant mapped into the native domain.
+    pub fn push_pcm_at(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::AudioPcmFrame,
+        capture_time: std::time::Duration,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .push_frame_at(frame, capture_time)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+
     /// Submit a raw frame with capture time in the native clock's timeline.
     /// The engine retains its own frame-dropping and RTP timestamp semantics.
     pub fn push_raw_video(
@@ -3807,6 +3837,29 @@ impl ProductionSession {
             .value
             .set_direction(direction)
     }
+    /// Replace/detach one native audio source. PCM and encoded Opus retain
+    /// their selected factory contracts; no codec factory is rebuilt here.
+    pub fn replace_audio_source(
+        &mut self,
+        sender: SessionSenderId,
+        source: Option<SessionSourceId>,
+        track_id: &str,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let track = source
+            .map(|id| match self.sources.get(&id).ok_or_else(missing)? {
+                Source::Pcm(source) => self.factory.create_audio_track(track_id, source),
+                Source::Opus(source) => self.factory.create_encoded_audio_track(track_id, source),
+                _ => Err(missing()),
+            })
+            .transpose()?;
+        self.senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .set_audio_track(track.as_ref())
+    }
+
     pub fn replace_video_source(
         &mut self,
         sender: SessionSenderId,

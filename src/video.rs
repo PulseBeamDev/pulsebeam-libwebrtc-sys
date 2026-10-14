@@ -1062,6 +1062,11 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
+            if self.peer._factory.uses_controlled_execution()
+                && (!self.peer._factory.controlled_media || !track.is_admitted_controlled_video())
+            {
+                return Err(PeerError { kind: PeerErrorKind::UnsupportedOperation, message: "controlled replacement requires an admitted video source".into() });
+            }
             if !Rc::ptr_eq(track.factory(), &self.peer._factory) {
                 return Err(PeerError {
                     kind: PeerErrorKind::InvalidParameter,
@@ -1789,7 +1794,6 @@ pub struct EncodedReceivedVideoFrame {
     pub dependencies: Vec<i64>,
     pub decode_target_indications: Vec<DecodeTargetIndication>,
 }
-
 /// Decode target indication from the negotiated dependency descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecodeTargetIndication {

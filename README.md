@@ -278,10 +278,27 @@ native discovery/support. Other target configurations still disable bundled
 H.264. Codec availability comes from the matching native artifact, not from a
 Rust source update alone.
 
-Headless audio sources accept owned, interleaved signed 16-bit PCM in exactly
-10 ms blocks at 8, 16, 32 or 48 kHz, mono or stereo. The source's capture
-microsecond value is validated but is not used as an RTP or absolute capture
-clock. A receiver can select one decoded PCM sink or one encoded Opus sink
+Headless audio sources accept owned, interleaved signed 16-bit PCM with native
+`sample_rate_hz / 100` samples per channel, at 100..=48000 Hz and 1, 2, 4, 6 or 8
+channels. This includes 44.1 kHz without padding or truncation. The legacy
+`AudioPcmFrame::timestamp_us` field is not an absolute capture clock. Use
+`AudioSource::capture_time_now` to read the supported native timeline and
+`push_frame_at` to supply a mapped actual capture instant, at native millisecond
+precision. Custom non-controlled clocks have no implicit mapping. Capture
+admission also protects the reached signed capture-difference arithmetic on
+native sender resume. Native packetization and playout keep their own timing
+semantics; successful source delivery is not an encode or wire acknowledgement.
+`AudioTrack::attach_sink` exposes an owning local PCM queue with exact samples,
+rate, channel geometry and optional capture milliseconds. It does not expose the
+encoded adapter's private carrier as PCM. `DecodedAudioFrame::capture_time_ms`
+preserves the full native optional signed value; `capture_time_us` is a checked
+projection and can be absent when that unit cannot represent it. Zero remains
+distinct from absence. `RtpSender::set_audio_track` replaces or detaches one
+source without rebuilding the sender; native renegotiation semantics remain
+unchanged. The production actor provides `pcm_capture_time_now`, `push_pcm_at`
+and `replace_audio_source` with the same contracts.
+
+A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. Audio sink close releases its reservation for reattachment
 or a mode change. Encoded close restores native decoding for future packets;
 stop reception before closing when opaque packets must never reach a decoder,

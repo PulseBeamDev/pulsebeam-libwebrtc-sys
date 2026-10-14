@@ -2666,6 +2666,7 @@ fn builtin_opus_vp8_links_have_real_owned_output_and_replay() {
             "audio": first.audio.iter().map(|frame| serde_json::json!({
                 "peer": frame.peer_id, "receiver": frame.receiver_id,
                 "observed_us": frame.observed_at.map(|time| time.as_micros()),
+                "capture_ms": frame.frame.capture_time_ms,
                 "capture_us": frame.frame.capture_time_us,
                 "rate": frame.frame.sample_rate_hz, "channels": frame.frame.channels,
                 "samples_per_channel": frame.frame.samples_per_channel,

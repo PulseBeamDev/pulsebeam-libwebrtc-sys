@@ -11,6 +11,7 @@ struct Call {
     gathered: [bool; 2],
     connected: [bool; 2],
     audio: Option<SessionReceiverId>,
+    audio_arrivals: Vec<SessionReceiverId>,
     video: Option<SessionReceiverId>,
 }
 impl Call {
@@ -24,7 +25,10 @@ impl Call {
                     }
                     SessionEvent::Track { receiver, .. } if index == 1 => {
                         match session.receiver_media_type(receiver).unwrap() {
-                            MediaType::Audio => self.audio = Some(receiver),
+                            MediaType::Audio => {
+                                self.audio = Some(receiver);
+                                self.audio_arrivals.push(receiver);
+                            }
                             MediaType::Video => self.video = Some(receiver),
                             kind => panic!("unexpected track kind: {kind:?}"),
                         }
@@ -103,6 +107,242 @@ impl Call {
     }
 }
 
+fn receive_encoded_audio(
+    session: &mut ProductionSession,
+    call: &mut Call,
+    peers: [SessionPeerId; 2],
+    expected: &[&[u8]],
+) -> Vec<EncodedAudioFrame> {
+    let mut frames = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !expected.iter().all(|payload| {
+        frames
+            .iter()
+            .any(|frame: &EncodedAudioFrame| frame.data == *payload)
+    }) {
+        call.drain(session, peers);
+        for receiver in &call.audio_arrivals {
+            while let Some(frame) = session.try_audio_frame(*receiver).unwrap() {
+                frames.push(frame);
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "encoded audio did not arrive: {frames:?}"
+        );
+        thread::yield_now();
+    }
+    frames
+}
+
+#[test]
+fn replacing_one_opus_source_preserves_native_sender_and_unrelated_payloads() {
+    let decoder = AudioDecoderFactory::builtin_opus().unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .audio_decoder_factory(&decoder)
+        .build()
+        .unwrap();
+    let peers = [
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+    ];
+    let sources = [
+        session.create_opus_source(1).unwrap(),
+        session.create_opus_source(1).unwrap(),
+    ];
+    let transceivers = sources.map(|source| {
+        session
+            .publish_opus(
+                peers[0],
+                source,
+                &format!("opus-{}", source.get()),
+                RtpTransceiverDirection::SendOnly,
+            )
+            .unwrap()
+    });
+    let senders = transceivers.map(|transceiver| session.sender(transceiver).unwrap());
+    let old = vec![0xf8, 0x11, 0x01];
+    let independent = vec![0xf8, 0x22, 0x02];
+    let replacement = vec![0xf8, 0x33, 0x03];
+    let (session, mut call, first, ssrcs, independent) = thread::spawn(move || {
+        let mut session = session;
+        let mut call = Call::default();
+        call.negotiate(&mut session, peers);
+        assert_eq!(call.audio_arrivals.len(), 2);
+        for receiver in &call.audio_arrivals {
+            session.attach_encoded_audio(*receiver).unwrap();
+        }
+        let ssrcs = senders.map(|sender| session.sender_ssrc(sender).unwrap());
+        assert_ne!(ssrcs[0], ssrcs[1]);
+        for ((source, data), level) in sources
+            .into_iter()
+            .zip([old.clone(), independent.clone()])
+            .zip([
+                OpusAudioLevel::new(17, true).unwrap(),
+                OpusAudioLevel::new(83, false).unwrap(),
+            ])
+        {
+            session
+                .push_opus_with_audio_level(
+                    source,
+                    &OpusInputFrame {
+                        data,
+                        rtp_timestamp: 0,
+                        samples_per_channel: 960,
+                    },
+                    level,
+                )
+                .unwrap();
+        }
+        let frames = receive_encoded_audio(&mut session, &mut call, peers, &[&old, &independent]);
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data == old && frame.ssrc == ssrcs[0])
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data == independent && frame.ssrc == ssrcs[1])
+        );
+        let previous = frames.iter().find(|frame| frame.data == old).unwrap();
+        assert_eq!(
+            (previous.audio_level_dbov, previous.voice_activity),
+            (Some(17), Some(true))
+        );
+        let unrelated = frames
+            .iter()
+            .find(|frame| frame.data == independent)
+            .unwrap();
+        assert_eq!(
+            (unrelated.audio_level_dbov, unrelated.voice_activity),
+            (Some(83), Some(false))
+        );
+        (session, call, frames, ssrcs, independent)
+    })
+    .join()
+    .unwrap();
+    let (session, second) = thread::spawn(move || {
+        let mut session = session;
+        // Leave old input queued at the same native sender while replacing its
+        // producer. Already accepted output may retain the old payload.
+        session
+            .push_opus(
+                sources[0],
+                &OpusInputFrame {
+                    data: vec![0xf8, 0x11, 0x01],
+                    rtp_timestamp: 960,
+                    samples_per_channel: 960,
+                },
+            )
+            .unwrap();
+        let new_source = session.create_opus_source(1).unwrap();
+        session
+            .replace_audio_source(senders[0], Some(new_source), "new-opus")
+            .unwrap();
+        session.close_source(sources[0]).unwrap();
+        assert!(
+            session
+                .push_opus(
+                    sources[0],
+                    &OpusInputFrame {
+                        data: replacement.clone(),
+                        rtp_timestamp: 1920,
+                        samples_per_channel: 960
+                    }
+                )
+                .is_err()
+        );
+        session
+            .push_opus_with_audio_level(
+                new_source,
+                &OpusInputFrame {
+                    data: replacement.clone(),
+                    rtp_timestamp: 1920,
+                    samples_per_channel: 960,
+                },
+                OpusAudioLevel::new(0, false).unwrap(),
+            )
+            .unwrap();
+        session
+            .push_opus_with_audio_level(
+                sources[1],
+                &OpusInputFrame {
+                    data: independent.clone(),
+                    rtp_timestamp: 960,
+                    samples_per_channel: 960,
+                },
+                OpusAudioLevel::new(83, false).unwrap(),
+            )
+            .unwrap();
+        let frames = receive_encoded_audio(
+            &mut session,
+            &mut call,
+            peers,
+            &[&replacement, &independent],
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data == replacement && frame.ssrc == ssrcs[0])
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data == independent && frame.ssrc == ssrcs[1])
+        );
+        let current = frames
+            .iter()
+            .find(|frame| frame.data == replacement)
+            .unwrap();
+        assert_eq!(
+            (current.audio_level_dbov, current.voice_activity),
+            (Some(0), Some(false))
+        );
+        let unrelated = frames
+            .iter()
+            .find(|frame| frame.data == independent)
+            .unwrap();
+        assert_eq!(
+            (unrelated.audio_level_dbov, unrelated.voice_activity),
+            (Some(83), Some(false))
+        );
+        assert_eq!(
+            senders.map(|sender| session.sender_ssrc(sender).unwrap()),
+            ssrcs
+        );
+        session
+            .replace_audio_source(senders[0], None, "unused")
+            .unwrap();
+        session
+            .replace_audio_source(senders[0], Some(new_source), "reattached-opus")
+            .unwrap();
+        session
+            .push_opus(
+                new_source,
+                &OpusInputFrame {
+                    data: replacement,
+                    rtp_timestamp: 2880,
+                    samples_per_channel: 960,
+                },
+            )
+            .unwrap();
+        (session, frames)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        session.shutdown().unwrap();
+        drop(session);
+        assert!(first.iter().any(|frame| frame.data == [0xf8, 0x11, 0x01]));
+        assert!(second.iter().any(|frame| frame.data == [0xf8, 0x33, 0x03]));
+    })
+    .join()
+    .unwrap();
+    assert_eq!(decoder.decoder_statistics().unwrap().input_packets, 0);
+}
+
 fn video(luma: u8, timestamp_us: i64) -> VideoFrame {
     let mut pixels = vec![128; 64 * 48 * 3 / 2];
     pixels[..64 * 48].fill(luma);
@@ -140,9 +380,10 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
     ];
     let pcm = session.create_pcm_source().unwrap();
     let raw = session.create_raw_video_source().unwrap();
-    session
+    let audio_transceiver = session
         .publish_pcm(peers[0], pcm, "pcm", RtpTransceiverDirection::SendOnly)
         .unwrap();
+    let audio_sender = session.sender(audio_transceiver).unwrap();
     let transceiver = session
         .publish_video(peers[0], raw, "raw", RtpTransceiverDirection::SendOnly, &[])
         .unwrap();
@@ -183,7 +424,8 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         while audio.is_none() || image.is_none() {
             let elapsed = start.elapsed();
             if elapsed >= next_audio {
-                session.push_pcm(pcm, &pcm_frame).unwrap();
+                let capture_time = session.pcm_capture_time_now(pcm).unwrap();
+                session.push_pcm_at(pcm, &pcm_frame, capture_time).unwrap();
                 next_audio = elapsed + Duration::from_millis(10);
             }
             if elapsed >= next_video {
@@ -228,6 +470,23 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session
             .replace_video_source(sender, Some(replacement), "replacement")
             .unwrap();
+        let replacement_pcm = session.create_pcm_source().unwrap();
+        session
+            .replace_audio_source(audio_sender, Some(replacement_pcm), "replacement-pcm")
+            .unwrap();
+        let replacement_samples = (0..441)
+            .map(|index| {
+                if index * 3000 / 44100 % 2 == 0 {
+                    12000
+                } else {
+                    -12000
+                }
+            })
+            .collect();
+        let replacement_frame =
+            AudioPcmFrame::i16_interleaved(44100, 1, 0, replacement_samples).unwrap();
+        session.close_source(pcm).unwrap();
+        assert!(session.push_pcm(pcm, &pcm_frame).is_err());
         session.close_source(raw).unwrap();
         assert!(session.push_raw_video(raw, &video(40, 0)).is_err());
         // Closing and replacing sinks must release their native reservation.
@@ -238,8 +497,18 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         let deadline = Instant::now() + Duration::from_secs(15);
         let start = Instant::now();
         let mut next_video = Duration::ZERO;
-        loop {
+        let mut next_audio = Duration::ZERO;
+        let mut saw_video = false;
+        let mut saw_audio = false;
+        while !saw_video || !saw_audio {
             let elapsed = start.elapsed();
+            if elapsed >= next_audio {
+                let capture_time = session.pcm_capture_time_now(replacement_pcm).unwrap();
+                session
+                    .push_pcm_at(replacement_pcm, &replacement_frame, capture_time)
+                    .unwrap();
+                next_audio = elapsed + Duration::from_millis(10);
+            }
             if elapsed >= next_video {
                 let capture_us = session.clock_timestamp().unwrap().microseconds().unwrap();
                 session
@@ -254,13 +523,32 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
                     .map(|&v| u64::from(v))
                     .sum::<u64>()
                     / (64 * 48);
-                if (195..=205).contains(&average) {
-                    break;
-                }
+                saw_video |= (195..=205).contains(&average);
+            }
+            if let Some(frame) = session.try_pcm_frame(call.audio.unwrap()).unwrap() {
+                // The 44.1 kHz replacement carries 1500 Hz, unlike the retired
+                // 1000 Hz input. Observe native resampling and actual new media,
+                // not silence or PLC decay after detaching the old producer.
+                let correlation = |lag: usize| {
+                    frame
+                        .samples
+                        .iter()
+                        .zip(frame.samples.iter().skip(lag))
+                        .fold((0i64, 0i64), |(dot, energy), (&a, &b)| {
+                            (
+                                dot + i64::from(a) * i64::from(b),
+                                energy + i64::from(a) * i64::from(a),
+                            )
+                        })
+                };
+                let (period, energy) = correlation(32);
+                let (opposite, opposite_energy) = correlation(48);
+                saw_audio |=
+                    energy > 1_000_000 && period > energy / 2 && opposite < -opposite_energy / 2;
             }
             assert!(
                 Instant::now() < deadline,
-                "replacement source was not decoded"
+                "replacement media missing: video={saw_video}, audio={saw_audio}"
             );
             thread::yield_now();
         }
