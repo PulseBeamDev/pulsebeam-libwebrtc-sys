@@ -1079,7 +1079,7 @@ mod tests {
             .task_queue_factory(&queues)
             .build()
             .unwrap();
-        let other = Environment::builder().build().unwrap();
+        let other = Environment::builder().clock(&clock).build().unwrap();
         let native_copy = ffi::clone_environment(selected.native());
         let actual = native_copy.as_ref().unwrap();
         assert!(
@@ -1100,6 +1100,8 @@ mod tests {
         );
         let copied = Environment::from_sdk(native_copy, Some(&selected));
         assert!(copied.uses_controlled_clock(&clock));
+        // Matching clock identity alone cannot grant cooperative scheduling.
+        assert!(!other.uses_controlled_clock(&clock));
         let mismatched =
             Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));
         assert!(!mismatched.uses_controlled_clock(&clock));
