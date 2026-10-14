@@ -5930,6 +5930,7 @@ mod ffi {
             video_encoder: *const NativeVideoEncoderFactory,
             video_decoder: *const NativeVideoDecoderFactory,
             video_creation_environment: Box<RustVideoFactoryEnvironment>,
+            production_system_clock: bool,
             native_audio: bool,
             event_logging: bool,
             event_log_factory: *const NativeRtcEventLogFactory,
@@ -5971,6 +5972,7 @@ mod ffi {
             disabled: &[u16],
         ) -> FfiCryptoOptions;
         fn factory_set_options(factory: &NativePeerConnectionFactory, options: &FfiFactoryOptions);
+        fn factory_audio_encoder_failure_observer(factory: &NativePeerConnectionFactory) -> UniquePtr<NativeAudioEncoderFailureObserver>;
         fn factory_audio_processing_state(
             factory: &NativePeerConnectionFactory,
         ) -> FfiAudioProcessingState;
@@ -6203,6 +6205,7 @@ mod ffi {
         ) -> bool;
         fn create_audio_source(
             factory: &NativePeerConnectionFactory,
+            failure: &mut u8,
         ) -> UniquePtr<NativeAudioSource>;
         fn create_encoded_audio_source(
             factory: &NativePeerConnectionFactory,
@@ -6226,6 +6229,8 @@ mod ffi {
             sample_rate_hz: u32,
             channels: u8,
             timestamp_us: i64,
+            failure: &mut u8,
+            processing_error: &mut i32,
         ) -> bool;
         fn create_microphone_track(
             factory: &NativePeerConnectionFactory,

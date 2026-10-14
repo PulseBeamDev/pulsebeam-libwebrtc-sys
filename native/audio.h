@@ -64,7 +64,7 @@ class NativeAudioTrack final {
 };
 
 std::unique_ptr<NativeAudioSource> create_audio_source(
-    const NativePeerConnectionFactory& factory) noexcept;
+    const NativePeerConnectionFactory& factory, std::uint8_t& failure) noexcept;
 std::unique_ptr<NativeAudioSource> create_encoded_audio_source(
     const NativePeerConnectionFactory& factory, std::uint8_t channels) noexcept;
 rust::Vec<FfiAudioCodecCapability> peer_audio_codec_capabilities(
@@ -79,7 +79,9 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            rust::Slice<const std::int16_t> samples,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
-                           std::int64_t timestamp_us) noexcept;
+                           std::int64_t timestamp_us,
+                           std::uint8_t& failure,
+                           std::int32_t& processing_error) noexcept;
 bool audio_source_push_opus(const NativeAudioSource& source,
                             rust::Slice<const std::uint8_t> payload,
                             std::uint32_t rtp_timestamp,

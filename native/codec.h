@@ -260,6 +260,22 @@ private:
 std::unique_ptr<NativeAudioEncoderFailureObserver> audio_encoder_sdk_failure_observer(const NativeAudioEncoder &) noexcept;
 std::uint32_t audio_encoder_sdk_failure(const NativeAudioEncoderFailureObserver &) noexcept;
 std::unique_ptr<NativeAudioEncoderFailureObserver> audio_encoder_sdk_failure_clone(const NativeAudioEncoderFailureObserver &) noexcept;
+class NativeInstalledAudioEncoderFactory final {
+public:
+  struct State;
+  explicit NativeInstalledAudioEncoderFactory(std::unique_ptr<State> state) noexcept;
+  ~NativeInstalledAudioEncoderFactory();
+  webrtc::scoped_refptr<webrtc::AudioEncoderFactory> factory() const noexcept;
+  const std::unique_ptr<State>& state() const noexcept { return state_; }
+private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeInstalledAudioEncoderFactory> audio_installed_encoder_factory(
+    const NativeAudioEncoderFactory*, const NativeEnvironment&,
+    std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>, bool production_system_clock) noexcept;
+std::unique_ptr<NativeAudioEncoderFailureObserver> audio_installed_encoder_failure_observer(
+    const NativeInstalledAudioEncoderFactory&) noexcept;
+
 struct AudioEncoderTransfer;
 std::unique_ptr<webrtc::AudioEncoder> audio_encoder_forward_to_sdk(rust::Box<AudioEncoderTransfer>) noexcept;
 std::unique_ptr<NativeAudioEncoder> audio_encoder_forward_product(rust::Box<AudioEncoderTransfer>) noexcept;

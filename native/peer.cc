@@ -105,6 +105,27 @@ enum EventKind : std::uint8_t {
 
 constexpr std::uint8_t kClosedError = 255;
 
+struct AudioProcessingSelection {
+  webrtc::scoped_refptr<webrtc::AudioProcessing> module;
+};
+
+// Retain the exact product built with the SDK-supplied environment. The shared
+// reference is published only after synchronous media-engine construction.
+class RetainedAudioProcessingBuilder final : public webrtc::AudioProcessingBuilderInterface {
+ public:
+  RetainedAudioProcessingBuilder(const webrtc::AudioProcessing::Config& config,
+      std::shared_ptr<AudioProcessingSelection> selection)
+      : builtin_(config), selection_(std::move(selection)) {}
+  webrtc::scoped_refptr<webrtc::AudioProcessing> Build(const webrtc::Environment& env) override {
+    auto module = builtin_.Build(env);
+    selection_->module = module;
+    return module;
+  }
+ private:
+  webrtc::BuiltinAudioProcessingBuilder builtin_;
+  const std::shared_ptr<AudioProcessingSelection> selection_;
+};
+
 class HeadlessAudioDevice
     : public webrtc::webrtc_impl::AudioDeviceModuleDefault<
           webrtc::AudioDeviceModule> {
@@ -1172,6 +1193,9 @@ struct NativePeerConnectionFactory::State {
   std::shared_ptr<ReadinessSignal> readiness;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
+  webrtc::scoped_refptr<webrtc::AudioProcessing> audio_processing;
+  FfiAudioProcessingConfig processing_config{};
+  std::unique_ptr<NativeInstalledAudioEncoderFactory> audio_encoder;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   std::unique_ptr<CertificateGeneratorScope> certificate_generator_scope;
   std::shared_ptr<PeerCallCreationContext> call_creation;
@@ -1237,6 +1261,16 @@ bool factory_requires_deferred_teardown(const NativePeerConnectionFactory& facto
 
 webrtc::Thread* NativePeerConnectionFactory::signaling_thread() const noexcept {
   return state_->signaling_thread;
+}
+webrtc::Thread* NativePeerConnectionFactory::worker_thread() const noexcept {
+  return state_->worker_thread;
+}
+webrtc::scoped_refptr<webrtc::AudioProcessing>
+NativePeerConnectionFactory::audio_processing() const noexcept {
+  return state_->audio_processing;
+}
+FfiAudioProcessingConfig NativePeerConnectionFactory::audio_processing_config() const noexcept {
+  return state_->processing_config;
 }
 webrtc::scoped_refptr<webrtc::AudioDeviceModule>
 NativePeerConnectionFactory::audio_device() const noexcept {
@@ -1316,6 +1350,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
     rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
+    bool production_system_clock,
     bool native_audio,
     bool event_logging,
     const NativeRtcEventLogFactory* event_log_factory,
@@ -1405,14 +1440,15 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     headless_audio_device = webrtc::make_ref_counted<HeadlessAudioDevice>();
     dependencies.adm = headless_audio_device;
   }
-  dependencies.audio_encoder_factory =
-      audio_encoder ? audio_encoder->factory()
-                    : webrtc::CreateBuiltinAudioEncoderFactory();
+  auto video_retention = std::make_shared<rust::Box<RustVideoFactoryEnvironment>>(
+      std::move(video_creation_environment));
+  auto installed_audio_encoder = audio_installed_encoder_factory(
+      audio_encoder, environment, video_retention, production_system_clock);
+  if (!installed_audio_encoder) { error = "audio encoder clock retention failed"; return nullptr; }
+  dependencies.audio_encoder_factory = installed_audio_encoder->factory();
   dependencies.audio_decoder_factory =
       audio_decoder ? audio_decoder->factory()
                     : webrtc::CreateBuiltinAudioDecoderFactory();
-  auto video_retention = std::make_shared<rust::Box<RustVideoFactoryEnvironment>>(
-      std::move(video_creation_environment));
   if (video_encoder) {
     dependencies.video_encoder_factory = video_encoder->rust_factory()
         ? video_encoder->CreateAdapter(video_retention)
@@ -1423,6 +1459,8 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
         ? video_decoder->CreateAdapter(video_retention)
         : std::make_unique<BorrowedVideoDecoderFactory>(*video_decoder);
   }
+  auto processing_selection = std::make_shared<AudioProcessingSelection>();
+  std::optional<webrtc::AudioProcessing::Config> requested_processing;
   if (processing.enabled) {
     if (processing.noise_suppression > 4 || processing.gain_control > 4) {
       error = "invalid audio processing configuration";
@@ -1447,8 +1485,9 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     if (config.gain_controller2.enabled) {
       config.gain_controller2.adaptive_digital.enabled = true;
     }
+    requested_processing = config;
     dependencies.audio_processing_builder =
-        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>(config);
+        std::make_unique<RetainedAudioProcessingBuilder>(config, processing_selection);
   }
   webrtc::EnableMedia(dependencies);
   auto call_creation = std::make_shared<PeerCallCreationContext>();
@@ -1465,10 +1504,18 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     error = "CreateModularPeerConnectionFactory failed";
     return nullptr;
   }
+  if (requested_processing && processing_selection->module) {
+    worker_thread.thread()->BlockingCall([&] {
+      processing_selection->module->ApplyConfig(*requested_processing);
+    });
+  }
   auto state = std::make_unique<NativePeerConnectionFactory::State>();
   state->readiness = readiness ? readiness->signal() : nullptr;
   state->headless_audio_device = std::move(headless_audio_device);
   state->audio_device = std::move(platform_audio_device);
+  state->audio_processing = std::move(processing_selection->module);
+  state->processing_config = processing;
+  state->audio_encoder = std::move(installed_audio_encoder);
   state->opus_transformer = audio_encoder ? audio_encoder->opus_transformer() : nullptr;
   state->factory = std::move(factory);
   state->call_creation = std::move(call_creation);
@@ -1726,6 +1773,11 @@ void factory_set_options(const NativePeerConnectionFactory& factory,
   factory.signaling_thread()->BlockingCall([&] {
     factory.factory()->SetOptions(native);
   });
+}
+
+std::unique_ptr<NativeAudioEncoderFailureObserver> factory_audio_encoder_failure_observer(
+    const NativePeerConnectionFactory& factory) noexcept {
+  return audio_installed_encoder_failure_observer(*factory.state()->audio_encoder);
 }
 
 FfiAudioProcessingState factory_audio_processing_state(

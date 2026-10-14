@@ -1012,6 +1012,7 @@ impl PeerConnectionFactoryBuilder {
                 optional_ptr(self.video_encoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_decoder.as_ref().map(|value| value.native())),
                 Box::new(crate::RustVideoFactoryEnvironment(environment.clone())),
+                environment.uses_system_clock() && production_lease.is_some(),
                 self.native_audio,
                 self.event_logging,
                 optional_ptr(
@@ -1193,6 +1194,13 @@ impl PeerConnectionFactory {
             kind.to_native(),
             false,
         ))
+    }
+
+    /// First rejected installed encoder control or unsafe factory operation.
+    /// The observer retains only the shared failure record and survives retirement.
+    pub fn audio_encoder_failure_observer(&self) -> crate::AudioEncoderSdkFailureObserver {
+        crate::AudioEncoderSdkFailureObserver::from_native(
+            ffi::factory_audio_encoder_failure_observer(self.native()))
     }
 
     /// Read WebRTC's factory-wide audio processing state. Unknown status and
@@ -1397,9 +1405,15 @@ impl PeerConnectionFactory {
     }
 
     fn create_audio_source_inner(&self) -> Result<AudioSource, PeerError> {
-        let native =
-            ffi::create_audio_source(self.0.native.as_ref().expect("validated peer factory"));
-        if native.is_null() {
+        let mut failure = 0;
+        let native = ffi::create_audio_source(
+            self.0.native.as_ref().expect("validated peer factory"), &mut failure);
+        if failure == 1 {
+            Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "custom PCM cannot share a processing capture thread with native devices; use a microphone track or a separate headless factory".into(),
+            })
+        } else if native.is_null() {
             Err(native_build_error("failed to create audio source"))
         } else {
             Ok(AudioSource::from_native(native, self.0.clone()))

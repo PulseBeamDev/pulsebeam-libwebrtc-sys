@@ -45,3 +45,70 @@ callback panic does. Product callback reentry latches an observable failure and
 fails closed without inventing initialized audio or output-slot writes. Different
 registrations remain independently callable, and concurrent factory callbacks
 are serialized.
+
+## Actor-owned PCM and processing
+
+The production actor's absent encoder choice remains the encoded Opus carrier.
+Select `ProductionSession::builder(config).pcm_audio()` to use builtin PCM
+encoding and decoding instead. Explicit codec selections are preserved, including native
+rejection when the selected encoder does not support the requested source type.
+Software processing is separately selected with `audio_processing(config)`;
+it does not process already encoded Opus packets or activate a physical device.
+Headless custom PCM passes through the exact selected native module on the
+factory worker before delivery to its own source sinks. It does not enter the
+microphone transport's broadcast-to-all-senders path. A native processing error
+refuses delivery and retains its error code; callback reentry is refused before
+source locks. Echo cancellation and adaptive analog gain require render/delay
+or microphone gain feedback that the custom PCM interface does not supply;
+such capture requests return `UnsupportedProcessing`, not unchanged successful
+processed audio. Custom PCM cannot share this processing capture thread with a
+native device module. Use a microphone track or a separate headless factory.
+
+Create an actor-owned source with `create_pcm_source`, publish it with
+`publish_pcm`, and submit validated 10-ms `AudioPcmFrame` blocks using `push_pcm`.
+Publication accepts optional track-level processing choices; subsequent
+`set_audio_processing_options` calls target the retained sender track. The
+voice engine shares processing across tracks, so those choices are not per-track
+DSP isolation. At the custom capture boundary the selected noise/gain algorithms
+and source enable/disable choices are applied through native `ApplyConfig` when
+they change. This prevents Linux voice-engine defaults from silently replacing
+the selected digital algorithm. Other native stream options can still change
+the shared module's settings; `audio_processing_state` reports its current state,
+including unknowns.
+The raw source's input timestamp is not forwarded as an absolute capture clock
+or RTP timestamp.
+
+`attach_pcm_audio` selects decoded reception and `try_pcm_audio_frame` returns
+owned initialized PCM. Headless polling pulls one native playout block when the
+queue is empty; readiness notifications are not an audio playout timer. Encoded
+and decoded receive modes are mutually exclusive. Use `detach_audio` before
+selecting another mode. Stop reception before detaching an encoded sink when
+opaque packets must never reach a native decoder. Source close, peer close and
+shutdown retire the captive graph without invalidating already returned frames.
+
+With a native artifact and the `native` Cargo feature, `native_audio(true)`
+explicitly selects the platform device module. Device enumeration and index
+selection are actor operations; re-enumerate before selecting a current index.
+`publish_microphone` separately requests a microphone track, requiring a
+PCM-capable encoder. `set_native_audio_enabled` forwards the peer's native
+recording/playout request. Empty discovery, unavailable initialization and
+failed selection remain native outcomes, not proof of physical capture or
+playout. These operations are not exposed by the headless core feature set.
+
+## Installed stock encoder controls
+
+Peer factories retain the selected stock encoder factory and wrap its actual
+products with the owning encoder control guards. No codec, payload or metadata
+is substituted. `audio_encoder_failure_observer` observes the first rejected
+installed control or unsafe Query/Create input independently of factory and
+product retirement. An unsupported/null native disposition is not a failure.
+
+Installed Opus packet-loss smoothing requires retained nondecreasing clock
+bounds whose microsecond width fits `INT64_MAX`. An enforced singleton range
+also proves frozen time without an additional monotonic flag. Production default clocks gain
+this evidence through an identity-checked retaining production lease; caller
+clocks retain only their own enforced evidence. Neither clock identity nor
+current values are rewritten, and admission does not sample the clock again.
+Unsafe callbacks are refused before native smoothing and report `UnsafeClock`.
+The existing ANA enablement limitation remains distinct from packet-loss clock
+admission.

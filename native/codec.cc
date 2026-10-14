@@ -27,6 +27,7 @@
 #include "api/audio/audio_frame.h"
 #include "api/audio_codecs/audio_decoder.h"
 #include "api/audio_codecs/audio_decoder_factory.h"
+#include "system_wrappers/include/clock.h"
 #include "api/audio_codecs/audio_encoder_factory.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
@@ -2075,7 +2076,8 @@ struct AnaClockEvidence {
 };
 
 std::optional<AnaClockEvidence> RetainedAnaClockEvidence(const FfiClockTimeBounds& bounds) {
-  if (!bounds.known || !bounds.monotonic || bounds.minimum_us > bounds.maximum_us ||
+  if (!bounds.known || (!bounds.monotonic && bounds.minimum_us != bounds.maximum_us) ||
+      bounds.minimum_us > bounds.maximum_us ||
       bounds.minimum_us == INT64_MIN || bounds.maximum_us == INT64_MAX) return std::nullopt;
   const auto minimum = webrtc::Timestamp::Micros(bounds.minimum_us).ms();
   const auto maximum = webrtc::Timestamp::Micros(bounds.maximum_us).ms();
@@ -2671,7 +2673,8 @@ std::unique_ptr<NativeAudioEncoderFailureObserver> audio_encoder_sdk_failure_clo
 
 static FfiAudioEncoderCreation CreateAudioEncoderWithOptions(const NativeAudioEncoderFactory& factory,
     const NativeEnvironment& environment, const FfiSdpAudioFormat& format,
-    const webrtc::AudioEncoderFactory::Options& options) noexcept {
+    const webrtc::AudioEncoderFactory::Options& options,
+    std::optional<FfiClockTimeBounds> clock_bounds = std::nullopt) noexcept {
   FfiAudioEncoderCreation result{};
   const auto query = audio_encoder_query(factory, format);
   result.valid = query.valid;
@@ -2696,7 +2699,7 @@ static FfiAudioEncoderCreation CreateAudioEncoderWithOptions(const NativeAudioEn
   auto multipliers = opus ? SelectedOpusBitrateMultipliers(env.field_trials()) : std::vector<float>();
   auto encoder = factory.factory()->Create(env, native, options);
   if (encoder) result.encoder = std::make_unique<NativeAudioEncoder>(
-      std::make_unique<NativeAudioEncoder::State>(std::move(env), std::move(encoder), opus, std::move(multipliers), environment_clock_time_bounds(environment)));
+      std::make_unique<NativeAudioEncoder::State>(std::move(env), std::move(encoder), opus, std::move(multipliers), clock_bounds.value_or(environment_clock_time_bounds(environment))));
   return result;
 }
 FfiAudioEncoderCreation audio_encoder_create(const NativeAudioEncoderFactory& factory,
@@ -3087,10 +3090,23 @@ void audio_encoder_set_receiver_frame_length_range(const NativeAudioEncoder& enc
 
 namespace {
 using AudioEncoderRetention = std::shared_ptr<rust::Box<AudioEncoderTransfer>>;
+struct InstalledAudioEncoderContext {
+  std::shared_ptr<NativeProductionLease> production_clock_lease;
+  std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>> rust_dependencies;
+  std::unique_ptr<NativeEnvironment> environment;
+  std::unique_ptr<NativeAudioEncoderFactory> selected;
+  std::shared_ptr<NativeAudioEncoderFailureObserver::State> failure =
+      std::make_shared<NativeAudioEncoderFailureObserver::State>();
+};
 class RetainedAudioEncoder final : public webrtc::AudioEncoder {
  public:
   explicit RetainedAudioEncoder(AudioEncoderRetention owner) : owner_(std::move(owner)) {}
-  const NativeAudioEncoder& original() const { return audio_encoder_transfer_native(**owner_); }
+  RetainedAudioEncoder(std::unique_ptr<NativeAudioEncoder> owner,
+      std::shared_ptr<InstalledAudioEncoderContext> context)
+      : installed_context_(std::move(context)), installed_owner_(std::move(owner)) {}
+  const NativeAudioEncoder& original() const {
+    return installed_owner_ ? *installed_owner_ : audio_encoder_transfer_native(**owner_);
+  }
   int SampleRateHz() const override { auto& s = original().state(); std::lock_guard lock(s.mutex); return s.encoder->SampleRateHz(); }
   std::size_t NumChannels() const override { auto& s = original().state(); std::lock_guard lock(s.mutex); return s.encoder->NumChannels(); }
   int RtpTimestampRateHz() const override { auto& s = original().state(); std::lock_guard lock(s.mutex); return s.encoder->RtpTimestampRateHz(); }
@@ -3175,6 +3191,9 @@ class RetainedAudioEncoder final : public webrtc::AudioEncoder {
     original().state().sdk_failure->first.compare_exchange_strong(empty,
         (std::uint32_t{operation} << 8) | error, std::memory_order_acq_rel);
   }
+  // Destroy the exact mutable product before its native/Rust dependency leases.
+  const std::shared_ptr<InstalledAudioEncoderContext> installed_context_;
+  const std::unique_ptr<NativeAudioEncoder> installed_owner_;
   AudioEncoderRetention owner_;
 };
 } // namespace
@@ -3192,6 +3211,81 @@ std::unique_ptr<NativeAudioEncoder> audio_encoder_forward_product(
       false, std::vector<float>{}, FfiClockTimeBounds{});
   state->forwarded_origin = &original; // Retained by the SDK envelope, not a registry.
   return std::make_unique<NativeAudioEncoder>(std::move(state));
+}
+
+namespace {
+class InstalledAudioEncoderFactory : public webrtc::AudioEncoderFactory {
+ public:
+  explicit InstalledAudioEncoderFactory(std::shared_ptr<InstalledAudioEncoderContext> context)
+      : context_(std::move(context)) {}
+  std::vector<webrtc::AudioCodecSpec> GetSupportedEncoders() override {
+    return context_->selected->factory()->GetSupportedEncoders();
+  }
+  std::optional<webrtc::AudioCodecInfo> QueryAudioEncoder(const webrtc::SdpAudioFormat& format) override {
+    const auto query = audio_encoder_query(*context_->selected, FromNative(format));
+    if (!query.valid) Observe(8, 1);
+    return query.present ? std::optional(AudioInfo(query.info)) : std::nullopt;
+  }
+  std::unique_ptr<webrtc::AudioEncoder> Create(const webrtc::Environment& env,
+      const webrtc::SdpAudioFormat& format, Options options) override {
+    auto environment = retain_environment_from_sdk(env, context_->environment.get());
+    auto bounds = environment_clock_time_bounds(*environment);
+    // A separate retaining production lease proves the actual SDK singleton's
+    // monotonic domain through final product/dependency destruction. Caller
+    // clocks retain their own identity-checked evidence without another read.
+    if (context_->production_clock_lease && bounds.known &&
+        &env.clock() == &context_->environment->environment().clock() &&
+        &env.clock() == webrtc::Clock::GetRealTimeClock())
+      bounds.monotonic = true;
+    auto created = CreateAudioEncoderWithOptions(*context_->selected, *environment,
+        FromNative(format), options, bounds);
+    if (!created.valid) { Observe(9, 1); return nullptr; }
+    if (!created.encoder) return nullptr;
+    created.encoder->state().sdk_failure = context_->failure;
+    return std::make_unique<RetainedAudioEncoder>(std::move(created.encoder), context_);
+  }
+ private:
+  void Observe(std::uint32_t operation, std::uint32_t error) {
+    std::uint32_t empty = 0;
+    context_->failure->first.compare_exchange_strong(empty, operation << 8 | error);
+  }
+  const std::shared_ptr<InstalledAudioEncoderContext> context_;
+};
+}  // namespace
+
+struct NativeInstalledAudioEncoderFactory::State {
+  std::shared_ptr<NativeAudioEncoderFailureObserver::State> failure;
+  webrtc::scoped_refptr<webrtc::AudioEncoderFactory> factory;
+};
+NativeInstalledAudioEncoderFactory::NativeInstalledAudioEncoderFactory(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeInstalledAudioEncoderFactory::~NativeInstalledAudioEncoderFactory() = default;
+webrtc::scoped_refptr<webrtc::AudioEncoderFactory>
+NativeInstalledAudioEncoderFactory::factory() const noexcept { return state_->factory; }
+
+std::unique_ptr<NativeInstalledAudioEncoderFactory> audio_installed_encoder_factory(
+    const NativeAudioEncoderFactory* selected, const NativeEnvironment& environment,
+    std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>> dependencies,
+    bool production_system_clock) noexcept {
+  auto context = std::make_shared<InstalledAudioEncoderContext>();
+  context->rust_dependencies = std::move(dependencies);
+  context->environment = clone_environment(environment);
+  context->selected = selected
+      ? std::make_unique<NativeAudioEncoderFactory>(
+            std::make_unique<NativeAudioEncoderFactory::State>(selected->state()))
+      : new_builtin_audio_encoder_factory();
+  if (production_system_clock) {
+    context->production_clock_lease = new_production_lease();
+    if (!context->production_clock_lease) return nullptr;
+  }
+  auto state = std::make_unique<NativeInstalledAudioEncoderFactory::State>();
+  state->failure = context->failure;
+  state->factory = webrtc::make_ref_counted<InstalledAudioEncoderFactory>(std::move(context));
+  return std::make_unique<NativeInstalledAudioEncoderFactory>(std::move(state));
+}
+std::unique_ptr<NativeAudioEncoderFailureObserver> audio_installed_encoder_failure_observer(
+    const NativeInstalledAudioEncoderFactory& factory) noexcept {
+  return std::make_unique<NativeAudioEncoderFailureObserver>(factory.state()->failure);
 }
 
 namespace {

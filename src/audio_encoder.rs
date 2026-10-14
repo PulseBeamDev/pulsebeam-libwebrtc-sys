@@ -575,6 +575,25 @@ mod adaptor_admission_tests {
     }
 
     #[test]
+    fn singleton_bounds_prove_frozen_packet_loss_time_without_a_monotonic_flag() {
+        use crate::{Clock, ClockProvider, ClockTimeBounds, FiniteTimestamp, NtpTime, Timestamp};
+        struct Frozen(FiniteTimestamp);
+        impl ClockProvider for Frozen {
+            fn current_time(&self) -> FiniteTimestamp { self.0 }
+            fn convert_timestamp_to_ntp_time(&self, _: Timestamp) -> NtpTime { NtpTime::from_raw(0) }
+        }
+        let epoch = FiniteTimestamp::from_microseconds(-1_230_000).unwrap();
+        let bounds = ClockTimeBounds::new(epoch, epoch).unwrap();
+        let clock = Clock::from_bounded_provider(Frozen(epoch), bounds);
+        let environment = Environment::builder().clock_handle(&clock).build().unwrap();
+        assert!(!environment.clock_is_monotonic());
+        let encoder = encoder_in(&environment, "opus", 48000, 2);
+        encoder.on_received_uplink_packet_loss_fraction(0.25).unwrap();
+        encoder.on_received_uplink_packet_loss_fraction(0.5).unwrap();
+        assert_eq!(clock.current_time().microseconds().unwrap(), epoch.microseconds());
+    }
+
+    #[test]
     fn bounded_native_smoother_guards_actual_averages_and_ignored_periods() {
         use crate::{Clock, ClockProvider, ClockTimeBounds, FiniteTimestamp, NtpTime, Timestamp};
         struct FixedTime;

@@ -91,6 +91,12 @@ pub enum AudioFrameError {
     InvalidSampleCount,
     InvalidTimestamp,
     Released,
+    /// Actual native ProcessStream error. No frame is delivered on failure.
+    ProcessingFailed(i32),
+    /// The custom capture path lacks required echo or microphone feedback.
+    UnsupportedProcessing,
+    /// Same-source callback recursion was refused before acquiring source locks.
+    ReentrantCall,
 }
 
 impl fmt::Display for AudioFrameError {
@@ -374,15 +380,25 @@ impl AudioSource {
             frame.timestamp_us,
             frame.samples.len(),
         )?;
-        ffi::audio_source_push_pcm(
+        let (mut failure, mut processing_error) = (0, 0);
+        if ffi::audio_source_push_pcm(
             self.native(),
             &frame.samples,
             frame.sample_rate_hz,
             frame.channels,
             frame.timestamp_us,
-        )
-        .then_some(())
-        .ok_or(AudioFrameError::Released)
+            &mut failure,
+            &mut processing_error,
+        ) {
+            Ok(())
+        } else {
+            Err(match failure {
+                1 => AudioFrameError::ProcessingFailed(processing_error),
+                2 => AudioFrameError::UnsupportedProcessing,
+                3 => AudioFrameError::ReentrantCall,
+                _ => AudioFrameError::Released,
+            })
+        }
     }
 
     pub fn close(&mut self) -> Result<(), AudioFrameError> {

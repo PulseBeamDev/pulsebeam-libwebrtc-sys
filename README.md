@@ -173,7 +173,14 @@ That cleanup is asynchronous; ordinary caller-thread drop remains synchronous.
 The cleanup caller does not execute application operations or controlled work.
 
 Use `ProductionSession::new(ProductionSessionConfig::default())` for encoded
-Opus and data channels. An optional `video_format` selects direct encoded H.264
+Opus and data channels. For caller-fed PCM, select
+`ProductionSession::builder(config).pcm_audio()` and optionally
+`.audio_processing(settings)` before building. The actor owns PCM sources,
+sender-track processing choices and exclusive encoded/decoded receive sinks;
+headless PCM playout remains caller-paced. Platform devices additionally require
+the `native` feature and explicit `.native_audio(true)` selection. See
+[`docs/audio-runtime-contracts.md`](docs/audio-runtime-contracts.md) for receive
+mode, processing and device contracts. An optional `video_format` selects direct encoded H.264
 or VP8 input and encoded-only video reception, not a new H.264 decoder. Existing
 input limitations still apply: this API alone does not implement layered or
 opaque media. Low-level local handles and controlled execution remain non-Send

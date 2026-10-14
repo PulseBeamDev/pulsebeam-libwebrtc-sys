@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "api/frame_transformer_interface.h"
+#include "api/audio/audio_processing.h"
 #include "pulsebeam-webrtc-sys/native/frame_callback_slot.h"
 #include "pulsebeam-webrtc-sys/native/media_values.h"
 #include "api/make_ref_counted.h"
@@ -32,6 +33,22 @@
 
 namespace pulsebeam::webrtc_sys {
 namespace {
+
+// Both the caller and worker processing scope refuse callback recursion before
+// source locks. Scope identity is the stable owned State, never codec metadata.
+class PcmCaptureScope {
+ public:
+  explicit PcmCaptureScope(const void* source) {
+    admitted_ = std::find(active_.begin(), active_.end(), source) == active_.end();
+    if (admitted_) active_.push_back(source);
+  }
+  ~PcmCaptureScope() { if (admitted_) active_.pop_back(); }
+  bool admitted() const { return admitted_; }
+ private:
+  static thread_local std::vector<const void*> active_;
+  bool admitted_ = false;
+};
+thread_local std::vector<const void*> PcmCaptureScope::active_;
 
 // Keep the sink list synchronized with synchronous source delivery. RemoveSink
 // cannot return until any in-flight OnData has finished using that sink.
@@ -395,7 +412,10 @@ struct NativeAudioSink::State {
 
 struct NativeAudioSource::State {
   webrtc::scoped_refptr<PushAudioSource> source;
+  webrtc::scoped_refptr<webrtc::AudioProcessing> processing;
+  FfiAudioProcessingConfig processing_config{};
   webrtc::Thread* signaling_thread = nullptr;
+  webrtc::Thread* worker_thread = nullptr;
   std::mutex frame_mutex;
   std::shared_ptr<opus_carrier::Budget> budget;
   std::uint32_t budget_id = 0;
@@ -441,10 +461,17 @@ const std::unique_ptr<NativeAudioTrack::State>& NativeAudioTrack::state() const 
 }
 
 std::unique_ptr<NativeAudioSource> create_audio_source(
-    const NativePeerConnectionFactory& factory) noexcept {
+    const NativePeerConnectionFactory& factory, std::uint8_t& failure) noexcept {
+  failure = 0;
   auto state = std::make_unique<NativeAudioSource::State>();
   state->signaling_thread = factory.signaling_thread();
-  if (!state->signaling_thread) return nullptr;
+  state->worker_thread = factory.worker_thread();
+  state->processing = factory.audio_processing();
+  state->processing_config = factory.audio_processing_config();
+  // Native capture owns the shared APM's capture thread. Do not call that
+  // instance from a second custom capture path or manufacture another module.
+  if (state->processing && factory.audio_device()) { failure = 1; return nullptr; }
+  if (!state->signaling_thread || !state->worker_thread) return nullptr;
   state->signaling_thread->BlockingCall(
       [&] { state->source = webrtc::make_ref_counted<PushAudioSource>(); });
   return std::make_unique<NativeAudioSource>(std::move(state));
@@ -452,7 +479,8 @@ std::unique_ptr<NativeAudioSource> create_audio_source(
 std::unique_ptr<NativeAudioSource> create_encoded_audio_source(
     const NativePeerConnectionFactory& factory, std::uint8_t channels) noexcept {
   if (channels != 1 && channels != 2) return nullptr;
-  auto source = create_audio_source(factory);
+  std::uint8_t failure = 0;
+  auto source = create_audio_source(factory, failure);
   if (source) source->state()->encoded_channels = channels;
   return source;
 }
@@ -495,14 +523,73 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            rust::Slice<const std::int16_t> samples,
                            std::uint32_t sample_rate_hz,
                            std::uint8_t channels,
-                           std::int64_t timestamp_us) noexcept {
+                           std::int64_t timestamp_us,
+                           std::uint8_t& failure,
+                           std::int32_t& processing_error) noexcept {
+  failure = 0;
+  processing_error = 0;
+  auto& state = *source.state();
+  PcmCaptureScope caller_scope(&state);
+  if (!caller_scope.admitted()) { failure = 3; return false; }
   if (timestamp_us < 0 ||
       (sample_rate_hz != 8000 && sample_rate_hz != 16000 &&
        sample_rate_hz != 32000 && sample_rate_hz != 48000) ||
       (channels != 1 && channels != 2) ||
       samples.size() != (sample_rate_hz / 100) * channels) return false;
-  return source.state()->source->Push(samples.data(), static_cast<int>(sample_rate_hz),
-                                      channels, sample_rate_hz / 100);
+  if (!state.processing)
+    return state.source->Push(samples.data(), static_cast<int>(sample_rate_hz),
+                              channels, sample_rate_hz / 100);
+  std::lock_guard lock(state.frame_mutex);
+  // This is an owned input copy for in-place native processing, not initialized
+  // output used to disguise a failed or partial processing result.
+  std::vector<std::int16_t> processed(samples.begin(), samples.end());
+  state.worker_thread->BlockingCall([&] {
+    PcmCaptureScope worker_scope(&state);
+    // BlockingCall may run directly when the caller already owns this worker.
+    // Its caller scope already protects that case; a different worker needs its
+    // own scope before APM can call environment dependencies.
+    const auto current = state.processing->GetConfig();
+    auto config = current;
+    const auto options = state.source->options();
+    config.echo_canceller.enabled = options.echo_cancellation.value_or(state.processing_config.echo_cancellation);
+    config.noise_suppression.enabled = options.noise_suppression.value_or(state.processing_config.noise_suppression != 0);
+    if (state.processing_config.noise_suppression != 0)
+      config.noise_suppression.level = static_cast<webrtc::AudioProcessing::Config::NoiseSuppression::Level>(
+          state.processing_config.noise_suppression - 1);
+    const bool gain = options.auto_gain_control.value_or(state.processing_config.gain_control != 0);
+    config.gain_controller1.enabled = gain && state.processing_config.gain_control != 4;
+    config.gain_controller2.enabled = gain && state.processing_config.gain_control == 4;
+    if (state.processing_config.gain_control >= 1 && state.processing_config.gain_control <= 3)
+      config.gain_controller1.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::Mode>(
+          state.processing_config.gain_control - 1);
+    if (state.processing_config.gain_control == 4)
+      config.gain_controller2.adaptive_digital.enabled = true;
+    if (config.echo_canceller.enabled ||
+        (config.gain_controller1.enabled && config.gain_controller1.mode ==
+             webrtc::AudioProcessing::Config::GainController1::kAdaptiveAnalog)) {
+      // Custom PCM has no render/delay or microphone gain feedback contract.
+      // These features remain usable through the real native capture transport.
+      failure = 2;
+      return;
+    }
+    // The voice engine's generic Linux options force analog AGC and High NS.
+    // At this custom capture boundary preserve the actual selected algorithms,
+    // while applying the source's native enable/disable choices. Reconfigure
+    // only when those settings differ, retaining ordinary DSP history.
+    if (config.echo_canceller.enabled != current.echo_canceller.enabled ||
+        config.noise_suppression.enabled != current.noise_suppression.enabled ||
+        config.noise_suppression.level != current.noise_suppression.level ||
+        config.gain_controller1 != current.gain_controller1 ||
+        config.gain_controller2 != current.gain_controller2)
+      state.processing->ApplyConfig(config);
+    state.processing->set_output_will_be_muted(!state.source->HasSinks());
+    const webrtc::StreamConfig stream(static_cast<int>(sample_rate_hz), channels);
+    processing_error = state.processing->ProcessStream(processed.data(), stream, stream, processed.data());
+    if (processing_error != webrtc::AudioProcessing::kNoError) failure = 1;
+  });
+  if (failure) return false;
+  return state.source->Push(processed.data(), static_cast<int>(sample_rate_hz),
+                            channels, sample_rate_hz / 100);
 }
 bool audio_source_push_opus(const NativeAudioSource& source,
                             rust::Slice<const std::uint8_t> payload,

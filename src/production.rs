@@ -119,6 +119,7 @@ struct Transceiver {
     receiver: SessionReceiverId,
 }
 enum Source {
+    Pcm(crate::AudioSource),
     Opus(EncodedAudioSource),
     Video(EncodedVideoSource),
 }
@@ -229,6 +230,7 @@ pub struct ProductionSession {
     track_sources: HashMap<SessionTrackSourceId, Resource<crate::MediaTrackSource>>,
     audio_processors: HashMap<SessionAudioProcessorId, Resource<crate::AudioProcessor>>,
     media_tracks: HashMap<SessionMediaTrackId, Resource<crate::MediaTrack>>,
+    pcm_sinks: HashMap<SessionReceiverId, crate::AudioSink>,
     transceivers: HashMap<SessionTransceiverId, Resource<Transceiver>>,
     senders: HashMap<SessionSenderId, Resource<RtpSender>>,
     receivers: HashMap<SessionReceiverId, Resource<RtpReceiver>>,
@@ -263,6 +265,9 @@ pub struct ProductionSessionBuilder {
     config: ProductionSessionConfig,
     audio_encoder_factory: Option<AudioEncoderFactory>,
     audio_decoder_factory: Option<AudioDecoderFactory>,
+    pcm_audio: bool,
+    audio_processing: Option<crate::AudioProcessingConfig>,
+    native_audio: bool,
     video_encoder_factory: Option<crate::VideoEncoderFactoryHandle>,
     video_decoder_factory: Option<crate::VideoDecoderFactoryHandle>,
     temporal_fps: Option<[u8; 3]>,
@@ -282,6 +287,29 @@ pub struct ProductionSessionBuilder {
 }
 
 impl ProductionSessionBuilder {
+    /// Select stock PCM encoding instead of the absent-choice encoded Opus
+    /// carrier default. An explicitly selected encoder factory is unchanged.
+    pub fn pcm_audio(mut self) -> Self {
+        self.pcm_audio = true;
+        self
+    }
+
+    /// Select the factory's software processing module. PCM input is required;
+    /// already encoded packets cannot be processed as captured PCM.
+    pub fn audio_processing(mut self, config: crate::AudioProcessingConfig) -> Self {
+        self.audio_processing = Some(config);
+        self
+    }
+
+    /// Explicitly select the native artifact's recording/playout device module.
+    /// This can fail on hosts without a usable sound service. It does not opt
+    /// into microphone capture; publish_microphone is a separate operation.
+    #[cfg(feature = "native")]
+    pub fn native_audio(mut self, enabled: bool) -> Self {
+        self.native_audio = enabled;
+        self
+    }
+
     /// Explicit selection, distinct from this builder's absent carrier default.
     pub fn audio_encoder_factory(mut self, factory: &AudioEncoderFactory) -> Self {
         self.audio_encoder_factory = Some(factory.clone());
@@ -446,6 +474,9 @@ impl ProductionSession {
             config,
             audio_encoder_factory: None,
             audio_decoder_factory: None,
+            pcm_audio: false,
+            audio_processing: None,
+            native_audio: false,
             video_encoder_factory: None,
             video_decoder_factory: None,
             temporal_fps: None,
@@ -580,6 +611,9 @@ impl ProductionSession {
             config,
             audio_encoder_factory,
             audio_decoder_factory,
+            pcm_audio,
+            audio_processing,
+            native_audio,
             video_encoder_factory,
             video_decoder_factory,
             temporal_fps,
@@ -616,10 +650,12 @@ impl ProductionSession {
         let readiness = Arc::new(Readiness::default());
         let selected_audio_encoder = match audio_encoder_factory {
             Some(factory) => factory,
+            None if pcm_audio => AudioEncoderFactory::builtin().map_err(codec_error)?,
             None => AudioEncoderFactory::with_opus_frames().map_err(codec_error)?,
         };
         let selected_audio_decoder = match audio_decoder_factory {
             Some(factory) => factory,
+            None if pcm_audio => AudioDecoderFactory::builtin().map_err(codec_error)?,
             None => AudioDecoderFactory::builtin_opus().map_err(codec_error)?,
         };
         let mut builder = PeerConnectionFactory::builder()
@@ -627,6 +663,13 @@ impl ProductionSession {
             .audio_decoder_factory(selected_audio_decoder)
             .readiness(readiness.clone())
             .event_logging(event_logging);
+        if let Some(config) = audio_processing {
+            builder = builder.audio_processing(config);
+        }
+        #[cfg(feature = "native")]
+        { builder = builder.native_audio(native_audio); }
+        #[cfg(not(feature = "native"))]
+        let _ = native_audio;
         if let Some(metronome) = encode_metronome {
             builder = builder.encode_metronome(&metronome);
         }
@@ -721,6 +764,7 @@ impl ProductionSession {
             channels: HashMap::new(),
             video_sinks: HashMap::new(),
             audio_sinks: HashMap::new(),
+            pcm_sinks: HashMap::new(),
             transceivers: HashMap::new(),
             senders: HashMap::new(),
             receivers: HashMap::new(),
@@ -1640,6 +1684,9 @@ impl ProductionSession {
     pub fn close_source(&mut self, id: SessionSourceId) -> Result<(), PeerError> {
         if let Some(source) = self.sources.get_mut(&id) {
             match source {
+                Source::Pcm(source) => source
+                    .close()
+                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
                 Source::Opus(source) => source
                     .close()
                     .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
@@ -1648,6 +1695,58 @@ impl ProductionSession {
             self.sources.remove(&id);
         }
         Ok(())
+    }
+
+    pub fn audio_encoder_failure_observer(&mut self) -> Result<crate::AudioEncoderSdkFailureObserver, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.audio_encoder_failure_observer())
+    }
+
+    /// Factory-wide diagnostic state, not a claim that hardware is running.
+    pub fn audio_processing_state(&mut self) -> Result<crate::AudioProcessingState, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.audio_processing_state())
+    }
+
+    #[cfg(feature = "native")]
+    pub fn audio_devices(&mut self, recording: bool) -> Result<Vec<crate::AudioDevice>, PeerError> {
+        self.check_open()?;
+        self.factory.audio_devices(recording)
+    }
+
+    #[cfg(feature = "native")]
+    pub fn select_audio_device(&mut self, recording: bool, index: u16) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.factory.select_audio_device(recording, index)
+    }
+
+    #[cfg(feature = "native")]
+    pub fn set_native_audio_enabled(&mut self, peer: SessionPeerId, recording: bool, enabled: bool) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers.get(&peer).ok_or_else(missing)?.value.set_native_audio_enabled(recording, enabled)
+    }
+
+    pub fn create_pcm_source(&mut self) -> Result<SessionSourceId, PeerError> {
+        self.check_open()?;
+        let id = SessionSourceId(next_id()?);
+        let source = self.factory.create_audio_source()?;
+        self.sources.insert(id, Source::Pcm(source));
+        Ok(id)
+    }
+
+    pub fn push_pcm(&mut self, source: SessionSourceId, frame: &crate::AudioPcmFrame) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else { return Err(missing()); };
+        source.push_frame(frame).map_err(|e| {
+            let kind = match e {
+                crate::AudioFrameError::ProcessingFailed(_) => PeerErrorKind::Internal,
+                crate::AudioFrameError::UnsupportedProcessing => PeerErrorKind::UnsupportedOperation,
+                crate::AudioFrameError::ReentrantCall => PeerErrorKind::InvalidState,
+                crate::AudioFrameError::Released => PeerErrorKind::Closed,
+                _ => PeerErrorKind::InvalidParameter,
+            };
+            error(kind, &e.to_string())
+        })
     }
 
     pub fn create_opus_source(&mut self, channels: u8) -> Result<SessionSourceId, PeerError> {
@@ -1834,6 +1933,53 @@ impl ProductionSession {
         let track = source.create_track(&self.factory, track_id)?;
         self.insert_media_track(peer, track.as_media_track())
     }
+    pub fn publish_pcm(
+        &mut self,
+        peer: SessionPeerId,
+        source: SessionSourceId,
+        track_id: &str,
+        direction: RtpTransceiverDirection,
+        processing: Option<crate::AudioProcessingOptions>,
+    ) -> Result<SessionTransceiverId, PeerError> {
+        self.check_open()?;
+        let target = &self.peers.get(&peer).ok_or_else(missing)?.value;
+        if target.inner.closed.get() { return Err(error(PeerErrorKind::Closed, "peer is closed")); }
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else { return Err(missing()); };
+        let track = self.factory.create_audio_track(track_id, source)?;
+        if let Some(options) = processing { track.set_audio_processing_options(options)?; }
+        let value = target.add_audio_transceiver(&track, direction)?;
+        self.insert_transceiver(peer, value)
+    }
+
+    /// Change the real retained local track's processing choices. Processing
+    /// is shared by the voice engine, not isolated independently per track.
+    pub fn set_audio_processing_options(&mut self, sender: SessionSenderId, options: crate::AudioProcessingOptions) -> Result<(), PeerError> {
+        self.check_open()?;
+        let sender = self.senders.get(&sender).ok_or_else(missing)?;
+        let peer = self.peers.get(&sender.peer).ok_or_else(missing)?;
+        let native_id = sender.value.id();
+        let track = peer.value.inner.audio_sender_tracks.borrow().get(&native_id).cloned()
+            .ok_or_else(|| error(PeerErrorKind::UnsupportedOperation, "sender has no local audio track"))?;
+        track.set_audio_processing_options(options)
+    }
+
+    #[cfg(feature = "native")]
+    pub fn publish_microphone(
+        &mut self,
+        peer: SessionPeerId,
+        track_id: &str,
+        direction: RtpTransceiverDirection,
+        processing: Option<crate::AudioProcessingOptions>,
+    ) -> Result<SessionTransceiverId, PeerError> {
+        self.check_open()?;
+        let target = &self.peers.get(&peer).ok_or_else(missing)?.value;
+        if target.inner.closed.get() { return Err(error(PeerErrorKind::Closed, "peer is closed")); }
+        let track = self.factory.create_microphone_track(track_id)?;
+        if let Some(options) = processing { track.set_audio_processing_options(options)?; }
+        let value = target.add_audio_transceiver(&track, direction)?;
+        self.insert_transceiver(peer, value)
+    }
+
     pub fn publish_opus(
         &mut self,
         peer: SessionPeerId,
@@ -2940,9 +3086,34 @@ impl ProductionSession {
             .value
             .request_keyframe()
     }
+    pub fn attach_pcm_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        self.check_open()?;
+        if self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) || self.video_sinks.contains_key(&receiver) {
+            return Err(error(PeerErrorKind::InvalidState, "receiver already has a sink"));
+        }
+        let sink = self.receivers.get(&receiver).ok_or_else(missing)?.value.attach_audio_sink()?;
+        self.pcm_sinks.insert(receiver, sink);
+        Ok(())
+    }
+
+    /// Caller-paced headless playout. Readiness is not an audio playout timer.
+    pub fn try_pcm_audio_frame(&mut self, receiver: SessionReceiverId) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
+        Ok(self.pcm_sinks.get(&receiver).ok_or_else(missing)?.try_next_frame())
+    }
+
+    /// Detach either audio receive mode before selecting another one. Stop
+    /// reception first if future encoded packets must never enter a decoder.
+    pub fn detach_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        if let Some(sink) = self.pcm_sinks.get_mut(&receiver) { sink.close()?; }
+        if let Some(sink) = self.audio_sinks.get_mut(&receiver) { sink.close()?; }
+        self.pcm_sinks.remove(&receiver);
+        self.audio_sinks.remove(&receiver);
+        Ok(())
+    }
+
     pub fn attach_encoded_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         self.check_open()?;
-        if self.audio_sinks.contains_key(&receiver) || self.video_sinks.contains_key(&receiver) {
+        if self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) || self.video_sinks.contains_key(&receiver) {
             return Err(error(
                 PeerErrorKind::InvalidState,
                 "receiver already has a sink",
@@ -2959,7 +3130,7 @@ impl ProductionSession {
     }
     pub fn attach_encoded_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         self.check_open()?;
-        if self.video_sinks.contains_key(&receiver) || self.audio_sinks.contains_key(&receiver) {
+        if self.video_sinks.contains_key(&receiver) || self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) {
             return Err(error(
                 PeerErrorKind::InvalidState,
                 "receiver already has a sink",
@@ -3001,6 +3172,9 @@ impl ProductionSession {
         if let Some(sink) = self.audio_sinks.get(&receiver) {
             return Ok(sink.dropped_frames());
         }
+        if let Some(sink) = self.pcm_sinks.get(&receiver) {
+            return Ok(sink.dropped_frames());
+        }
         Err(missing())
     }
 
@@ -3038,6 +3212,9 @@ impl ProductionSession {
                 if let Some(sink) = self.audio_sinks.get_mut(&id) {
                     sink.close()?;
                 }
+                if let Some(sink) = self.pcm_sinks.get_mut(&id) {
+                    sink.close()?;
+                }
                 if let Some(sink) = self.video_sinks.get_mut(&id) {
                     sink.close();
                 }
@@ -3054,6 +3231,9 @@ impl ProductionSession {
         }
         for source in self.sources.values_mut() {
             match source {
+                Source::Pcm(source) => source
+                    .close()
+                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
                 Source::Opus(source) => source
                     .close()
                     .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,

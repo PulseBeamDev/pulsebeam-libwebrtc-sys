@@ -12,6 +12,8 @@ impl AudioEncoderSdkOperation {
     pub const PACKET_LOSS: Self = Self(5);
     pub const RECOVERABLE_PACKET_LOSS: Self = Self(6);
     pub const ENABLE_ADAPTOR: Self = Self(7);
+    pub const QUERY_ENCODER: Self = Self(8);
+    pub const CREATE_ENCODER: Self = Self(9);
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioEncoderSdkFailure {

@@ -9,6 +9,7 @@
 
 namespace webrtc {
 class AudioDeviceModule;
+class AudioProcessing;
 class FrameTransformerInterface;
 class PeerConnectionFactoryInterface;
 class PeerConnectionInterface;
@@ -45,6 +46,7 @@ struct FfiOfferAnswerOptions;
 struct FfiAudioDevice;
 struct FfiAudioProcessingConfig;
 struct FfiAudioProcessingState;
+class NativeAudioEncoderFailureObserver;
 struct FfiDescriptionSnapshot;
 struct FfiPeerIceSnapshot;
 struct FfiPeerEvent;
@@ -121,6 +123,10 @@ public:
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
   factory() const noexcept;
   webrtc::Thread *signaling_thread() const noexcept;
+  webrtc::Thread *worker_thread() const noexcept;
+  webrtc::scoped_refptr<webrtc::AudioProcessing>
+  audio_processing() const noexcept;
+  FfiAudioProcessingConfig audio_processing_config() const noexcept;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule>
   audio_device() const noexcept;
   std::shared_ptr<ReadinessSignal> readiness() const noexcept;
@@ -170,11 +176,13 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory *video_encoder,
     const NativeVideoDecoderFactory *video_decoder,
     rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
-    bool native_audio, bool event_logging,
+    bool production_system_clock, bool native_audio, bool event_logging,
     const NativeRtcEventLogFactory *event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome, const NativeReadiness *readiness,
     const FfiAudioProcessingConfig &processing, rust::String &error) noexcept;
+std::unique_ptr<NativeAudioEncoderFailureObserver> factory_audio_encoder_failure_observer(
+    const NativePeerConnectionFactory&) noexcept;
 FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept;
 bool certificate_key_params_valid(
     const FfiCertificateKeyParams &params) noexcept;
