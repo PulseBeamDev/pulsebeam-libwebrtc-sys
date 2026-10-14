@@ -1477,6 +1477,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     config.gain_controller1.enabled = processing.gain_control >= 1 &&
                                       processing.gain_control <= 3;
     if (config.gain_controller1.enabled) {
+      config.gain_controller1.analog_gain_controller.enabled = processing.gain_control == 1;
       config.gain_controller1.mode = static_cast<
           webrtc::AudioProcessing::Config::GainController1::Mode>(
               processing.gain_control - 1);

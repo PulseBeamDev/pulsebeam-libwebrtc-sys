@@ -559,9 +559,11 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
     const bool gain = options.auto_gain_control.value_or(state.processing_config.gain_control != 0);
     config.gain_controller1.enabled = gain && state.processing_config.gain_control != 4;
     config.gain_controller2.enabled = gain && state.processing_config.gain_control == 4;
-    if (state.processing_config.gain_control >= 1 && state.processing_config.gain_control <= 3)
+    if (state.processing_config.gain_control >= 1 && state.processing_config.gain_control <= 3) {
       config.gain_controller1.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::Mode>(
           state.processing_config.gain_control - 1);
+      config.gain_controller1.analog_gain_controller.enabled = state.processing_config.gain_control == 1;
+    }
     if (state.processing_config.gain_control == 4)
       config.gain_controller2.adaptive_digital.enabled = true;
     if (config.echo_canceller.enabled ||

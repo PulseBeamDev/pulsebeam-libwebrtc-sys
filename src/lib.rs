@@ -3,8 +3,10 @@
 mod async_dns;
 mod audio;
 mod audio_processing;
+mod audio_processor_config;
+pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplifier, ApmCaptureLevelAdjustment, ApmAnalogMicGainEmulation, ApmHighPassFilter, ApmEchoCanceller, ApmNoiseSuppression, ApmTransientSuppression, ApmGainController1, ApmAnalogGainController, ApmClippingPredictor, ApmGainController2, ApmInputVolumeController, ApmAdaptiveDigital, ApmFixedDigital, ApmDownmixMethod, ApmNoiseSuppressionLevel, ApmGainController1Mode, ApmClippingPredictorMode};
 mod audio_processor;
-pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState};
+pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats};
 mod audio_mixer;
 use audio_mixer::{RustMixerSource, mixer_source_frame, mixer_source_ssrc, mixer_source_rate, mixer_source_invalid};
 pub use audio_mixer::{AudioMixer, AudioMixerSource, AudioMixerSourceProvider, AudioMixerError, AudioMixerFailureObserver, MixerAudioFrame};
@@ -1771,6 +1773,70 @@ mod ffi {
         id: String,
     }
 
+    struct FfiApmFormats {
+        input_rate: i32,
+        input_channels: usize,
+        output_rate: i32,
+        output_channels: usize,
+        reverse_input_rate: i32,
+        reverse_input_channels: usize,
+        reverse_output_rate: i32,
+        reverse_output_channels: usize,
+    }
+
+    struct FfiApmConfig {
+        pipeline_maximum_internal_processing_rate: i32,
+        pipeline_multi_channel_render: bool,
+        pipeline_multi_channel_capture: bool,
+        pipeline_capture_downmix_method: i32,
+        pipeline_capture_downmix_method_stereo_aec: i32,
+        pre_amplifier_enabled: bool,
+        pre_amplifier_fixed_gain_factor: f32,
+        capture_level_adjustment_enabled: bool,
+        capture_level_adjustment_pre_gain_factor: f32,
+        capture_level_adjustment_post_gain_factor: f32,
+        capture_level_adjustment_analog_mic_gain_emulation_enabled: bool,
+        capture_level_adjustment_analog_mic_gain_emulation_initial_level: i32,
+        high_pass_filter_enabled: bool,
+        high_pass_filter_apply_in_full_band: bool,
+        echo_canceller_enabled: bool,
+        echo_canceller_export_linear_aec_output: bool,
+        echo_canceller_enforce_high_pass_filtering: bool,
+        noise_suppression_enabled: bool,
+        noise_suppression_level: i32,
+        noise_suppression_analyze_linear_aec_output_when_available: bool,
+        transient_suppression_enabled: bool,
+        gain_controller1_enabled: bool,
+        gain_controller1_mode: i32,
+        gain_controller1_target_level_dbfs: i32,
+        gain_controller1_compression_gain_db: i32,
+        gain_controller1_enable_limiter: bool,
+        gain_controller1_analog_gain_controller_enabled: bool,
+        gain_controller1_analog_gain_controller_startup_min_volume: i32,
+        gain_controller1_analog_gain_controller_clipped_level_min: i32,
+        gain_controller1_analog_gain_controller_enable_digital_adaptive: bool,
+        gain_controller1_analog_gain_controller_clipped_level_step: i32,
+        gain_controller1_analog_gain_controller_clipped_ratio_threshold: f32,
+        gain_controller1_analog_gain_controller_clipped_wait_frames: i32,
+        gain_controller1_analog_gain_controller_clipping_predictor_enabled: bool,
+        gain_controller1_analog_gain_controller_clipping_predictor_mode: i32,
+        gain_controller1_analog_gain_controller_clipping_predictor_window_length: i32,
+        gain_controller1_analog_gain_controller_clipping_predictor_reference_window_length: i32,
+        gain_controller1_analog_gain_controller_clipping_predictor_reference_window_delay: i32,
+        gain_controller1_analog_gain_controller_clipping_predictor_clipping_threshold: f32,
+        gain_controller1_analog_gain_controller_clipping_predictor_crest_factor_margin: f32,
+        gain_controller1_analog_gain_controller_clipping_predictor_use_predicted_step: bool,
+        gain_controller2_enabled: bool,
+        gain_controller2_input_volume_controller_enabled: bool,
+        gain_controller2_adaptive_digital_enabled: bool,
+        gain_controller2_adaptive_digital_headroom_db: f32,
+        gain_controller2_adaptive_digital_max_gain_db: f32,
+        gain_controller2_adaptive_digital_initial_gain_db: f32,
+        gain_controller2_adaptive_digital_max_gain_change_db_per_second: f32,
+        gain_controller2_adaptive_digital_max_output_noise_level_dbfs: f32,
+        gain_controller2_fixed_digital_gain_db: f32,
+    }
+
     struct FfiAudioProcessingFormatState {
         processing_rate_hz: i32,
         split_rate_hz: i32,
@@ -3180,10 +3246,18 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/audio_processor.h");
         type NativeAudioProcessor;
+        fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
+        fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;
+        fn audio_processor_config_apply(processor: Pin<&mut NativeAudioProcessor>, config: &FfiApmConfig) -> u8;
+        fn audio_processor_config_default() -> FfiApmConfig;
+        fn audio_processor_config_string(config: &FfiApmConfig) -> String;
+        fn audio_processor_config_get(processor: &NativeAudioProcessor) -> FfiApmConfig;
         fn audio_processor_new(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> UniquePtr<NativeAudioProcessor>;
         fn audio_processor_effects_admitted(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> bool;
         fn audio_processor_initialize(processor: Pin<&mut NativeAudioProcessor>) -> i32;
-        fn audio_processor_configure(processor: Pin<&mut NativeAudioProcessor>, config: &FfiAudioProcessingConfig);
+        fn audio_processor_formats_default() -> FfiApmFormats;
+        fn audio_processor_initialize_formats(processor: Pin<&mut NativeAudioProcessor>, formats: &FfiApmFormats, admitted: &mut bool) -> i32;
+        fn audio_processor_configure(processor: Pin<&mut NativeAudioProcessor>, config: &FfiAudioProcessingConfig) -> u8;
         fn audio_processor_format(processor: &NativeAudioProcessor) -> FfiAudioProcessingFormatState;
         fn audio_processor_set_muted(processor: Pin<&mut NativeAudioProcessor>, muted: bool);
         fn audio_processor_muted(processor: Pin<&mut NativeAudioProcessor>) -> bool;

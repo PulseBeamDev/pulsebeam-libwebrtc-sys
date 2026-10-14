@@ -21,6 +21,9 @@ pub enum AudioProcessorError {
     InvalidAnalogLevel,
     InvalidFloatInput,
     UnsafeFieldTrial,
+    InvalidConfiguration,
+    /// Raw SDK value is preserved, but this consuming range is not yet qualified.
+    UnqualifiedGainRange,
 }
 impl std::fmt::Display for AudioProcessorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,6 +52,53 @@ impl AudioProcessingStream {
     }
 }
 
+/// Exact four native stream descriptions. Default preserves the SDK's empty
+/// ProcessingConfig; empty capture is not safe to initialize in this pin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioProcessingFormats {
+    pub input: AudioProcessingStream,
+    pub output: AudioProcessingStream,
+    pub reverse_input: AudioProcessingStream,
+    pub reverse_output: AudioProcessingStream,
+}
+impl Default for AudioProcessingFormats {
+    fn default() -> Self {
+        let f = ffi::audio_processor_formats_default();
+        Self {
+            input: AudioProcessingStream {
+                sample_rate_hz: f.input_rate,
+                channels: f.input_channels,
+            },
+            output: AudioProcessingStream {
+                sample_rate_hz: f.output_rate,
+                channels: f.output_channels,
+            },
+            reverse_input: AudioProcessingStream {
+                sample_rate_hz: f.reverse_input_rate,
+                channels: f.reverse_input_channels,
+            },
+            reverse_output: AudioProcessingStream {
+                sample_rate_hz: f.reverse_output_rate,
+                channels: f.reverse_output_channels,
+            },
+        }
+    }
+}
+impl AudioProcessingFormats {
+    fn ffi(self) -> ffi::FfiApmFormats {
+        ffi::FfiApmFormats {
+            input_rate: self.input.sample_rate_hz,
+            input_channels: self.input.channels,
+            output_rate: self.output.sample_rate_hz,
+            output_channels: self.output.channels,
+            reverse_input_rate: self.reverse_input.sample_rate_hz,
+            reverse_input_channels: self.reverse_input.channels,
+            reverse_output_rate: self.reverse_output.sample_rate_hz,
+            reverse_output_channels: self.reverse_output.channels,
+        }
+    }
+}
+
 /// Native rates/channels reported by the currently initialized processing graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioProcessingFormatState {
@@ -68,6 +118,44 @@ pub struct AudioProcessor {
     _sequence: PhantomData<Rc<()>>,
 }
 impl AudioProcessor {
+    fn admission(error: u8) -> Result<(), AudioProcessorError> {
+        match error {
+            0 => Ok(()),
+            1 => Err(AudioProcessorError::UnsafeFieldTrial),
+            2 => Err(AudioProcessorError::InvalidDimensions),
+            4 => Err(AudioProcessorError::UnqualifiedGainRange),
+            _ => Err(AudioProcessorError::InvalidConfiguration),
+        }
+    }
+    /// Drive the builtin builder with every native config member unchanged.
+    pub fn builtin_with_config(
+        environment: &Environment,
+        config: &crate::AudioProcessorConfig,
+    ) -> Result<Self, AudioProcessorError> {
+        let environment = environment.clone();
+        let mut error = 0;
+        let native =
+            ffi::audio_processor_new_config(environment.native(), &config.ffi(), &mut error);
+        Self::admission(error)?;
+        if native.is_null() {
+            return Err(AudioProcessorError::CreationFailed);
+        }
+        Ok(Self {
+            native,
+            _environment: environment,
+            _sequence: PhantomData,
+        })
+    }
+    /// Native ApplyConfig, including its actual GC2 validation/reset behavior.
+    pub fn apply_config(
+        &mut self,
+        config: &crate::AudioProcessorConfig,
+    ) -> Result<(), AudioProcessorError> {
+        Self::admission(ffi::audio_processor_config_apply(
+            self.native.pin_mut(),
+            &config.ffi(),
+        ))
+    }
     /// Select builtin APM with the same initial effect choices as peer capture.
     /// This creates a standalone module, not an installed peer component.
     pub fn builtin(
@@ -91,17 +179,48 @@ impl AudioProcessor {
     pub fn initialize(&mut self) -> AudioProcessingStatus {
         AudioProcessingStatus(ffi::audio_processor_initialize(self.native.pin_mut()))
     }
+    /// Initialize the actual four-stream graph. This native overload always
+    /// returns OK, even for unsafe dimensions, so inadmissible layouts are
+    /// wrapper errors before entry, never invented native status codes.
+    pub fn initialize_with_formats(
+        &mut self,
+        formats: AudioProcessingFormats,
+    ) -> Result<AudioProcessingStatus, AudioProcessorError> {
+        for s in [
+            formats.input,
+            formats.output,
+            formats.reverse_input,
+            formats.reverse_output,
+        ] {
+            s.sample_count()?;
+        }
+        let mut admitted = false;
+        let status = ffi::audio_processor_initialize_formats(
+            self.native.pin_mut(),
+            &formats.ffi(),
+            &mut admitted,
+        );
+        if !admitted {
+            return Err(AudioProcessorError::InvalidDimensions);
+        }
+        Ok(AudioProcessingStatus(status))
+    }
     /// Apply effect selection to this actual module without substituting a
     /// product. Settings not represented by these choices remain unchanged.
     pub fn configure_effects(
         &mut self,
         config: AudioProcessingConfig,
     ) -> Result<(), AudioProcessorError> {
-        if !ffi::audio_processor_effects_admitted(self._environment.native(), &config.ffi()) {
-            return Err(AudioProcessorError::UnsafeFieldTrial);
-        }
-        ffi::audio_processor_configure(self.native.pin_mut(), &config.ffi());
-        Ok(())
+        Self::admission(ffi::audio_processor_configure(
+            self.native.pin_mut(),
+            &config.ffi(),
+        ))
+    }
+    /// Current actual SDK configuration, including disabled nested fields.
+    pub fn configuration(&self) -> crate::AudioProcessorConfig {
+        crate::AudioProcessorConfig::from_ffi(ffi::audio_processor_config_get(
+            self.native.as_ref().unwrap(),
+        ))
     }
     pub fn format_state(&self) -> AudioProcessingFormatState {
         let s = ffi::audio_processor_format(self.native.as_ref().unwrap());

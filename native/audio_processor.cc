@@ -12,6 +12,8 @@
 #include <vector>
 #include "api/audio/builtin_audio_processing_builder.h"
 #include "api/environment/environment.h"
+#include "common_audio/include/audio_util.h"
+#include "rtc_base/checks.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 // Pinned internal preflight declaration from aec3/echo_canceller3.h. Importing
@@ -36,7 +38,11 @@ void SelectEffects(webrtc::AudioProcessing::Config& config, const FfiAudioProces
   config.noise_suppression.enabled = selected.noise_suppression != 0;
   if (selected.noise_suppression != 0) config.noise_suppression.level = static_cast<webrtc::AudioProcessing::Config::NoiseSuppression::Level>(selected.noise_suppression - 1);
   config.gain_controller1.enabled = selected.gain_control >= 1 && selected.gain_control <= 3;
-  if (config.gain_controller1.enabled) config.gain_controller1.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::Mode>(selected.gain_control - 1);
+  if (config.gain_controller1.enabled) {
+    config.gain_controller1.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::Mode>(selected.gain_control - 1);
+    // The pin selects the analog manager by this flag, not by Mode.
+    config.gain_controller1.analog_gain_controller.enabled = selected.gain_control == 1;
+  }
   config.gain_controller2.enabled = selected.gain_control == 4;
   if (config.gain_controller2.enabled) config.gain_controller2.adaptive_digital.enabled = true;
 }
@@ -185,11 +191,256 @@ bool audio_processor_effects_admitted(const NativeEnvironment& environment, cons
   }
   return true;
 }
+namespace {
+webrtc::AudioProcessing::Config ConfigFromFfi(const FfiApmConfig& v) {
+  webrtc::AudioProcessing::Config config;
+  config.pipeline.maximum_internal_processing_rate = v.pipeline_maximum_internal_processing_rate;
+  config.pipeline.multi_channel_render = v.pipeline_multi_channel_render;
+  config.pipeline.multi_channel_capture = v.pipeline_multi_channel_capture;
+  config.pipeline.capture_downmix_method = static_cast<webrtc::AudioProcessing::Config::Pipeline::DownmixMethod>(v.pipeline_capture_downmix_method);
+  config.pipeline.capture_downmix_method_stereo_aec = static_cast<webrtc::AudioProcessing::Config::Pipeline::DownmixMethod>(v.pipeline_capture_downmix_method_stereo_aec);
+  config.pre_amplifier.enabled = v.pre_amplifier_enabled;
+  config.pre_amplifier.fixed_gain_factor = v.pre_amplifier_fixed_gain_factor;
+  config.capture_level_adjustment.enabled = v.capture_level_adjustment_enabled;
+  config.capture_level_adjustment.pre_gain_factor = v.capture_level_adjustment_pre_gain_factor;
+  config.capture_level_adjustment.post_gain_factor = v.capture_level_adjustment_post_gain_factor;
+  config.capture_level_adjustment.analog_mic_gain_emulation.enabled = v.capture_level_adjustment_analog_mic_gain_emulation_enabled;
+  config.capture_level_adjustment.analog_mic_gain_emulation.initial_level = v.capture_level_adjustment_analog_mic_gain_emulation_initial_level;
+  config.high_pass_filter.enabled = v.high_pass_filter_enabled;
+  config.high_pass_filter.apply_in_full_band = v.high_pass_filter_apply_in_full_band;
+  config.echo_canceller.enabled = v.echo_canceller_enabled;
+  config.echo_canceller.export_linear_aec_output = v.echo_canceller_export_linear_aec_output;
+  config.echo_canceller.enforce_high_pass_filtering = v.echo_canceller_enforce_high_pass_filtering;
+  config.noise_suppression.enabled = v.noise_suppression_enabled;
+  config.noise_suppression.level = static_cast<webrtc::AudioProcessing::Config::NoiseSuppression::Level>(v.noise_suppression_level);
+  config.noise_suppression.analyze_linear_aec_output_when_available = v.noise_suppression_analyze_linear_aec_output_when_available;
+  config.transient_suppression.enabled = v.transient_suppression_enabled;
+  config.gain_controller1.enabled = v.gain_controller1_enabled;
+  config.gain_controller1.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::Mode>(v.gain_controller1_mode);
+  config.gain_controller1.target_level_dbfs = v.gain_controller1_target_level_dbfs;
+  config.gain_controller1.compression_gain_db = v.gain_controller1_compression_gain_db;
+  config.gain_controller1.enable_limiter = v.gain_controller1_enable_limiter;
+  config.gain_controller1.analog_gain_controller.enabled = v.gain_controller1_analog_gain_controller_enabled;
+  config.gain_controller1.analog_gain_controller.startup_min_volume = v.gain_controller1_analog_gain_controller_startup_min_volume;
+  config.gain_controller1.analog_gain_controller.clipped_level_min = v.gain_controller1_analog_gain_controller_clipped_level_min;
+  config.gain_controller1.analog_gain_controller.enable_digital_adaptive = v.gain_controller1_analog_gain_controller_enable_digital_adaptive;
+  config.gain_controller1.analog_gain_controller.clipped_level_step = v.gain_controller1_analog_gain_controller_clipped_level_step;
+  config.gain_controller1.analog_gain_controller.clipped_ratio_threshold = v.gain_controller1_analog_gain_controller_clipped_ratio_threshold;
+  config.gain_controller1.analog_gain_controller.clipped_wait_frames = v.gain_controller1_analog_gain_controller_clipped_wait_frames;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.enabled = v.gain_controller1_analog_gain_controller_clipping_predictor_enabled;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.mode = static_cast<webrtc::AudioProcessing::Config::GainController1::AnalogGainController::ClippingPredictor::Mode>(v.gain_controller1_analog_gain_controller_clipping_predictor_mode);
+  config.gain_controller1.analog_gain_controller.clipping_predictor.window_length = v.gain_controller1_analog_gain_controller_clipping_predictor_window_length;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.reference_window_length = v.gain_controller1_analog_gain_controller_clipping_predictor_reference_window_length;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.reference_window_delay = v.gain_controller1_analog_gain_controller_clipping_predictor_reference_window_delay;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.clipping_threshold = v.gain_controller1_analog_gain_controller_clipping_predictor_clipping_threshold;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.crest_factor_margin = v.gain_controller1_analog_gain_controller_clipping_predictor_crest_factor_margin;
+  config.gain_controller1.analog_gain_controller.clipping_predictor.use_predicted_step = v.gain_controller1_analog_gain_controller_clipping_predictor_use_predicted_step;
+  config.gain_controller2.enabled = v.gain_controller2_enabled;
+  config.gain_controller2.input_volume_controller.enabled = v.gain_controller2_input_volume_controller_enabled;
+  config.gain_controller2.adaptive_digital.enabled = v.gain_controller2_adaptive_digital_enabled;
+  config.gain_controller2.adaptive_digital.headroom_db = v.gain_controller2_adaptive_digital_headroom_db;
+  config.gain_controller2.adaptive_digital.max_gain_db = v.gain_controller2_adaptive_digital_max_gain_db;
+  config.gain_controller2.adaptive_digital.initial_gain_db = v.gain_controller2_adaptive_digital_initial_gain_db;
+  config.gain_controller2.adaptive_digital.max_gain_change_db_per_second = v.gain_controller2_adaptive_digital_max_gain_change_db_per_second;
+  config.gain_controller2.adaptive_digital.max_output_noise_level_dbfs = v.gain_controller2_adaptive_digital_max_output_noise_level_dbfs;
+  config.gain_controller2.fixed_digital.gain_db = v.gain_controller2_fixed_digital_gain_db;
+  return config;
+}
+FfiApmConfig ConfigToFfi(const webrtc::AudioProcessing::Config& config) {
+  FfiApmConfig v;
+  v.pipeline_maximum_internal_processing_rate = config.pipeline.maximum_internal_processing_rate;
+  v.pipeline_multi_channel_render = config.pipeline.multi_channel_render;
+  v.pipeline_multi_channel_capture = config.pipeline.multi_channel_capture;
+  v.pipeline_capture_downmix_method = static_cast<std::int32_t>(config.pipeline.capture_downmix_method);
+  v.pipeline_capture_downmix_method_stereo_aec = static_cast<std::int32_t>(config.pipeline.capture_downmix_method_stereo_aec);
+  v.pre_amplifier_enabled = config.pre_amplifier.enabled;
+  v.pre_amplifier_fixed_gain_factor = config.pre_amplifier.fixed_gain_factor;
+  v.capture_level_adjustment_enabled = config.capture_level_adjustment.enabled;
+  v.capture_level_adjustment_pre_gain_factor = config.capture_level_adjustment.pre_gain_factor;
+  v.capture_level_adjustment_post_gain_factor = config.capture_level_adjustment.post_gain_factor;
+  v.capture_level_adjustment_analog_mic_gain_emulation_enabled = config.capture_level_adjustment.analog_mic_gain_emulation.enabled;
+  v.capture_level_adjustment_analog_mic_gain_emulation_initial_level = config.capture_level_adjustment.analog_mic_gain_emulation.initial_level;
+  v.high_pass_filter_enabled = config.high_pass_filter.enabled;
+  v.high_pass_filter_apply_in_full_band = config.high_pass_filter.apply_in_full_band;
+  v.echo_canceller_enabled = config.echo_canceller.enabled;
+  v.echo_canceller_export_linear_aec_output = config.echo_canceller.export_linear_aec_output;
+  v.echo_canceller_enforce_high_pass_filtering = config.echo_canceller.enforce_high_pass_filtering;
+  v.noise_suppression_enabled = config.noise_suppression.enabled;
+  v.noise_suppression_level = static_cast<std::int32_t>(config.noise_suppression.level);
+  v.noise_suppression_analyze_linear_aec_output_when_available = config.noise_suppression.analyze_linear_aec_output_when_available;
+  v.transient_suppression_enabled = config.transient_suppression.enabled;
+  v.gain_controller1_enabled = config.gain_controller1.enabled;
+  v.gain_controller1_mode = static_cast<std::int32_t>(config.gain_controller1.mode);
+  v.gain_controller1_target_level_dbfs = config.gain_controller1.target_level_dbfs;
+  v.gain_controller1_compression_gain_db = config.gain_controller1.compression_gain_db;
+  v.gain_controller1_enable_limiter = config.gain_controller1.enable_limiter;
+  v.gain_controller1_analog_gain_controller_enabled = config.gain_controller1.analog_gain_controller.enabled;
+  v.gain_controller1_analog_gain_controller_startup_min_volume = config.gain_controller1.analog_gain_controller.startup_min_volume;
+  v.gain_controller1_analog_gain_controller_clipped_level_min = config.gain_controller1.analog_gain_controller.clipped_level_min;
+  v.gain_controller1_analog_gain_controller_enable_digital_adaptive = config.gain_controller1.analog_gain_controller.enable_digital_adaptive;
+  v.gain_controller1_analog_gain_controller_clipped_level_step = config.gain_controller1.analog_gain_controller.clipped_level_step;
+  v.gain_controller1_analog_gain_controller_clipped_ratio_threshold = config.gain_controller1.analog_gain_controller.clipped_ratio_threshold;
+  v.gain_controller1_analog_gain_controller_clipped_wait_frames = config.gain_controller1.analog_gain_controller.clipped_wait_frames;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_enabled = config.gain_controller1.analog_gain_controller.clipping_predictor.enabled;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_mode = static_cast<std::int32_t>(config.gain_controller1.analog_gain_controller.clipping_predictor.mode);
+  v.gain_controller1_analog_gain_controller_clipping_predictor_window_length = config.gain_controller1.analog_gain_controller.clipping_predictor.window_length;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_reference_window_length = config.gain_controller1.analog_gain_controller.clipping_predictor.reference_window_length;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_reference_window_delay = config.gain_controller1.analog_gain_controller.clipping_predictor.reference_window_delay;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_clipping_threshold = config.gain_controller1.analog_gain_controller.clipping_predictor.clipping_threshold;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_crest_factor_margin = config.gain_controller1.analog_gain_controller.clipping_predictor.crest_factor_margin;
+  v.gain_controller1_analog_gain_controller_clipping_predictor_use_predicted_step = config.gain_controller1.analog_gain_controller.clipping_predictor.use_predicted_step;
+  v.gain_controller2_enabled = config.gain_controller2.enabled;
+  v.gain_controller2_input_volume_controller_enabled = config.gain_controller2.input_volume_controller.enabled;
+  v.gain_controller2_adaptive_digital_enabled = config.gain_controller2.adaptive_digital.enabled;
+  v.gain_controller2_adaptive_digital_headroom_db = config.gain_controller2.adaptive_digital.headroom_db;
+  v.gain_controller2_adaptive_digital_max_gain_db = config.gain_controller2.adaptive_digital.max_gain_db;
+  v.gain_controller2_adaptive_digital_initial_gain_db = config.gain_controller2.adaptive_digital.initial_gain_db;
+  v.gain_controller2_adaptive_digital_max_gain_change_db_per_second = config.gain_controller2.adaptive_digital.max_gain_change_db_per_second;
+  v.gain_controller2_adaptive_digital_max_output_noise_level_dbfs = config.gain_controller2.adaptive_digital.max_output_noise_level_dbfs;
+  v.gain_controller2_fixed_digital_gain_db = config.gain_controller2.fixed_digital.gain_db;
+  return v;
+}
+// This is the pin's Validate predicate. Build does not run ApplyConfig's
+// fallback; ApplyConfig does, even for a disabled GC2. Keep that distinction.
+bool ValidGc2(const webrtc::AudioProcessing::Config::GainController2& g) {
+  const auto& a = g.adaptive_digital;
+  return g.fixed_digital.gain_db >= 0 && g.fixed_digital.gain_db < 50 &&
+      a.headroom_db >= 0 && a.max_gain_db > 0 && a.initial_gain_db >= 0 &&
+      a.max_gain_change_db_per_second > 0 && a.max_output_noise_level_dbfs <= 0;
+}
+std::uint8_t AdmitConfig(const webrtc::Environment& env, const webrtc::AudioProcessing::Config& c, bool build) {
+#if RTC_DCHECK_IS_ON
+  if (c.pipeline.maximum_internal_processing_rate != 32000 &&
+      c.pipeline.maximum_internal_processing_rate != 48000) return 3;
+#endif
+  const auto& g = c.gain_controller1;
+  if (g.enabled) {
+    if (!g.analog_gain_controller.enabled) {
+      if (g.target_level_dbfs < 0 || g.target_level_dbfs > 31 ||
+          g.compression_gain_db < 0 || g.compression_gain_db > 90) return 3;
+    } else {
+      const auto& a = g.analog_gain_controller;
+      if (a.clipped_level_min < 0 || a.clipped_level_min > 255 ||
+          a.clipped_level_step < 1 || a.clipped_level_step > 255 ||
+          !(a.clipped_ratio_threshold > 0 && a.clipped_ratio_threshold < 1) ||
+          a.clipped_wait_frames < 1) return 3;
+      const auto& p = a.clipping_predictor;
+      if (p.enabled) {
+        const std::int64_t capacity = std::int64_t(p.reference_window_length) + p.reference_window_delay;
+        if (p.window_length < 1 || p.reference_window_length < 1 || p.reference_window_delay < 0 ||
+            capacity > std::numeric_limits<int>::max() || p.window_length >= capacity) return 3;
+        // Event mode compares floats. Peak modes narrow the same field to int.
+        if (p.mode != webrtc::AudioProcessing::Config::GainController1::AnalogGainController::ClippingPredictor::kClippingEventPrediction &&
+            !(std::isfinite(p.clipping_threshold) && p.clipping_threshold >= -2147483648.0f && p.clipping_threshold < 2147483648.0f)) return 3;
+      }
+    }
+  }
+  if (c.pre_amplifier.enabled || c.capture_level_adjustment.enabled) {
+    float pre = c.pre_amplifier.enabled ? c.pre_amplifier.fixed_gain_factor : 1.f;
+    const float adjustment = c.capture_level_adjustment.enabled ? c.capture_level_adjustment.pre_gain_factor : 1.f;
+    const double product = double(pre) * adjustment;
+    if (!std::isfinite(pre) || !std::isfinite(adjustment) || !std::isfinite(product) ||
+        std::abs(product) > std::numeric_limits<float>::max() ||
+        !std::isfinite(c.capture_level_adjustment.post_gain_factor)) return 3;
+    const auto& mic = c.capture_level_adjustment.analog_mic_gain_emulation;
+    if (mic.enabled && (mic.initial_level < 0 || mic.initial_level > 255)) return 3;
+  }
+  const auto& g2 = c.gain_controller2;
+  if (g2.enabled && (build || ValidGc2(g2))) {
+    if (!ValidGc2(g2)) return 3;
+    if (g2.adaptive_digital.enabled) {
+      const auto& a = g2.adaptive_digital;
+#if RTC_DCHECK_IS_ON
+      if (a.max_output_noise_level_dbfs < -90 ||
+          !(a.max_gain_change_db_per_second * 10.f / 1000.f > 0)) return 3;
+#endif
+      // Actual steady target is noise-limited, independently of max_gain_db.
+      // A finite powf alone cannot certify an extreme initial gain: preceding
+      // DSP is not hard-clipped to the input PCM range. Wider initial settings
+      // remain an explicit admission gap, not native capability absence.
+      const float max_target_db = -webrtc::FloatS16ToDbfs(0.f);
+      if (!std::isfinite(webrtc::DbToRatio(a.initial_gain_db))) return 3;
+      if (a.initial_gain_db > max_target_db) return 4;
+    }
+  }
+  const auto& trials = env.field_trials();
+  if (c.echo_canceller.enabled && !SafeAecTrials(trials)) return 1;
+  if (g.enabled && g.analog_gain_controller.enabled &&
+      trials.IsEnabled("WebRTC-Audio-2ndAgcMinMicLevelExperiment")) {
+    const auto group = trials.Lookup("WebRTC-Audio-2ndAgcMinMicLevelExperiment");
+    if (group.starts_with("Enabled-") && !NumericRepresentable(group.substr(8), NumericKind::Int32)) return 1;
+  }
+  return 0;
+}
+}
+std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment& environment, const FfiApmConfig& f, std::uint8_t& error) noexcept {
+  const auto env = environment.environment();
+  const auto config = ConfigFromFfi(f);
+  error = AdmitConfig(env, config, true);
+  if (error) return nullptr;
+  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{env, nullptr});
+  state->module = webrtc::BuiltinAudioProcessingBuilder(config).Build(state->environment);
+  if (!state->module) return nullptr;
+  return std::make_unique<NativeAudioProcessor>(std::move(state));
+}
+std::uint8_t audio_processor_config_apply(NativeAudioProcessor& p, const FfiApmConfig& f) noexcept {
+  const auto config = ConfigFromFfi(f);
+  if (config.echo_canceller.enabled && p.state().module->num_reverse_channels() == 0) return 2;
+  if (const auto error = AdmitConfig(p.state().environment, config, false)) return error;
+  p.state().module->ApplyConfig(config);
+  return 0;
+}
+bool audio_processor_config_equal(const FfiApmConfig& left, const FfiApmConfig& right, std::uint8_t group) noexcept {
+  const auto a = ConfigFromFfi(left), b = ConfigFromFfi(right);
+  switch (group) {
+    case 0: return a.capture_level_adjustment == b.capture_level_adjustment;
+    case 1: return a.capture_level_adjustment.analog_mic_gain_emulation == b.capture_level_adjustment.analog_mic_gain_emulation;
+    case 2: return a.gain_controller1 == b.gain_controller1;
+    case 3: return a.gain_controller2 == b.gain_controller2;
+    case 4: return a.gain_controller2.input_volume_controller == b.gain_controller2.input_volume_controller;
+    case 5: return a.gain_controller2.adaptive_digital == b.gain_controller2.adaptive_digital;
+    default: return false;
+  }
+}
+FfiApmConfig audio_processor_config_default() noexcept { return ConfigToFfi(webrtc::AudioProcessing::Config{}); }
+rust::String audio_processor_config_string(const FfiApmConfig& v) noexcept { return ConfigFromFfi(v).ToString(); }
+FfiApmConfig audio_processor_config_get(const NativeAudioProcessor& p) noexcept { return ConfigToFfi(p.state().module->GetConfig()); }
 std::int32_t audio_processor_initialize(NativeAudioProcessor& p) noexcept { return p.state().module->Initialize(); }
-void audio_processor_configure(NativeAudioProcessor& p, const FfiAudioProcessingConfig& selected) noexcept {
+FfiApmFormats audio_processor_formats_default() noexcept {
+  const webrtc::ProcessingConfig config;
+  return {config.input_stream().sample_rate_hz(), config.input_stream().num_channels(), config.output_stream().sample_rate_hz(), config.output_stream().num_channels(), config.reverse_input_stream().sample_rate_hz(), config.reverse_input_stream().num_channels(), config.reverse_output_stream().sample_rate_hz(), config.reverse_output_stream().num_channels()};
+}
+std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const FfiApmFormats& f, bool& admitted) noexcept {
+  admitted = false;
+  const auto valid = [](std::int32_t rate, std::size_t channels) {
+    return rate >= 8000 && rate <= 384000 && channels > 0 && channels <= std::numeric_limits<std::int32_t>::max();
+  };
+  if (!valid(f.input_rate, f.input_channels) || !valid(f.output_rate, f.output_channels) ||
+      (f.output_channels != 1 && f.output_channels != f.input_channels)) return 0;
+  if (f.reverse_input_channels == 0 && f.reverse_output_channels == 0) {
+    // Absent render is allowed only when no selected echo controller needs it.
+    if (p.state().module->GetConfig().echo_canceller.enabled) return 0;
+  } else if (!valid(f.reverse_input_rate, f.reverse_input_channels) ||
+             !valid(f.reverse_output_rate, f.reverse_output_channels) ||
+             (f.reverse_input_channels != f.reverse_output_channels &&
+              f.reverse_input_channels != 1 && f.reverse_output_channels != 1)) {
+    return 0;
+  }
+  webrtc::ProcessingConfig config;
+  config.input_stream() = webrtc::StreamConfig(f.input_rate, f.input_channels);
+  config.output_stream() = webrtc::StreamConfig(f.output_rate, f.output_channels);
+  config.reverse_input_stream() = webrtc::StreamConfig(f.reverse_input_rate, f.reverse_input_channels);
+  config.reverse_output_stream() = webrtc::StreamConfig(f.reverse_output_rate, f.reverse_output_channels);
+  admitted = true;
+  return p.state().module->Initialize(config);
+}
+std::uint8_t audio_processor_configure(NativeAudioProcessor& p, const FfiAudioProcessingConfig& selected) noexcept {
+  if (selected.echo_cancellation && p.state().module->num_reverse_channels() == 0) return 2;
   auto config = p.state().module->GetConfig();
   SelectEffects(config, selected);
+  if (const auto error = AdmitConfig(p.state().environment, config, false)) return error;
   p.state().module->ApplyConfig(config);
+  return 0;
 }
 FfiAudioProcessingFormatState audio_processor_format(const NativeAudioProcessor& p) noexcept {
   const auto& m = p.state().module;

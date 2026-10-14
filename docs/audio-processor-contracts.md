@@ -40,7 +40,9 @@ mutation are not recoverable allocation or callback errors.
 
 `configure_effects` changes echo/noise/gain choices on the existing module using
 GetConfig/ApplyConfig; it does not rebuild or substitute a product. Other native
-configuration fields remain unchanged. Initialization, current processing rates
+configuration fields remain unchanged except the analog-manager enable flag:
+digital choices disable that manager so the pin actually selects the requested
+legacy digital mode, rather than merely storing a Mode value it ignores. Initialization, current processing rates
 and channel counts, output-muted intent, stream delay/key state and analog-level
 recommendation invoke the native operations. Delay clamping and warning codes
 are SDK behavior; out-of-range analog levels are refused before native gain
@@ -57,9 +59,49 @@ configuration to the real builtin builder. Unsafe trials return UnsafeFieldTrial
 before construction or live ApplyConfig; unrelated effect selections remain
 available using the original environment.
 
-This API currently exposes stock construction, effect selection and the named
-processing/control operations above. Full AudioProcessing configuration values,
-runtime settings/statistics/AEC dump and linear output, processing providers and
+## Complete configuration values and initialization
+
+AudioProcessorConfig covers all 50 scalar/enum fields of the pinned SDK Config,
+with typed nested groups, native defaults, GetConfig readback and native ToString.
+Raw inactive fields are retained independently of consuming admission. Rust
+PartialEq compares all represented fields; native_equals on the groups with SDK
+operators preserves their exact semantics, including GC1 equality's omission of
+clipping_predictor.enabled.
+
+builtin_with_config passes the complete configuration to the actual builder.
+apply_config drives native ApplyConfig on the same module. Constructor safety is
+distinct from ApplyConfig's recoverable GC2 validation/reset, which remains native
+behavior and is visible in subsequent readback. Admission covers active legacy
+GC1 setter domains, analog/clipping construction and arithmetic, peak-predictor
+float-to-int narrowing, reached pre/post/microphone scaling, compiled pipeline
+and GC2 DCHECKs, and actual GC2 exponentiation. Event-predictor float comparisons
+are not rejected as though they were peak-predictor integer conversions.
+
+GC2's max_gain_db is not artificially capped: the actual noise limiter bounds
+steady target gain. Initial gain above that steady envelope currently returns
+UnqualifiedGainRange. This is an incomplete consuming proof, not an invalid raw
+value, native capability absence or a silently repaired configuration. Preceding
+DSP has no verified universal PCM-range output bound; a finite exponentiation
+alone cannot certify arbitrary extreme initial gain. Infinite exponentiation
+is independently refused as InvalidConfiguration. Wider initial-gain admission
+remains outstanding.
+
+SDK configuration readback is not proof that every submodule was reconstructed.
+The pin retains an existing same-channel GC1 analog manager during ApplyConfig,
+and its equality omits the predictor enable flag. These native limitations are
+not hidden by rebuilding or replacing the selected product.
+
+AudioProcessingFormats preserves all four SDK StreamConfig descriptions and
+native empty ProcessingConfig defaults. initialize_with_formats calls the actual
+explicit Initialize overload after protecting buffer/converter dimensions. That
+overload does not return validation errors, so unsafe layouts are wrapper
+InvalidDimensions, not fabricated native error codes. Wholly absent render is
+supported with echo off; enabling echo requires real reverse channels. Capture
+layout must be mono output or equal-channel; reverse conversion permits equal
+channels or a mono side. Native supported rates are not reduced to a whitelist
+of 8/16/32/48 kHz.
+
+Runtime settings/statistics/AEC dump and linear output, processing providers and
 builders, and installation of standalone selected products remain outside this
 API surface. Existing peer processing selection is not standalone-product
 installation or proof of complete pinned AudioProcessing parity.
