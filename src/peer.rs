@@ -1952,6 +1952,22 @@ impl PeerConnection {
     pub fn standardized_ice_connection_state(&self) -> PeerIceConnectionState { self.ice_snapshot().standardized_state }
     pub fn can_trickle_ice_candidates(&self) -> Option<bool> { self.ice_snapshot().can_trickle_ice_candidates }
 
+    /// Current native signaling state sampled on its signaling role, not a
+    /// reconstruction from queued observations or description text.
+    pub fn signaling_state(&self) -> SignalingState {
+        signaling_state(ffi::peer_native_state(self.native(), 0))
+    }
+
+    /// Current overall native connection state. This is distinct from both
+    /// legacy and standardized ICE connection state and remains readable after close.
+    pub fn peer_connection_state(&self) -> ConnectionState {
+        connection_state(ffi::peer_native_state(self.native(), 1))
+    }
+
+    pub fn ice_gathering_state(&self) -> IceGatheringState {
+        gathering_state(ffi::peer_native_state(self.native(), 2))
+    }
+
     pub fn descriptions(&self) -> Result<PeerDescriptions, PeerError> {
         let bytes = self.descriptions_bytes()?;
         let project = |value: Option<SessionDescriptionBytes>| value.map(SessionDescription::try_from).transpose().map_err(|_| PeerError {

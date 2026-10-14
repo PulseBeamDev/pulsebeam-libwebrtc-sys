@@ -768,6 +768,20 @@ impl ProductionSession {
     pub fn peer_standardized_ice_connection_state(&mut self, peer: SessionPeerId) -> Result<crate::PeerIceConnectionState, PeerError> { Ok(self.peer_ice_snapshot(peer)?.standardized_state) }
     pub fn peer_can_trickle_ice_candidates(&mut self, peer: SessionPeerId) -> Result<Option<bool>, PeerError> { Ok(self.peer_ice_snapshot(peer)?.can_trickle_ice_candidates) }
 
+    /// Read actual native state without draining or interpreting peer events.
+    /// Retained peer identities remain queryable after close and shutdown.
+    pub fn peer_signaling_state(&mut self, peer: SessionPeerId) -> Result<crate::SignalingState, PeerError> {
+        Ok(self.peers.get(&peer).ok_or_else(missing)?.value.signaling_state())
+    }
+
+    pub fn peer_connection_state(&mut self, peer: SessionPeerId) -> Result<crate::ConnectionState, PeerError> {
+        Ok(self.peers.get(&peer).ok_or_else(missing)?.value.peer_connection_state())
+    }
+
+    pub fn peer_ice_gathering_state(&mut self, peer: SessionPeerId) -> Result<crate::IceGatheringState, PeerError> {
+        Ok(self.peers.get(&peer).ok_or_else(missing)?.value.ice_gathering_state())
+    }
+
     pub fn descriptions_bytes(&mut self, peer: SessionPeerId) -> Result<crate::PeerDescriptionBytes, PeerError> {
         self.peers.get(&peer).ok_or_else(missing)?.value.descriptions_bytes()
     }

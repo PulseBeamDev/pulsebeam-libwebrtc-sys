@@ -50,6 +50,18 @@ fn main() {
                 .iter()
                 .any(|codec| codec.format().name == "H264")
         );
+        assert_eq!(
+            peer.signaling_state(),
+            pulsebeam_webrtc_sys::SignalingState::Stable
+        );
+        assert_eq!(
+            peer.peer_connection_state(),
+            pulsebeam_webrtc_sys::ConnectionState::New
+        );
+        assert_eq!(
+            peer.ice_gathering_state(),
+            pulsebeam_webrtc_sys::IceGatheringState::New
+        );
         let channel = peer
             .create_data_channel("consumer", Default::default())
             .unwrap();
@@ -63,6 +75,14 @@ fn main() {
             pulsebeam_webrtc_sys::DataChannelState::Connecting
         );
         peer.close().unwrap();
+        assert_eq!(
+            peer.signaling_state(),
+            pulsebeam_webrtc_sys::SignalingState::Closed
+        );
+        assert_eq!(
+            peer.peer_connection_state(),
+            pulsebeam_webrtc_sys::ConnectionState::Closed
+        );
         assert_eq!(
             alias.state(),
             pulsebeam_webrtc_sys::DataChannelState::Closed

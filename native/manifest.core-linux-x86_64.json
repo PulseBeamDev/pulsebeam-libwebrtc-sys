@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "e22a452e0af96bf3d45b7064a9f20bc754f67522bee53921dd561cdde6a9fa64",
+      "bridge_source_sha256": "7281836b761b74386ba98cbaa7af2ecf6507482a728803a095376608f40a2be5",
       "generated_header_sha256": "631b11bc33f55c5fd0b9ab9cd8aaf051a391b2040dc0b75235a860b5e5af45e9",
-      "generated_source_sha256": "91f250ee1d5ebe8b245386f9ce22d0a39dfce895dca71cde69b8e61f6e43edd1"
+      "generated_source_sha256": "7e69d900c841976d72598d241e5aff4b339744ad5882ef8c5e33d4a5add95ead"
     },
-    "native_adapter_sha256": "503e7f880c7fc14a9720b3753e96190aebb3323cb93ce69ed2b918c14ed5a236"
+    "native_adapter_sha256": "cf7525cc6b5faa9f6785a5c9520a41757ab53a322322c8babdfa1dab04bdc2ec"
   },
   "sources": {
     "webrtc": {
@@ -32,7 +32,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "61bdb9532bd768e2f1c5e947e3d8b5c3c00e5ec884435641331ab311b6ff4199",
+  "native_configuration_sha256": "72a283757c92e22ad14f423ba7196193ea8103003b3f88150343fd32a3a389e4",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",

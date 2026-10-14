@@ -2041,6 +2041,19 @@ bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
   return result.ok();
 }
 
+std::uint8_t peer_native_state(const NativePeerConnection& peer,
+                               std::uint8_t field) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
+    switch (field) {
+      case 0: return static_cast<std::uint8_t>(state->peer->signaling_state());
+      case 1: return static_cast<std::uint8_t>(state->peer->peer_connection_state());
+      case 2: return static_cast<std::uint8_t>(state->peer->ice_gathering_state());
+      default: RTC_CHECK_NOTREACHED();
+    }
+  });
+}
+
 FfiPeerIceSnapshot peer_ice_snapshot(const NativePeerConnection &peer) noexcept {
   const auto &state = peer.state();
   FfiPeerIceSnapshot result{};

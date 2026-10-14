@@ -253,6 +253,8 @@ std::uint8_t peer_request_stats(const NativePeerConnection &peer,
 bool peer_set_bitrate(const NativePeerConnection &peer, std::int32_t minimum,
                       std::int32_t start, std::int32_t maximum,
                       std::uint8_t &error_type, rust::String &message) noexcept;
+std::uint8_t peer_native_state(const NativePeerConnection& peer,
+                               std::uint8_t field) noexcept;
 FfiPeerIceSnapshot peer_ice_snapshot(const NativePeerConnection &peer) noexcept;
 std::uint8_t
 peer_descriptions(const NativePeerConnection &peer,

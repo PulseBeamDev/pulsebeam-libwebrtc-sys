@@ -4966,6 +4966,7 @@ mod ffi {
             error_type: &mut u8,
             message: &mut String,
         ) -> bool;
+        fn peer_native_state(peer: &NativePeerConnection, field: u8) -> u8;
         fn peer_ice_snapshot(peer: &NativePeerConnection) -> FfiPeerIceSnapshot;
         fn peer_descriptions(
             peer: &NativePeerConnection,

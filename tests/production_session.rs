@@ -855,6 +855,9 @@ fn migrated_actor_preserves_native_signaling_choices() {
     let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
     let alice = session.create_peer(PeerConfiguration::default()).unwrap();
     let bob = session.create_peer(PeerConfiguration::default()).unwrap();
+    assert_eq!(session.peer_signaling_state(alice).unwrap(), SignalingState::Stable);
+    assert_eq!(session.peer_connection_state(alice).unwrap(), ConnectionState::New);
+    assert_eq!(session.peer_ice_gathering_state(alice).unwrap(), IceGatheringState::New);
     session
         .create_channel(alice, "auto", DataChannelConfiguration::default())
         .unwrap();
@@ -869,8 +872,10 @@ fn migrated_actor_preserves_native_signaling_choices() {
             .unwrap()
             .clone();
         assert_eq!(offer.kind, SessionDescriptionType::Offer);
+        assert_eq!(session.peer_signaling_state(alice).unwrap(), SignalingState::HaveLocalOffer);
         let operation = session.set_remote_description(bob, offer.clone()).unwrap();
         finish(&mut session, bob, operation);
+        assert_eq!(session.peer_signaling_state(bob).unwrap(), SignalingState::HaveRemoteOffer);
         let candidate = IceCandidate {
             sdp_mid: offer
                 .sdp
@@ -939,6 +944,8 @@ fn migrated_actor_preserves_native_signaling_choices() {
         };
         assert_ne!(ufrag(&offer.sdp), ufrag(&restart.sdp));
         session.shutdown().unwrap();
+        assert_eq!(session.peer_signaling_state(alice).unwrap(), SignalingState::Closed);
+        assert_eq!(session.peer_connection_state(alice).unwrap(), ConnectionState::Closed);
         assert_eq!(
             session.restart_ice(alice).unwrap_err().kind,
             PeerErrorKind::Closed
@@ -1065,6 +1072,10 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
             256
         );
         assert_eq!(session.channel_buffered_amount(outgoing).unwrap(), 0);
+        for peer in [alice, bob] {
+            assert_eq!(session.peer_connection_state(peer).unwrap(), ConnectionState::Connected);
+            assert_eq!(session.peer_ice_gathering_state(peer).unwrap(), IceGatheringState::Complete);
+        }
         let limits = ProductionSession::channel_receive_queue_limits();
         assert_eq!(limits, DataChannel::receive_queue_limits());
         for index in 0..limits.max_messages + 2 {
@@ -1199,6 +1210,9 @@ fn foreign_ids_cannot_import_local_ownership_and_controlled_acquisition_is_exclu
     let mut first = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
     let peer = first.create_peer(PeerConfiguration::default()).unwrap();
     let mut second = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    assert_eq!(second.peer_signaling_state(peer).unwrap_err().kind, PeerErrorKind::InvalidParameter);
+    assert_eq!(second.peer_connection_state(peer).unwrap_err().kind, PeerErrorKind::InvalidParameter);
+    assert_eq!(second.peer_ice_gathering_state(peer).unwrap_err().kind, PeerErrorKind::InvalidParameter);
     assert_eq!(
         second.create_offer(peer, false).unwrap_err().kind,
         PeerErrorKind::InvalidParameter

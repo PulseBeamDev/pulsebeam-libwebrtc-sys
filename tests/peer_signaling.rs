@@ -129,6 +129,9 @@ fn automatic_local_sdp_sync_candidates_and_direct_restart_preserve_native_state(
     let mut bob = factory
         .create_peer_connection(PeerConfiguration::default())
         .unwrap();
+    assert_eq!(alice.signaling_state(), SignalingState::Stable);
+    assert_eq!(alice.peer_connection_state(), ConnectionState::New);
+    assert_eq!(alice.ice_gathering_state(), IceGatheringState::New);
     let _channel = alice
         .create_data_channel("auto", DataChannelConfiguration::default())
         .unwrap();
@@ -159,11 +162,13 @@ fn automatic_local_sdp_sync_candidates_and_direct_restart_preserve_native_state(
         complete(&alice, alice.set_local_description_auto().unwrap()).unwrap(),
         None
     );
+    assert_eq!(alice.signaling_state(), SignalingState::HaveLocalOffer);
     let descriptions = alice.descriptions().unwrap();
     assert!(descriptions.current_local.is_none());
     let offer = descriptions.local().unwrap().clone();
     assert_eq!(offer.kind, SessionDescriptionType::Offer);
     complete(&bob, bob.set_remote_description(offer.clone()).unwrap()).unwrap();
+    assert_eq!(bob.signaling_state(), SignalingState::HaveRemoteOffer);
     assert_eq!(bob.descriptions().unwrap().remote(), Some(&offer));
     assert_eq!(
         bob.add_ice_candidate_sync(candidate(&offer)).unwrap(),
@@ -180,6 +185,8 @@ fn automatic_local_sdp_sync_candidates_and_direct_restart_preserve_native_state(
     let answer = bob.descriptions().unwrap().local().unwrap().clone();
     assert_eq!(answer.kind, SessionDescriptionType::Answer);
     complete(&alice, alice.set_remote_description(answer).unwrap()).unwrap();
+    assert_eq!(alice.signaling_state(), SignalingState::Stable);
+    assert_eq!(bob.signaling_state(), SignalingState::Stable);
     let stable = alice.descriptions().unwrap();
     assert!(stable.pending_local.is_none());
     assert_eq!(stable.local(), stable.current_local.as_ref());
@@ -196,4 +203,6 @@ fn automatic_local_sdp_sync_candidates_and_direct_restart_preserve_native_state(
     assert_ne!(ufrag(&offer.sdp), ufrag(&restart.sdp));
     alice.close().unwrap();
     bob.close().unwrap();
+    assert_eq!(alice.signaling_state(), SignalingState::Closed);
+    assert_eq!(bob.peer_connection_state(), ConnectionState::Closed);
 }
