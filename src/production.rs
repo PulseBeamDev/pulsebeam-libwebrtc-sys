@@ -780,6 +780,12 @@ impl ProductionSession {
     ) -> Result<OperationId, PeerError> {
         self.check_open()?;
         let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, submit)
+    }
+    fn submit_operation(
+        peer: &mut Peer,
+        submit: impl FnOnce(&PeerConnection) -> Result<OperationId, PeerError>,
+    ) -> Result<OperationId, PeerError> {
         if peer.value.inner.closed.get() {
             return Err(error(PeerErrorKind::Closed, "peer is closed"));
         }
@@ -956,6 +962,61 @@ impl ProductionSession {
     }
     pub fn request_stats(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::request_stats)
+    }
+    pub fn request_sender_stats(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<OperationId, PeerError> {
+        self.check_open()?;
+        let sender = self.senders.get(&sender).ok_or_else(missing)?;
+        let peer = self.peers.get_mut(&sender.peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| p.request_sender_stats(&sender.value))
+    }
+    pub fn request_receiver_stats(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<OperationId, PeerError> {
+        self.check_open()?;
+        let receiver = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let peer = self.peers.get_mut(&receiver.peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| p.request_receiver_stats(&receiver.value))
+    }
+    /// A selector may belong to another peer in this session; native selection
+    /// then returns an empty report. None preserves the native null selector.
+    pub fn request_stats_with_sender_selector(
+        &mut self,
+        peer: SessionPeerId,
+        selector: Option<SessionSenderId>,
+    ) -> Result<OperationId, PeerError> {
+        self.check_open()?;
+        let selector = selector
+            .map(|id| self.senders.get(&id).ok_or_else(missing))
+            .transpose()?
+            .map(|r| &r.value);
+        let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| p.request_stats_with_sender_selector(selector))
+    }
+    pub fn request_stats_with_receiver_selector(
+        &mut self,
+        peer: SessionPeerId,
+        selector: Option<SessionReceiverId>,
+    ) -> Result<OperationId, PeerError> {
+        self.check_open()?;
+        let selector = selector
+            .map(|id| self.receivers.get(&id).ok_or_else(missing))
+            .transpose()?
+            .map(|r| &r.value);
+        let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| p.request_stats_with_receiver_selector(selector))
+    }
+    pub fn clear_stats_cache(&mut self, peer: SessionPeerId) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .clear_stats_cache();
+        Ok(())
     }
     pub fn descriptions(&mut self, peer: SessionPeerId) -> Result<PeerDescriptions, PeerError> {
         self.peers

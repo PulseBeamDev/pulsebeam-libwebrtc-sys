@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "28987f78b92960e0a37be91d35fffbfed9d43df76bd30bdd13e28f55cf7ba46b";
+    "e83a64ac9c00ebe8ab463567ef7711e5e71c472557b8191591d07e406f0b64a1";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "04b9fbb812a4d75ba77e67277b9650649a93b15d76b3682830f07a50f70435f5";
+    "9adbbbdb1ba29c0c5cbb28f61b05489bcd0052e724ea48eb3ca37b857f1c9f8c";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "3f3f5ba3d41085244e6efa6ce62cfd714c413b7c4ab23e207eb77de15652cb2a";
+    "4b7a0343182861108cbdd37dd79577d833cba205bf079113b86b588b66e10180";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -156,6 +156,12 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ),
     ("native/peer.cc", include_bytes!("../native/peer.cc")),
     ("native/peer.h", include_bytes!("../native/peer.h")),
+    ("native/stats.cc", include_bytes!("../native/stats.cc")),
+    ("native/stats.h", include_bytes!("../native/stats.h")),
+    (
+        "native/stats_objects.h",
+        include_bytes!("../native/stats_objects.h"),
+    ),
     ("native/probe.cc", include_bytes!("../native/probe.cc")),
     ("native/probe.h", include_bytes!("../native/probe.h")),
     (

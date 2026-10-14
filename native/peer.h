@@ -37,6 +37,8 @@ struct FfiCertificateFingerprint;
 struct FfiIceServer;
 struct FfiPeerConfiguration;
 class NativePeerConnection;
+class NativeRtpSender;
+class NativeRtpReceiver;
 struct FfiFactoryOptions;
 struct FfiCryptoOptions;
 struct FfiOfferAnswerOptions;
@@ -276,6 +278,10 @@ std::uint8_t peer_add_ice_candidate(const NativePeerConnection &peer,
                                     rust::Slice<const std::uint8_t> sdp_mid,
                                     std::int32_t sdp_mline_index,
                                     rust::Slice<const std::uint8_t> candidate) noexcept;
+std::uint8_t peer_request_sender_stats(const NativePeerConnection&, const NativeRtpSender&, std::uint64_t) noexcept;
+std::uint8_t peer_request_receiver_stats(const NativePeerConnection&, const NativeRtpReceiver&, std::uint64_t) noexcept;
+std::uint8_t peer_request_stats_with_empty_selector(const NativePeerConnection&, bool, std::uint64_t) noexcept;
+void peer_clear_stats_cache(const NativePeerConnection&) noexcept;
 FfiPeerEvent peer_take_event(const NativePeerConnection &peer) noexcept;
 FfiPeerEventObservation
 peer_event_observation(const NativePeerConnection &peer) noexcept;

@@ -757,11 +757,30 @@ previously returned owned outputs remain readable.
 
 `PeerConnection::request_stats()` returns `Result<OperationId, PeerError>`, then a typed
 `PeerConnectionEvent::Stats` snapshot or a terminal operation error. The
-snapshot contains candidate-pair, transport, inbound/outbound RTP and data
-channel records with object IDs and optional metrics; up to 256 records are
-accepted per request. Take each snapshot event before requesting another.
-Upstream RTT and jitter values are seconds; available/target bitrates are
-bits per second. Metrics that WebRTC did not supply remain `None`.
+snapshot's `report` retains the actual complete immutable SDK report, without
+a 256-record truncation. Its `records` field remains a convenience projection
+of candidate-pair, transport, inbound/outbound RTP and data-channel records.
+Take each result event before requesting another; one pending or unconsumed
+report retains admission per peer. Sender/receiver selectors and native cache
+clearing are exposed locally and through `ProductionSession`. Optional selector
+methods preserve the native empty-report result for null or foreign selectors;
+they do not substitute a full peer report or fabricate a selector error.
+
+`RtcStatsReport` supports native get/type filtering, ordered iteration, shared
+retention, deep copying and exact native serialization. `RtcStatsReportBuilder`
+owns native add/try-add/take/transfer operations and freezes without leaving
+mutable aliases. Duplicate insertion/merge preconditions are guarded rather
+than reaching native checks. `RtcStats` exposes all 20 pinned classes' typed
+public fields, including inherited/deprecated fields, native defaults, copies
+and valid base copies. Five base classes have protected SDK constructors;
+constructing them directly returns `None`, while native base copying is usable.
+`RtcStatsAttribute` preserves all 16 typed optional scalar/container variants,
+full-width integers, byte strings and map keys. Undefined is not zero or an
+empty container. Native `ToJson`/`ToString` retain upstream quoting/precision
+limitations; use typed values for exact data. JSON serialization requires finite
+object timestamps. Reports and owned values remain readable after peer close
+and can move independently between caller threads. Upstream RTT/jitter values
+are seconds; available/target bitrates are bits per second.
 
 `PeerConnection::video_transceivers()`, `video_senders()`, and
 `video_receivers()` return owned video-only handles from snapshots of upstream

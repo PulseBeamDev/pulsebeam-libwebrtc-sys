@@ -49,6 +49,7 @@
 #include "api/scoped_refptr.h"
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
+#include "pulsebeam-webrtc-sys/native/stats.h"
 #include "api/stats/rtcstats_objects.h"
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
@@ -676,16 +677,11 @@ class StatsObserver : public webrtc::RTCStatsCollectorCallback {
     FfiPeerEvent event;
     event.kind = kStatsReport;
     event.operation_id = operation_id_;
+    event.stats_report = std::make_unique<NativeRtcStatsReport>(report);
     event.stats_timestamp_us = report->timestamp().us_or(-1);
-    // Never retain an unbounded upstream report in the Rust event queue.
-    bool overflow = false;
-    auto add = [&](FfiStatsRecord record) {
-      if (event.stats_records.size() == 256) {
-        overflow = true;
-      } else {
-        event.stats_records.push_back(std::move(record));
-      }
-    };
+    // One admitted report, including an unconsumed terminal result, per peer.
+    // The compatibility projection is not the complete report contract.
+    auto add = [&](FfiStatsRecord record) { event.stats_records.push_back(std::move(record)); };
 #define COPY(member) AddStatsField(record.fields, #member, stat->member)
     for (const auto* stat :
          report->GetStatsOfType<webrtc::RTCIceCandidatePairStats>()) {
@@ -728,13 +724,7 @@ class StatsObserver : public webrtc::RTCStatsCollectorCallback {
       add(std::move(record));
     }
 #undef COPY
-    if (overflow) {
-      state_->Complete(ErrorEvent(
-          operation_id_, webrtc::RTCErrorType::RESOURCE_EXHAUSTED,
-          "stats report exceeds the 256-record limit"));
-    } else {
-      state_->Complete(std::move(event));
-    }
+    state_->Complete(std::move(event));
   }
 
  private:
@@ -2027,6 +2017,28 @@ std::uint8_t peer_request_stats(const NativePeerConnection& peer,
       webrtc::make_ref_counted<StatsObserver>(state->events, operation_id).get());
   return 0;
 }
+
+std::uint8_t peer_request_sender_stats(const NativePeerConnection& peer, const NativeRtpSender& sender, std::uint64_t id) noexcept {
+  const auto& state = peer.state();
+  const auto status = state->events->BeginStats(id); if (status != 0) return status;
+  state->peer->GetStats(sender.sender(), webrtc::make_ref_counted<StatsObserver>(state->events, id));
+  return 0;
+}
+std::uint8_t peer_request_receiver_stats(const NativePeerConnection& peer, const NativeRtpReceiver& receiver, std::uint64_t id) noexcept {
+  const auto& state = peer.state();
+  const auto status = state->events->BeginStats(id); if (status != 0) return status;
+  state->peer->GetStats(receiver.receiver(), webrtc::make_ref_counted<StatsObserver>(state->events, id));
+  return 0;
+}
+std::uint8_t peer_request_stats_with_empty_selector(const NativePeerConnection& peer, bool receiver, std::uint64_t id) noexcept {
+  const auto& state = peer.state();
+  const auto status = state->events->BeginStats(id); if (status != 0) return status;
+  auto callback = webrtc::make_ref_counted<StatsObserver>(state->events, id);
+  if (receiver) state->peer->GetStats(webrtc::scoped_refptr<webrtc::RtpReceiverInterface>(), callback);
+  else state->peer->GetStats(webrtc::scoped_refptr<webrtc::RtpSenderInterface>(), callback);
+  return 0;
+}
+void peer_clear_stats_cache(const NativePeerConnection& peer) noexcept { peer.peer()->ClearStatsCache(); }
 
 bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
                       std::int32_t start, std::int32_t maximum,

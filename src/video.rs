@@ -1280,7 +1280,7 @@ impl RtpSender {
 /// ```
 pub struct RtpReceiver {
     native: cxx::UniquePtr<ffi::NativeRtpReceiver>,
-    peer: Rc<PeerInner>,
+    pub(crate) peer: Rc<PeerInner>,
 }
 
 impl fmt::Debug for RtpReceiver {
@@ -1543,7 +1543,7 @@ impl RtpReceiver {
         })
     }
 
-    fn native(&self) -> &ffi::NativeRtpReceiver {
+    pub(crate) fn native(&self) -> &ffi::NativeRtpReceiver {
         self.native.as_ref().expect("validated RTP receiver")
     }
 }

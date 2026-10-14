@@ -339,6 +339,8 @@ pub struct OperationCompletion {
 /// Native string fields retain their bytes, including non-UTF-8 and NUL.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeerStatsSnapshot {
+    /// Complete retained SDK report; records below are a compatibility projection.
+    pub report: crate::RtcStatsReport,
     pub operation_id: OperationId,
     pub timestamp_us: i64,
     pub records: Vec<PeerStatsRecord>,
@@ -2351,6 +2353,42 @@ impl PeerConnection {
         Self::operation_admission(id, ffi::peer_request_stats(self.native(), id.0))
     }
 
+    pub fn request_sender_stats(&self, sender: &RtpSender) -> Result<OperationId, PeerError> {
+        self.request_stats_with_sender_selector(Some(sender))
+    }
+    /// Null and foreign selectors yield the SDK's empty report, not a binding
+    /// error or the complete peer report. Only target-peer admission is checked.
+    pub fn request_stats_with_sender_selector(
+        &self,
+        selector: Option<&RtpSender>,
+    ) -> Result<OperationId, PeerError> {
+        let id = self.next_operation();
+        let status = match selector {
+            Some(sender) => ffi::peer_request_sender_stats(self.native(), sender.native(), id.0),
+            None => ffi::peer_request_stats_with_empty_selector(self.native(), false, id.0),
+        };
+        Self::operation_admission(id, status)
+    }
+    pub fn request_receiver_stats(&self, receiver: &RtpReceiver) -> Result<OperationId, PeerError> {
+        self.request_stats_with_receiver_selector(Some(receiver))
+    }
+    pub fn request_stats_with_receiver_selector(
+        &self,
+        selector: Option<&RtpReceiver>,
+    ) -> Result<OperationId, PeerError> {
+        let id = self.next_operation();
+        let status = match selector {
+            Some(receiver) => {
+                ffi::peer_request_receiver_stats(self.native(), receiver.native(), id.0)
+            }
+            None => ffi::peer_request_stats_with_empty_selector(self.native(), true, id.0),
+        };
+        Self::operation_admission(id, status)
+    }
+    pub fn clear_stats_cache(&self) {
+        ffi::peer_clear_stats_cache(self.native());
+    }
+
     /// Start native event logging, consuming the owned output on success or
     /// failure. `None` selects the engine's default period. Requires an event
     /// log factory at construction; native kill-switch trials remain effective.
@@ -2651,6 +2689,7 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
     match event.kind {
         0 => None,
         12 => Some(PeerConnectionEvent::Stats(PeerStatsSnapshot {
+            report: crate::RtcStatsReport::from_native(event.stats_report),
             operation_id: OperationId(event.operation_id),
             timestamp_us: event.stats_timestamp_us,
             records: event

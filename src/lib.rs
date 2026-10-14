@@ -349,6 +349,8 @@ pub use task_queue_provider::{
     TaskDelayPrecision, TaskQueueContext, TaskQueueFactoryProvider, TaskQueueIdentity,
     TaskQueueLocation, TaskQueuePostError, TaskQueueProvider, TaskQueueTask,
 };
+mod stats;
+pub use stats::*;
 mod timestamp;
 pub use timestamp::{FiniteTimestamp, TimeValueError, Timestamp};
 mod metronome;
@@ -1971,6 +1973,50 @@ mod ffi {
         sdp: Vec<u8>,
     }
 
+    struct FfiRtcStatsBytes {
+        value: Vec<u8>,
+    }
+    struct FfiRtcStatsUint64Entry {
+        key: Vec<u8>,
+        value: u64,
+    }
+    struct FfiRtcStatsDoubleEntry {
+        key: Vec<u8>,
+        value: f64,
+    }
+    #[derive(Default)]
+    struct FfiRtcStatsValue {
+        kind: u8,
+        has_value: bool,
+        boolean: bool,
+        int32_value: i32,
+        uint32_value: u32,
+        int64_value: i64,
+        uint64_value: u64,
+        decimal: f64,
+        text: Vec<u8>,
+        booleans: Vec<u8>,
+        int32s: Vec<i32>,
+        uint32s: Vec<u32>,
+        int64s: Vec<i64>,
+        uint64s: Vec<u64>,
+        decimals: Vec<f64>,
+        texts: Vec<FfiRtcStatsBytes>,
+        uint64_map: Vec<FfiRtcStatsUint64Entry>,
+        decimal_map: Vec<FfiRtcStatsDoubleEntry>,
+    }
+    struct FfiRtcStatsAttribute {
+        name: Vec<u8>,
+        value: FfiRtcStatsValue,
+    }
+    struct FfiRtcStatsData {
+        class_kind: u8,
+        fields: Vec<FfiRtcStatsValue>,
+    }
+    struct FfiRtcStatsEntry {
+        value: UniquePtr<NativeRtcStats>,
+    }
+
     struct FfiStatsField {
         name: String,
         kind: u8,
@@ -1998,6 +2044,7 @@ mod ffi {
 
     struct FfiPeerEvent {
         ice_state: i32,
+        stats_report: UniquePtr<NativeRtcStatsReport>,
         stats_timestamp_us: i64,
         stats_records: Vec<FfiStatsRecord>,
         kind: u8,
@@ -4476,6 +4523,78 @@ mod ffi {
             source: &NativeStringBuilder,
         );
 
+        include!("pulsebeam-webrtc-sys/native/stats.h");
+        type NativeRtcStats;
+        type NativeRtcStatsAttribute;
+        type NativeRtcStatsReport;
+        type NativeRtcStatsReportBuilder;
+        fn rtc_stats_new(class_kind: u8, id: &[u8], timestamp: i64) -> UniquePtr<NativeRtcStats>;
+        fn rtc_stats_copy(value: &NativeRtcStats) -> UniquePtr<NativeRtcStats>;
+        fn rtc_stats_copy_as(value: &NativeRtcStats, class_kind: u8) -> UniquePtr<NativeRtcStats>;
+        fn rtc_stats_class(value: &NativeRtcStats) -> u8;
+        fn rtc_stats_id(value: &NativeRtcStats) -> Vec<u8>;
+        fn rtc_stats_type(value: &NativeRtcStats) -> Vec<u8>;
+        fn rtc_stats_timestamp(value: &NativeRtcStats) -> i64;
+        fn rtc_stats_set_timestamp(value: Pin<&mut NativeRtcStats>, timestamp: i64);
+        fn rtc_stats_data(value: &NativeRtcStats) -> FfiRtcStatsData;
+        fn rtc_stats_set_data(value: Pin<&mut NativeRtcStats>, data: &FfiRtcStatsData) -> bool;
+        fn rtc_stats_attributes(value: &NativeRtcStats) -> Vec<FfiRtcStatsAttribute>;
+        fn rtc_stats_equal(a: &NativeRtcStats, b: &NativeRtcStats) -> bool;
+        fn rtc_stats_json(value: &NativeRtcStats) -> Vec<u8>;
+        fn rtc_stats_attribute_new(
+            name: &[u8],
+            value: &FfiRtcStatsValue,
+        ) -> UniquePtr<NativeRtcStatsAttribute>;
+        fn rtc_stats_attribute_copy(
+            value: &NativeRtcStatsAttribute,
+        ) -> UniquePtr<NativeRtcStatsAttribute>;
+        fn rtc_stats_attribute_data(value: &NativeRtcStatsAttribute) -> FfiRtcStatsAttribute;
+        fn rtc_stats_attribute_has_value(value: &NativeRtcStatsAttribute) -> bool;
+        fn rtc_stats_attribute_is_sequence(value: &NativeRtcStatsAttribute) -> bool;
+        fn rtc_stats_attribute_is_string(value: &NativeRtcStatsAttribute) -> bool;
+        fn rtc_stats_attribute_string(value: &NativeRtcStatsAttribute) -> Vec<u8>;
+        fn rtc_stats_attribute_equal(
+            a: &NativeRtcStatsAttribute,
+            b: &NativeRtcStatsAttribute,
+        ) -> bool;
+        fn rtc_stats_report_clone(value: &NativeRtcStatsReport) -> UniquePtr<NativeRtcStatsReport>;
+        fn rtc_stats_report_same(a: &NativeRtcStatsReport, b: &NativeRtcStatsReport) -> bool;
+        fn rtc_stats_report_timestamp(value: &NativeRtcStatsReport) -> i64;
+        fn rtc_stats_report_size(value: &NativeRtcStatsReport) -> usize;
+        fn rtc_stats_report_keys(value: &NativeRtcStatsReport) -> Vec<FfiRtcStatsBytes>;
+        fn rtc_stats_report_get(
+            value: &NativeRtcStatsReport,
+            id: &[u8],
+            class_kind: u8,
+        ) -> UniquePtr<NativeRtcStats>;
+        fn rtc_stats_report_of_class(
+            value: &NativeRtcStatsReport,
+            class_kind: u8,
+        ) -> Vec<FfiRtcStatsEntry>;
+        fn rtc_stats_report_serializable(value: &NativeRtcStatsReport) -> bool;
+        fn rtc_stats_report_json(value: &NativeRtcStatsReport) -> Vec<u8>;
+        fn rtc_stats_report_copy(
+            value: &NativeRtcStatsReport,
+        ) -> UniquePtr<NativeRtcStatsReportBuilder>;
+        fn rtc_stats_report_new(timestamp: i64) -> UniquePtr<NativeRtcStatsReportBuilder>;
+        fn rtc_stats_builder_size(value: &NativeRtcStatsReportBuilder) -> usize;
+        fn rtc_stats_builder_add(
+            value: Pin<&mut NativeRtcStatsReportBuilder>,
+            stat: UniquePtr<NativeRtcStats>,
+            try_add: bool,
+        ) -> bool;
+        fn rtc_stats_builder_take(
+            value: Pin<&mut NativeRtcStatsReportBuilder>,
+            id: &[u8],
+        ) -> UniquePtr<NativeRtcStats>;
+        fn rtc_stats_builder_merge(
+            value: Pin<&mut NativeRtcStatsReportBuilder>,
+            other: Pin<&mut NativeRtcStatsReportBuilder>,
+        ) -> bool;
+        fn rtc_stats_report_freeze(
+            value: UniquePtr<NativeRtcStatsReportBuilder>,
+        ) -> UniquePtr<NativeRtcStatsReport>;
+
         include!("pulsebeam-webrtc-sys/native/rtc_error.h");
         type NativeRtcError;
         fn rtc_error_default() -> UniquePtr<NativeRtcError>;
@@ -5403,6 +5522,22 @@ mod ffi {
             message: &mut Vec<u8>,
         ) -> u8;
         fn peer_request_stats(peer: &NativePeerConnection, operation_id: u64) -> u8;
+        fn peer_request_sender_stats(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+            operation_id: u64,
+        ) -> u8;
+        fn peer_request_receiver_stats(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+            operation_id: u64,
+        ) -> u8;
+        fn peer_request_stats_with_empty_selector(
+            peer: &NativePeerConnection,
+            receiver: bool,
+            operation_id: u64,
+        ) -> u8;
+        fn peer_clear_stats_cache(peer: &NativePeerConnection);
         fn peer_set_bitrate(
             peer: &NativePeerConnection,
             minimum: i32,

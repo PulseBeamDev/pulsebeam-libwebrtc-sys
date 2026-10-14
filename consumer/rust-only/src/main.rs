@@ -87,6 +87,40 @@ fn main() {
                 .unwrap()
                 .reliable()
         );
+        let mut stats = pulsebeam_webrtc_sys::RtcStats::new(
+            pulsebeam_webrtc_sys::RtcStatsClass::DataChannelStats,
+            b"consumer-stat\xff\0",
+            pulsebeam_webrtc_sys::Timestamp::zero(),
+        )
+        .unwrap();
+        let pulsebeam_webrtc_sys::RtcStatsValues::DataChannelStats(mut values) = stats.values()
+        else {
+            panic!()
+        };
+        values.bytes_sent = Some(u64::MAX);
+        assert!(
+            stats.set_values(pulsebeam_webrtc_sys::RtcStatsValues::DataChannelStats(
+                values
+            ))
+        );
+        let mut report = pulsebeam_webrtc_sys::RtcStatsReportBuilder::new(
+            pulsebeam_webrtc_sys::Timestamp::zero(),
+        );
+        assert!(report.add(stats));
+        let report = report.freeze();
+        std::thread::spawn(move || {
+            assert!(
+                report
+                    .get_as(
+                        b"consumer-stat\xff\0",
+                        pulsebeam_webrtc_sys::RtcStatsClass::DataChannelStats
+                    )
+                    .is_some()
+            );
+            assert_eq!(report.len(), 1);
+        })
+        .join()
+        .unwrap();
         let alias = channel.clone();
         assert!(channel.same_resource(&alias));
         let limits = pulsebeam_webrtc_sys::DataChannel::receive_queue_limits();

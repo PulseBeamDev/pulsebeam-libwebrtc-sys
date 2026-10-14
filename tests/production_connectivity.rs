@@ -41,6 +41,7 @@ struct Events {
     complete: HashMap<(SessionPeerId, OperationId), Option<SessionDescription>>,
     gathered: HashSet<SessionPeerId>,
     channels: Vec<(SessionPeerId, SessionChannelId, Vec<u8>)>,
+    stats: HashMap<(SessionPeerId, OperationId), PeerStatsSnapshot>,
 }
 impl Events {
     fn drain(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
@@ -54,6 +55,13 @@ impl Events {
                                 .is_none()
                         );
                     }
+                    SessionEvent::Stats(value) => {
+                        assert!(
+                            self.stats
+                                .insert((peer, value.operation_id), value)
+                                .is_none()
+                        );
+                    }
                     SessionEvent::DataChannel { channel, label } => {
                         self.channels.push((peer, channel, label));
                     }
@@ -63,6 +71,21 @@ impl Events {
                     _ => {}
                 }
             }
+        }
+    }
+    fn stats(
+        &mut self,
+        session: &mut ProductionSession,
+        peers: [SessionPeerId; 2],
+        peer: SessionPeerId,
+        id: OperationId,
+    ) -> PeerStatsSnapshot {
+        loop {
+            self.drain(session, peers);
+            if let Some(value) = self.stats.remove(&(peer, id)) {
+                return value;
+            }
+            wait(session);
         }
     }
     fn finish(
@@ -140,7 +163,7 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
     let id = session.create_offer(peers[0], false).unwrap();
     let offer = events.finish(&mut session, peers, peers[0], id).unwrap();
     let offer = events.gather(&mut session, peers, peers[0], offer);
-    thread::spawn(move || {
+    let report = thread::spawn(move || {
         let mut session = session;
         let id = session.set_remote_description(peers[1], offer).unwrap();
         events.finish(&mut session, peers, peers[1], id);
@@ -186,11 +209,19 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
         };
         assert!(snapshot.records.iter().any(|record| matches!(record, PeerStatsRecord::DataChannel(value)
             if value.label.as_deref() == Some(expected_label.as_slice()) && value.protocol.as_deref() == Some(protocol.as_slice()))));
+        assert!(snapshot.report.len() > snapshot.records.len(), "full report includes the other native families");
+        let native_channel = snapshot.report.of_class(RtcStatsClass::DataChannelStats).into_iter().find(|v| matches!(v.values(), RtcStatsValues::DataChannelStats(value) if value.label.as_deref() == Some(expected_label.as_slice()))).unwrap();
+        let RtcStatsValues::DataChannelStats(values) = native_channel.values() else { panic!() };
+        assert_eq!(values.protocol.as_deref(), Some(protocol.as_slice()));
+        assert_eq!(values.bytes_received, Some(3));
         session.close_peer(peers[0]).unwrap();
         session.close_peer(peers[1]).unwrap();
         assert_eq!(session.channel_label(outgoing).unwrap(), expected_label);
         session.shutdown().unwrap();
+        snapshot.report
     }).join().unwrap();
+    assert!(!report.is_empty());
+    assert!(!report.of_class(RtcStatsClass::DataChannelStats).is_empty());
 }
 
 #[test]
@@ -408,6 +439,70 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
             wait(&mut session);
         }
         assert_eq!(session.dtmf_comma_delay_ms(dtmf).unwrap(), 2000);
+        session.clear_stats_cache(peers[0]).unwrap();
+        let stats_id = session.request_sender_stats(sender).unwrap();
+        assert!(
+            session.request_sender_stats(sender).is_err(),
+            "native report result retains admission"
+        );
+        let sender_stats = events.stats(&mut session, peers, peers[0], stats_id);
+        assert!(
+            sender_stats
+                .report
+                .of_class(RtcStatsClass::DataChannelStats)
+                .is_empty(),
+            "sender selection is not the complete peer report"
+        );
+        assert!(
+            !sender_stats
+                .report
+                .of_class(RtcStatsClass::OutboundRtpStreamStats)
+                .is_empty()
+        );
+        let stats_id = session.request_receiver_stats(receiver).unwrap();
+        let receiver_stats = events.stats(&mut session, peers, peers[0], stats_id);
+        assert!(
+            receiver_stats
+                .report
+                .of_class(RtcStatsClass::DataChannelStats)
+                .is_empty()
+        );
+        let id = session
+            .request_stats_with_sender_selector(peers[0], None)
+            .unwrap();
+        assert!(
+            events
+                .stats(&mut session, peers, peers[0], id)
+                .report
+                .is_empty()
+        );
+        let id = session
+            .request_stats_with_receiver_selector(peers[0], None)
+            .unwrap();
+        assert!(
+            events
+                .stats(&mut session, peers, peers[0], id)
+                .report
+                .is_empty()
+        );
+        let id = session
+            .request_stats_with_sender_selector(peers[1], Some(sender))
+            .unwrap();
+        assert!(
+            events
+                .stats(&mut session, peers, peers[1], id)
+                .report
+                .is_empty()
+        );
+        let id = session
+            .request_stats_with_receiver_selector(peers[1], Some(receiver))
+            .unwrap();
+        assert!(
+            events
+                .stats(&mut session, peers, peers[1], id)
+                .report
+                .is_empty()
+        );
         // Keep this native notification and transport transitions unconsumed
         // across migration and peer close.
         (session, info, connected_sctp)
