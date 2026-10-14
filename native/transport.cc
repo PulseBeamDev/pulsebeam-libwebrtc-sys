@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/tls.h"
 #include "pulsebeam-webrtc-sys/native/rtc_error.h"
 #include "absl/strings/str_format.h"
@@ -19,6 +20,7 @@
 namespace pulsebeam::webrtc_sys {
 namespace {
 template <class Event> struct EventQueue {
+  std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::size_t capacity = 0;
   std::deque<Event> events;
@@ -30,6 +32,8 @@ template <class Event> struct EventQueue {
     dropped = 0;
   }
   void Push(Event event) {
+    struct Notify { std::shared_ptr<ReadinessSignal> signal;
+      ~Notify() { SignalReadiness(signal); } } notify{readiness};
     std::lock_guard lock(mutex);
     if (!capacity) return;
     if (events.size() == capacity) {
@@ -153,17 +157,31 @@ const std::unique_ptr<NativeSctpTransport::State>& NativeSctpTransport::state() 
 }
 std::unique_ptr<NativeDtlsTransport> wrap_dtls_transport(
     webrtc::scoped_refptr<webrtc::DtlsTransportInterface> transport,
-    webrtc::Thread* network) noexcept {
+    webrtc::Thread* network,
+    std::shared_ptr<ReadinessSignal> readiness) noexcept {
   if (!transport) return nullptr;
   auto state = std::make_unique<NativeDtlsTransport::State>();
+  state->queue.readiness = std::move(readiness);
   state->transport = std::move(transport);
   state->network = network;
   return std::make_unique<NativeDtlsTransport>(std::move(state));
+}
+std::unique_ptr<NativeDtlsTransport> peer_dtls_transport_by_mid(
+    const NativePeerConnection& peer, rust::Slice<const std::uint8_t> mid) noexcept {
+  auto native = peer.network_thread()->BlockingCall([&] {
+    return peer.peer()->LookupDtlsTransportByMid(
+        std::string(reinterpret_cast<const char*>(mid.data()), mid.size()));
+  });
+  return wrap_dtls_transport(std::move(native), peer.network_thread(), peer.readiness());
+}
+bool ice_transport_same_resource(const NativeIceTransport& first, const NativeIceTransport& second) noexcept {
+  return first.state()->transport.get() == second.state()->transport.get();
 }
 std::unique_ptr<NativeSctpTransport> peer_sctp_transport(const NativePeerConnection& peer) noexcept {
   auto transport = peer.peer()->GetSctpTransport();
   if (!transport) return nullptr;
   auto state = std::make_unique<NativeSctpTransport::State>();
+  state->queue.readiness = peer.readiness();
   state->transport = std::move(transport);
   state->network = peer.network_thread();
   return std::make_unique<NativeSctpTransport>(std::move(state));
@@ -189,11 +207,11 @@ std::unique_ptr<NativeDtlsTransport> sctp_transport_dtls(
   auto dtls = state.network->BlockingCall([&] {
     return state.transport->dtls_transport();
   });
-  return wrap_dtls_transport(std::move(dtls), state.network);
+  return wrap_dtls_transport(std::move(dtls), state.network, state.queue.readiness);
 }
 std::unique_ptr<NativeDtlsTransport> sctp_information_dtls(
     const NativeSctpInformation& information, const NativePeerConnection& peer) noexcept {
-  return wrap_dtls_transport(information.value().dtls_transport(), peer.network_thread());
+  return wrap_dtls_transport(information.value().dtls_transport(), peer.network_thread(), peer.readiness());
 }
 FfiDtlsInformation dtls_information_fields(const NativeDtlsInformation& information) noexcept {
   const auto& value = information.value();

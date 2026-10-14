@@ -52,10 +52,18 @@ impl DtmfSender {
         native: cxx::UniquePtr<ffi::NativeDtmfSender>,
         peer: Rc<PeerInner>,
     ) -> Self {
-        Self(Rc::new(DtmfInner {
+        let identity = ffi::dtmf_sender_identity(native.as_ref().unwrap());
+        let mut handles = peer.dtmf_senders.borrow_mut();
+        handles.retain(|_, weak| weak.strong_count() != 0);
+        if let Some(inner) = handles.get(&identity).and_then(std::rc::Weak::upgrade) {
+            return Self(inner);
+        }
+        let inner = Rc::new(DtmfInner {
             native,
-            _peer: peer,
-        }))
+            _peer: peer.clone(),
+        });
+        handles.insert(identity, Rc::downgrade(&inner));
+        Self(inner)
     }
 
     fn native(&self) -> &ffi::NativeDtmfSender {
@@ -63,6 +71,10 @@ impl DtmfSender {
             .native
             .as_ref()
             .expect("validated native DTMF sender")
+    }
+
+    pub fn same_resource(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 
     pub fn can_insert_tones(&self) -> bool {

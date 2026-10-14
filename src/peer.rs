@@ -1616,7 +1616,7 @@ pub(crate) struct PeerInner {
         RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::SenderObserverInner>>>,
     pub(crate) receiver_observers:
         RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::ReceiverObserverInner>>>,
-    pub(crate) dtmf_senders: RefCell<HashMap<String, std::rc::Weak<crate::dtmf::DtmfInner>>>,
+    pub(crate) dtmf_senders: RefCell<HashMap<usize, std::rc::Weak<crate::dtmf::DtmfInner>>>,
     pub(crate) dtls_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::DtlsInner>>>,
     pub(crate) sctp_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::SctpInner>>>,
 }
@@ -1624,6 +1624,14 @@ pub(crate) struct PeerInner {
 impl PeerConnection {
     /// Native owning SCTP transport, absent before one is created. Repeated
     /// getters and its DTLS associations share native observer registrations.
+    /// Native MID lookup. No transport is guessed from a sender or SDP parse.
+    pub fn dtls_transport_by_mid(&self, mid: &[u8]) -> Option<crate::DtlsTransport> {
+        crate::DtlsTransport::from_native(
+            ffi::peer_dtls_transport_by_mid(self.native(), mid),
+            self.inner.clone(),
+        )
+    }
+
     pub fn sctp_transport(&self) -> Option<crate::SctpTransport> {
         crate::SctpTransport::from_native(
             ffi::peer_sctp_transport(self.inner.native()),

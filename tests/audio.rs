@@ -126,6 +126,13 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
         .unwrap();
     assert!(!transceiver.sender().id().is_empty());
     let sender = transceiver.sender();
+    assert!(sender.same_resource(&transceiver.sender()));
+    assert!(
+        transceiver
+            .receiver()
+            .same_resource(&transceiver.receiver())
+    );
+    assert!(transceiver.same_resource(&peer.audio_transceivers().unwrap()[0]));
     let observer = sender.packet_observer();
     let alias = transceiver.sender().packet_observer();
     assert!(observer.same_resource(&alias));
@@ -193,6 +200,7 @@ fn caller_fed_audio_track_rejects_foreign_sources_and_survives_source_owner_drop
         .dtmf_sender()
         .expect("audio native DTMF proxy");
     let same_dtmf = transceiver.sender().dtmf_sender().unwrap();
+    assert!(dtmf.same_resource(&same_dtmf));
     assert_eq!(dtmf.tones(), "");
     assert_eq!(dtmf.duration_ms(), 100);
     assert_eq!(dtmf.inter_tone_gap_ms(), 50);
@@ -336,6 +344,7 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
     let mut sink = receivers[0].attach_audio_sink().unwrap();
     let frame = AudioPcmFrame::i16_interleaved(48_000, 1, 1_000_000, vec![1000; 480]).unwrap();
     let mut received = None;
+    let mut receiver_sources = Vec::new();
     let mut alice_connected = false;
     let mut bob_connected = false;
     for tick in 0..100_000 {
@@ -361,8 +370,18 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
                 )
             );
         }
-        received = sink.try_next_frame();
-        if received.is_some() {
+        if let Some(frame) = sink.try_next_frame() {
+            received = Some(frame);
+        }
+        // A playout pull may produce concealment before the first RTP packet.
+        // Wait for an actual native source observation, not merely any PCM frame.
+        receiver_sources = receivers[0].get_sources();
+        if received.is_some()
+            && receiver_sources.iter().any(|source| {
+                source.source_type() == pulsebeam_webrtc_sys::RtpSourceType::Ssrc
+                    && source.source_id() == sender.ssrc()
+            })
+        {
             break;
         }
         clock.advance(Duration::from_millis(1)).unwrap();
@@ -386,7 +405,6 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
             sink.dropped_frames(), snapshot(&alice), snapshot(&bob)
         )
     });
-    let receiver_sources = receivers[0].get_sources();
     assert!(receiver_sources.iter().any(|source| source.source_type()
         == pulsebeam_webrtc_sys::RtpSourceType::Ssrc
         && source.source_id() == sender.ssrc()));

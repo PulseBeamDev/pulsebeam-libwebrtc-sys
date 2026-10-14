@@ -493,9 +493,11 @@ pub use peer_configuration::{
 };
 pub use production::{
     ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionChannelId,
-    SessionEvent, SessionFrameDecryptorId, SessionFrameEncryptorId, SessionPeerId,
-    SessionReceiverId, SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId,
-    SessionSourceId, SessionTransceiverId,
+    SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEvent,
+    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionPeerId,
+    SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
+    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTransceiverId,
+    SessionTransportError,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -4550,6 +4552,14 @@ mod ffi {
         type NativeDtlsInformation;
         type NativeSctpInformation;
         type NativeDtlsEvent;
+        fn peer_dtls_transport_by_mid(
+            peer: &NativePeerConnection,
+            mid: &[u8],
+        ) -> UniquePtr<NativeDtlsTransport>;
+        fn ice_transport_same_resource(
+            first: &NativeIceTransport,
+            second: &NativeIceTransport,
+        ) -> bool;
         fn peer_sctp_transport(peer: &NativePeerConnection) -> UniquePtr<NativeSctpTransport>;
         fn dtls_transport_identity(transport: &NativeDtlsTransport) -> usize;
         fn sctp_transport_identity(transport: &NativeSctpTransport) -> usize;
@@ -5745,7 +5755,20 @@ mod ffi {
             error_type: &mut u8,
             error: &mut String,
         ) -> bool;
-        fn rtp_sender_dtmf(sender: &NativeRtpSender) -> UniquePtr<NativeDtmfSender>;
+        fn rtp_sender_same_resource(first: &NativeRtpSender, second: &NativeRtpSender) -> bool;
+        fn rtp_receiver_same_resource(
+            first: &NativeRtpReceiver,
+            second: &NativeRtpReceiver,
+        ) -> bool;
+        fn rtp_transceiver_same_resource(
+            first: &NativeRtpTransceiver,
+            second: &NativeRtpTransceiver,
+        ) -> bool;
+        fn dtmf_sender_identity(sender: &NativeDtmfSender) -> usize;
+        fn rtp_sender_dtmf(
+            sender: &NativeRtpSender,
+            peer: &NativePeerConnection,
+        ) -> UniquePtr<NativeDtmfSender>;
         fn dtmf_sender_can_insert(sender: &NativeDtmfSender) -> bool;
         fn dtmf_sender_insert(
             sender: &NativeDtmfSender,

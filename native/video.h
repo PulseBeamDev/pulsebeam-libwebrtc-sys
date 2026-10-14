@@ -389,7 +389,11 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t& error_type,
                                    rust::String& error) noexcept;
 struct FfiDtmfToneChange;
-std::unique_ptr<NativeDtmfSender> rtp_sender_dtmf(const NativeRtpSender& sender) noexcept;
+bool rtp_sender_same_resource(const NativeRtpSender& first, const NativeRtpSender& second) noexcept;
+bool rtp_receiver_same_resource(const NativeRtpReceiver& first, const NativeRtpReceiver& second) noexcept;
+bool rtp_transceiver_same_resource(const NativeRtpTransceiver& first, const NativeRtpTransceiver& second) noexcept;
+std::size_t dtmf_sender_identity(const NativeDtmfSender& sender) noexcept;
+std::unique_ptr<NativeDtmfSender> rtp_sender_dtmf(const NativeRtpSender& sender, const NativePeerConnection& peer) noexcept;
 bool dtmf_sender_can_insert(const NativeDtmfSender& sender) noexcept;
 std::uint8_t dtmf_sender_insert(const NativeDtmfSender& sender, rust::Str tones,
     std::int32_t duration, std::int32_t gap, bool has_comma_delay,

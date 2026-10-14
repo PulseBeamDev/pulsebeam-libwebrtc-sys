@@ -113,7 +113,7 @@ artifact through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`.
 resource graph. It constructs headless peers on system time and retains
 WebRTC's existing network, worker and signaling threads. There is no additional
 application owner executor. All mutations require `&mut self`; peers, channels,
-encoded sources, RTP handles and sinks stay private. Copyable session IDs and
+encoded sources, RTP handles, DTMF senders, transports and sinks stay private. Copyable session IDs and
 owned event/frame values are the application boundary, so an async actor may
 retain the session across awaits and migrate between executor threads.
 
@@ -125,8 +125,8 @@ opaque media. Low-level local handles and controlled execution remain non-Send
 and cannot be imported into a production session. Production factories and
 controlled worlds reject coexistence before starting production threads.
 
-Drain `try_peer_event`, `try_channel_event` and any attached encoded sinks, then
-await `ready()` (or call `poll_ready` from an executor). Readiness coalesces
+Drain `try_peer_event`, `try_channel_event`, registered DTMF/DTLS/SCTP observer
+queues and any attached encoded sinks, then await `ready()` (or call `poll_ready` from an executor). Readiness coalesces
 activity, may be spurious and never enters the engine or drives a clock. A
 single actor waiter is supported; its waker must schedule the actor, not run
 engine operations inside a native callback. Native event locks are released
@@ -134,7 +134,14 @@ before waking. Each peer admits at most 64 asynchronous operations until their
 terminal outcomes are consumed; excess admission fails synchronously with
 `ResourceExhausted`. Closing retains peer observation identities so accepted
 pending operations still produce one terminal outcome. Shutdown is idempotent;
-owned outputs already returned remain valid. `close_source(id)` idempotently
+owned outputs already returned remain valid. Transport IDs refer to retained
+native public facades; each ICE-internal operation reacquires its revocable
+pointer on the network role and reports `InternalUnavailable` after native
+teardown. DTLS information and certificate copies are independent owned values;
+SCTP snapshots contain the exact callback-time DTLS ID. Repeated endpoint and
+transport lookups share actual native identities and observer queues, not string
+ID joins. Explicit `release_*_transport` and `release_dtmf_sender` calls retire
+an individual actor entry and invalidate copies of that ID. `close_source(id)` idempotently
 retires an individual producer and removes its actor-owned entry; existing
 native track references can remain until the sender is detached/stopped.
 

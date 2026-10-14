@@ -87,5 +87,39 @@ fn main() {
             alias.state(),
             pulsebeam_webrtc_sys::DataChannelState::Closed
         );
+        let mut session = pulsebeam_webrtc_sys::ProductionSession::new(Default::default()).unwrap();
+        let peer = session.create_peer(Default::default()).unwrap();
+        assert!(session.peer_sctp_transport(peer).unwrap().is_none());
+        assert!(
+            session
+                .peer_dtls_transport_by_mid(peer, b"absent")
+                .unwrap()
+                .is_none()
+        );
+        let source = session.create_opus_source(1).unwrap();
+        let transceiver = session
+            .publish_opus(
+                peer,
+                source,
+                "consumer-audio",
+                pulsebeam_webrtc_sys::RtpTransceiverDirection::SendOnly,
+            )
+            .unwrap();
+        let sender = session.sender(transceiver).unwrap();
+        let dtmf = session.sender_dtmf(sender).unwrap().unwrap();
+        assert_eq!(session.sender_dtmf(sender).unwrap(), Some(dtmf));
+        assert!(!session.dtmf_can_insert_tones(dtmf).unwrap());
+        assert!(
+            session
+                .register_dtmf_observer(dtmf, std::num::NonZeroUsize::new(2).unwrap())
+                .unwrap()
+        );
+        std::thread::spawn(move || {
+            session.shutdown().unwrap();
+            assert!(!session.dtmf_can_insert_tones(dtmf).unwrap());
+            session.release_dtmf_sender(dtmf).unwrap();
+        })
+        .join()
+        .unwrap();
     }
 }

@@ -98,6 +98,12 @@ impl SctpTransportState {
 pub struct DtlsTransportInformation {
     native: cxx::UniquePtr<ffi::NativeDtlsInformation>,
 }
+// SAFETY: this is an independent native value copy, not a transport facade.
+// It owns its certificate-chain clone, whose existing owning Rust wrapper is
+// Send + Sync. Shared methods read/copy only; assignments require &mut self.
+unsafe impl Send for DtlsTransportInformation {}
+unsafe impl Sync for DtlsTransportInformation {}
+
 impl Default for DtlsTransportInformation {
     fn default() -> Self {
         Self::from_native(ffi::dtls_information_default())
@@ -536,6 +542,10 @@ struct IceInner {
 #[derive(Clone)]
 pub struct IceTransport(Rc<IceInner>);
 impl IceTransport {
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::ice_transport_same_resource(self.native(), other.native())
+    }
+
     fn native(&self) -> &ffi::NativeIceTransport {
         self.0.native.as_ref().unwrap()
     }

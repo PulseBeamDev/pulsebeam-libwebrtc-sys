@@ -271,8 +271,10 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
 
             vendor = temporary_root / "registry"
             bootstrap_environment = os.environ.copy()
-            # The image's default Cargo home can be root-owned; proof cache must be writable and isolated.
-            bootstrap_environment["CARGO_HOME"] = str(temporary_root / "cargo-home")
+            # Reuse an explicitly supplied writable dependency cache for
+            # vendoring. The consumer itself still starts with a fresh home.
+            consumer_cargo_home = str(temporary_root / "cargo-home")
+            bootstrap_environment["CARGO_HOME"] = os.environ.get("CARGO_HOME", consumer_cargo_home)
             cargo_config = run(
                 ["cargo", "vendor", "--locked", str(vendor)],
                 cwd=ROOT,
@@ -285,7 +287,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
             marker = temporary_root / "compiler-invocations"
             work = temporary_root / "no-producer-work"
             environment = cold_consumer_environment(marker, temporary_root / "consumer-sentinels", work, cargo_target)
-            environment["CARGO_HOME"] = bootstrap_environment["CARGO_HOME"]
+            environment["CARGO_HOME"] = consumer_cargo_home
             environment["CARGO_TARGET_DIR"] = str(temporary_root / "target")
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-cache")
             # The candidate fixture exercises the checked-in mock lock; real Git consumers fetch the tag's release lock.

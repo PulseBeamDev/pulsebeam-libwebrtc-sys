@@ -12,6 +12,7 @@
 namespace webrtc { class Thread; }
 namespace pulsebeam::webrtc_sys {
 class NativePeerConnection;
+class ReadinessSignal;
 struct FfiDtlsInformation;
 struct FfiSctpInformation;
 class NativeRtcError;
@@ -80,7 +81,11 @@ FfiIceInternalValue ice_transport_internal_value(const NativeIceTransport& trans
                                                 std::uint8_t field) noexcept;
 std::unique_ptr<NativeDtlsTransport> wrap_dtls_transport(
     webrtc::scoped_refptr<webrtc::DtlsTransportInterface> transport,
-    webrtc::Thread* network) noexcept;
+    webrtc::Thread* network,
+    std::shared_ptr<ReadinessSignal> readiness = nullptr) noexcept;
+std::unique_ptr<NativeDtlsTransport> peer_dtls_transport_by_mid(
+    const NativePeerConnection& peer, rust::Slice<const std::uint8_t> mid) noexcept;
+bool ice_transport_same_resource(const NativeIceTransport& first, const NativeIceTransport& second) noexcept;
 std::unique_ptr<NativeSctpTransport> peer_sctp_transport(
     const NativePeerConnection& peer) noexcept;
 std::uintptr_t dtls_transport_identity(const NativeDtlsTransport& transport) noexcept;

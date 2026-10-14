@@ -814,6 +814,7 @@ struct NativeDtmfSender::State final : webrtc::DtmfSenderObserverInterface {
   // GetDtmfSender returns the signaling-thread proxy. Every method below,
   // including unregister during destruction, is marshaled by that proxy.
   webrtc::scoped_refptr<webrtc::DtmfSenderInterface> sender;
+  std::shared_ptr<ReadinessSignal> readiness;
   bool registered = false;
   std::mutex mutex;
   std::size_t capacity = 0;
@@ -829,7 +830,11 @@ struct NativeDtmfSender::State final : webrtc::DtmfSenderObserverInterface {
     Push(tone, false, {});
   }
   void Push(const std::string& tone, bool has_buffer, const std::string& buffer) {
+    // Declare before the lock so the native callback wakes only after unlocking.
+    struct Notify { std::shared_ptr<ReadinessSignal> signal;
+      ~Notify() { SignalReadiness(signal); } } notify{readiness};
     std::lock_guard<std::mutex> lock(mutex);
+    if (!capacity) return;
     if (events.size() == capacity) {
       events.pop_front();
       if (dropped != std::numeric_limits<std::uint64_t>::max()) ++dropped;
@@ -1822,10 +1827,24 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
   return true;
 }
 
-std::unique_ptr<NativeDtmfSender> rtp_sender_dtmf(const NativeRtpSender& sender) noexcept {
+bool rtp_sender_same_resource(const NativeRtpSender& first, const NativeRtpSender& second) noexcept {
+  return first.sender().get() == second.sender().get();
+}
+bool rtp_receiver_same_resource(const NativeRtpReceiver& first, const NativeRtpReceiver& second) noexcept {
+  return first.receiver().get() == second.receiver().get();
+}
+bool rtp_transceiver_same_resource(const NativeRtpTransceiver& first, const NativeRtpTransceiver& second) noexcept {
+  return first.state()->transceiver.get() == second.state()->transceiver.get();
+}
+std::size_t dtmf_sender_identity(const NativeDtmfSender& sender) noexcept {
+  return reinterpret_cast<std::uintptr_t>(sender.state()->sender.get());
+}
+std::unique_ptr<NativeDtmfSender> rtp_sender_dtmf(const NativeRtpSender& sender,
+                                                const NativePeerConnection& peer) noexcept {
   auto native = sender.state()->sender->GetDtmfSender();
   if (!native) return nullptr;
   auto state = std::make_unique<NativeDtmfSender::State>();
+  state->readiness = peer.readiness();
   state->sender = std::move(native);
   return std::make_unique<NativeDtmfSender>(std::move(state));
 }
@@ -1899,11 +1918,11 @@ std::uint64_t dtmf_sender_take_dropped(const NativeDtmfSender& sender) noexcept 
 
 std::unique_ptr<NativeDtlsTransport> rtp_sender_dtls(
     const NativeRtpSender& sender, const NativePeerConnection& peer) noexcept {
-  return wrap_dtls_transport(sender.state()->sender->dtls_transport(), peer.network_thread());
+  return wrap_dtls_transport(sender.state()->sender->dtls_transport(), peer.network_thread(), peer.readiness());
 }
 std::unique_ptr<NativeDtlsTransport> rtp_receiver_dtls(
     const NativeRtpReceiver& receiver, const NativePeerConnection& peer) noexcept {
-  return wrap_dtls_transport(receiver.state()->receiver->dtls_transport(), peer.network_thread());
+  return wrap_dtls_transport(receiver.state()->receiver->dtls_transport(), peer.network_thread(), peer.readiness());
 }
 bool media_type_to_string(std::int32_t kind, rust::String& name) noexcept {
   // UNSUPPORTED/ANY are real enum alternatives but the pinned converter's

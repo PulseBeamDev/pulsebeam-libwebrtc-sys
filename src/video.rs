@@ -902,24 +902,13 @@ impl RtpSender {
     /// Native DTMF access for audio RTP senders. Video senders return `None`.
     /// Repeated getters share one owning handle and one observer registration.
     pub fn dtmf_sender(&self) -> Option<crate::DtmfSender> {
-        let id = self.id();
-        {
-            let mut senders = self.peer.dtmf_senders.borrow_mut();
-            senders.retain(|_, sender| sender.strong_count() != 0);
-            if let Some(sender) = senders.get(&id).and_then(std::rc::Weak::upgrade) {
-                return Some(crate::DtmfSender(sender));
-            }
-        }
-        let native = ffi::rtp_sender_dtmf(self.native());
-        if native.is_null() {
-            return None;
-        }
-        let sender = crate::DtmfSender::from_native(native, self.peer.clone());
-        self.peer
-            .dtmf_senders
-            .borrow_mut()
-            .insert(id, Rc::downgrade(&sender.0));
-        Some(sender)
+        let native = ffi::rtp_sender_dtmf(self.native(), self.peer.native());
+        (!native.is_null()).then(|| crate::DtmfSender::from_native(native, self.peer.clone()))
+    }
+
+    /// Actual SDK interface identity, independent of a track/protocol ID.
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::rtp_sender_same_resource(self.native(), other.native())
     }
 
     pub fn id(&self) -> String {
@@ -1335,6 +1324,10 @@ impl From<PeerError> for RtpReceiverOperationError {
 }
 
 impl RtpReceiver {
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::rtp_receiver_same_resource(self.native(), other.native())
+    }
+
     /// Preserve native error and transceiver/negotiation side effects. SFrame
     /// key management is distinct from the legacy frame decryptor provider.
     pub fn create_sframe_decrypter(
@@ -1667,6 +1660,10 @@ impl fmt::Debug for RtpTransceiver {
 }
 
 impl RtpTransceiver {
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::rtp_transceiver_same_resource(self.native(), other.native())
+    }
+
     pub(crate) fn from_native(
         native: cxx::UniquePtr<ffi::NativeRtpTransceiver>,
         peer: Rc<PeerInner>,

@@ -24,6 +24,10 @@ use crate::{
     VideoCodecFormat, VideoRateControl, readiness::Readiness,
 };
 
+#[path = "production_connectivity.rs"]
+mod connectivity;
+pub use connectivity::{SessionDtmfError, SessionSctpTransportInformation, SessionTransportError};
+
 macro_rules! resource_id {
     ($($name:ident),+ $(,)?) => {$ (
         /// An opaque session-owned identity. Copying it does not share access
@@ -43,7 +47,11 @@ resource_id!(
     SessionFrameEncryptorId,
     SessionFrameDecryptorId,
     SessionSframeEncrypterId,
-    SessionSframeDecrypterId
+    SessionSframeDecrypterId,
+    SessionDtmfSenderId,
+    SessionDtlsTransportId,
+    SessionSctpTransportId,
+    SessionIceTransportId
 );
 
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
@@ -175,6 +183,8 @@ pub enum SessionEvent {
 /// assert_sync::<pulsebeam_webrtc_sys::ProductionSession>();
 /// ```
 pub struct ProductionSession {
+    // Observers/transports retire before endpoints, peers and role threads.
+    connectivity: connectivity::ConnectivityResources,
     sframe_encrypters: HashMap<SessionSframeEncrypterId, Resource<crate::SframeEncrypter>>,
     sframe_decrypters: HashMap<SessionSframeDecrypterId, Resource<crate::SframeDecrypter>>,
     frame_encryptors: HashMap<SessionFrameEncryptorId, crate::FrameEncryptor>,
@@ -663,6 +673,7 @@ impl ProductionSession {
         }
         let factory = builder.build()?;
         Ok(Self {
+            connectivity: connectivity::ConnectivityResources::default(),
             sframe_encrypters: HashMap::new(),
             sframe_decrypters: HashMap::new(),
             frame_encryptors: HashMap::new(),
@@ -1038,6 +1049,7 @@ impl ProductionSession {
     /// Drain owned events/frames, then wait. Signals coalesce and may be spurious.
     /// Polling never enters the engine, pumps work or advances a clock. A single
     /// actor waiter may register; its waker must schedule, not execute engine work.
+    /// DTMF and registered transport observers share this readiness source.
     /// First-packet observer queues are explicit-poll-only and do not signal this
     /// readiness source; it is not a waiter for those observer records.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
@@ -1596,16 +1608,32 @@ impl ProductionSession {
             .add_video_transceiver_with_rids(&track, direction, rids)?;
         self.insert_transceiver(peer, value)
     }
+    fn insert_sender(
+        &mut self,
+        peer: SessionPeerId,
+        value: RtpSender,
+    ) -> Result<SessionSenderId, PeerError> {
+        if let Some((&id, _)) = self
+            .senders
+            .iter()
+            .find(|(_, existing)| existing.peer == peer && existing.value.same_resource(&value))
+        {
+            return Ok(id);
+        }
+        let id = SessionSenderId(next_id()?);
+        self.senders.insert(id, Resource { peer, value });
+        Ok(id)
+    }
+
     fn insert_receiver(
         &mut self,
         peer: SessionPeerId,
         value: RtpReceiver,
     ) -> Result<SessionReceiverId, PeerError> {
-        let native_id = value.id();
         if let Some((&id, _)) = self
             .receivers
             .iter()
-            .find(|(_, existing)| existing.peer == peer && existing.value.id() == native_id)
+            .find(|(_, existing)| existing.peer == peer && existing.value.same_resource(&value))
         {
             return Ok(id);
         }
@@ -1619,21 +1647,12 @@ impl ProductionSession {
         value: RtpTransceiver,
     ) -> Result<SessionTransceiverId, PeerError> {
         let receiver = self.insert_receiver(peer, value.receiver())?;
-        if let Some((&id, _)) = self
-            .transceivers
-            .iter()
-            .find(|(_, existing)| existing.peer == peer && existing.value.receiver == receiver)
-        {
+        if let Some((&id, _)) = self.transceivers.iter().find(|(_, existing)| {
+            existing.peer == peer && existing.value.value.same_resource(&value)
+        }) {
             return Ok(id);
         }
-        let sender = SessionSenderId(next_id()?);
-        self.senders.insert(
-            sender,
-            Resource {
-                peer,
-                value: value.sender(),
-            },
-        );
+        let sender = self.insert_sender(peer, value.sender())?;
         let id = SessionTransceiverId(next_id()?);
         self.transceivers.insert(
             id,
@@ -2623,6 +2642,7 @@ impl ProductionSession {
     /// operations still yield exactly one outcome through try_peer_event.
     pub fn close_peer(&mut self, peer: SessionPeerId) -> Result<(), PeerError> {
         self.peers.get(&peer).ok_or_else(missing)?;
+        self.connectivity.retire_dtmf_observers(peer);
         // Retire raw observer slots before stopping the peer's resource graph.
         // Already queued records remain available, including after close.
         for observer in self
