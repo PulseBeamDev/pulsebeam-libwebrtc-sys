@@ -174,8 +174,22 @@ pub struct DataChannelCounters {
     pub bytes_received: u64,
 }
 
+/// Bounds on the owned message inbox, independent of native SCTP buffering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DataChannelReceiveQueueLimits {
+    pub max_messages: usize,
+    pub max_bytes: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataChannelEvent {
+    /// Native deliveries rejected by the full owned inbox since the previous
+    /// overflow event. Newest messages are dropped before copying. Counts
+    /// saturate at `u64::MAX`; this does not signal a native transport failure.
+    MessagesDropped {
+        messages: u64,
+        bytes: u64,
+    },
     /// Latest callback-time state snapshot. Intermediate states may coalesce;
     /// this is not a historical transition sampled at polling time.
     StateChanged(DataChannelState),
@@ -206,7 +220,11 @@ pub enum DataChannelEvent {
 /// fn assert_sync<T: Sync>() {}
 /// assert_sync::<pulsebeam_webrtc_sys::DataChannel>();
 /// ```
-pub struct DataChannel {
+#[derive(Clone)]
+pub struct DataChannel(Rc<DataChannelInner>);
+
+struct DataChannelInner {
+    // The last alias unregisters the observer before releasing the peer roles.
     native: cxx::UniquePtr<ffi::NativeDataChannel>,
     _peer: Rc<PeerInner>,
 }
@@ -267,9 +285,23 @@ impl DataChannel {
         native: cxx::UniquePtr<ffi::NativeDataChannel>,
         peer: Rc<PeerInner>,
     ) -> Self {
-        Self {
+        Self(Rc::new(DataChannelInner {
             native,
             _peer: peer,
+        }))
+    }
+
+    /// Aliases share one observer, inbox and asynchronous send budget. Dropping
+    /// an alias does not close the channel until its final owner is released.
+    pub fn same_resource(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub fn receive_queue_limits() -> DataChannelReceiveQueueLimits {
+        let limits = ffi::data_channel_receive_queue_limits();
+        DataChannelReceiveQueueLimits {
+            max_messages: limits.max_messages,
+            max_bytes: limits.max_bytes,
         }
     }
 
@@ -387,14 +419,19 @@ impl DataChannel {
     /// are retained independently of message storage. Send completions precede
     /// advisory notifications and queued messages; each queue is FIFO. A closed
     /// snapshot clears remaining message deliveries and advisory notifications.
-    /// Outstanding send completions remain observable after close. Native reception
-    /// is push-based: this owned message inbox has no consumption-driven SCTP
-    /// receive credit or retained-message byte/count guarantee. Polling drains
-    /// Rust storage, not the engine's advertised receive window.
+    /// Outstanding send completions and overflow notifications remain observable
+    /// after close. The message inbox is bounded by `receive_queue_limits`;
+    /// newest deliveries exceeding either limit produce `MessagesDropped`.
+    /// Native reception is push-based: polling drains Rust storage and does not
+    /// return SCTP receive-window credit. Overflow does not close the channel.
     pub fn try_next_event(&self) -> Option<DataChannelEvent> {
         let event = ffi::data_channel_take_event(self.native());
         match event.kind {
             0 => None,
+            6 => Some(DataChannelEvent::MessagesDropped {
+                messages: event.dropped_messages,
+                bytes: event.dropped_bytes,
+            }),
             1 => Some(DataChannelEvent::StateChanged(state(event.state))),
             2 => Some(DataChannelEvent::Message(DataChannelMessage {
                 kind: if event.binary {
@@ -433,7 +470,7 @@ impl DataChannel {
     }
 
     fn native(&self) -> &ffi::NativeDataChannel {
-        self.native.as_ref().expect("validated data channel")
+        self.0.native.as_ref().expect("validated data channel")
     }
 }
 

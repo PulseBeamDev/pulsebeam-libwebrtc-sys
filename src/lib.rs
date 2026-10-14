@@ -429,7 +429,7 @@ pub use data_channel::{
     DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelError,
     DataChannelErrorDetail, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
     DataChannelPriority, DataChannelSendCompletion, DataChannelSendError, DataChannelSendId,
-    DataChannelSendResult, DataChannelState,
+    DataChannelReceiveQueueLimits, DataChannelSendResult, DataChannelState,
 };
 pub use encoded_video::{
     EncodedH264Input, EncodedH264Source, EncodedVideoAccessUnit, EncodedVideoInput,
@@ -2000,7 +2000,14 @@ mod ffi {
         bytes_received: u64,
     }
 
+    struct FfiDataChannelReceiveQueueLimits {
+        max_messages: usize,
+        max_bytes: usize,
+    }
+
     struct FfiDataChannelEvent {
+        dropped_messages: u64,
+        dropped_bytes: u64,
         kind: u8,
         send_id: u64,
         canceled: bool,
@@ -5032,6 +5039,7 @@ mod ffi {
         fn data_channel_buffered_amount(channel: &NativeDataChannel) -> u64;
         fn data_channel_send(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u8;
         fn data_channel_send_async(channel: &NativeDataChannel, data: &[u8], binary: bool) -> u64;
+        fn data_channel_receive_queue_limits() -> FfiDataChannelReceiveQueueLimits;
         fn data_channel_take_event(channel: &NativeDataChannel) -> FfiDataChannelEvent;
         fn close_data_channel(channel: &NativeDataChannel) -> bool;
         fn data_channel_error(channel: &NativeDataChannel) -> FfiDataChannelError;

@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "1dbc18e44605e5a3250ed01be34e982d660b2f941e7e09ba30efc38098a7f4de",
-      "generated_header_sha256": "e2e7898a21b474d81dad1ff679fc1d03a7c73546cd183e6e430f6d9c0de0bdf3",
-      "generated_source_sha256": "8fb91dd8396ee9922cfa6d9f0c1568678899f012ce50c4e8dcd6d26c69c3f697"
+      "bridge_source_sha256": "e22a452e0af96bf3d45b7064a9f20bc754f67522bee53921dd561cdde6a9fa64",
+      "generated_header_sha256": "631b11bc33f55c5fd0b9ab9cd8aaf051a391b2040dc0b75235a860b5e5af45e9",
+      "generated_source_sha256": "91f250ee1d5ebe8b245386f9ce22d0a39dfce895dca71cde69b8e61f6e43edd1"
     },
-    "native_adapter_sha256": "a41beac2bae141c4cf910946d9db4790b7aa436ccb181f52a2448d7484f4c2a1"
+    "native_adapter_sha256": "503e7f880c7fc14a9720b3753e96190aebb3323cb93ce69ed2b918c14ed5a236"
   },
   "sources": {
     "webrtc": {
@@ -32,7 +32,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "f52c5a2b460a60b6bd0c202339bb916faec827dcc55ce5dc390fdeb2deda4878",
+  "native_configuration_sha256": "61bdb9532bd768e2f1c5e947e3d8b5c3c00e5ec884435641331ab311b6ff4199",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",
@@ -67,7 +67,7 @@
     }
   ],
   "licenses": {
-    "sha256": "fe956273e437802f0d3b1253c8efe025f8abfd8edffcae26ae98676f7ce3b08c",
+    "sha256": "4224f8307e774a8b00f30ffefdf1a3d237cfa2d5e7d06a7fa5085d8bf2258094",
     "files": [
       {
         "path": "LICENSES/CXX-APACHE-2.0.txt",
@@ -79,7 +79,7 @@
       },
       {
         "path": "LICENSES/LICENSE.md",
-        "sha256": "e225bbee88b0d8ec6ad39f2753a046835e692ee1cefcd9c6175f924d56d522d2"
+        "sha256": "5dac3fc560689dd9fcdbc0c062b87f542fd73e72899fc6dbf0f9b6ae9718d508"
       },
       {
         "path": "LICENSES/PATENTS",

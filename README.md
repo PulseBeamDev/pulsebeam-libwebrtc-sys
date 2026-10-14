@@ -138,10 +138,14 @@ owned outputs already returned remain valid. `close_source(id)` idempotently
 retires an individual producer and removes its actor-owned entry; existing
 native track references can remain until the sender is detached/stopped.
 
-Data channels expose native push delivery and send backpressure. Advisory
-snapshots are bounded, but the Rust message inbox is not byte/count bounded and
-consuming its events does not return SCTP receive-window credit. No binding-only
-SID-retirement or substitute receive-credit policy is imposed. Layered and
+Data channels expose native push delivery and send backpressure. The owned
+message inbox is bounded by `DataChannel::receive_queue_limits()` (also available
+on `ProductionSession`). Newest deliveries exceeding its message or byte limit
+are dropped before copying and reported through `DataChannelEvent::MessagesDropped`.
+Overflow does not fabricate a native error or close the channel. Aliases share
+one observer, inbox and send-completion budget. Consuming events does not return
+SCTP receive-window credit. No binding-only SID-retirement or substitute
+receive-credit policy is imposed. Layered and
 opaque media remain unqualified; this ownership API alone is not the entire
 agent-ready binding contract.
 

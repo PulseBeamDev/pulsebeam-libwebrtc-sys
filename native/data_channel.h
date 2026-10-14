@@ -17,6 +17,7 @@ namespace pulsebeam::webrtc_sys {
 struct FfiDataChannelEvent;
 struct FfiDataChannelError;
 struct FfiDataChannelCounters;
+struct FfiDataChannelReceiveQueueLimits;
 class NativePeerConnection;
 class ReadinessSignal;
 
@@ -79,6 +80,7 @@ FfiDataChannelEvent data_channel_take_event(
 bool close_data_channel(const NativeDataChannel& channel) noexcept;
 FfiDataChannelError data_channel_error(const NativeDataChannel& channel) noexcept;
 std::uint64_t data_channel_send_queue_capacity() noexcept;
+FfiDataChannelReceiveQueueLimits data_channel_receive_queue_limits() noexcept;
 void data_channel_set_event_observation(const NativeDataChannel& channel,
                                        bool enabled) noexcept;
 

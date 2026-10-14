@@ -78,7 +78,10 @@ struct NativeIceTransport::State {
 };
 NativeIceTransport::NativeIceTransport(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
-NativeIceTransport::~NativeIceTransport() = default;
+NativeIceTransport::~NativeIceTransport() {
+  auto* network = state_->network;
+  network->BlockingCall([this] { state_.reset(); });
+}
 const std::unique_ptr<NativeIceTransport::State>& NativeIceTransport::state() const noexcept {
   return state_;
 }
@@ -125,9 +128,12 @@ NativeDtlsTransport::NativeDtlsTransport(std::unique_ptr<State> state) noexcept
 NativeDtlsTransport::~NativeDtlsTransport() {
   // Unregister and serialize against callbacks before beginning destruction of
   // the observer object (including its vtable), not inside State::~State.
-  if (state_->registered) state_->network->BlockingCall([this] {
-    state_->transport->UnregisterObserver();
-    state_->registered = false;
+  auto* network = state_->network;
+  network->BlockingCall([this] {
+    if (state_->registered) state_->transport->UnregisterObserver();
+    // Retire queued snapshots and the final native reference on their role.
+    // The Rust owner keeps the peer and its role threads alive through here.
+    state_.reset();
   });
 }
 const std::unique_ptr<NativeDtlsTransport::State>& NativeDtlsTransport::state() const noexcept {
@@ -136,9 +142,10 @@ const std::unique_ptr<NativeDtlsTransport::State>& NativeDtlsTransport::state() 
 NativeSctpTransport::NativeSctpTransport(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
 NativeSctpTransport::~NativeSctpTransport() {
-  if (state_->registered) state_->network->BlockingCall([this] {
-    state_->transport->UnregisterObserver();
-    state_->registered = false;
+  auto* network = state_->network;
+  network->BlockingCall([this] {
+    if (state_->registered) state_->transport->UnregisterObserver();
+    state_.reset();
   });
 }
 const std::unique_ptr<NativeSctpTransport::State>& NativeSctpTransport::state() const noexcept {
@@ -177,7 +184,12 @@ std::unique_ptr<NativeSctpInformation> sctp_transport_information(
 }
 std::unique_ptr<NativeDtlsTransport> sctp_transport_dtls(
     const NativeSctpTransport& transport) noexcept {
-  return wrap_dtls_transport(transport.state()->transport->dtls_transport(), transport.state()->network);
+  auto& state = *transport.state();
+  // Unlike Information(), this pinned SCTP accessor does not proxy itself.
+  auto dtls = state.network->BlockingCall([&] {
+    return state.transport->dtls_transport();
+  });
+  return wrap_dtls_transport(std::move(dtls), state.network);
 }
 std::unique_ptr<NativeDtlsTransport> sctp_information_dtls(
     const NativeSctpInformation& information, const NativePeerConnection& peer) noexcept {

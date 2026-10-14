@@ -1011,6 +1011,11 @@ impl ProductionSession {
         Ok(())
     }
 
+    /// Bounds on the owned channel inbox, not SCTP receive-window credit.
+    pub fn channel_receive_queue_limits() -> crate::DataChannelReceiveQueueLimits {
+        DataChannel::receive_queue_limits()
+    }
+
     /// Engine send-queue capacity, not a negotiated message-size or receive limit.
     pub fn channel_send_queue_capacity() -> u64 {
         DataChannel::send_queue_capacity()

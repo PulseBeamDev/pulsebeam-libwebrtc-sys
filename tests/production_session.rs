@@ -978,7 +978,7 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
     })
     .join()
     .unwrap();
-    thread::spawn(move || {
+    let session = thread::spawn(move || {
         let mut session = session;
         assert!(ProductionSession::channel_send_queue_capacity() > 0);
         assert_eq!(session.channel_error(outgoing).unwrap(), None);
@@ -1065,8 +1065,44 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
             256
         );
         assert_eq!(session.channel_buffered_amount(outgoing).unwrap(), 0);
+        let limits = ProductionSession::channel_receive_queue_limits();
+        assert_eq!(limits, DataChannel::receive_queue_limits());
+        for index in 0..limits.max_messages + 2 {
+            assert_eq!(
+                session.send(outgoing, DataChannelMessage::binary((index as u32).to_be_bytes())).unwrap(),
+                DataChannelSendResult::Sent,
+            );
+        }
+        while session.channel_counters(incoming).unwrap().messages_received < 64 + limits.max_messages as u32 + 2 {
+            wait(&mut session);
+        }
+        // Migrate with the full inbox and overflow notification still pending.
+        session
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        let limits = ProductionSession::channel_receive_queue_limits();
+        let mut received = Vec::new();
+        let mut dropped = (0, 0);
+        while let Some(event) = session.try_channel_event(incoming).unwrap() {
+            match event {
+                DataChannelEvent::Message(message) => received.push(message.bytes),
+                DataChannelEvent::MessagesDropped { messages, bytes } => {
+                    dropped.0 += messages; dropped.1 += bytes;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(received, (0..limits.max_messages as u32).map(|n| n.to_be_bytes().to_vec()).collect::<Vec<_>>());
+        assert_eq!(dropped, (2, 8));
+        assert_eq!(session.channel_state(incoming).unwrap(), DataChannelState::Open);
+        assert_eq!(session.channel_error(incoming).unwrap(), None);
+        session.close_peer(bob).unwrap();
+        assert_eq!(session.channel_state(incoming).unwrap(), DataChannelState::Closed);
+        assert_eq!(session.send(incoming, DataChannelMessage::text("closed")).unwrap(), DataChannelSendResult::NotOpen);
         session.shutdown().unwrap();
-        drop(session);
     })
     .join()
     .unwrap();

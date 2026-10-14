@@ -24,6 +24,7 @@ enum EventKind : std::uint8_t {
   kBufferedAmountChanged = 3,
   kMaxMessageSizeChanged = 4,
   kSendComplete = 5,
+  kMessagesDropped = 6,
 };
 
 enum SendResult : std::uint8_t {
@@ -47,6 +48,14 @@ FfiDataChannelError CopyError(const webrtc::RTCError& error) {
       ? static_cast<std::int32_t>(*error.sctp_cause_code()) : -1;
   result.message = error.message();
   return result;
+}
+
+constexpr std::size_t kMaxRetainedMessages = 256;
+constexpr std::size_t kMaxRetainedMessageBytes = 1024 * 1024;
+
+std::uint64_t SaturatingAdd(std::uint64_t value, std::uint64_t increment) {
+  return value + std::min(std::numeric_limits<std::uint64_t>::max() - value,
+                          increment);
 }
 
 struct EventState {
@@ -74,17 +83,24 @@ struct EventState {
 
   void PushMessage(const webrtc::DataBuffer& buffer) {
     NotifyOnExit notify{readiness};
-    FfiDataChannelEvent event;
+    std::lock_guard lock(mutex);
+    if (closed) return;
+    // Bound admission before copying, including empty messages. Drop the newest
+    // delivery rather than evicting messages the application already retained.
+    // This is an owned-inbox policy, not SCTP receive-window credit.
+    if (events.size() == kMaxRetainedMessages ||
+        buffer.data.size() > kMaxRetainedMessageBytes - retained_message_bytes) {
+      dropped_messages = SaturatingAdd(dropped_messages, 1);
+      dropped_bytes = SaturatingAdd(dropped_bytes, buffer.data.size());
+      return;
+    }
+    FfiDataChannelEvent event{};
     event.kind = kMessage;
     event.binary = buffer.binary;
     event.data.reserve(buffer.data.size());
-    for (std::uint8_t byte : buffer.data) {
-      event.data.push_back(byte);
-    }
-    std::lock_guard lock(mutex);
-    if (!closed) {
-      events.push_back(std::move(event));
-    }
+    for (std::uint8_t byte : buffer.data) event.data.push_back(byte);
+    retained_message_bytes += buffer.data.size();
+    events.push_back(std::move(event));
   }
 
   void PushBufferedAmount(std::uint64_t sent_data_size) {
@@ -133,12 +149,17 @@ struct EventState {
       event = std::move(completions.front());
       completions.pop_front();
       --outstanding_sends;
+    } else if (dropped_messages != 0) {
+      event.kind = kMessagesDropped;
+      event.dropped_messages = std::exchange(dropped_messages, 0);
+      event.dropped_bytes = std::exchange(dropped_bytes, 0);
     } else if (pending_state) {
       event.kind = kStateChanged;
       event.state = static_cast<std::uint8_t>(*pending_state);
       if (*pending_state == webrtc::DataChannelInterface::kClosed) {
         closed = true;
         events.clear();
+        retained_message_bytes = 0;
         pending_sent_bytes.reset();
         pending_max_message_size.reset();
       }
@@ -154,6 +175,7 @@ struct EventState {
     } else if (!events.empty()) {
       event = std::move(events.front());
       events.pop_front();
+      retained_message_bytes -= event.data.size();
     }
     return event;
   }
@@ -162,6 +184,8 @@ struct EventState {
   std::mutex mutex;
   std::deque<FfiDataChannelEvent> events;
   std::deque<FfiDataChannelEvent> completions;
+  std::size_t retained_message_bytes = 0;
+  std::uint64_t dropped_messages = 0, dropped_bytes = 0;
   std::size_t outstanding_sends = 0;
   std::uint64_t next_send = 0;
   std::optional<int> pending_max_message_size;
@@ -396,6 +420,12 @@ bool close_data_channel(const NativeDataChannel& channel) noexcept {
 }
 FfiDataChannelError data_channel_error(const NativeDataChannel& channel) noexcept {
   return CopyError(channel.state()->channel->error());
+}
+FfiDataChannelReceiveQueueLimits data_channel_receive_queue_limits() noexcept {
+  FfiDataChannelReceiveQueueLimits limits{};
+  limits.max_messages = kMaxRetainedMessages;
+  limits.max_bytes = kMaxRetainedMessageBytes;
+  return limits;
 }
 std::uint64_t data_channel_send_queue_capacity() noexcept {
   return webrtc::DataChannelInterface::MaxSendQueueSize();

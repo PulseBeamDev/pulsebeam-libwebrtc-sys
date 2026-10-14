@@ -443,6 +443,104 @@ fn native_observer_registration_preserves_ordered_delivery() {
 }
 
 #[test]
+fn owned_receive_inbox_bounds_count_and_bytes_without_closing_native_channel() {
+    let pair = Pair::new(19);
+    let alice = pair
+        .alice
+        .create_data_channel("bounded", Default::default())
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let bob = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &alice, &bob);
+    let alias = bob.clone();
+    assert!(bob.same_resource(&alias));
+    drop(bob);
+    let limits = DataChannel::receive_queue_limits();
+    assert!(limits.max_messages > 0 && limits.max_bytes >= 64 * 1024);
+    let mut delivered = 0u32;
+    for size in [4, 64 * 1024, 0] {
+        let capacity = if size == 0 {
+            limits.max_messages
+        } else {
+            limits.max_messages.min(limits.max_bytes / size)
+        };
+        let total = capacity + 3;
+        for index in 0..total {
+            let mut payload = vec![0xa5; size];
+            if size >= 4 {
+                payload[..4].copy_from_slice(&(index as u32).to_be_bytes());
+            }
+            assert_eq!(
+                alice.send(DataChannelMessage::binary(payload)),
+                DataChannelSendResult::Sent
+            );
+            delivered += 1;
+            for _ in 0..2_000_000 {
+                pair.progress_transport_only();
+                if alias.counters().messages_received == delivered {
+                    break;
+                }
+            }
+            assert_eq!(alias.counters().messages_received, delivered);
+        }
+        let mut messages = Vec::new();
+        let mut dropped = (0, 0);
+        for event in drain_channel(&alias) {
+            match event {
+                DataChannelEvent::Message(message) => messages.push(message),
+                DataChannelEvent::MessagesDropped { messages, bytes } => {
+                    dropped.0 += messages;
+                    dropped.1 += bytes;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(messages.len(), capacity);
+        assert_eq!(dropped, (3, 3 * size as u64));
+        for (index, message) in messages.into_iter().enumerate() {
+            assert_eq!(message.kind, DataChannelMessageKind::Binary);
+            assert_eq!(message.bytes.len(), size);
+            if size >= 4 {
+                assert_eq!(&message.bytes[..4], &(index as u32).to_be_bytes());
+            }
+        }
+        assert_eq!(alias.state(), DataChannelState::Open);
+        assert_eq!(alias.error(), None);
+        assert!(alias.try_next_event().is_none());
+    }
+    // An overflow notification survives peer close even though close retires
+    // undelivered messages. The retained alias still reaches the native state.
+    for _ in 0..limits.max_messages + 1 {
+        assert_eq!(
+            alice.send(DataChannelMessage::binary([])),
+            DataChannelSendResult::Sent
+        );
+        delivered += 1;
+        for _ in 0..2_000_000 {
+            pair.progress_transport_only();
+            if alias.counters().messages_received == delivered {
+                break;
+            }
+        }
+        assert_eq!(alias.counters().messages_received, delivered);
+    }
+    let mut peer = pair.bob;
+    peer.close().unwrap();
+    assert_eq!(alias.state(), DataChannelState::Closed);
+    let events = drain_channel(&alias);
+    assert!(events.contains(&DataChannelEvent::MessagesDropped {
+        messages: 1,
+        bytes: 0
+    }));
+    assert!(events.contains(&DataChannelEvent::StateChanged(DataChannelState::Closed)));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DataChannelEvent::Message(_)))
+    );
+}
+
+#[test]
 fn native_pre_observer_overflow_is_an_owned_resource_error() {
     let pair = Pair::new(15);
     let alice = pair
@@ -592,11 +690,16 @@ fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
 
 #[test]
 fn owning_transport_aliases_observers_and_revocable_ice_internal() {
-    use pulsebeam_webrtc_sys::{DtlsTransportEvent, DtlsTransportState,
-        SctpTransportState, TransportObserverError, IceInternalUnavailable};
+    use pulsebeam_webrtc_sys::{
+        DtlsTransportEvent, DtlsTransportState, IceInternalUnavailable, SctpTransportState,
+        TransportObserverError,
+    };
     let mut pair = Pair::new(32);
     assert!(pair.alice.sctp_transport().is_none());
-    let alice_channel = pair.alice.create_data_channel("transports", DataChannelConfiguration::default()).unwrap();
+    let alice_channel = pair
+        .alice
+        .create_data_channel("transports", DataChannelConfiguration::default())
+        .unwrap();
     let (_, events) = pair.negotiate();
     let bob_channel = wait_for_remote_channel(&pair, events);
     wait_for_open(&pair, &alice_channel, &bob_channel);
@@ -614,10 +717,20 @@ fn owning_transport_aliases_observers_and_revocable_ice_internal() {
     assert_eq!(dtls_info.state(), DtlsTransportState::Connected);
     assert!(dtls_info.role().is_some());
     assert!(dtls_info.remote_ssl_certificates().is_some());
-    assert_eq!(dtls_info.clone().remote_certificate_data(), dtls_info.remote_certificate_data());
-    assert_eq!(dtls_info.remote_ssl_certificates().unwrap().len(), dtls_info.remote_certificate_data().unwrap().len());
-    let constructed = pulsebeam_webrtc_sys::SctpTransportInformation::from_parts(SctpTransportState::Connecting,
-        Some(&dtls), Some(0.0), Some(0));
+    assert_eq!(
+        dtls_info.clone().remote_certificate_data(),
+        dtls_info.remote_certificate_data()
+    );
+    assert_eq!(
+        dtls_info.remote_ssl_certificates().unwrap().len(),
+        dtls_info.remote_certificate_data().unwrap().len()
+    );
+    let constructed = pulsebeam_webrtc_sys::SctpTransportInformation::from_parts(
+        SctpTransportState::Connecting,
+        Some(&dtls),
+        Some(0.0),
+        Some(0),
+    );
     assert!(dtls.same_resource(&constructed.dtls_transport().unwrap()));
     assert_eq!(constructed.max_message_size(), Some(0.0));
     assert_eq!(constructed.max_channels(), Some(0));
@@ -626,12 +739,21 @@ fn owning_transport_aliases_observers_and_revocable_ice_internal() {
     let internal = ice.internal().unwrap();
     assert_eq!(internal.component(), Ok(1));
 
-    assert_eq!(sctp.register_observer(0), Err(TransportObserverError::ZeroCapacity));
+    assert_eq!(
+        sctp.register_observer(0),
+        Err(TransportObserverError::ZeroCapacity)
+    );
     assert_eq!(sctp.register_observer(1), Ok(()));
-    assert_eq!(sctp_alias.register_observer(1), Err(TransportObserverError::AlreadyRegistered));
+    assert_eq!(
+        sctp_alias.register_observer(1),
+        Err(TransportObserverError::AlreadyRegistered)
+    );
     let dtls_alias = sctp_info.dtls_transport().unwrap();
     assert_eq!(dtls.register_observer(1), Ok(()));
-    assert_eq!(dtls_alias.register_observer(1), Err(TransportObserverError::AlreadyRegistered));
+    assert_eq!(
+        dtls_alias.register_observer(1),
+        Err(TransportObserverError::AlreadyRegistered)
+    );
     // Explicit peer teardown leaves owned interfaces/snapshots alive, but
     // revokes the borrowed internal pointer. No pump or synthetic close event.
     pair.alice.close().unwrap();
@@ -643,9 +765,14 @@ fn owning_transport_aliases_observers_and_revocable_ice_internal() {
     assert_eq!(dtls_info.state(), DtlsTransportState::Connected);
     assert_eq!(sctp_info.state(), SctpTransportState::Connected);
     assert!(dtls.same_resource(&sctp_info.dtls_transport().unwrap()));
-    assert_eq!(sctp_alias.take_event().unwrap().state(), SctpTransportState::Closed);
+    assert_eq!(
+        sctp_alias.take_event().unwrap().state(),
+        SctpTransportState::Closed
+    );
     match dtls_alias.take_event().unwrap() {
-        DtlsTransportEvent::StateChange(info) => assert_eq!(info.state(), DtlsTransportState::Closed),
+        DtlsTransportEvent::StateChange(info) => {
+            assert_eq!(info.state(), DtlsTransportState::Closed)
+        }
         DtlsTransportEvent::Error(error) => panic!("unexpected DTLS error: {error}"),
     }
     assert_eq!(dtls.take_dropped_events(), 0);

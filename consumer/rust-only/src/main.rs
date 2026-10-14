@@ -21,8 +21,18 @@ fn main() {
             .with_parameter("profile-level-id", "42e01f")
             .with_parameter("packetization-mode", "1")
             .with_parameter("level-asymmetry-allowed", "1");
-        assert!(encoder.supported_formats().iter().any(|format| format.name == "H264"));
-        assert!(decoder.supported_formats().iter().any(|format| format.name == "H264"));
+        assert!(
+            encoder
+                .supported_formats()
+                .iter()
+                .any(|format| format.name == "H264")
+        );
+        assert!(
+            decoder
+                .supported_formats()
+                .iter()
+                .any(|format| format.name == "H264")
+        );
         assert!(encoder.query_support(&format, None, None).supported);
         assert!(decoder.query_support(&format, false, None).supported);
         let factory = pulsebeam_webrtc_sys::PeerConnectionFactory::builder()
@@ -31,11 +41,31 @@ fn main() {
             .video_decoder_factory(decoder)
             .build()
             .unwrap();
-        let peer = factory
+        let mut peer = factory
             .create_peer_connection(pulsebeam_webrtc_sys::PeerConfiguration::default())
             .unwrap();
-        assert!(peer.video_sender_capabilities().unwrap().iter()
-            .any(|codec| codec.format().name == "H264"));
+        assert!(
+            peer.video_sender_capabilities()
+                .unwrap()
+                .iter()
+                .any(|codec| codec.format().name == "H264")
+        );
+        let channel = peer
+            .create_data_channel("consumer", Default::default())
+            .unwrap();
+        let alias = channel.clone();
+        assert!(channel.same_resource(&alias));
+        let limits = pulsebeam_webrtc_sys::DataChannel::receive_queue_limits();
+        assert!(limits.max_messages > 0 && limits.max_bytes > 0);
+        drop(channel);
+        assert_eq!(
+            alias.state(),
+            pulsebeam_webrtc_sys::DataChannelState::Connecting
+        );
         peer.close().unwrap();
+        assert_eq!(
+            alias.state(),
+            pulsebeam_webrtc_sys::DataChannelState::Closed
+        );
     }
 }
