@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "absl/functional/any_invocable.h"
 #include "api/environment/environment.h"
@@ -119,15 +120,21 @@ class NativeTaskQueueFactory final {
  public:
   struct State;
 
-  explicit NativeTaskQueueFactory(std::shared_ptr<State> state) noexcept;
+  explicit NativeTaskQueueFactory(std::shared_ptr<State> state,
+      std::optional<webrtc::Environment> environment = std::nullopt,
+      std::shared_ptr<NativeProductionLease> production = nullptr) noexcept;
   ~NativeTaskQueueFactory();
 
   NativeTaskQueueFactory(const NativeTaskQueueFactory&) = delete;
   NativeTaskQueueFactory& operator=(const NativeTaskQueueFactory&) = delete;
 
   const std::shared_ptr<State>& state() const noexcept;
+  const std::optional<webrtc::Environment>& environment() const noexcept;
+  const std::shared_ptr<NativeProductionLease>& production_lease() const noexcept;
 
  private:
+  std::shared_ptr<NativeProductionLease> production_lease_;
+  std::optional<webrtc::Environment> environment_;
   std::shared_ptr<State> state_;
 };
 
@@ -284,6 +291,8 @@ bool environment_queue_factory_identity_matches(const NativeEnvironment& environ
     const NativeEnvironment& other) noexcept;
 bool environment_context_retention_contract(const NativeEnvironment& environment,
     const NativeEnvironment& other) noexcept;
+std::unique_ptr<NativeTaskQueueFactory> environment_task_queue_factory(
+    const NativeEnvironment& environment, const NativeTaskQueueFactory& selected) noexcept;
 std::unique_ptr<NativeEnvironment> bind_environment_selection(
     std::unique_ptr<NativeEnvironment> environment, const NativeEnvironment& selected) noexcept;
 std::unique_ptr<NativeEnvironment> clone_environment(

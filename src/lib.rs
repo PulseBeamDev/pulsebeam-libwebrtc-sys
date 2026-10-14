@@ -7474,6 +7474,10 @@ mod ffi {
         fn field_trials_is_enabled(view: &NativeFieldTrials, key: &str) -> bool;
         fn field_trials_is_disabled(view: &NativeFieldTrials, key: &str) -> bool;
         fn clone_environment(environment: &NativeEnvironment) -> UniquePtr<NativeEnvironment>;
+        fn environment_task_queue_factory(
+            environment: &NativeEnvironment,
+            selected: &NativeTaskQueueFactory,
+        ) -> UniquePtr<NativeTaskQueueFactory>;
         fn environment_time_us(environment: &NativeEnvironment) -> i64;
         fn environment_timestamp(environment: &NativeEnvironment) -> i64;
         fn environment_clock_time_bounds(environment: &NativeEnvironment) -> FfiClockTimeBounds;

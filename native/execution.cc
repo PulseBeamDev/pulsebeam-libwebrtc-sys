@@ -116,6 +116,8 @@ class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
 
   webrtc::TaskQueueBase* identity() const { return identity_; }
   bool lifecycle() const { return lifecycle_; }
+  // Called only on a newly created, unpublished public queue.
+  void MarkCallerOwned() { lifecycle_ = false; }
 
   absl::string_view queue_name() const override { return name_; }
   void Delete() override;
@@ -135,7 +137,7 @@ class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
   std::shared_ptr<NativeTaskQueueFactory::State> state_;
   std::string name_;
   webrtc::TaskQueueBase* identity_;
-  const bool lifecycle_;
+  bool lifecycle_;
 };
 
 class CooperativeTaskQueueFactory final : public webrtc::TaskQueueFactory {
@@ -161,6 +163,20 @@ class SharedTaskQueueFactory final : public webrtc::TaskQueueFactory {
   CreateTaskQueue(absl::string_view name, Priority priority) const override;
  private:
   std::shared_ptr<NativeTaskQueueFactory::State> state_;
+};
+
+class EnvironmentTaskQueueFactory final : public webrtc::TaskQueueFactory {
+ public:
+  EnvironmentTaskQueueFactory(webrtc::Environment environment,
+      std::shared_ptr<NativeProductionLease> production)
+      : production_(std::move(production)), environment_(std::move(environment)) {}
+  std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter>
+  CreateTaskQueue(absl::string_view name, Priority priority) const override {
+    return environment_.task_queue_factory().CreateTaskQueue(name, priority);
+  }
+ private:
+  std::shared_ptr<NativeProductionLease> production_;
+  webrtc::Environment environment_;
 };
 
 class SeededRandom final : public webrtc::RandomGenerator {
@@ -243,9 +259,15 @@ struct NativeTaskQueueFactory::State {
 
 struct NativeTaskQueue::State {
   explicit State(std::unique_ptr<webrtc::TaskQueueBase,
-                                 webrtc::TaskQueueDeleter> queue, bool provider_backed, bool cooperative) noexcept
-      : queue(std::move(queue)), provider_backed(provider_backed), cooperative(cooperative) {}
+                                 webrtc::TaskQueueDeleter> queue, bool provider_backed, bool cooperative,
+                 std::optional<webrtc::Environment> environment = std::nullopt,
+                 std::shared_ptr<NativeProductionLease> production = nullptr) noexcept
+      : production(std::move(production)), environment(std::move(environment)), queue(std::move(queue)),
+        provider_backed(provider_backed), cooperative(cooperative) {}
 
+  // Outlive queue deletion, including provider callbacks and task retirement.
+  std::shared_ptr<NativeProductionLease> production;
+  std::optional<webrtc::Environment> environment;
   std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> queue;
   const bool provider_backed;
   const bool cooperative;
@@ -550,12 +572,21 @@ const std::shared_ptr<NativeManualClock::State>& NativeManualClock::state()
 }
 
 NativeTaskQueueFactory::NativeTaskQueueFactory(
-    std::shared_ptr<State> state) noexcept
-    : state_(std::move(state)) {}
+    std::shared_ptr<State> state, std::optional<webrtc::Environment> environment,
+    std::shared_ptr<NativeProductionLease> production) noexcept
+    : production_lease_(std::move(production)), environment_(std::move(environment)), state_(std::move(state)) {}
 NativeTaskQueueFactory::~NativeTaskQueueFactory() = default;
 const std::shared_ptr<NativeTaskQueueFactory::State>&
 NativeTaskQueueFactory::state() const noexcept {
   return state_;
+}
+
+const std::optional<webrtc::Environment>& NativeTaskQueueFactory::environment() const noexcept {
+  return environment_;
+}
+
+const std::shared_ptr<NativeProductionLease>& NativeTaskQueueFactory::production_lease() const noexcept {
+  return production_lease_;
 }
 
 NativeTaskQueue::NativeTaskQueue(std::unique_ptr<State> state) noexcept
@@ -698,9 +729,21 @@ std::unique_ptr<NativeTaskQueue> create_task_queue(
     rust::Slice<const std::uint8_t> name,
     std::uint8_t priority) noexcept {
   if (!task_queue_factory_is_current(factory)) return nullptr;
+  auto production = factory.production_lease();
+  if (!factory.state()->cooperative() && !production) {
+    production = new_production_lease();
+    if (!production) return nullptr;
+  }
   const absl::string_view queue_name(reinterpret_cast<const char*>(name.data()), name.size());
   std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> queue;
-  if (factory.state()->cooperative()) {
+  if (factory.environment()) {
+    queue = factory.environment()->task_queue_factory().CreateTaskQueue(queue_name, ToPriority(priority));
+    if (queue && factory.state()->cooperative()) {
+      // Identity-bound cooperative metadata proves the returned concrete
+      // adapter. Keep its scheduler state, but public work is not lifecycle work.
+      static_cast<CooperativeTaskQueue&>(*queue).MarkCallerOwned();
+    }
+  } else if (factory.state()->cooperative()) {
     // This entry point creates public caller queues, unlike the factory
     // installed into a native Environment for engine-owned media work.
     queue.reset(new CooperativeTaskQueue(
@@ -713,7 +756,8 @@ std::unique_ptr<NativeTaskQueue> create_task_queue(
     return nullptr;
   }
   return std::make_unique<NativeTaskQueue>(
-      std::make_unique<NativeTaskQueue::State>(std::move(queue), factory.state()->provider_backed, factory.state()->cooperative()));
+      std::make_unique<NativeTaskQueue::State>(std::move(queue), factory.state()->provider_backed,
+          factory.state()->cooperative(), factory.environment(), std::move(production)));
 }
 
 bool post_task(const NativeTaskQueue& queue,
@@ -1013,7 +1057,9 @@ std::unique_ptr<NativeEnvironment> create_environment(
   } else if (clock != nullptr) {
     environment_factory.Set(std::make_unique<SharedClock>(clock->state()));
   }
-  if (factory.state()->cooperative()) {
+  if (factory.environment()) {
+    environment_factory.Set(std::make_unique<EnvironmentTaskQueueFactory>(*factory.environment(), factory.production_lease()));
+  } else if (factory.state()->cooperative()) {
     environment_factory.Set(
         std::make_unique<CooperativeTaskQueueFactory>(factory.state()));
   } else {
@@ -1035,6 +1081,18 @@ std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
 }
 std::unique_ptr<NativeEnvironment> rtc_event_log_factory_environment(const webrtc::Environment& environment) noexcept {
   return retain_environment_from_sdk(environment);
+}
+
+std::unique_ptr<NativeTaskQueueFactory> environment_task_queue_factory(
+    const NativeEnvironment& environment, const NativeTaskQueueFactory& selected) noexcept {
+  // Rust supplies metadata only from the environment's selected registration or
+  // an exact SDK utility identity match. Reuse that scheduler, never fork it.
+  std::shared_ptr<NativeProductionLease> production;
+  if (!selected.state()->cooperative()) {
+    production = new_production_lease();
+    if (!production) return nullptr;
+  }
+  return std::make_unique<NativeTaskQueueFactory>(selected.state(), environment.environment(), std::move(production));
 }
 
 std::unique_ptr<NativeEnvironment> bind_environment_selection(

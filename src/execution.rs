@@ -117,11 +117,13 @@ struct TaskQueueFactoryInner {
     native: cxx::UniquePtr<ffi::NativeTaskQueueFactory>,
     clock: Option<ManualClock>,
     provider: Option<Arc<crate::task_queue_provider::FactoryState>>,
+    _environment: Option<Box<Environment>>,
 }
 
 // SAFETY: `TaskQueueFactory` requires thread-safe implementations. The default
 // upstream factory satisfies that contract and the cooperative adapter guards
-// all shared scheduler state with a mutex.
+// all shared scheduler state with a mutex. Environment delegates preserve that
+// same selected factory and retain its thread-safe environment/lease ownership.
 unsafe impl Send for TaskQueueFactoryInner {}
 // SAFETY: see the `Send` rationale; factory methods take shared references.
 unsafe impl Sync for TaskQueueFactoryInner {}
@@ -162,6 +164,26 @@ impl TaskQueueFactory {
             .is_some_and(|state| state.has_failed())
     }
 
+    fn from_environment(
+        environment: &Environment,
+        selected: &Self,
+    ) -> Result<Self, BuildEnvironmentError> {
+        let native = ffi::environment_task_queue_factory(environment.native(), selected.native());
+        if native.is_null() {
+            return Err(if selected.is_cooperative() {
+                BuildEnvironmentError::NativeConstructionFailed
+            } else {
+                BuildEnvironmentError::ProductionRuntimeUnavailable
+            });
+        }
+        Ok(Self(Arc::new(TaskQueueFactoryInner {
+            native,
+            clock: selected.0.clock.clone(),
+            provider: selected.0.provider.clone(),
+            _environment: Some(Box::new(environment.clone())),
+        })))
+    }
+
     fn from_native(
         native: cxx::UniquePtr<ffi::NativeTaskQueueFactory>,
         clock: Option<ManualClock>,
@@ -174,6 +196,7 @@ impl TaskQueueFactory {
                 native,
                 clock,
                 provider,
+                _environment: None,
             })))
         }
     }
@@ -481,6 +504,16 @@ impl Environment {
         Ok(crate::Clock::from_environment(native, self))
     }
 
+    /// Own the exact SDK task-queue factory and its environment. Created public
+    /// queues remain caller-owned, even when the SDK factory also creates engine
+    /// lifecycle queues. Cooperative operations keep the original creator sequence.
+    pub fn task_queue_factory(&self) -> Result<TaskQueueFactory, BuildEnvironmentError> {
+        self.native.as_ref().ok_or(BuildEnvironmentError::Closed)?;
+        let selected = self._task_queue_factory.as_ref()
+            .ok_or(BuildEnvironmentError::UnqualifiedEnvironment)?;
+        TaskQueueFactory::from_environment(self, selected)
+    }
+
     pub(crate) fn manual_clock_source(&self) -> Option<&ManualClock> { self._clock.as_ref() }
 
     pub(crate) fn selected_clock_handle(&self) -> Option<&crate::Clock> {
@@ -694,6 +727,9 @@ impl EnvironmentBuilder {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildEnvironmentError {
+    Closed,
+    UnqualifiedEnvironment,
+    ProductionRuntimeUnavailable,
     InvalidQueueName,
     MismatchedCooperativeClock,
     NativeConstructionFailed,
@@ -706,6 +742,9 @@ pub enum BuildEnvironmentError {
 impl fmt::Display for BuildEnvironmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Closed => "environment is closed",
+            Self::ProductionRuntimeUnavailable => "production task queues cannot coexist with controlled execution",
+            Self::UnqualifiedEnvironment => "SDK environment has no identity-bound task queue factory registration",
             Self::InvalidQueueName => "task queue names cannot contain a NUL byte",
             Self::MismatchedCooperativeClock => {
                 "the environment clock differs from the cooperative factory clock"
@@ -1159,9 +1198,11 @@ mod tests {
         );
         let copied = Environment::from_sdk(native_copy, Some(&selected));
         assert!(copied.uses_controlled_clock(&clock));
+        assert!(copied.task_queue_factory().unwrap().is_cooperative());
         // An SDK snapshot without selected Rust origin still owns the exact
         // clock, but cannot use Rust metadata to preflight its conversion kind.
         let unqualified = Environment::from_sdk(ffi::clone_environment(selected.native()), None);
+        assert!(matches!(unqualified.task_queue_factory(), Err(BuildEnvironmentError::UnqualifiedEnvironment)));
         let utility = unqualified.clock().unwrap();
         assert_eq!(utility.time_in_microseconds(), 100);
         for timestamp in [crate::Timestamp::plus_infinity(), crate::Timestamp::minus_infinity(),
@@ -1174,6 +1215,7 @@ mod tests {
         let mismatched =
             Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));
         assert!(!mismatched.uses_controlled_clock(&clock));
+        assert!(matches!(mismatched.task_queue_factory(), Err(BuildEnvironmentError::UnqualifiedEnvironment)));
         drop(selected);
         clock.advance(Duration::from_micros(50)).unwrap();
         assert_eq!(copied.timestamp().microseconds().unwrap(), 150);
@@ -1219,16 +1261,18 @@ mod tests {
         }
 
         let world = ControlledWorld::acquire(81, Duration::from_secs(99)).unwrap();
+        let environment = Environment::builder().task_queue_factory(&world.factory).build().unwrap();
+        let utility = environment.task_queue_factory().unwrap();
+        let rebound = Environment::builder().task_queue_factory(&utility).build().unwrap();
+        let rebound_utility = rebound.task_queue_factory().unwrap();
         let queue = Rc::new(RefCell::new(
-            world
-                .create_queue("caller-reposting", QueuePriority::Normal)
-                .unwrap(),
+            rebound_utility.create_queue("caller-reposting", QueuePriority::Normal).unwrap(),
         ));
         let count = Rc::new(Cell::new(0));
         repost(queue.clone(), count.clone());
         assert!(ffi::test_driver_lifecycle_yield(
             world.driver.native(),
-            world.factory.native(),
+            rebound_utility.native(),
         ));
         assert_eq!(count.get(), 0);
         assert_eq!(world.now(), Duration::from_secs(99));
