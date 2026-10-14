@@ -81,6 +81,7 @@ mod tests {
             bounds(-100, -1),
             timestamp(i64::MIN + 1)
         ));
+        assert!(receive_time_is_safe(negative, timestamp(i64::MIN + 2)));
     }
 
     #[test]

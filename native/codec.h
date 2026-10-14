@@ -483,7 +483,7 @@ FfiNetEqFactoryCreation
 neteq_factory_create(rust::Box<RustNetEqFactory> source,
                      const NativeEnvironment &environment,
                      const FfiNetEqConfig &config,
-                     const NativeAudioDecoderFactory &decoder_factory) noexcept;
+                     const NativeAudioDecoderFactory *decoder_factory) noexcept;
 bool neteq_factory_failed_product_contract(
     rust::Box<RustNetEqFactory> source, const NativeEnvironment &environment,
     const NativeAudioDecoderFactory &decoder_factory) noexcept;
@@ -498,7 +498,7 @@ bool neteq_is_failed(const NativeNetEq &) noexcept;
 bool neteq_is_stock(const NativeNetEq &) noexcept;
 std::unique_ptr<NativeNetEq> neteq_stock_create(
     const NativeEnvironment &environment, const FfiNetEqConfig &config,
-    const NativeAudioDecoderFactory &factory, std::int64_t minimum_time_us,
+    const NativeAudioDecoderFactory *factory, std::int64_t minimum_time_us,
     std::int64_t maximum_time_us) noexcept;
 std::int32_t
 neteq_insert_packet(NativeNetEq &value, const FfiMediaRtpHeader &header,

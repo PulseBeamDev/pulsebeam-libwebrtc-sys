@@ -2,7 +2,7 @@
 //!
 //! Registration stays lazy. Stock-only guards reject unsafe invocations without
 //! selecting replacement decoders or changing caller metadata. Native outcomes
-//! and normalization remain native. This source has not yet been qualified.
+//! and normalization remain native.
 use crate::{
     AudioDecoderFactory, AudioFrame, ClockTimeBounds, Environment, NetEqConfig, NetEqDecoderFormat,
     NetEqLifetimeStatistics, NetEqNetworkStatistics, NetEqOperation, NetEqOperationsAndState,
@@ -115,17 +115,33 @@ impl NetEq {
         config: &NetEqConfig,
         decoder_factory: &AudioDecoderFactory,
     ) -> Result<Self, NetEqError> {
+        Self::stock_with_decoder_factory(environment, config, Some(decoder_factory))
+    }
+    /// Preserve an explicitly absent native decoder factory. Registration stays
+    /// lazy, but ordinary decoder creation and packet consumption are refused
+    /// before the SDK dereferences a missing factory. No builtin is substituted.
+    pub fn stock_with_decoder_factory(
+        environment: &Environment,
+        config: &NetEqConfig,
+        decoder_factory: Option<&AudioDecoderFactory>,
+    ) -> Result<Self, NetEqError> {
         let environment = environment.clone();
         // A durable range, not a sampled clock value. Default SDK current time
         // is signed int64 nanoseconds / 1000 even with testing time installed.
         let clock_bounds = environment.clock_time_bounds();
-        let native = ffi::neteq_stock_create(
-            environment.native(),
-            &config.to_native(),
-            decoder_factory.native(),
-            clock_bounds.minimum().microseconds(),
-            clock_bounds.maximum().microseconds(),
-        );
+        let factory =
+            decoder_factory.map_or(std::ptr::null(), |factory| factory.native() as *const _);
+        // SAFETY: any selected owner remains alive for this synchronous call;
+        // native construction retains it. Null is a distinct supported input.
+        let native = unsafe {
+            ffi::neteq_stock_create(
+                environment.native(),
+                &config.to_native(),
+                factory,
+                clock_bounds.minimum().microseconds(),
+                clock_bounds.maximum().microseconds(),
+            )
+        };
         if native.is_null() {
             return Err(NetEqError::InvalidStockConfiguration);
         }

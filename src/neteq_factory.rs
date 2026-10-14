@@ -41,12 +41,14 @@ pub trait NetEqFactoryProvider: Send + 'static {
 pub enum NetEqFactoryError {
     Rejected(String),
     Panicked,
+    ReentrantCall,
 }
 impl std::fmt::Display for NetEqFactoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected(message) => write!(f, "NetEq creation rejected: {message}"),
             Self::Panicked => f.write_str("NetEq factory callback panicked"),
+            Self::ReentrantCall => f.write_str("NetEq factory callback reentered its registration"),
         }
     }
 }
@@ -111,18 +113,35 @@ impl NetEqFactory {
         config: &NetEqConfig,
         decoder_factory: &AudioDecoderFactory,
     ) -> Result<NetEq, NetEqFactoryError> {
-        let output = ffi::neteq_factory_create(
-            Box::new(RustNetEqFactory {
-                factory: self.clone(),
-                environment: environment.clone(),
-            }),
-            environment.native(),
-            &config.to_native(),
-            decoder_factory.native(),
-        );
+        self.create_with_decoder_factory(environment, config, Some(decoder_factory))
+    }
+    /// Pass the exact optional factory to the native Create contract and owned
+    /// callback context. None does not select a builtin or a failed product.
+    pub fn create_with_decoder_factory(
+        &self,
+        environment: &Environment,
+        config: &NetEqConfig,
+        decoder_factory: Option<&AudioDecoderFactory>,
+    ) -> Result<NetEq, NetEqFactoryError> {
+        let factory =
+            decoder_factory.map_or(std::ptr::null(), |factory| factory.native() as *const _);
+        // SAFETY: the optional factory owner outlives synchronous dispatch. The
+        // callback receives its own retained SDK reference, or genuine absence.
+        let output = unsafe {
+            ffi::neteq_factory_create(
+                Box::new(RustNetEqFactory {
+                    factory: self.clone(),
+                    environment: environment.clone(),
+                }),
+                environment.native(),
+                &config.to_native(),
+                factory,
+            )
+        };
         match output.failure {
             1 => Err(NetEqFactoryError::Rejected(output.message)),
             2 => Err(NetEqFactoryError::Panicked),
+            3 => Err(NetEqFactoryError::ReentrantCall),
             _ => Ok(NetEq::from_factory_native(
                 output.product,
                 environment.clone(),
@@ -152,7 +171,12 @@ pub(crate) fn neteq_factory_create_product(
         config: NetEqConfig::from_native(config),
         decoder_factory: AudioDecoderFactory::from_native(decoder_factory),
     };
-    let result = if source.factory.0.panicked.load(Ordering::Acquire) {
+    let scope = crate::neteq_callback_scope::NetEqCallbackScope::enter(Arc::as_ptr(
+        &source.factory.0,
+    ) as usize);
+    let result = if scope.is_none() {
+        Err(NetEqFactoryError::ReentrantCall)
+    } else if source.factory.0.panicked.load(Ordering::Acquire) {
         Err(NetEqFactoryError::Panicked)
     } else {
         let mut provider = source
@@ -210,6 +234,7 @@ pub(crate) fn neteq_factory_create_product(
             let (failure, message) = match error {
                 NetEqFactoryError::Rejected(message) => (1, message),
                 NetEqFactoryError::Panicked => (2, String::new()),
+                NetEqFactoryError::ReentrantCall => (3, String::new()),
             };
             // SDK receive channels dereference Create's result unconditionally.
             // Failure is observable and non-stock. The standalone helper returns

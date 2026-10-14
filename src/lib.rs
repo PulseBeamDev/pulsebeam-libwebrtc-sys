@@ -127,6 +127,7 @@ mod neteq_values;
 pub(crate) use neteq_safety::receive_time_bits_are_safe as neteq_receive_time_safe;
 mod neteq;
 mod neteq_factory;
+mod neteq_callback_scope;
 mod neteq_provider;
 pub use neteq::{NetEq, NetEqError};
 pub use neteq_factory::{
@@ -3532,11 +3533,11 @@ mod ffi {
             pair: &UniquePtr<NativeAudioCodecPairId>,
         );
         type NativeNetEq;
-        fn neteq_factory_create(
+        unsafe fn neteq_factory_create(
             source: Box<RustNetEqFactory>,
             environment: &NativeEnvironment,
             config: &FfiNetEqConfig,
-            decoder_factory: &NativeAudioDecoderFactory,
+            decoder_factory: *const NativeAudioDecoderFactory,
         ) -> FfiNetEqFactoryCreation;
         fn neteq_factory_failed_product_contract(
             source: Box<RustNetEqFactory>,
@@ -3551,10 +3552,10 @@ mod ffi {
         fn neteq_failed_create_for_sdk(configured_rate: i32) -> UniquePtr<NativeNetEq>;
         fn neteq_is_failed(value: &NativeNetEq) -> bool;
         fn neteq_is_stock(value: &NativeNetEq) -> bool;
-        fn neteq_stock_create(
+        unsafe fn neteq_stock_create(
             environment: &NativeEnvironment,
             config: &FfiNetEqConfig,
-            factory: &NativeAudioDecoderFactory,
+            factory: *const NativeAudioDecoderFactory,
             minimum_time_us: i64,
             maximum_time_us: i64,
         ) -> UniquePtr<NativeNetEq>;

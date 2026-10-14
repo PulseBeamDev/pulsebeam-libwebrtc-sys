@@ -123,6 +123,7 @@ pub enum NetEqFailure {
     Panicked,
     InvalidAudioOutput,
     InvalidSdkOutput,
+    ReentrantCall,
 }
 /// Durable first-failure observation, independent of product lifetime.
 #[derive(Clone, Default)]
@@ -133,6 +134,7 @@ impl NetEqFailureObserver {
             1 => Some(NetEqFailure::Panicked),
             2 => Some(NetEqFailure::InvalidAudioOutput),
             3 => Some(NetEqFailure::InvalidSdkOutput),
+            4 => Some(NetEqFailure::ReentrantCall),
             _ => None,
         }
     }
@@ -200,6 +202,12 @@ impl RustNetEqProvider {
         if self.observer.has_failed() {
             return fallback;
         }
+        let Some(_scope) =
+            crate::neteq_callback_scope::NetEqCallbackScope::enter(self as *const Self as usize)
+        else {
+            self.observer.report(4);
+            return fallback;
+        };
         let mut provider = self
             .provider
             .lock()
@@ -615,6 +623,33 @@ mod tests {
             .unwrap();
         frame
     }
+    #[test]
+    fn callback_reentry_fails_closed_without_locking_or_overwriting_outputs() {
+        let observer = NetEqFailureObserver::default();
+        let source = RustNetEqProvider::new(
+            Box::new(LeaveFrame),
+            &NetEqConfig::default(),
+            observer.clone(),
+        );
+        let mut frame = frame(false);
+        let before = frame.fields();
+        let result = source.call(17, |_| {
+            let output =
+                neteq_provider_get_audio(&source, frame.native_mut(), true, true, true, false, 0);
+            assert_eq!(output.code, -1);
+            assert!(!output.muted_written && !output.rate_written);
+            99
+        });
+        assert_eq!(result, 17);
+        assert_eq!(frame.fields(), before);
+        assert_eq!(frame.data_view().unwrap(), &[7; 80]);
+        assert_eq!(observer.failure(), Some(NetEqFailure::ReentrantCall));
+        assert_eq!(
+            source.call(23, |_| panic!("failed product must not dispatch")),
+            23
+        );
+    }
+
     #[test]
     fn sdk_unknown_storage_cannot_gain_proof_from_shape_or_success_status() {
         let observer = NetEqFailureObserver::default();

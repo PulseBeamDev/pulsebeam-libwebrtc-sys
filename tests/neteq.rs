@@ -1,7 +1,8 @@
-//! Stock product regression coverage. Written while qualification is deferred.
+//! Stock NetEq packet, removal, initialized output and factory-selection contracts.
 use pulsebeam_webrtc_sys::{
-    AudioDecoderFactory, AudioFrame, Environment, NetEq, NetEqConfig, NetEqError, NetEqOperation,
-    NetEqReturnCode, RtpHeaderValues, RtpReceivedPacketInfo, SdpAudioFormat, Timestamp,
+    AudioDecoderFactory, AudioFrame, AudioFrameSpeechType, Environment, NetEq, NetEqConfig,
+    NetEqError, NetEqOperation, NetEqReturnCode, RtpHeaderValues, RtpReceivedPacketInfo,
+    SdpAudioFormat, Timestamp,
 };
 use std::collections::BTreeMap;
 
@@ -11,6 +12,61 @@ fn stock() -> NetEq {
     // Both dependencies intentionally drop before the caller uses the engine.
     NetEq::stock(&environment, &NetEqConfig::default(), &factory).unwrap()
 }
+#[test]
+fn absent_factory_is_native_stock_without_an_implicit_decoder() {
+    let environment = Environment::builder().build().unwrap();
+    let config = NetEqConfig {
+        sample_rate_hz: 8000,
+        ..Default::default()
+    };
+    let mut neteq = NetEq::stock_with_decoder_factory(&environment, &config, None).unwrap();
+    assert!(!neteq.is_failed());
+    assert!(neteq.register_payload_type(0, &pcmu()));
+    // The pinned stock product inherits the deprecated getter's absent result.
+    assert!(neteq.decoder_format(0).is_none());
+    assert!(!neteq.create_decoder(0));
+    assert_eq!(
+        neteq.insert_packet(&header(0, 1, 0), &[0xff; 80]),
+        NetEqReturnCode::FAIL
+    );
+    assert!(neteq.playout_timestamp().is_none());
+    assert!(neteq.remove_payload_type(0) == NetEqReturnCode::OK);
+    // Empty playout still runs the stock engine, not a permanently failed substitute.
+    let mut frame = AudioFrame::new();
+    assert_eq!(
+        neteq.get_audio(&mut frame, None, None, None),
+        Ok(NetEqReturnCode::OK)
+    );
+    assert_eq!(frame.fields().samples_per_channel, 80);
+    assert_eq!(neteq.lifetime_statistics().total_samples_received, 0);
+}
+
+#[test]
+fn absent_factory_preserves_native_internal_comfort_noise() {
+    let environment = Environment::builder().build().unwrap();
+    let config = NetEqConfig {
+        sample_rate_hz: 8000,
+        ..Default::default()
+    };
+    let mut neteq = NetEq::stock_with_decoder_factory(&environment, &config, None).unwrap();
+    let cn = SdpAudioFormat::new(b"CN".to_vec(), 8000, 1);
+    assert!(neteq.register_payload_type(13, &cn));
+    assert_eq!(
+        neteq.insert_packet(&header(13, 1, 0), &[42]),
+        NetEqReturnCode::OK
+    );
+    let mut frame = AudioFrame::new();
+    assert_eq!(
+        neteq.get_audio(&mut frame, None, None, None),
+        Ok(NetEqReturnCode::OK)
+    );
+    assert_eq!(frame.fields().sample_rate_hz, 8000);
+    assert_eq!(frame.fields().samples_per_channel, 80);
+    assert!(neteq.current_decoder_format().is_none());
+    assert_eq!(frame.fields().speech_type, AudioFrameSpeechType::CNG);
+    assert!(frame.data_view().unwrap().iter().any(|&sample| sample != 0));
+}
+
 fn pcmu() -> SdpAudioFormat {
     SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1)
 }
@@ -103,12 +159,29 @@ fn remove_all_refuses_queued_frames_without_implicit_flush_or_codec_mutation() {
     let before = engine.operations_and_state();
     // next_packet_available also requires sync-buffer timestamp alignment;
     // the removal guard below, not that metadata bit, proves a queued packet.
+    assert!(before.current_buffer_size_ms > 0);
     assert_eq!(
         engine.remove_all_payload_types(),
         Err(NetEqError::BufferedPackets)
     );
     assert_eq!(engine.operations_and_state(), before);
     assert!(engine.create_decoder(96));
+    let mut retained = AudioFrame::new();
+    assert_eq!(
+        engine.get_audio(&mut retained, None, None, None),
+        Ok(NetEqReturnCode::OK)
+    );
+    assert_eq!(
+        retained.fields().speech_type,
+        AudioFrameSpeechType::NORMAL_SPEECH
+    );
+    assert!(
+        retained
+            .data_view()
+            .unwrap()
+            .iter()
+            .any(|&sample| sample != 0)
+    );
     engine.flush_buffers();
     assert_eq!(engine.remove_all_payload_types(), Ok(()));
     assert!(!engine.create_decoder(96));

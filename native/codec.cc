@@ -288,11 +288,13 @@ class CallerNetEqFactory final : public webrtc::NetEqFactory {
  public:
   CallerNetEqFactory(rust::Box<RustNetEqFactory> source,
       const NativeEnvironment& selected_environment,
-      const NativeAudioDecoderFactory& selected_decoder_factory,
+      const NativeAudioDecoderFactory* selected_decoder_factory,
       bool sdk_consumer)
       : source_(std::move(source)),
         environment_(clone_environment(selected_environment)),
-        decoder_factory_(wrap_audio_decoder_factory(selected_decoder_factory.factory(), &selected_decoder_factory)),
+        decoder_factory_(selected_decoder_factory
+            ? wrap_audio_decoder_factory(selected_decoder_factory->factory(), selected_decoder_factory)
+            : nullptr),
         sdk_consumer_(sdk_consumer) {}
   FfiNetEqFactoryCreation Dispatch(const webrtc::Environment& environment,
       const webrtc::NetEq::Config& config,
@@ -321,13 +323,14 @@ class CallerNetEqFactory final : public webrtc::NetEqFactory {
 
 FfiNetEqFactoryCreation neteq_factory_create(rust::Box<RustNetEqFactory> source,
     const NativeEnvironment& environment, const FfiNetEqConfig& config,
-    const NativeAudioDecoderFactory& decoder_factory) noexcept {
+    const NativeAudioDecoderFactory* decoder_factory) noexcept {
   CallerNetEqFactory factory(std::move(source), environment, decoder_factory, false);
-  return factory.Dispatch(environment.environment(), NetEqConfigFromFfi(config), decoder_factory.factory());
+  return factory.Dispatch(environment.environment(), NetEqConfigFromFfi(config),
+      decoder_factory ? decoder_factory->factory() : nullptr);
 }
 bool neteq_factory_failed_product_contract(rust::Box<RustNetEqFactory> source,
     const NativeEnvironment& environment, const NativeAudioDecoderFactory& decoder_factory) noexcept {
-  CallerNetEqFactory factory(std::move(source), environment, decoder_factory, true);
+  CallerNetEqFactory factory(std::move(source), environment, &decoder_factory, true);
   webrtc::NetEq::Config config;
   config.sample_rate_hz = 384000;  // Deliberately not a mixer-safe failure rate.
   auto product = factory.Create(environment.environment(), config, decoder_factory.factory());
@@ -1971,7 +1974,7 @@ bool audio_decoder_factory_context_contract(const NativeAudioDecoderFactory& fac
   FfiNetEqConfig config{};
   config.sample_rate_hz = 8000;
   return !refused.valid && !refused.decoder &&
-      !neteq_stock_create(environment, config, *mismatch, 0, 1);
+      !neteq_stock_create(environment, config, mismatch.get(), 0, 1);
 }
 namespace {
 enum class OwnedAudioDecoderKind { Opus, G722, G711, L16 };
@@ -4113,8 +4116,14 @@ class GuardedStockNetEq final : private StockNetEqEnvironmentOwner,
     return NetEqImpl::CreateDecoder(payload_type);
   }
   std::optional<DecoderFormat> GetCurrentDecoderFormat() const override {
-    if (current_rtp_payload_type_ && !EnsureDecoder(*current_rtp_payload_type_))
-      return std::nullopt;
+    if (current_rtp_payload_type_) {
+      const auto* info = decoder_database_->GetDecoderInfo(*current_rtp_payload_type_);
+      // The pinned getter dereferences GetDecoder even for internally handled
+      // formats that have no AudioDecoder. Absence is not invented DSP metadata.
+      if (info && (info->IsComfortNoise() || info->IsDtmf() || info->IsRed()))
+        return std::nullopt;
+      if (!EnsureDecoder(*current_rtp_payload_type_)) return std::nullopt;
+    }
     return NetEqImpl::GetCurrentDecoderFormat();
   }
   int GetAudio(webrtc::AudioFrame* frame, bool* muted, int* rate,
@@ -4177,7 +4186,7 @@ class GuardedStockNetEq final : private StockNetEqEnvironmentOwner,
     if (!info || info->IsComfortNoise() || info->IsDtmf() || info->IsRed()) return true;
     // A negative RTP clock rate violates TimestampScaler's denominator assertion.
     // Registration itself remains lazy and does not query capabilities/Create.
-    if (info->GetFormat().clockrate_hz < 0) return false;
+    if (info->GetFormat().clockrate_hz < 0 || !factory_) return false;
     auto& token = lifetimes_[pt];
     if (token && token->state.load() == NetEqDecoderLifetimeState::Consumed) return true;
     if (token && token->state.load() == NetEqDecoderLifetimeState::Prepared) return false;
@@ -4204,15 +4213,16 @@ bool StockNetEqHasPackets(const webrtc::NetEq& value) {
 }  // namespace
 
 std::unique_ptr<NativeNetEq> neteq_stock_create(const NativeEnvironment& environment,
-    const FfiNetEqConfig& config, const NativeAudioDecoderFactory& factory,
+    const FfiNetEqConfig& config, const NativeAudioDecoderFactory* factory,
     int64_t minimum_time_us, int64_t maximum_time_us) noexcept {
-  if (!neteq_stock_config_safe(config) || !factory.factory() ||
-      factory.state().builtin_kind == 0 ||
+  if (!neteq_stock_config_safe(config) ||
+      (factory && (!factory->factory() || factory->state().builtin_kind == 0)) ||
       minimum_time_us == std::numeric_limits<int64_t>::min() ||
       maximum_time_us == std::numeric_limits<int64_t>::max() ||
       minimum_time_us > maximum_time_us) return nullptr;
   auto retained = clone_environment(environment);
-  auto handoff = webrtc::make_ref_counted<PreparedNetEqDecoderFactory>(factory);
+  webrtc::scoped_refptr<PreparedNetEqDecoderFactory> handoff;
+  if (factory) handoff = webrtc::make_ref_counted<PreparedNetEqDecoderFactory>(*factory);
   const auto native_config = NetEqConfigFromFfi(config);
   auto deps = StockNetEqDependencies(retained->environment(), native_config, handoff);
   auto engine = std::make_unique<GuardedStockNetEq>(std::move(retained), native_config,

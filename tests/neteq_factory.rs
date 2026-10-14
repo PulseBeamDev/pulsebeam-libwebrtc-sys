@@ -1,4 +1,4 @@
-//! Public factory/context ownership and failure evidence. Execution deferred.
+//! Public factory/context ownership, nullable inputs and callback failures.
 use pulsebeam_webrtc_sys::*;
 use std::{
     collections::BTreeMap,
@@ -228,6 +228,54 @@ fn contexts_and_independent_products_outlive_all_creation_owners() {
                 .is_some()
         );
     }
+}
+
+#[test]
+fn absent_decoder_factory_reaches_the_owned_creation_context() {
+    let (factory, calls, _, _, contexts) = factory(Behavior::Products, false);
+    let environment = Environment::builder().build().unwrap();
+    let config = NetEqConfig::default();
+    let product = factory
+        .create_with_decoder_factory(&environment, &config, None)
+        .unwrap();
+    drop(factory);
+    drop(environment);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(product.base_minimum_delay_ms(), 1);
+    let contexts = contexts.lock().unwrap();
+    assert!(contexts[0].decoder_factory.is_none());
+    assert_eq!(contexts[0].config, config);
+}
+
+#[test]
+fn same_registration_reentry_is_rejected_before_locking_and_remains_observable() {
+    struct Reenter(Arc<Mutex<Option<NetEqFactory>>>);
+    impl NetEqFactoryProvider for Reenter {
+        fn create(
+            &mut self,
+            context: NetEqCreationContext,
+        ) -> Result<Box<dyn NetEqProvider>, NetEqFactoryError> {
+            let factory = self.0.lock().unwrap().as_ref().unwrap().clone();
+            match factory.create_with_decoder_factory(&context.environment, &context.config, None) {
+                Err(error) => Err(error),
+                Ok(_) => panic!("recursive creation must not dispatch"),
+            }
+        }
+    }
+    let slot = Arc::new(Mutex::new(None));
+    let factory = NetEqFactory::from_provider(Reenter(slot.clone()));
+    *slot.lock().unwrap() = Some(factory.clone());
+    let observer = factory.failure_observer();
+    let environment = Environment::builder().build().unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            factory.create_with_decoder_factory(&environment, &NetEqConfig::default(), None),
+            Err(NetEqFactoryError::ReentrantCall)
+        ));
+    }
+    slot.lock().unwrap().take();
+    drop(factory);
+    assert_eq!(observer.failure(), Some(NetEqFactoryError::ReentrantCall));
 }
 
 #[test]
