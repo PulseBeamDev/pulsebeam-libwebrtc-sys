@@ -47,12 +47,31 @@ class NativeRtcError;
 class NativeVideoFrame;
 struct FfiSenderParameters;
 struct FfiCodecFormat;
+struct FfiVideoSourceStats;
 struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
 struct FfiRtpHeaderExtension;
 
 class NativeAudioTrack;
 class NativeVideoTrack;
+class NativeVideoSourceView final {
+ public:
+  struct State;
+  explicit NativeVideoSourceView(std::unique_ptr<State> state) noexcept;
+  ~NativeVideoSourceView();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+class NativeVideoObserver final {
+ public:
+  struct State;
+  explicit NativeVideoObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeVideoObserver();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
 class NativeMediaStream final {
  public:
   struct State;
@@ -327,6 +346,20 @@ std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept;
 bool close_video_source(const NativeVideoSource& source) noexcept;
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept;
+std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept;
+std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept;
+bool video_source_views_same_interface(const NativeVideoSourceView& a, const NativeVideoSourceView& b) noexcept;
+std::uint8_t video_source_view_state(const NativeVideoSourceView& source) noexcept;
+bool video_source_view_remote(const NativeVideoSourceView& source) noexcept;
+bool video_source_view_screencast(const NativeVideoSourceView& source) noexcept;
+std::int8_t video_source_view_denoising(const NativeVideoSourceView& source) noexcept;
+bool video_source_view_encoded_output(const NativeVideoSourceView& source) noexcept;
+FfiVideoSourceStats video_source_view_stats(const NativeVideoSourceView& source) noexcept;
+std::unique_ptr<NativeVideoObserver> video_source_view_observe(const NativeVideoSourceView& source, std::size_t capacity) noexcept;
+std::unique_ptr<NativeVideoObserver> video_track_observe(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory, std::size_t capacity) noexcept;
+bool video_observer_take(const NativeVideoObserver& observer) noexcept;
+std::uint64_t video_observer_take_dropped(const NativeVideoObserver& observer) noexcept;
+void video_observer_close(const NativeVideoObserver& observer) noexcept;
 bool video_source_push_encoded_trigger(
     const NativeVideoSource& source, std::uint32_t width,
     std::uint32_t height, std::int64_t timestamp_us,
@@ -347,6 +380,11 @@ bool video_track_enabled(const NativeVideoTrack& track) noexcept;
 bool video_track_set_enabled(const NativeVideoTrack& track,
                              bool enabled) noexcept;
 std::uint8_t video_track_state(const NativeVideoTrack& track) noexcept;
+rust::String video_track_kind(const NativeVideoTrack& track) noexcept;
+bool video_track_should_receive(const NativeVideoTrack& track) noexcept;
+void video_track_set_should_receive(const NativeVideoTrack& track, bool receive) noexcept;
+std::uint8_t video_track_content_hint(const NativeVideoTrack& track) noexcept;
+void video_track_set_content_hint(const NativeVideoTrack& track, std::uint8_t hint) noexcept;
 std::unique_ptr<NativeVideoSink> video_track_attach_sink(
     const NativeVideoTrack& track) noexcept;
 std::unique_ptr<NativeVideoFrame> video_sink_take_frame(

@@ -655,11 +655,12 @@ pub use production::{
     ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioObserverId,
     SessionAudioProcessorId, SessionAudioSourceViewId, SessionChannelId, SessionDtlsTransportId,
     SessionDtmfError, SessionDtmfSenderId, SessionEvent, SessionFrameDecryptorId,
-    SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId, SessionMediaTrackId,
-    SessionPeerId, SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation,
-    SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId,
+    SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId,
+    SessionMediaStreamObserverId, SessionMediaTrackId, SessionPeerId, SessionReceiverId,
+    SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
+    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTrackId,
     SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
-    SessionMediaStreamObserverId, SessionTrackId,
+    SessionVideoObserverId, SessionVideoSourceViewId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -670,8 +671,10 @@ pub use video::{
     DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, MediaType,
     ReceivedVideoFrame, RtpHeaderExtensionCapability, RtpHeaderExtensionDirection, RtpReceiver,
     RtpReceiverOperationError, RtpSender, RtpSenderEncoding, RtpSenderOperationError,
-    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability, VideoSink,
-    VideoSource, VideoSourceState, VideoTrack, VideoTrackState,
+    RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability,
+    VideoContentHint, VideoObserver, VideoObserverEvent, VideoSink, VideoSource, VideoSourceState,
+    VideoSourceStats, VideoSourceStatus, VideoSourceView, VideoTrack, VideoTrackState,
+    VideoTrackStatus,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -3767,6 +3770,12 @@ mod ffi {
         signal_level: FfiOptionalI32,
     }
 
+    struct FfiVideoSourceStats {
+        available: bool,
+        input_width: i32,
+        input_height: i32,
+    }
+
     struct FfiAudioSourceOptions {
         echo_cancellation: i8,
         echo_cancellation_mode: FfiOptionalI32,
@@ -4964,6 +4973,8 @@ mod ffi {
         fn rtp_receiver_track_reference(
             receiver: &NativeRtpReceiver,
         ) -> UniquePtr<NativeMediaTrack>;
+        type NativeVideoSourceView;
+        type NativeVideoObserver;
         type NativeVideoTrack;
         type NativeAudioSource;
         type NativeAudioTrack;
@@ -7609,6 +7620,33 @@ mod ffi {
         ) -> UniquePtr<NativeVideoSource>;
         fn close_video_source(source: &NativeVideoSource) -> bool;
         fn video_source_state(source: &NativeVideoSource) -> u8;
+        fn video_source_as_view(source: &NativeVideoSource) -> UniquePtr<NativeVideoSourceView>;
+        fn video_track_source(
+            track: &NativeVideoTrack,
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeVideoSourceView>;
+        fn video_source_views_same_interface(
+            a: &NativeVideoSourceView,
+            b: &NativeVideoSourceView,
+        ) -> bool;
+        fn video_source_view_state(source: &NativeVideoSourceView) -> u8;
+        fn video_source_view_remote(source: &NativeVideoSourceView) -> bool;
+        fn video_source_view_screencast(source: &NativeVideoSourceView) -> bool;
+        fn video_source_view_denoising(source: &NativeVideoSourceView) -> i8;
+        fn video_source_view_encoded_output(source: &NativeVideoSourceView) -> bool;
+        fn video_source_view_stats(source: &NativeVideoSourceView) -> FfiVideoSourceStats;
+        fn video_source_view_observe(
+            source: &NativeVideoSourceView,
+            capacity: usize,
+        ) -> UniquePtr<NativeVideoObserver>;
+        fn video_track_observe(
+            track: &NativeVideoTrack,
+            factory: &NativePeerConnectionFactory,
+            capacity: usize,
+        ) -> UniquePtr<NativeVideoObserver>;
+        fn video_observer_take(observer: &NativeVideoObserver) -> bool;
+        fn video_observer_take_dropped(observer: &NativeVideoObserver) -> u64;
+        fn video_observer_close(observer: &NativeVideoObserver);
         fn video_source_push_encoded_trigger(
             source: &NativeVideoSource,
             width: u32,
@@ -7663,6 +7701,11 @@ mod ffi {
         fn video_track_enabled(track: &NativeVideoTrack) -> bool;
         fn video_track_set_enabled(track: &NativeVideoTrack, enabled: bool) -> bool;
         fn video_track_state(track: &NativeVideoTrack) -> u8;
+        fn video_track_kind(track: &NativeVideoTrack) -> String;
+        fn video_track_should_receive(track: &NativeVideoTrack) -> bool;
+        fn video_track_set_should_receive(track: &NativeVideoTrack, receive: bool);
+        fn video_track_content_hint(track: &NativeVideoTrack) -> u8;
+        fn video_track_set_content_hint(track: &NativeVideoTrack, hint: u8);
         fn video_track_attach_sink(track: &NativeVideoTrack) -> UniquePtr<NativeVideoSink>;
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
         fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;

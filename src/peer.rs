@@ -1446,7 +1446,10 @@ impl PeerConnectionFactory {
     pub fn create_media_stream(&self, id: &str) -> Result<crate::MediaStream, PeerError> {
         let native = ffi::create_media_stream(self.native(), id);
         if native.is_null() {
-            return Err(PeerError { kind: PeerErrorKind::NativeConstruction, message: "native media stream creation failed".into() });
+            return Err(PeerError {
+                kind: PeerErrorKind::NativeConstruction,
+                message: "native media stream creation failed".into(),
+            });
         }
         Ok(crate::MediaStream::from_native(native, self.0.clone()))
     }

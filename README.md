@@ -348,6 +348,20 @@ retirement. Releasing an outer view/producer identifier does not invalidate an
 observer or discard its queued callbacks. Polling notifications does not pump
 media or advance a controlled clock.
 
+`VideoSource::as_view` and `VideoTrack::source` retain owning video-source
+interfaces without creating another frame producer. Views query native state,
+remote/screencast/denoising metadata, encoded-output support and optional source
+statistics. Stock push and RTP sources return no source statistics at this pin,
+even after frames arrive; requested geometry is not substitute native output.
+`same_interface` compares the actual SDK interface: different track-source
+proxies can wrap the same producer without being the same interface.
+`VideoTrack` exposes native kind, receive intent and all four content hints.
+Track/source change observers are bounded, unregister synchronously on close,
+and retain accepted events and overflow counts. Source views and observers retain
+the exact producer/track/peer origin through final native release. Production
+sessions provide opaque view/observer IDs and use the existing track IDs for
+controls, preserving their captive single-owner migration contract.
+
 `PeerConnectionFactory::create_media_stream` creates an owning native track
 container, not SDP routing or receive synchronization. Get/Find return the exact
 accepted track owners in native insertion order. Native Add rejects duplicate

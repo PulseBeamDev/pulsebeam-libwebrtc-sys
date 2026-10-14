@@ -120,8 +120,51 @@ impl VideoCodecCapability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VideoSourceState {
+    Initializing,
     Live,
     Ended,
+    Muted,
+}
+impl VideoSourceState {
+    fn from_native(value: u8) -> Self {
+        match value {
+            0 => Self::Initializing, 1 => Self::Live, 2 => Self::Ended, 3 => Self::Muted,
+            value => unreachable!("native adapter returned invalid video source state {value}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoContentHint { None, Fluid, Detailed, Text }
+impl VideoContentHint {
+    fn native(self) -> u8 {
+        match self { Self::None => 0, Self::Fluid => 1, Self::Detailed => 2, Self::Text => 3 }
+    }
+    fn from_native(value: u8) -> Self {
+        match value { 0 => Self::None, 1 => Self::Fluid, 2 => Self::Detailed, 3 => Self::Text,
+            value => unreachable!("native adapter returned invalid content hint {value}") }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoSourceStats { pub input_width: i32, pub input_height: i32 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoSourceStatus {
+    pub state: VideoSourceState,
+    pub remote: bool,
+    pub is_screencast: bool,
+    pub needs_denoising: Option<bool>,
+    pub supports_encoded_output: bool,
+    pub stats: Option<VideoSourceStats>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoTrackStatus {
+    pub id: String,
+    pub kind: String,
+    pub state: VideoTrackState,
+    pub enabled: bool,
+    pub should_receive: bool,
+    pub content_hint: VideoContentHint,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -434,11 +477,7 @@ impl VideoSource {
     }
 
     pub fn state(&self) -> VideoSourceState {
-        match ffi::video_source_state(self.native()) {
-            1 => VideoSourceState::Live,
-            2 => VideoSourceState::Ended,
-            value => unreachable!("native adapter returned invalid video source state {value}"),
-        }
+        VideoSourceState::from_native(ffi::video_source_state(self.native()))
     }
 
     pub fn push_frame(&self, frame: &VideoFrame) -> Result<(), CodecError> {
@@ -468,6 +507,15 @@ impl VideoSource {
             .ok_or(CodecError::Released)
     }
 
+    /// An owning SDK interface view, not another frame producer.
+    pub fn as_view(&self) -> VideoSourceView {
+        VideoSourceView { inner: Rc::new(VideoSourceViewInner {
+            native: ffi::video_source_as_view(self.native()),
+            _producer: Some(self.inner.clone()), _track: None,
+            _factory: self.inner._factory.clone(),
+        }) }
+    }
+
     pub(crate) fn controlled_media(&self) -> bool {
         self.inner._factory.controlled_media
     }
@@ -479,6 +527,70 @@ impl VideoSource {
     pub(crate) fn native(&self) -> &ffi::NativeVideoSource {
         self.inner.native.as_ref().expect("validated video source")
     }
+}
+
+/// Owning source interface access without another producer or a fabricated
+/// stop/push operation. A track view retains that exact track's origin.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::VideoSourceView>();
+/// ```
+#[derive(Clone)]
+pub struct VideoSourceView { inner: Rc<VideoSourceViewInner> }
+struct VideoSourceViewInner {
+    native: cxx::UniquePtr<ffi::NativeVideoSourceView>,
+    _producer: Option<Rc<SourceInner>>,
+    _track: Option<VideoTrack>,
+    _factory: Rc<FactoryInner>,
+}
+impl VideoSourceView {
+    /// Compare the actual SDK interface, not logical producer identity.
+    /// Different SDK track-source proxies can wrap the same producer.
+    pub fn same_interface(&self, other: &Self) -> bool {
+        ffi::video_source_views_same_interface(self.native(), other.native())
+    }
+    pub fn state(&self) -> VideoSourceState { VideoSourceState::from_native(ffi::video_source_view_state(self.native())) }
+    pub fn remote(&self) -> bool { ffi::video_source_view_remote(self.native()) }
+    pub fn is_screencast(&self) -> bool { ffi::video_source_view_screencast(self.native()) }
+    pub fn needs_denoising(&self) -> Option<bool> {
+        match ffi::video_source_view_denoising(self.native()) { -1 => None, 0 => Some(false), 1 => Some(true), value => unreachable!("invalid native denoising value {value}") }
+    }
+    pub fn supports_encoded_output(&self) -> bool { ffi::video_source_view_encoded_output(self.native()) }
+    pub fn stats(&self) -> Option<VideoSourceStats> {
+        let value = ffi::video_source_view_stats(self.native());
+        value.available.then_some(VideoSourceStats { input_width: value.input_width, input_height: value.input_height })
+    }
+    /// A fresh collection of SDK queries, not a cached or atomic snapshot.
+    pub fn status(&self) -> VideoSourceStatus {
+        VideoSourceStatus { state: self.state(), remote: self.remote(), is_screencast: self.is_screencast(), needs_denoising: self.needs_denoising(), supports_encoded_output: self.supports_encoded_output(), stats: self.stats() }
+    }
+    pub fn observe_changes(&self, capacity: std::num::NonZeroUsize) -> Result<VideoObserver, PeerError> {
+        VideoObserver::new(ffi::video_source_view_observe(self.native(), capacity.get()), Some(self.clone()), None)
+    }
+    fn native(&self) -> &ffi::NativeVideoSourceView { self.inner.native.as_ref().expect("owning video source view") }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoObserverEvent { Changed }
+/// A bounded owning native observer queue. Close unregisters synchronously,
+/// retaining accepted notifications and overflow counts for later consumption.
+#[derive(Clone)]
+pub struct VideoObserver { inner: Rc<VideoObserverInner> }
+struct VideoObserverInner {
+    native: cxx::UniquePtr<ffi::NativeVideoObserver>,
+    _source: Option<VideoSourceView>,
+    _track: Option<VideoTrack>,
+}
+impl VideoObserver {
+    fn new(native: cxx::UniquePtr<ffi::NativeVideoObserver>, source: Option<VideoSourceView>, track: Option<VideoTrack>) -> Result<Self, PeerError> {
+        if native.is_null() { return Err(PeerError { kind: PeerErrorKind::NativeConstruction, message: "native video observer creation failed".into() }); }
+        Ok(Self { inner: Rc::new(VideoObserverInner { native, _source: source, _track: track }) })
+    }
+    pub fn try_next_event(&self) -> Option<VideoObserverEvent> { ffi::video_observer_take(self.native()).then_some(VideoObserverEvent::Changed) }
+    pub fn take_dropped_events(&self) -> u64 { ffi::video_observer_take_dropped(self.native()) }
+    pub fn close(&self) { ffi::video_observer_close(self.native()); }
+    fn native(&self) -> &ffi::NativeVideoObserver { self.inner.native.as_ref().expect("owning video observer") }
 }
 
 /// A sequence-bound local or remote video track.
@@ -590,6 +702,27 @@ impl VideoTrack {
 
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::video_track_identity(self.native()) == ffi::video_track_identity(other.native())
+    }
+
+    pub fn kind(&self) -> String { ffi::video_track_kind(self.native()) }
+    pub fn should_receive(&self) -> bool { ffi::video_track_should_receive(self.native()) }
+    pub fn set_should_receive(&self, receive: bool) { ffi::video_track_set_should_receive(self.native(), receive); }
+    pub fn content_hint(&self) -> VideoContentHint { VideoContentHint::from_native(ffi::video_track_content_hint(self.native())) }
+    pub fn set_content_hint(&self, hint: VideoContentHint) { ffi::video_track_set_content_hint(self.native(), hint.native()); }
+    pub fn status(&self) -> VideoTrackStatus {
+        VideoTrackStatus { id: self.id(), kind: self.kind(), state: self.state(), enabled: self.enabled(), should_receive: self.should_receive(), content_hint: self.content_hint() }
+    }
+    pub fn source(&self) -> Option<VideoSourceView> {
+        let native = ffi::video_track_source(self.native(), self.origin_factory().native());
+        (!native.is_null()).then(|| VideoSourceView { inner: Rc::new(VideoSourceViewInner {
+            native, _producer: None, _track: Some(self.clone()), _factory: self.origin_factory().clone(),
+        }) })
+    }
+    pub fn observe_changes(&self, capacity: std::num::NonZeroUsize) -> Result<VideoObserver, PeerError> {
+        VideoObserver::new(ffi::video_track_observe(self.native(), self.origin_factory().native(), capacity.get()), None, Some(self.clone()))
+    }
+    fn origin_factory(&self) -> &Rc<FactoryInner> {
+        self.inner._factory.as_ref().unwrap_or_else(|| &self.inner._peer.as_ref().expect("track origin")._factory)
     }
 
     pub fn enabled(&self) -> bool {

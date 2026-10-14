@@ -872,7 +872,7 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
             .is_err()
     );
 
-    let (session, mut call) = thread::spawn(move || {
+    let (session, mut call, retained_video) = thread::spawn(move || {
         let mut session = session;
         let mut call = Call::default();
         call.negotiate(&mut session, peers);
@@ -880,7 +880,44 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session.attach_raw_video(call.video.unwrap()).unwrap();
         assert!(session.attach_encoded_audio(call.audio.unwrap()).is_err());
         assert!(session.attach_encoded_video(call.video.unwrap()).is_err());
-        (session, call)
+        let local = session.video_source_view(raw).unwrap();
+        let local_track = session.sender_track(sender).unwrap().unwrap();
+        let installed = session.video_track_source_view(local_track).unwrap().unwrap();
+        let installed_alias = session.video_track_source_view(local_track).unwrap().unwrap();
+        assert!(session.video_source_views_same_interface(installed, installed_alias).unwrap());
+        session.release_video_source_view(installed_alias);
+        let remote_track = session.receiver_track(call.video.unwrap()).unwrap().unwrap();
+        let remote = session.video_track_source_view(remote_track).unwrap().unwrap();
+        let local_status = session.video_source_status(local).unwrap();
+        let remote_status = session.video_source_status(remote).unwrap();
+        assert!(!local_status.remote && !local_status.supports_encoded_output);
+        assert!(remote_status.remote && remote_status.supports_encoded_output);
+        for status in [local_status, remote_status] {
+            assert!(!status.is_screencast);
+            assert_eq!(status.needs_denoising, None);
+            assert_eq!(status.stats, None);
+        }
+        let cap = std::num::NonZeroUsize::new(2).unwrap();
+        let source_events = session.observe_video_source_changes(installed, cap).unwrap();
+        let track_events = session.observe_video_track_changes(local_track, cap).unwrap();
+        let remote_events = session.observe_video_source_changes(remote, cap).unwrap();
+        let receive_events = session.observe_video_track_changes(remote_track, cap).unwrap();
+        session.set_video_track_content_hint(local_track, VideoContentHint::Fluid).unwrap();
+        session.set_video_track_content_hint(local_track, VideoContentHint::Fluid).unwrap();
+        session.set_video_track_should_receive(local_track, false).unwrap();
+        session.set_video_track_should_receive(local_track, false).unwrap();
+        let status = session.video_track_status(local_track).unwrap();
+        assert_eq!(status.kind, "video");
+        assert!(!status.should_receive);
+        assert_eq!(status.content_hint, VideoContentHint::Fluid);
+        // Exercise the actual receiver stop/restart control before native media.
+        session.set_video_track_should_receive(remote_track, false).unwrap();
+        session.set_video_track_should_receive(remote_track, true).unwrap();
+        assert!(session.video_track_status(remote_track).unwrap().should_receive);
+        session.close_video_observer(receive_events).unwrap();
+        session.release_media_stream_track(local_track);
+        session.release_media_stream_track(remote_track);
+        (session, call, (local, installed, remote, source_events, track_events, remote_events, receive_events))
     })
     .join()
     .unwrap();
@@ -931,6 +968,12 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         assert_eq!((audio.sample_rate_hz, audio.channels), (48000, 1));
         assert_eq!(audio.samples.len(), audio.samples_per_channel as usize);
         let image = image.unwrap();
+        let (local, installed_view, remote, source_events, track_events, _, _) = retained_video;
+        for view in [local, installed_view, remote] {
+            let status = session.video_source_status(view).unwrap();
+            assert_eq!(status.state, VideoSourceState::Live);
+            assert_eq!(status.stats, None); // Actual frames do not invent GetStats.
+        }
         assert_eq!((image.width, image.height), (64, 48));
         let average = image.buffer.as_bytes()[..64 * 48]
             .iter()
@@ -983,6 +1026,13 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session.close_source(pcm).unwrap();
         assert!(session.push_pcm(pcm, &pcm_frame).is_err());
         session.close_source(raw).unwrap();
+        assert_eq!(session.video_source_status(installed_view).unwrap().state, VideoSourceState::Ended);
+        assert_eq!(session.video_source_status(local).unwrap().state, VideoSourceState::Ended);
+        assert_eq!(session.take_video_observer_dropped(track_events).unwrap(), 1);
+        session.close_video_observer(source_events).unwrap();
+        session.close_video_observer(track_events).unwrap();
+        session.release_video_source_view(local);
+        session.release_video_source_view(installed_view);
         assert!(session.push_raw_video(raw, &video(40, 0)).is_err());
         // Closing and replacing sinks must release their native reservation.
         session.close_media_sink(call.video.unwrap()).unwrap();
@@ -1058,6 +1108,22 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
     .unwrap();
     thread::spawn(move || {
         let mut session = session;
+        let (_, _, remote, source_events, track_events, remote_events, receive_events) = retained_video;
+        session.close_peer(peers[0]).unwrap();
+        session.close_peer(peers[1]).unwrap();
+        assert_eq!(session.video_source_status(remote).unwrap().state, VideoSourceState::Ended);
+        session.close_video_observer(remote_events).unwrap();
+        session.release_video_source_view(remote);
+        for observer in [source_events, remote_events] {
+            assert_eq!(session.try_video_observer_event(observer).unwrap(), Some(VideoObserverEvent::Changed));
+            assert_eq!(session.try_video_observer_event(observer).unwrap(), None);
+            session.release_video_observer(observer);
+        }
+        for observer in [track_events, receive_events] {
+            for _ in 0..2 { assert_eq!(session.try_video_observer_event(observer).unwrap(), Some(VideoObserverEvent::Changed)); }
+            assert_eq!(session.try_video_observer_event(observer).unwrap(), None);
+            session.release_video_observer(observer);
+        }
         session.shutdown().unwrap();
         session.shutdown().unwrap();
         drop(session);

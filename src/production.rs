@@ -48,6 +48,8 @@ resource_id!(
     SessionMediaStreamId,
     SessionTrackId,
     SessionMediaStreamObserverId,
+    SessionVideoSourceViewId,
+    SessionVideoObserverId,
     SessionAudioSourceViewId,
     SessionAudioProcessorId,
     SessionAudioObserverId,
@@ -291,6 +293,8 @@ pub struct ProductionSession {
     // Observers/transports retire before endpoints, peers and role threads.
     connectivity: connectivity::ConnectivityResources,
     local_stream_observers: HashMap<SessionMediaStreamObserverId, crate::MediaStreamObserver>,
+    video_observers: HashMap<SessionVideoObserverId, crate::VideoObserver>,
+    video_source_views: HashMap<SessionVideoSourceViewId, crate::VideoSourceView>,
     streams: HashMap<SessionMediaStreamId, crate::MediaStream>,
     stream_tracks: HashMap<SessionTrackId, StreamTrack>,
     audio_observers: HashMap<SessionAudioObserverId, crate::AudioObserver>,
@@ -914,6 +918,8 @@ impl ProductionSession {
             audio_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
+            video_observers: HashMap::new(),
+            video_source_views: HashMap::new(),
             stream_observers: HashMap::new(),
             streams: HashMap::new(),
             stream_tracks: HashMap::new(),
@@ -2090,6 +2096,143 @@ impl ProductionSession {
     }
     pub fn release_media_stream(&mut self, id: SessionMediaStreamId) {
         self.streams.remove(&id);
+    }
+
+    fn video_track_handle(&self, id: SessionTrackId) -> Result<&crate::VideoTrack, PeerError> {
+        match self.stream_tracks.get(&id).ok_or_else(missing)? {
+            StreamTrack::Video(track) => Ok(track),
+            _ => Err(missing()),
+        }
+    }
+    fn retain_video_source_view(
+        &mut self,
+        view: crate::VideoSourceView,
+    ) -> Result<SessionVideoSourceViewId, PeerError> {
+        let id = SessionVideoSourceViewId(next_id()?);
+        self.video_source_views.insert(id, view);
+        Ok(id)
+    }
+    /// View a raw producer without creating another producer or exposing handles.
+    pub fn video_source_view(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<SessionVideoSourceViewId, PeerError> {
+        self.check_open()?;
+        let Some(Source::RawVideo(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        self.retain_video_source_view(source.as_view())
+    }
+    pub fn video_track_source_view(
+        &mut self,
+        track: SessionTrackId,
+    ) -> Result<Option<SessionVideoSourceViewId>, PeerError> {
+        self.check_open()?;
+        let view = self.video_track_handle(track)?.source();
+        view.map(|view| self.retain_video_source_view(view))
+            .transpose()
+    }
+    pub fn video_source_status(
+        &mut self,
+        view: SessionVideoSourceViewId,
+    ) -> Result<crate::VideoSourceStatus, PeerError> {
+        Ok(self
+            .video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .status())
+    }
+    /// Actual SDK interface equality; distinct proxies may share a producer.
+    pub fn video_source_views_same_interface(
+        &mut self,
+        a: SessionVideoSourceViewId,
+        b: SessionVideoSourceViewId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .video_source_views
+            .get(&a)
+            .ok_or_else(missing)?
+            .same_interface(self.video_source_views.get(&b).ok_or_else(missing)?))
+    }
+    pub fn video_track_status(
+        &mut self,
+        track: SessionTrackId,
+    ) -> Result<crate::VideoTrackStatus, PeerError> {
+        Ok(self.video_track_handle(track)?.status())
+    }
+    pub fn set_video_track_should_receive(
+        &mut self,
+        track: SessionTrackId,
+        receive: bool,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_track_handle(track)?.set_should_receive(receive);
+        Ok(())
+    }
+    pub fn set_video_track_content_hint(
+        &mut self,
+        track: SessionTrackId,
+        hint: crate::VideoContentHint,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_track_handle(track)?.set_content_hint(hint);
+        Ok(())
+    }
+    pub fn observe_video_source_changes(
+        &mut self,
+        view: SessionVideoSourceViewId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionVideoObserverId, PeerError> {
+        self.check_open()?;
+        let observer = self
+            .video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .observe_changes(capacity)?;
+        let id = SessionVideoObserverId(next_id()?);
+        self.video_observers.insert(id, observer);
+        Ok(id)
+    }
+    pub fn observe_video_track_changes(
+        &mut self,
+        track: SessionTrackId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionVideoObserverId, PeerError> {
+        self.check_open()?;
+        let observer = self.video_track_handle(track)?.observe_changes(capacity)?;
+        let id = SessionVideoObserverId(next_id()?);
+        self.video_observers.insert(id, observer);
+        Ok(id)
+    }
+    pub fn try_video_observer_event(
+        &mut self,
+        id: SessionVideoObserverId,
+    ) -> Result<Option<crate::VideoObserverEvent>, PeerError> {
+        Ok(self
+            .video_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .try_next_event())
+    }
+    pub fn take_video_observer_dropped(
+        &mut self,
+        id: SessionVideoObserverId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .video_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .take_dropped_events())
+    }
+    pub fn close_video_observer(&mut self, id: SessionVideoObserverId) -> Result<(), PeerError> {
+        self.video_observers.get(&id).ok_or_else(missing)?.close();
+        Ok(())
+    }
+    pub fn release_video_observer(&mut self, id: SessionVideoObserverId) {
+        self.video_observers.remove(&id);
+    }
+    pub fn release_video_source_view(&mut self, id: SessionVideoSourceViewId) {
+        self.video_source_views.remove(&id);
     }
 
     /// Capture an owning interface alias without creating another producer.
@@ -4730,6 +4873,9 @@ impl ProductionSession {
         }
         for source in self.sources.values_mut() {
             source.close()?;
+        }
+        for observer in self.video_observers.values() {
+            observer.close();
         }
         for observer in self.stream_observers.values() {
             observer.close();

@@ -717,6 +717,131 @@ struct NativeVideoTrack::State {
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
 };
 
+struct NativeVideoSourceView::State {
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::Thread* signaling = nullptr;
+};
+struct NativeVideoObserver::State final : webrtc::ObserverInterface {
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
+  webrtc::Thread* signaling = nullptr;
+  bool registered = false;  // signaling only
+  std::mutex mutex;
+  std::size_t capacity = 0;
+  std::size_t pending = 0;
+  std::uint64_t dropped = 0;
+  webrtc::NotifierInterface* notifier() const {
+    return source ? static_cast<webrtc::NotifierInterface*>(source.get())
+                  : static_cast<webrtc::NotifierInterface*>(track.get());
+  }
+  void OnChanged() override {
+    std::lock_guard lock(mutex);
+    if (pending < capacity) ++pending;
+    else if (dropped != std::numeric_limits<std::uint64_t>::max()) ++dropped;
+  }
+};
+NativeVideoSourceView::NativeVideoSourceView(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeVideoSourceView::~NativeVideoSourceView() {
+  state_->signaling->BlockingCall([&] { state_->source = nullptr; });
+}
+const std::unique_ptr<NativeVideoSourceView::State>& NativeVideoSourceView::state() const noexcept { return state_; }
+std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept {
+  auto state = std::make_unique<NativeVideoSourceView::State>();
+  state->signaling = source.state()->signaling_thread;
+  state->signaling->BlockingCall([&] { state->source = source.state()->source; });
+  return std::make_unique<NativeVideoSourceView>(std::move(state));
+}
+std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept {
+  auto state = std::make_unique<NativeVideoSourceView::State>();
+  state->signaling = factory.signaling_thread();
+  state->signaling->BlockingCall([&] { state->source = track.state()->track->GetSource(); });
+  if (!state->source) return nullptr;
+  return std::make_unique<NativeVideoSourceView>(std::move(state));
+}
+bool video_source_views_same_interface(const NativeVideoSourceView& a, const NativeVideoSourceView& b) noexcept {
+  return a.state()->source.get() == b.state()->source.get();
+}
+std::uint8_t video_source_view_state(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&] { return static_cast<std::uint8_t>(source.state()->source->state()); });
+}
+bool video_source_view_remote(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&] { return source.state()->source->remote(); });
+}
+bool video_source_view_screencast(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&] { return source.state()->source->is_screencast(); });
+}
+std::int8_t video_source_view_denoising(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&]() -> std::int8_t {
+    const auto value = source.state()->source->needs_denoising();
+    return value ? static_cast<std::int8_t>(*value) : -1;
+  });
+}
+bool video_source_view_encoded_output(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&] { return source.state()->source->SupportsEncodedOutput(); });
+}
+FfiVideoSourceStats video_source_view_stats(const NativeVideoSourceView& source) noexcept {
+  return source.state()->signaling->BlockingCall([&] {
+    FfiVideoSourceStats out;
+    webrtc::VideoTrackSourceInterface::Stats stats{};
+    if (source.state()->source->GetStats(&stats)) {
+      out.available = true;
+      out.input_width = stats.input_width;
+      out.input_height = stats.input_height;
+    }
+    return out;
+  });
+}
+NativeVideoObserver::NativeVideoObserver(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeVideoObserver::~NativeVideoObserver() {
+  video_observer_close(*this);
+  state_->signaling->BlockingCall([&] { state_->source = nullptr; state_->track = nullptr; });
+}
+const std::unique_ptr<NativeVideoObserver::State>& NativeVideoObserver::state() const noexcept { return state_; }
+std::unique_ptr<NativeVideoObserver> video_source_view_observe(const NativeVideoSourceView& source, std::size_t capacity) noexcept {
+  if (!capacity) return nullptr;
+  auto state = std::make_unique<NativeVideoObserver::State>();
+  state->signaling = source.state()->signaling;
+  state->capacity = capacity;
+  state->signaling->BlockingCall([&] {
+    state->source = source.state()->source;
+    state->notifier()->RegisterObserver(state.get());
+    state->registered = true;
+  });
+  return std::make_unique<NativeVideoObserver>(std::move(state));
+}
+std::unique_ptr<NativeVideoObserver> video_track_observe(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory, std::size_t capacity) noexcept {
+  if (!capacity) return nullptr;
+  auto state = std::make_unique<NativeVideoObserver::State>();
+  state->signaling = factory.signaling_thread();
+  state->capacity = capacity;
+  state->signaling->BlockingCall([&] {
+    state->track = track.state()->track;
+    state->notifier()->RegisterObserver(state.get());
+    state->registered = true;
+  });
+  return std::make_unique<NativeVideoObserver>(std::move(state));
+}
+bool video_observer_take(const NativeVideoObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  if (!state.pending) return false;
+  --state.pending;
+  return true;
+}
+std::uint64_t video_observer_take_dropped(const NativeVideoObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  return std::exchange(state.dropped, 0);
+}
+void video_observer_close(const NativeVideoObserver& observer) noexcept {
+  auto& state = *observer.state();
+  state.signaling->BlockingCall([&] {
+    if (!state.registered) return;
+    state.notifier()->UnregisterObserver(&state);
+    state.registered = false;
+  });
+}
+
 struct NativeMediaStream::State {
   webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream;
   webrtc::Thread* signaling = nullptr;
@@ -1352,9 +1477,9 @@ bool close_video_source(const NativeVideoSource& source) noexcept {
 }
 
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept {
-  return source.state()->closed.load()
-             ? static_cast<std::uint8_t>(webrtc::MediaSourceInterface::kEnded)
-             : static_cast<std::uint8_t>(webrtc::MediaSourceInterface::kLive);
+  return source.state()->signaling_thread->BlockingCall([&] {
+    return static_cast<std::uint8_t>(source.state()->source->state());
+  });
 }
 
 bool video_source_push_encoded_trigger(
@@ -1470,6 +1595,23 @@ bool video_track_set_enabled(const NativeVideoTrack& track,
 }
 std::uint8_t video_track_state(const NativeVideoTrack& track) noexcept {
   return static_cast<std::uint8_t>(track.state()->track->state());
+}
+
+rust::String video_track_kind(const NativeVideoTrack& track) noexcept {
+  return track.state()->track->kind();
+}
+bool video_track_should_receive(const NativeVideoTrack& track) noexcept {
+  return track.state()->track->should_receive();
+}
+void video_track_set_should_receive(const NativeVideoTrack& track, bool receive) noexcept {
+  track.state()->track->set_should_receive(receive);
+}
+std::uint8_t video_track_content_hint(const NativeVideoTrack& track) noexcept {
+  return static_cast<std::uint8_t>(track.state()->track->content_hint());
+}
+void video_track_set_content_hint(const NativeVideoTrack& track, std::uint8_t hint) noexcept {
+  // Closed SDK enum; only the four typed Rust variants cross this bridge.
+  track.state()->track->set_content_hint(static_cast<webrtc::VideoTrackInterface::ContentHint>(hint));
 }
 
 std::unique_ptr<NativeVideoSink> video_track_attach_sink(
