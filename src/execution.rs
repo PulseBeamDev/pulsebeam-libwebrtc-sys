@@ -381,6 +381,7 @@ pub struct Environment {
     native: cxx::UniquePtr<ffi::NativeEnvironment>,
     _clock: Option<ManualClock>,
     _custom_clock: bool,
+    _clock_handle: Option<crate::Clock>,
     clock_bounds: crate::ClockTimeBounds,
     // SDK creation contexts own queues through the native Environment itself.
     // They must not fabricate a Rust factory handle for a different selection.
@@ -400,6 +401,7 @@ impl Clone for Environment {
             native,
             _clock: self._clock.clone(),
             _custom_clock: self._custom_clock,
+            _clock_handle: self._clock_handle.clone(),
             clock_bounds: self.clock_bounds,
             _task_queue_factory: self._task_queue_factory.clone(),
             _randomness: self._randomness.clone(),
@@ -464,6 +466,27 @@ impl Environment {
         self._clock.is_none() && !self._custom_clock
     }
 
+    /// Own a delegate to this exact SDK clock, with its environment and Rust
+    /// leases retained independently. This does not echo the builder's clock.
+    /// A default system clock needs a production lease for safe NTP conversion.
+    pub fn clock(&self) -> Result<crate::Clock, EnvironmentClockError> {
+        let environment = self.native.as_ref().ok_or(EnvironmentClockError::Closed)?;
+        let selected = self._clock_handle.as_ref()
+            .map_or(std::ptr::null(), |clock| clock.native() as *const _);
+        // SAFETY: the optional pointer is either null or a live selected clock
+        // retained by this environment. Identity-bound metadata is propagated
+        // only by constructors and from_sdk's exact native pointer comparison.
+        let native = unsafe { ffi::environment_clock(environment, selected, self._clock.is_some()) };
+        if native.is_null() { return Err(EnvironmentClockError::RealTimeClockUnavailable); }
+        Ok(crate::Clock::from_environment(native, self))
+    }
+
+    pub(crate) fn manual_clock_source(&self) -> Option<&ManualClock> { self._clock.as_ref() }
+
+    pub(crate) fn selected_clock_handle(&self) -> Option<&crate::Clock> {
+        self._clock_handle.as_ref()
+    }
+
     pub fn close(&mut self) {
         // Destroy the native environment before releasing this handle's Rust
         // dependency leases. Independent environment/product owners keep theirs.
@@ -471,6 +494,7 @@ impl Environment {
         // Native teardown precedes the Rust capability owners it can call.
         self._task_queue_factory = None;
         self._clock = None;
+        self._clock_handle = None;
         self._randomness = None;
     }
 
@@ -488,6 +512,10 @@ impl Environment {
         native: cxx::UniquePtr<ffi::NativeEnvironment>,
         retention: Option<&Environment>,
     ) -> Self {
+        let native = match retention {
+            Some(selected) => ffi::bind_environment_selection(native, selected.native()),
+            None => native,
+        };
         let bounds =
             ffi::environment_clock_time_bounds(native.as_ref().expect("retained SDK environment"));
         let clock_bounds = if bounds.known {
@@ -511,6 +539,7 @@ impl Environment {
             native,
             _clock: selected_clock.and_then(|selected| selected._clock.clone()),
             _custom_clock: selected_clock.is_none_or(|selected| selected._custom_clock),
+            _clock_handle: selected_clock.and_then(|selected| selected._clock_handle.clone()),
             clock_bounds,
             _task_queue_factory: selected_queue
                 .and_then(|selected| selected._task_queue_factory.clone()),
@@ -523,6 +552,21 @@ impl Environment {
         self.native.as_ref().expect("validated environment")
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvironmentClockError {
+    Closed,
+    RealTimeClockUnavailable,
+}
+impl fmt::Display for EnvironmentClockError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Closed => "environment is closed",
+            Self::RealTimeClockUnavailable => "system clock cannot retain a production lease while testing time is active",
+        })
+    }
+}
+impl std::error::Error for EnvironmentClockError {}
 
 #[derive(Default)]
 pub struct EnvironmentBuilder {
@@ -567,11 +611,12 @@ impl EnvironmentBuilder {
         self.clock_handle(&crate::Clock::from_provider(provider))
     }
 
-    /// Install a shared owning clock handle. Custom clocks cannot drive the
-    /// cooperative scheduler, which must share its registered manual clock.
+    /// Install a shared owning clock handle. A retained manual-clock utility
+    /// preserves its scheduler identity; other custom clocks cannot drive a
+    /// cooperative scheduler registered for a different clock.
     pub fn clock_handle(mut self, clock: &crate::Clock) -> Self {
         self.custom_clock = Some(clock.clone());
-        self.clock = None;
+        self.clock = clock.manual_source().cloned();
         self
     }
 
@@ -591,7 +636,7 @@ impl EnvironmentBuilder {
             None => TaskQueueFactory::default_threaded()?,
         };
         factory.check_current()?;
-        if self.custom_clock.is_some() && factory.0.clock.is_some() {
+        if self.custom_clock.as_ref().is_some_and(|clock| clock.manual_source().is_none()) && factory.0.clock.is_some() {
             return Err(BuildEnvironmentError::MismatchedCooperativeClock);
         }
         let clock = match (&self.clock, &factory.0.clock) {
@@ -617,8 +662,9 @@ impl EnvironmentBuilder {
             .or_else(|| clock.as_ref().map(ManualClock::time_bounds))
             .unwrap_or_else(crate::ClockTimeBounds::system_time);
         // SAFETY: null clock pointers select upstream system time; otherwise
-        // the selected clock is retained in the returned Environment. The two
-        // registrations are mutually exclusive and valid for this call. Bounds
+        // the selected clock is retained in the returned Environment. A
+        // custom handle may also carry its proven manual scheduling anchor.
+        // All selected values are valid and retained for this call. Bounds
         // are enforced by this exact selected adapter, not supplied by a caller.
         let native = unsafe {
             ffi::create_environment(
@@ -638,6 +684,7 @@ impl EnvironmentBuilder {
             native,
             _clock: clock,
             _custom_clock: self.custom_clock.is_some(),
+            _clock_handle: self.custom_clock,
             clock_bounds,
             _task_queue_factory: Some(factory),
             _randomness: self.randomness,
@@ -1112,6 +1159,16 @@ mod tests {
         );
         let copied = Environment::from_sdk(native_copy, Some(&selected));
         assert!(copied.uses_controlled_clock(&clock));
+        // An SDK snapshot without selected Rust origin still owns the exact
+        // clock, but cannot use Rust metadata to preflight its conversion kind.
+        let unqualified = Environment::from_sdk(ffi::clone_environment(selected.native()), None);
+        let utility = unqualified.clock().unwrap();
+        assert_eq!(utility.time_in_microseconds(), 100);
+        for timestamp in [crate::Timestamp::plus_infinity(), crate::Timestamp::minus_infinity(),
+            crate::Timestamp::from_microseconds(-1).unwrap()] {
+            assert!(!utility.convert_timestamp_to_ntp_time(timestamp).unwrap().is_valid());
+        }
+        assert!(utility.convert_timestamp_to_ntp_time(crate::Timestamp::from_microseconds(-1_000_000).unwrap()).unwrap().is_valid());
         // Matching clock identity alone cannot grant cooperative scheduling.
         assert!(!other.uses_controlled_clock(&clock));
         let mismatched =

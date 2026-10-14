@@ -143,6 +143,8 @@ pub(crate) fn clock_provider_convert_ntp(provider: &RustClockProvider, timestamp
 struct ClockState {
     native: cxx::UniquePtr<ffi::NativeClock>,
     provider: Option<Arc<ProviderState>>,
+    _environment: Option<Box<crate::Environment>>,
+    manual_source: Option<crate::ManualClock>,
     bounds: ClockTimeBounds,
     monotonic: bool,
 }
@@ -163,6 +165,18 @@ unsafe impl Sync for ClockState {}
 #[derive(Clone)]
 pub struct Clock(Arc<ClockState>);
 impl Clock {
+    pub(crate) fn from_environment(native: cxx::UniquePtr<ffi::NativeClock>, environment: &crate::Environment) -> Self {
+        let monotonic = ffi::clock_is_monotonic(native.as_ref().expect("owned environment clock"));
+        Self(Arc::new(ClockState {
+            native,
+            provider: environment.selected_clock_handle().and_then(|clock| clock.0.provider.clone()),
+            _environment: Some(Box::new(environment.clone())),
+            manual_source: environment.manual_clock_source().cloned(),
+            bounds: environment.clock_time_bounds(),
+            monotonic,
+        }))
+    }
+    pub(crate) fn manual_source(&self) -> Option<&crate::ManualClock> { self.0.manual_source.as_ref() }
     pub fn from_provider(provider: impl ClockProvider) -> Self {
         Self::from_bounded_provider(provider, ClockTimeBounds::all_finite())
     }
@@ -203,6 +217,8 @@ impl Clock {
         Self(Arc::new(ClockState {
             native,
             provider: Some(state),
+            _environment: None,
+            manual_source: None,
             bounds,
             monotonic,
         }))
@@ -238,6 +254,8 @@ impl Clock {
         Ok(Self(Arc::new(ClockState {
             native,
             provider: None,
+            _environment: None,
+            manual_source: None,
             bounds: ClockTimeBounds::system_time(),
             monotonic: true,
         })))
@@ -373,6 +391,8 @@ impl SimulatedClock {
         Ok(Self(Clock(Arc::new(ClockState {
             native,
             provider: None,
+            _environment: None,
+            manual_source: None,
             bounds,
             monotonic: false,
         }))))

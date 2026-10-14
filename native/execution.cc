@@ -454,6 +454,10 @@ webrtc::Timestamp SharedClock::CurrentTime() {
 
 webrtc::NtpTime SharedClock::ConvertTimestampToNtpTime(
     webrtc::Timestamp timestamp) {
+  // SDK snapshots may have no Rust clock-kind metadata. Guard the intrinsic
+  // adapter too: the SDK simulated converter cannot read infinity or convert
+  // a negative fractional second to its unsigned NTP fraction.
+  if (!timestamp.IsFinite() || timestamp.us() % 1000000 < 0) return webrtc::NtpTime();
   return state_->clock.ConvertTimestampToNtpTime(timestamp);
 }
 
@@ -993,7 +997,10 @@ std::unique_ptr<NativeEnvironment> create_environment(
   if (clock_minimum_us == INT64_MIN || clock_maximum_us == INT64_MAX ||
       clock_minimum_us > clock_maximum_us) return nullptr;
   if (!task_queue_factory_is_current(factory)) return nullptr;
-  if (custom_clock && (clock || factory.state()->cooperative())) return nullptr;
+  // A clock utility may retain the exact registered manual scheduling source.
+  // Rust only supplies both pointers for that identity-bound delegate.
+  if (custom_clock && factory.state()->cooperative() &&
+      (!clock || !task_queue_factory_uses_clock(factory, *clock))) return nullptr;
   webrtc::EnvironmentFactory environment_factory;
   if (field_trials_present(*field_trials)) {
     environment_factory.Set(field_trials_adapter(std::move(field_trials)));
@@ -1028,6 +1035,15 @@ std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
 }
 std::unique_ptr<NativeEnvironment> rtc_event_log_factory_environment(const webrtc::Environment& environment) noexcept {
   return retain_environment_from_sdk(environment);
+}
+
+std::unique_ptr<NativeEnvironment> bind_environment_selection(
+    std::unique_ptr<NativeEnvironment> environment, const NativeEnvironment& selected) noexcept {
+  if (environment && !environment->state()->clock_bounds.known &&
+      environment_clock_identity_matches(*environment, selected)) {
+    environment->state()->clock_bounds = selected.state()->clock_bounds;
+  }
+  return environment;
 }
 
 std::unique_ptr<NativeEnvironment> clone_environment(

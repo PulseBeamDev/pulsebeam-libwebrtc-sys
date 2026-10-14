@@ -31,6 +31,18 @@ closed or finally retired; closing an original handle does not revoke them.
 
 Field-trial configuration also works with manual-clock cooperative environments. It adds no task queues, autonomous threads, sockets, or time advancement. Provider lookup work still has the provider's own execution contract; a caller provider must not introduce autonomous work when used in controlled execution.
 
+`Environment::clock()` returns an owning `Clock` delegate to the exact SDK
+utility. It retains the SDK storage and Rust-only leases independently of the
+environment handle, and can itself be installed into another environment.
+Matching native identity preserves selected provider failure diagnostics, bounds
+and monotonicity evidence, including in actual provider creation contexts. A
+closed handle returns `EnvironmentClockError::Closed`. The SDK's default system
+clock acquires a production lease for its safe NTP mapping and rejects testing
+clock coexistence; manual/custom clocks do not gain autonomous progress.
+SDK copies are not a universal ownership proof for arbitrary raw-pointer `Set`
+utilities. The exposed construction paths install owning adapters, and the pinned
+peer factory transfers each selected logger into its environment storage.
+
 Clock ownership, current-time bounds, and opt-in bounded provider/simulated-clock
 behavior are documented in [clock contracts](clock-contracts.md). Environment
 bounds are durable across copies, not obtained by sampling the clock.

@@ -284,6 +284,8 @@ bool environment_queue_factory_identity_matches(const NativeEnvironment& environ
     const NativeEnvironment& other) noexcept;
 bool environment_context_retention_contract(const NativeEnvironment& environment,
     const NativeEnvironment& other) noexcept;
+std::unique_ptr<NativeEnvironment> bind_environment_selection(
+    std::unique_ptr<NativeEnvironment> environment, const NativeEnvironment& selected) noexcept;
 std::unique_ptr<NativeEnvironment> clone_environment(
     const NativeEnvironment& environment) noexcept;
 std::int64_t environment_time_us(const NativeEnvironment& environment) noexcept;

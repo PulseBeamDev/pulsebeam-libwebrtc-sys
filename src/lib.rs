@@ -693,6 +693,7 @@ pub use encoded_video::{
 };
 pub use execution::{
     BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder,
+    EnvironmentClockError,
     MAX_CONTROLLED_TIME, ManualClock, NetworkThread, PumpResult, QueuePriority, RandomnessLease,
     RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue, TaskQueueFactory,
     ThreadStartError, WorkerThread, WorldAcquireError,
@@ -4322,6 +4323,8 @@ mod ffi {
             maximum_time_us: i64,
         ) -> UniquePtr<NativeClock>;
         fn new_real_time_clock() -> UniquePtr<NativeClock>;
+        unsafe fn environment_clock(environment: &NativeEnvironment, selected: *const NativeClock, manual: bool) -> UniquePtr<NativeClock>;
+        fn clock_is_monotonic(clock: &NativeClock) -> bool;
         fn real_time_clock_native_sample(clock: &NativeClock) -> FfiClockNtpSample;
         fn advance_simulated_clock(clock: &NativeClock, delta_us: i64) -> bool;
         fn provider_clock_timestamp(clock: &NativeClock) -> i64;
@@ -7474,6 +7477,7 @@ mod ffi {
         fn environment_time_us(environment: &NativeEnvironment) -> i64;
         fn environment_timestamp(environment: &NativeEnvironment) -> i64;
         fn environment_clock_time_bounds(environment: &NativeEnvironment) -> FfiClockTimeBounds;
+        fn bind_environment_selection(environment: UniquePtr<NativeEnvironment>, selected: &NativeEnvironment) -> UniquePtr<NativeEnvironment>;
         fn environment_clock_identity_matches(
             environment: &NativeEnvironment,
             other: &NativeEnvironment,

@@ -6,7 +6,8 @@
 namespace webrtc { class Clock; }
 namespace pulsebeam::webrtc_sys {
 struct RustClockProvider;
-enum class ClockKind { Provider, Simulated, RealTime };
+enum class ClockKind { Provider, Simulated, RealTime, RetainedSimulated, RetainedRealTime };
+class NativeEnvironment;
 class NativeClock final {
  public:
   explicit NativeClock(std::shared_ptr<webrtc::Clock> clock, ClockKind kind = ClockKind::Provider,
@@ -14,7 +15,9 @@ class NativeClock final {
   ~NativeClock();
   const std::shared_ptr<webrtc::Clock>& clock() const noexcept;
   bool simulated() const noexcept;
+  bool owned_simulated() const noexcept;
   bool real_time() const noexcept;
+  bool owned_real_time() const noexcept;
   bool monotonic() const noexcept;
  private:
   std::shared_ptr<webrtc::Clock> clock_;
@@ -25,6 +28,9 @@ std::unique_ptr<NativeClock> new_provider_clock(rust::Box<RustClockProvider> pro
 std::unique_ptr<NativeClock> new_simulated_clock(std::int64_t initial_time_us,
     std::int64_t minimum_time_us, std::int64_t maximum_time_us) noexcept;
 std::unique_ptr<NativeClock> new_real_time_clock() noexcept;
+std::unique_ptr<NativeClock> environment_clock(const NativeEnvironment& environment,
+    const NativeClock* selected, bool manual) noexcept;
+bool clock_is_monotonic(const NativeClock& clock) noexcept;
 struct FfiClockNtpSample;
 // A matched SDK sample, only available while a real-time handle retains its lease.
 FfiClockNtpSample real_time_clock_native_sample(const NativeClock& clock) noexcept;
