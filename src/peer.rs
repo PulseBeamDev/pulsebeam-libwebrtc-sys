@@ -2363,6 +2363,7 @@ impl PeerConnection {
                 message: "audio track must belong to this peer factory".into(),
             });
         }
+        track.check_peer_dependency(&self.inner)?;
         let mut error_type = 0;
         let mut message = String::new();
         let native = ffi::peer_add_audio_transceiver(

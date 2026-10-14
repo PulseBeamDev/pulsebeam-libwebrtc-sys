@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 
 #include "rust/cxx.h"
@@ -19,6 +20,45 @@ struct FfiCodecFormat;
 struct FfiAudioSourceOptions;
 struct FfiAudioTrackStatus;
 struct FfiOptionalI32;
+struct FfiAudioObserverEvent;
+class NativeAudioSource;
+class NativeAudioTrack;
+
+class NativeAudioSourceView final {
+ public:
+  struct State;
+  explicit NativeAudioSourceView(std::unique_ptr<State> state) noexcept;
+  ~NativeAudioSourceView();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+class NativeAudioObserver final {
+ public:
+  struct State;
+  explicit NativeAudioObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeAudioObserver();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeAudioSourceView> audio_source_view(const NativeAudioSource& source) noexcept;
+std::unique_ptr<NativeAudioSourceView> audio_track_source_view(const NativeAudioTrack& track) noexcept;
+std::unique_ptr<NativeAudioTrack> rtp_receiver_audio_track(const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
+std::unique_ptr<NativeAudioTrack> rtp_sender_audio_track(const NativePeerConnection& peer, const NativeRtpSender& sender) noexcept;
+bool audio_tracks_same(const NativeAudioTrack& a, const NativeAudioTrack& b) noexcept;
+bool audio_source_view_same(const NativeAudioSourceView& a, const NativeAudioSourceView& b) noexcept;
+std::uint8_t audio_source_view_state(const NativeAudioSourceView& view) noexcept;
+bool audio_source_view_remote(const NativeAudioSourceView& view) noexcept;
+FfiAudioSourceOptions audio_source_view_options(const NativeAudioSourceView& view) noexcept;
+std::uint8_t audio_source_view_set_options(const NativeAudioSourceView& view, const FfiAudioSourceOptions& options) noexcept;
+double audio_source_view_volume(const NativeAudioSourceView& view) noexcept;
+std::uint8_t audio_source_view_set_volume(const NativeAudioSourceView& view, double volume) noexcept;
+std::unique_ptr<NativeAudioObserver> audio_source_view_observe(const NativeAudioSourceView& view, bool volume, std::size_t capacity) noexcept;
+std::unique_ptr<NativeAudioObserver> audio_track_observe(const NativeAudioTrack& track, std::size_t capacity) noexcept;
+FfiAudioObserverEvent audio_observer_take(const NativeAudioObserver& observer) noexcept;
+std::uint64_t audio_observer_take_dropped(const NativeAudioObserver& observer) noexcept;
+void audio_observer_close(const NativeAudioObserver& observer) noexcept;
 
 class NativeAudioTrack;
 class NativeMediaTrack;

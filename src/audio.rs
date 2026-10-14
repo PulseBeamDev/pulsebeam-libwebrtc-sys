@@ -396,6 +396,7 @@ impl EncodedAudioSink {
 /// fn assert_send<T: Send>() {}
 /// assert_send::<pulsebeam_webrtc_sys::AudioSource>();
 /// ```
+#[derive(Clone)]
 pub struct AudioSource {
     inner: Rc<SourceInner>,
 }
@@ -824,6 +825,7 @@ enum AudioInputKind {
 struct TrackInner {
     native: cxx::UniquePtr<ffi::NativeAudioTrack>,
     _source: Option<Rc<SourceInner>>,
+    _peer: Option<Rc<PeerInner>>,
     _factory: Rc<FactoryInner>,
     input_kind: AudioInputKind,
 }
@@ -849,7 +851,23 @@ impl AudioTrack {
             inner: Rc::new(TrackInner {
                 native,
                 _source: Some(source.inner.clone()),
+                _peer: None,
                 _factory: factory,
+                input_kind: AudioInputKind::Pcm,
+            }),
+        }
+    }
+
+    pub(crate) fn received(
+        native: cxx::UniquePtr<ffi::NativeAudioTrack>,
+        peer: Rc<PeerInner>,
+    ) -> Self {
+        Self {
+            inner: Rc::new(TrackInner {
+                native,
+                _source: None,
+                _factory: peer._factory.clone(),
+                _peer: Some(peer),
                 input_kind: AudioInputKind::Pcm,
             }),
         }
@@ -864,6 +882,7 @@ impl AudioTrack {
             inner: Rc::new(TrackInner {
                 native,
                 _source: None,
+                _peer: None,
                 _factory: factory,
                 input_kind: AudioInputKind::Pcm,
             }),
@@ -967,6 +986,43 @@ impl AudioTrack {
         ffi::audio_track_set_enabled(self.native(), enabled)
     }
 
+    // Received tracks retain their peer. Reject actual ownership cycles before
+    // native attachment rather than leaking the native peer and role threads.
+    pub(crate) fn check_peer_dependency(&self, target: &Rc<PeerInner>) -> Result<(), PeerError> {
+        fn reaches(
+            peer: &Rc<PeerInner>,
+            target: &Rc<PeerInner>,
+            seen: &mut std::collections::HashSet<usize>,
+        ) -> bool {
+            if Rc::ptr_eq(peer, target) {
+                return true;
+            }
+            if !seen.insert(Rc::as_ptr(peer) as usize) {
+                return false;
+            }
+            peer.audio_sender_tracks.borrow().values().any(|track| {
+                track
+                    .inner
+                    ._peer
+                    .as_ref()
+                    .is_some_and(|origin| reaches(origin, target, seen))
+            })
+        }
+        if self
+            .inner
+            ._peer
+            .as_ref()
+            .is_some_and(|origin| reaches(origin, target, &mut std::collections::HashSet::new()))
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "audio track attachment would create an owning peer dependency cycle"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn belongs_to(&self, factory: &Rc<FactoryInner>) -> bool {
         Rc::ptr_eq(&self.inner._factory, factory)
     }
@@ -977,6 +1033,21 @@ impl AudioTrack {
 }
 
 impl crate::RtpSender {
+    /// Actual native installed audio track, retaining the exact known origin
+    /// when its native identity matches, rather than trusting cached state.
+    pub fn audio_track(&self) -> Option<AudioTrack> {
+        let native = ffi::rtp_sender_audio_track(self.peer.native(), self.native());
+        if native.is_null() {
+            return None;
+        }
+        if let Some(track) = self.peer.audio_sender_tracks.borrow().get(&self.id()) {
+            if ffi::audio_tracks_same(track.native(), native.as_ref().expect("native audio track"))
+            {
+                return Some(track.clone());
+            }
+        }
+        Some(AudioTrack::received(native, self.peer.clone()))
+    }
     /// Replace or detach the actual native audio track without rebuilding its
     /// sender/transceiver. The accepted track retains its source and factory;
     /// renegotiate separately if the remote track identity must change.
@@ -1000,6 +1071,7 @@ impl crate::RtpSender {
                     message: "audio replacement track belongs to another factory".into(),
                 });
             }
+            track.check_peer_dependency(&self.peer)?;
             if self.peer._factory.uses_controlled_execution()
                 && (!self.peer._factory.controlled_media || !track.is_opus_frames())
             {

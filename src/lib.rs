@@ -3,10 +3,12 @@
 mod async_dns;
 mod audio;
 mod audio_source_options;
+mod audio_source_view;
 pub use audio_source_options::{
     AudioProcessingMode, AudioSourceControlError, AudioSourceOptions, AudioSourceState,
     AudioTrackState, AudioTrackStatus,
 };
+pub use audio_source_view::{AudioObserver, AudioObserverEvent, AudioSourceView};
 mod audio_processing;
 mod audio_processor_config;
 pub use audio_processor_config::{
@@ -648,6 +650,7 @@ pub use production::{
     SessionSctpTransportInformation, SessionSenderId, SessionSframeDecrypterId,
     SessionSframeEncrypterId, SessionSourceId, SessionTrackSourceId, SessionTransceiverId,
     SessionTransportError,
+    SessionAudioObserverId, SessionAudioSourceViewId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -2383,7 +2386,6 @@ mod ffi {
         input_width: i32,
         input_height: i32,
     }
-
     struct FfiOptionalI32 {
         present: bool,
         value: i32,
@@ -3706,6 +3708,12 @@ mod ffi {
         temporal_index: i32,
         dependencies: Vec<i64>,
         decode_target_indications: Vec<u8>,
+    }
+
+    struct FfiAudioObserverEvent {
+        present: bool,
+        volume: bool,
+        value: f64,
     }
 
     struct FfiAudioTrackStatus {
@@ -7386,9 +7394,50 @@ mod ffi {
         ) -> UniquePtr<NativeAudioTrack>;
         fn audio_options_default() -> FfiAudioSourceOptions;
         fn audio_options_equal(a: &FfiAudioSourceOptions, b: &FfiAudioSourceOptions) -> bool;
-        fn audio_options_set_all(value: &FfiAudioSourceOptions, changes: &FfiAudioSourceOptions) -> FfiAudioSourceOptions;
+        fn audio_options_set_all(
+            value: &FfiAudioSourceOptions,
+            changes: &FfiAudioSourceOptions,
+        ) -> FfiAudioSourceOptions;
         fn audio_options_description(value: &FfiAudioSourceOptions) -> String;
-        fn audio_source_set_options(source: &NativeAudioSource, options: &FfiAudioSourceOptions) -> u8;
+        type NativeAudioSourceView;
+        type NativeAudioObserver;
+        fn audio_source_view(source: &NativeAudioSource) -> UniquePtr<NativeAudioSourceView>;
+        fn audio_track_source_view(track: &NativeAudioTrack) -> UniquePtr<NativeAudioSourceView>;
+        fn rtp_receiver_audio_track(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+        ) -> UniquePtr<NativeAudioTrack>;
+        fn rtp_sender_audio_track(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+        ) -> UniquePtr<NativeAudioTrack>;
+        fn audio_tracks_same(a: &NativeAudioTrack, b: &NativeAudioTrack) -> bool;
+        fn audio_source_view_same(a: &NativeAudioSourceView, b: &NativeAudioSourceView) -> bool;
+        fn audio_source_view_state(view: &NativeAudioSourceView) -> u8;
+        fn audio_source_view_remote(view: &NativeAudioSourceView) -> bool;
+        fn audio_source_view_options(view: &NativeAudioSourceView) -> FfiAudioSourceOptions;
+        fn audio_source_view_set_options(
+            view: &NativeAudioSourceView,
+            options: &FfiAudioSourceOptions,
+        ) -> u8;
+        fn audio_source_view_volume(view: &NativeAudioSourceView) -> f64;
+        fn audio_source_view_set_volume(view: &NativeAudioSourceView, volume: f64) -> u8;
+        fn audio_source_view_observe(
+            view: &NativeAudioSourceView,
+            volume: bool,
+            capacity: usize,
+        ) -> UniquePtr<NativeAudioObserver>;
+        fn audio_track_observe(
+            track: &NativeAudioTrack,
+            capacity: usize,
+        ) -> UniquePtr<NativeAudioObserver>;
+        fn audio_observer_take(observer: &NativeAudioObserver) -> FfiAudioObserverEvent;
+        fn audio_observer_take_dropped(observer: &NativeAudioObserver) -> u64;
+        fn audio_observer_close(observer: &NativeAudioObserver);
+        fn audio_source_set_options(
+            source: &NativeAudioSource,
+            options: &FfiAudioSourceOptions,
+        ) -> u8;
         fn audio_source_set_volume(source: &NativeAudioSource, volume: f64) -> u8;
         fn audio_track_set_volume(track: &NativeAudioTrack, volume: f64) -> u8;
         fn rtp_sender_set_audio_track_volume(
@@ -7401,7 +7450,10 @@ mod ffi {
         fn audio_source_remote(source: &NativeAudioSource) -> bool;
         fn audio_source_volume(source: &NativeAudioSource) -> f64;
         fn audio_track_status(track: &NativeAudioTrack) -> FfiAudioTrackStatus;
-        fn rtp_sender_audio_track_status(peer: &NativePeerConnection, sender: &NativeRtpSender) -> FfiAudioTrackStatus;
+        fn rtp_sender_audio_track_status(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+        ) -> FfiAudioTrackStatus;
         fn audio_track_state(track: &NativeAudioTrack) -> u8;
         fn audio_track_signal_level(track: &NativeAudioTrack) -> FfiOptionalI32;
         fn audio_track_volume(track: &NativeAudioTrack) -> f64;

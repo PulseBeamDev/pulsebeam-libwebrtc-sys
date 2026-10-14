@@ -69,6 +69,13 @@ FfiOptionalI32 WriteOptionInt(const std::optional<T>& value) {
   out.value = value ? static_cast<std::int32_t>(*value) : 0;
   return out;
 }
+std::uint8_t CheckAudioOptions(const FfiAudioSourceOptions& options) {
+  for (const auto& mode : {options.echo_cancellation_mode, options.auto_gain_control_mode,
+                          options.noise_suppression_mode, options.highpass_filter_mode}) {
+    if (mode.present && (mode.value < 0 || mode.value > 2)) return 1;
+  }
+  return 0;
+}
 webrtc::AudioOptions ReadAudioOptions(const FfiAudioSourceOptions& value) {
   webrtc::AudioOptions out;
   out.echo_cancellation = ReadOptionBool(value.echo_cancellation);
@@ -511,6 +518,161 @@ struct NativeAudioTrack::State {
   webrtc::Thread* signaling_thread = nullptr;
 };
 
+struct NativeAudioSourceView::State {
+  webrtc::scoped_refptr<webrtc::AudioSourceInterface> source;
+  webrtc::Thread* signaling_thread = nullptr;
+};
+struct NativeAudioObserver::State final : webrtc::ObserverInterface,
+                                        webrtc::AudioSourceInterface::AudioObserver {
+  webrtc::scoped_refptr<webrtc::AudioSourceInterface> source;
+  webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
+  webrtc::Thread* signaling_thread = nullptr;
+  bool volume_only = false;
+  bool registered = false;  // signaling only
+  std::size_t capacity = 0;
+  std::mutex mutex;
+  std::deque<FfiAudioObserverEvent> events;
+  std::uint64_t dropped = 0;
+  void Push(bool volume, double value) {
+    std::lock_guard lock(mutex);
+    if (events.size() == capacity) {
+      events.pop_front();
+      if (dropped != std::numeric_limits<std::uint64_t>::max()) ++dropped;
+    }
+    FfiAudioObserverEvent event;
+    event.present = true;
+    event.volume = volume;
+    event.value = value;
+    events.push_back(std::move(event));
+  }
+  void OnChanged() override { Push(false, 0); }
+  void OnSetVolume(double volume) override { Push(true, volume); }
+};
+NativeAudioSourceView::NativeAudioSourceView(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeAudioSourceView::~NativeAudioSourceView() {
+  state_->signaling_thread->BlockingCall([&] { state_->source = nullptr; });
+}
+const std::unique_ptr<NativeAudioSourceView::State>& NativeAudioSourceView::state() const noexcept { return state_; }
+NativeAudioObserver::NativeAudioObserver(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeAudioObserver::~NativeAudioObserver() {
+  audio_observer_close(*this);
+  state_->signaling_thread->BlockingCall([&] { state_->source = nullptr; state_->track = nullptr; });
+}
+const std::unique_ptr<NativeAudioObserver::State>& NativeAudioObserver::state() const noexcept { return state_; }
+std::unique_ptr<NativeAudioSourceView> audio_source_view(const NativeAudioSource& source) noexcept {
+  auto state = std::make_unique<NativeAudioSourceView::State>();
+  state->signaling_thread = source.state()->signaling_thread;
+  state->signaling_thread->BlockingCall([&] { state->source = source.state()->source; });
+  return std::make_unique<NativeAudioSourceView>(std::move(state));
+}
+std::unique_ptr<NativeAudioSourceView> audio_track_source_view(const NativeAudioTrack& track) noexcept {
+  auto state = std::make_unique<NativeAudioSourceView::State>();
+  state->signaling_thread = track.state()->signaling_thread;
+  state->signaling_thread->BlockingCall([&] { state->source = track.state()->track->GetSource(); });
+  if (!state->source) return nullptr;
+  return std::make_unique<NativeAudioSourceView>(std::move(state));
+}
+std::unique_ptr<NativeAudioTrack> rtp_receiver_audio_track(const NativePeerConnection& peer,
+                                                       const NativeRtpReceiver& receiver) noexcept {
+  if (!peer.peer() || !peer.signaling_thread()) return nullptr;
+  return peer.signaling_thread()->BlockingCall([&]() -> std::unique_ptr<NativeAudioTrack> {
+    auto remote = receiver.receiver();
+    bool belongs = false;
+    for (const auto& candidate : peer.peer()->GetReceivers()) if (candidate == remote) belongs = true;
+    if (!belongs || !remote || !remote->track() || remote->track()->kind() != webrtc::MediaStreamTrackInterface::kAudioKind) return nullptr;
+    auto state = std::make_unique<NativeAudioTrack::State>();
+    state->signaling_thread = peer.signaling_thread();
+    state->track = static_cast<webrtc::AudioTrackInterface*>(remote->track().get());
+    return std::make_unique<NativeAudioTrack>(std::move(state));
+  });
+}
+std::unique_ptr<NativeAudioTrack> rtp_sender_audio_track(const NativePeerConnection& peer,
+                                                     const NativeRtpSender& sender) noexcept {
+  if (!peer.peer() || !peer.signaling_thread()) return nullptr;
+  return peer.signaling_thread()->BlockingCall([&]() -> std::unique_ptr<NativeAudioTrack> {
+    auto track = sender.sender()->track();
+    if (!track || track->kind() != webrtc::MediaStreamTrackInterface::kAudioKind) return nullptr;
+    auto state = std::make_unique<NativeAudioTrack::State>();
+    state->signaling_thread = peer.signaling_thread();
+    state->track = static_cast<webrtc::AudioTrackInterface*>(track.get());
+    return std::make_unique<NativeAudioTrack>(std::move(state));
+  });
+}
+bool audio_tracks_same(const NativeAudioTrack& a, const NativeAudioTrack& b) noexcept { return a.state()->track == b.state()->track; }
+bool audio_source_view_same(const NativeAudioSourceView& a, const NativeAudioSourceView& b) noexcept {
+  return a.state()->source == b.state()->source;
+}
+std::uint8_t audio_source_view_state(const NativeAudioSourceView& view) noexcept {
+  return view.state()->signaling_thread->BlockingCall([&] { return static_cast<std::uint8_t>(view.state()->source->state()); });
+}
+bool audio_source_view_remote(const NativeAudioSourceView& view) noexcept {
+  return view.state()->signaling_thread->BlockingCall([&] { return view.state()->source->remote(); });
+}
+FfiAudioSourceOptions audio_source_view_options(const NativeAudioSourceView& view) noexcept {
+  return view.state()->signaling_thread->BlockingCall([&] { return WriteAudioOptions(view.state()->source->options()); });
+}
+std::uint8_t audio_source_view_set_options(const NativeAudioSourceView& view, const FfiAudioSourceOptions& options) noexcept {
+  if (auto error = CheckAudioOptions(options)) return error;
+  const auto native = ReadAudioOptions(options);
+  view.state()->signaling_thread->BlockingCall([&] { view.state()->source->SetOptions(native); });
+  return 0;
+}
+double audio_source_view_volume(const NativeAudioSourceView& view) noexcept {
+  return view.state()->signaling_thread->BlockingCall([&] { return view.state()->source->GetVolume(); });
+}
+std::uint8_t audio_source_view_set_volume(const NativeAudioSourceView& view, double volume) noexcept {
+  if (!std::isfinite(volume) || volume < 0 || volume > 10) return 2;
+  view.state()->signaling_thread->BlockingCall([&] { view.state()->source->SetVolume(volume); });
+  return 0;
+}
+std::unique_ptr<NativeAudioObserver> audio_source_view_observe(const NativeAudioSourceView& view,
+                                                           bool volume, std::size_t capacity) noexcept {
+  if (!capacity) return nullptr;
+  auto state = std::make_unique<NativeAudioObserver::State>();
+  state->source = view.state()->source;
+  state->signaling_thread = view.state()->signaling_thread;
+  state->volume_only = volume;
+  state->capacity = capacity;
+  state->signaling_thread->BlockingCall([&] {
+    if (volume) state->source->RegisterAudioObserver(state.get());
+    else state->source->RegisterObserver(state.get());
+    state->registered = true;
+  });
+  return std::make_unique<NativeAudioObserver>(std::move(state));
+}
+std::unique_ptr<NativeAudioObserver> audio_track_observe(const NativeAudioTrack& track, std::size_t capacity) noexcept {
+  if (!capacity) return nullptr;
+  auto state = std::make_unique<NativeAudioObserver::State>();
+  state->track = track.state()->track;
+  state->signaling_thread = track.state()->signaling_thread;
+  state->capacity = capacity;
+  state->signaling_thread->BlockingCall([&] { state->track->RegisterObserver(state.get()); state->registered = true; });
+  return std::make_unique<NativeAudioObserver>(std::move(state));
+}
+void audio_observer_close(const NativeAudioObserver& observer) noexcept {
+  auto& state = *observer.state();
+  state.signaling_thread->BlockingCall([&] {
+    if (!state.registered) return;
+    if (state.volume_only) state.source->UnregisterAudioObserver(&state);
+    else if (state.track) state.track->UnregisterObserver(&state);
+    else state.source->UnregisterObserver(&state);
+    state.registered = false;
+  });
+}
+FfiAudioObserverEvent audio_observer_take(const NativeAudioObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  if (state.events.empty()) return {};
+  auto event = std::move(state.events.front());
+  state.events.pop_front();
+  return event;
+}
+std::uint64_t audio_observer_take_dropped(const NativeAudioObserver& observer) noexcept {
+  auto& state = *observer.state();
+  std::lock_guard lock(state.mutex);
+  return std::exchange(state.dropped, 0);
+}
+
 NativeEncodedAudioSink::NativeEncodedAudioSink(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
 NativeEncodedAudioSink::~NativeEncodedAudioSink() { close_encoded_audio_sink(*this); }
@@ -808,10 +970,7 @@ std::uint8_t audio_source_set_options(const NativeAudioSource& source,
                                       const FfiAudioSourceOptions& options) noexcept {
   // Source options reach the send channel. Jitter options do not become
   // receive-channel/NetEq settings through this path; preserve their values.
-  for (const auto& mode : {options.echo_cancellation_mode, options.auto_gain_control_mode,
-                          options.noise_suppression_mode, options.highpass_filter_mode}) {
-    if (mode.present && (mode.value < 0 || mode.value > 2)) return 1;
-  }
+  if (auto error = CheckAudioOptions(options)) return error;
   const auto native = ReadAudioOptions(options);
   source.state()->signaling_thread->BlockingCall([&] { source.state()->source->SetOptions(native); });
   return 0;  // Native SetOptions is void; this is invocation, not effective state.

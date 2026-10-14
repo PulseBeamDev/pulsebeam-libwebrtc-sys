@@ -325,6 +325,27 @@ of 1.0, even after requesting zero; no synthetic attenuation is applied to PCM
 or to the encoded adapter's carrier. Setter completion means native invocation,
 not a fabricated effective gain.
 
+`AudioTrack::source` returns an owning native `AudioSourceView`;
+`RtpReceiver::audio_track` and `RtpSender::audio_track` distinguish audio from
+the existing video-track accessor. `AudioSource::as_source_view` captures the
+same source interface without making another producer. Source-view aliases
+retain their origin track/producer, peer where applicable, and factory;
+`same_resource` compares actual native source identity. Remote views do not
+invent PCM submission or a stop method. Attachments that would create an
+owning peer dependency cycle are rejected before native mutation.
+
+Source/track `observe_changes` and source-view `observe_volume` register native
+observers with bounded owning event queues. Callbacks copy notifications without
+calling Rust on native callback stacks. Overflow drops the oldest event and has
+a consumable counter. `close` unregisters synchronously on signaling while
+leaving accepted events consumable; aliases share registration and queue state.
+The local source's native no-op volume observer produces no invented events;
+remote-source volume events carry the actual native values. Session source-view
+and observer identifiers provide the same operations and independent alias
+retirement. Releasing an outer view/producer identifier does not invalidate an
+observer or discard its queued callbacks. Polling notifications does not pump
+media or advance a controlled clock.
+
 A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. Audio sink close releases its reservation for reattachment
 or a mode change. Encoded close restores native decoding for future packets;

@@ -45,6 +45,8 @@ resource_id!(
     SessionPeerId,
     SessionChannelId,
     SessionSourceId,
+    SessionAudioSourceViewId,
+    SessionAudioObserverId,
     SessionTransceiverId,
     SessionSenderId,
     SessionReceiverId,
@@ -278,6 +280,8 @@ pub enum SessionEvent {
 pub struct ProductionSession {
     // Observers/transports retire before endpoints, peers and role threads.
     connectivity: connectivity::ConnectivityResources,
+    audio_observers: HashMap<SessionAudioObserverId, crate::AudioObserver>,
+    audio_source_views: HashMap<SessionAudioSourceViewId, crate::AudioSourceView>,
     sframe_encrypters: HashMap<SessionSframeEncrypterId, Resource<crate::SframeEncrypter>>,
     sframe_decrypters: HashMap<SessionSframeDecrypterId, Resource<crate::SframeDecrypter>>,
     frame_encryptors: HashMap<SessionFrameEncryptorId, crate::FrameEncryptor>,
@@ -897,6 +901,8 @@ impl ProductionSession {
             audio_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
+            audio_observers: HashMap::new(),
+            audio_source_views: HashMap::new(),
             peers: HashMap::new(),
             input,
             factory: cleanup::CaptiveFactory::new(factory),
@@ -1818,6 +1824,236 @@ impl ProductionSession {
         let source = self.factory.create_video_source()?;
         self.sources.insert(id, Source::RawVideo(source));
         Ok(id)
+    }
+
+    /// Capture an owning interface alias without creating another producer.
+    pub fn audio_source_view(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<SessionAudioSourceViewId, PeerError> {
+        self.check_open()?;
+        let view = self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .as_source_view();
+        let id = SessionAudioSourceViewId(next_id()?);
+        self.audio_source_views.insert(id, view);
+        Ok(id)
+    }
+    pub fn sender_audio_source_view(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<Option<SessionAudioSourceViewId>, PeerError> {
+        self.check_open()?;
+        let Some(track) = self
+            .senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+        else {
+            return Ok(None);
+        };
+        let Some(view) = track.source() else {
+            return Ok(None);
+        };
+        let id = SessionAudioSourceViewId(next_id()?);
+        self.audio_source_views.insert(id, view);
+        Ok(Some(id))
+    }
+    pub fn receiver_audio_source_view(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<SessionAudioSourceViewId>, PeerError> {
+        self.check_open()?;
+        let Some(track) = self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+        else {
+            return Ok(None);
+        };
+        let Some(view) = track.source() else {
+            return Ok(None);
+        };
+        let id = SessionAudioSourceViewId(next_id()?);
+        self.audio_source_views.insert(id, view);
+        Ok(Some(id))
+    }
+    pub fn audio_source_views_same(
+        &mut self,
+        a: SessionAudioSourceViewId,
+        b: SessionAudioSourceViewId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .audio_source_views
+            .get(&a)
+            .ok_or_else(missing)?
+            .same_resource(self.audio_source_views.get(&b).ok_or_else(missing)?))
+    }
+    pub fn audio_source_view_state(
+        &mut self,
+        id: SessionAudioSourceViewId,
+    ) -> Result<crate::AudioSourceState, PeerError> {
+        Ok(self
+            .audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .state())
+    }
+    pub fn audio_source_view_is_remote(
+        &mut self,
+        id: SessionAudioSourceViewId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .is_remote())
+    }
+    pub fn audio_source_view_options(
+        &mut self,
+        id: SessionAudioSourceViewId,
+    ) -> Result<crate::AudioSourceOptions, PeerError> {
+        Ok(self
+            .audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .options())
+    }
+    pub fn set_audio_source_view_options(
+        &mut self,
+        id: SessionAudioSourceViewId,
+        options: &crate::AudioSourceOptions,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .set_options(options)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    pub fn audio_source_view_volume(
+        &mut self,
+        id: SessionAudioSourceViewId,
+    ) -> Result<f64, PeerError> {
+        Ok(self
+            .audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .volume())
+    }
+    pub fn set_audio_source_view_volume(
+        &mut self,
+        id: SessionAudioSourceViewId,
+        volume: f64,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.audio_source_views
+            .get(&id)
+            .ok_or_else(missing)?
+            .set_volume(volume)
+            .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    pub fn observe_audio_source_changes(
+        &mut self,
+        id: SessionAudioSourceViewId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionAudioObserverId, PeerError> {
+        self.observe_audio_source(id, false, capacity)
+    }
+    pub fn observe_audio_source_volume(
+        &mut self,
+        id: SessionAudioSourceViewId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionAudioObserverId, PeerError> {
+        self.observe_audio_source(id, true, capacity)
+    }
+    fn observe_audio_source(
+        &mut self,
+        id: SessionAudioSourceViewId,
+        volume: bool,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionAudioObserverId, PeerError> {
+        self.check_open()?;
+        let view = self.audio_source_views.get(&id).ok_or_else(missing)?;
+        let observer = if volume {
+            view.observe_volume(capacity)?
+        } else {
+            view.observe_changes(capacity)?
+        };
+        let id = SessionAudioObserverId(next_id()?);
+        self.audio_observers.insert(id, observer);
+        Ok(id)
+    }
+    pub fn observe_receiver_audio_track(
+        &mut self,
+        receiver: SessionReceiverId,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<SessionAudioObserverId, PeerError> {
+        self.check_open()?;
+        let track = self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+            .ok_or_else(missing)?;
+        let observer = track.observe_changes(capacity)?;
+        let id = SessionAudioObserverId(next_id()?);
+        self.audio_observers.insert(id, observer);
+        Ok(id)
+    }
+    pub fn set_receiver_audio_track_enabled(
+        &mut self,
+        receiver: SessionReceiverId,
+        enabled: bool,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .audio_track()
+            .ok_or_else(missing)?
+            .set_enabled(enabled))
+    }
+    pub fn try_audio_observer_event(
+        &mut self,
+        id: SessionAudioObserverId,
+    ) -> Result<Option<crate::AudioObserverEvent>, PeerError> {
+        Ok(self
+            .audio_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .try_next_event())
+    }
+    pub fn take_audio_observer_dropped(
+        &mut self,
+        id: SessionAudioObserverId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .audio_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .take_dropped_events())
+    }
+    /// Unregister but retain already queued events for consumption.
+    pub fn close_audio_observer(&mut self, id: SessionAudioObserverId) -> Result<(), PeerError> {
+        self.audio_observers.get(&id).ok_or_else(missing)?.close();
+        Ok(())
+    }
+    pub fn release_audio_observer(&mut self, id: SessionAudioObserverId) {
+        self.audio_observers.remove(&id);
+    }
+    /// Release this alias, not the producer or other aliases/observers.
+    pub fn release_audio_source_view(&mut self, id: SessionAudioSourceViewId) {
+        self.audio_source_views.remove(&id);
     }
 
     /// Invoke native source SetOptions. This reports admission/invocation, not
@@ -4162,6 +4398,11 @@ impl ProductionSession {
         for source in self.sources.values_mut() {
             source.close()?;
         }
+        for observer in self.audio_observers.values() {
+            observer.close();
+        }
+        self.audio_observers.clear();
+        self.audio_source_views.clear();
         self.sources.clear();
         self.closed = true;
         self.readiness.notify();

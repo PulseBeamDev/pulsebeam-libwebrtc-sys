@@ -353,6 +353,171 @@ fn source_options_reconfigure_active_bidirectional_pcm_without_false_volume_gain
     .unwrap();
 }
 
+#[test]
+fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration() {
+    let encoder = AudioEncoderFactory::builtin().unwrap();
+    let decoder = AudioDecoderFactory::builtin_opus().unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .audio_encoder_factory(&encoder)
+        .audio_decoder_factory(&decoder)
+        .build()
+        .unwrap();
+    let peers = [
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+        session.create_peer(PeerConfiguration::default()).unwrap(),
+    ];
+    let sources = [
+        session.create_pcm_source().unwrap(),
+        session.create_pcm_source().unwrap(),
+    ];
+    let transceiver = session
+        .publish_pcm(
+            peers[0],
+            sources[0],
+            "observed-0",
+            RtpTransceiverDirection::SendReceive,
+        )
+        .unwrap();
+    let sender = session.sender(transceiver).unwrap();
+    let (session, mut call, retained, warm) = thread::spawn(move || {
+        let mut session = session;
+        let mut call = Call::default();
+        call.negotiate_answer_source(&mut session, peers, Some(sources[1]))
+            .unwrap();
+        for &(_, receiver, _) in &call.all_audio {
+            session.attach_pcm(receiver).unwrap();
+        }
+        let warm = drive_pcm_tones(&mut session, &mut call, peers, sources);
+        let receiver = call.all_audio[0].1;
+        let remote = session
+            .receiver_audio_source_view(receiver)
+            .unwrap()
+            .unwrap();
+        let alias = session
+            .receiver_audio_source_view(receiver)
+            .unwrap()
+            .unwrap();
+        assert!(session.audio_source_views_same(remote, alias).unwrap());
+        assert!(session.audio_source_view_is_remote(remote).unwrap());
+        let local = session.audio_source_view(sources[0]).unwrap();
+        let installed = session.sender_audio_source_view(sender).unwrap().unwrap();
+        assert!(session.audio_source_views_same(local, installed).unwrap());
+        assert!(!session.audio_source_views_same(local, remote).unwrap());
+        let cap = std::num::NonZeroUsize::new(2).unwrap();
+        let volume = session.observe_audio_source_volume(remote, cap).unwrap();
+        let state = session.observe_audio_source_changes(remote, cap).unwrap();
+        let track = session.observe_receiver_audio_track(receiver, cap).unwrap();
+        let producer = session.observe_audio_source_changes(local, cap).unwrap();
+        session.release_audio_source_view(local);
+        session.release_audio_source_view(remote);
+        (
+            session,
+            call,
+            (alias, installed, volume, state, track, producer, receiver),
+            warm,
+        )
+    })
+    .join()
+    .unwrap();
+    let (session, later) = thread::spawn(move || {
+        let mut session = session;
+        let (alias, installed, volume, _, track, producer, receiver) = retained;
+        for value in [0.0, 0.25, 0.5] {
+            session.set_audio_source_view_volume(alias, value).unwrap();
+        }
+        assert_eq!(session.audio_source_view_volume(alias).unwrap(), 0.5);
+        assert_eq!(session.take_audio_observer_dropped(volume).unwrap(), 1);
+        assert_eq!(session.take_audio_observer_dropped(volume).unwrap(), 0);
+        session.close_audio_observer(volume).unwrap();
+        session.close_audio_observer(volume).unwrap();
+        session.set_audio_source_view_volume(alias, 1.0).unwrap();
+        assert!(
+            session
+                .set_receiver_audio_track_enabled(receiver, false)
+                .unwrap()
+        );
+        assert!(
+            !session
+                .set_receiver_audio_track_enabled(receiver, false)
+                .unwrap()
+        );
+        assert!(
+            session
+                .set_receiver_audio_track_enabled(receiver, true)
+                .unwrap()
+        );
+        session.close_audio_observer(track).unwrap();
+        let mut options = AudioSourceOptions::default();
+        options.stereo_swapping = Some(false);
+        session
+            .set_audio_source_view_options(installed, &options)
+            .unwrap();
+        assert_eq!(session.audio_source_options(sources[0]).unwrap(), options);
+        let later = drive_pcm_tones(&mut session, &mut call, peers, sources);
+        session.close_source(sources[0]).unwrap();
+        assert_eq!(
+            session.audio_source_view_state(installed).unwrap(),
+            AudioSourceState::Ended
+        );
+        session.close_audio_observer(producer).unwrap();
+        session.release_audio_source_view(alias);
+        session.release_audio_source_view(installed);
+        (session, later)
+    })
+    .join()
+    .unwrap();
+    thread::spawn(move || {
+        let mut session = session;
+        let (_, _, volume, state, track, producer, _) = retained;
+        assert_eq!(
+            session.try_audio_observer_event(volume).unwrap(),
+            Some(AudioObserverEvent::Volume(0.25))
+        );
+        assert_eq!(
+            session.try_audio_observer_event(volume).unwrap(),
+            Some(AudioObserverEvent::Volume(0.5))
+        );
+        assert_eq!(session.try_audio_observer_event(volume).unwrap(), None);
+        for _ in 0..2 {
+            assert_eq!(
+                session.try_audio_observer_event(track).unwrap(),
+                Some(AudioObserverEvent::Changed)
+            );
+        }
+        assert_eq!(session.try_audio_observer_event(track).unwrap(), None);
+        // Both options-change and producer-ended callbacks remain available
+        // after the producer identifier and all outer source-view IDs retire.
+        for _ in 0..2 {
+            assert_eq!(
+                session.try_audio_observer_event(producer).unwrap(),
+                Some(AudioObserverEvent::Changed)
+            );
+        }
+        assert_eq!(session.try_audio_observer_event(producer).unwrap(), None);
+        session.close_peer(peers[0]).unwrap();
+        session.close_peer(peers[1]).unwrap();
+        session.close_audio_observer(state).unwrap();
+        assert_eq!(
+            session.try_audio_observer_event(state).unwrap(),
+            Some(AudioObserverEvent::Changed)
+        );
+        assert_eq!(session.try_audio_observer_event(state).unwrap(), None);
+        for observer in [volume, state, track, producer] {
+            session.release_audio_observer(observer);
+        }
+        session.shutdown().unwrap();
+        drop(session);
+        assert!(!warm.is_empty() && !later.is_empty());
+        assert!(
+            warm.iter()
+                .chain(&later)
+                .all(|frame| frame.samples.iter().any(|&sample| sample != 0))
+        );
+    })
+    .join()
+    .unwrap();
+}
+
 fn receive_encoded_audio(
     session: &mut ProductionSession,
     call: &mut Call,

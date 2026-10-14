@@ -1672,6 +1672,12 @@ impl RtpReceiver {
         (!native.is_null()).then(|| VideoTrack::remote(native, self.peer.clone()))
     }
 
+    /// Owning native audio track, distinct from the video-only `track` view.
+    pub fn audio_track(&self) -> Option<crate::AudioTrack> {
+        let native = ffi::rtp_receiver_audio_track(self.peer.native(), self.native());
+        (!native.is_null()).then(|| crate::AudioTrack::received(native, self.peer.clone()))
+    }
+
     /// Attach a bounded decoded PCM sink to a receiver on this peer.
     /// Only one audio sink may be active; close it before selecting either mode
     /// again. Closing an encoded sink restores the native decoder first.
