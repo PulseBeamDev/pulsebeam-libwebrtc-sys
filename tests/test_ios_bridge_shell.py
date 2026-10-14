@@ -23,7 +23,17 @@ class IosBridgeShellTests(unittest.TestCase):
             for target, (sdk, minimum) in self.targets.items():
                 with self.subTest(flavor=flavor, target=target):
                     calls, stage = self._run_bridge(flavor, target)
-                    self.assertEqual(len(calls), 10)
+                    expected_sources = {
+                        str(source) for source in (ROOT / "native").glob("*.cc")
+                    } | {str(ROOT / "vendor/cxx/src/cxx.cc")}
+                    compiled_sources = [call[-3] for call in calls]
+                    # The generated bridge lives under the temporary work root.
+                    generated = [source for source in compiled_sources if source.endswith("/lib.rs.cc")]
+                    self.assertEqual(len(generated), 1)
+                    self.assertCountEqual(
+                        [source for source in compiled_sources if source not in generated],
+                        expected_sources,
+                    )
                     expected_prefix = [
                         "-arch", "arm64", "-isysroot", "/fake SDK path", minimum,
                         "-std=c++20", "-fno-exceptions", "-fno-rtti",
