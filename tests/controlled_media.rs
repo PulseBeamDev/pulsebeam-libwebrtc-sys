@@ -286,6 +286,12 @@ impl Observations {
                     PeerConnectionEvent::SignalingStateChanged(state) => {
                         format!("signaling:{state:?}")
                     }
+                    PeerConnectionEvent::IceConnectionStateChanged(state) => {
+                        format!("ice-connection:{state:?}")
+                    }
+                    PeerConnectionEvent::StandardizedIceConnectionStateChanged(state) => {
+                        format!("standardized-ice-connection:{state:?}")
+                    }
                     PeerConnectionEvent::Track(transceiver) => {
                         let receiver = transceiver.receiver();
                         let id = receiver.id();
@@ -350,6 +356,12 @@ impl Observations {
                     PeerConnectionEvent::Closed => "closed".into(),
                     PeerConnectionEvent::IceCandidate(candidate) => format!(
                         "candidate:{}:{}:{}",
+                        candidate.sdp_mid,
+                        candidate.sdp_mline_index,
+                        normalized_candidate(&candidate.candidate)
+                    ),
+                    PeerConnectionEvent::IceCandidateRemoved(candidate) => format!(
+                        "candidate-removed:{}:{}:{}",
                         candidate.sdp_mid,
                         candidate.sdp_mline_index,
                         normalized_candidate(&candidate.candidate)
@@ -599,6 +611,82 @@ impl DeclaredOpusSource {
     }
 }
 
+#[derive(Default)]
+struct InstalledLog {
+    active_outputs: AtomicUsize,
+    headers: Arc<Mutex<Vec<Vec<u8>>>>,
+    incoming: Mutex<Option<RtcEvent>>,
+    outgoing: Mutex<Option<RtcEvent>>,
+    configs: Mutex<Vec<RtcEventStreamConfig>>,
+    creations: AtomicUsize,
+    drops: AtomicUsize,
+    stops: AtomicUsize,
+}
+struct InstalledLogFactory(Arc<InstalledLog>);
+struct InstalledLogger {
+    audit: Arc<InstalledLog>,
+    output: Mutex<Option<EventLogOutput>>,
+}
+struct InstalledOutput(Arc<Mutex<Vec<Vec<u8>>>>);
+impl RtcEventLogFactory for InstalledLogFactory {
+    fn create(&self, environment: EventLogEnvironment) -> Box<dyn RtcEventLogger> {
+        assert!(environment.timestamp().microseconds().unwrap() >= 10_000_000);
+        self.0.creations.fetch_add(1, Ordering::SeqCst);
+        Box::new(InstalledLogger { audit: self.0.clone(), output: Mutex::new(None) })
+    }
+}
+impl EventLogOutputSink for InstalledOutput {
+    fn is_active(&self) -> bool { true }
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        self.0.lock().unwrap().push(bytes.to_vec());
+        true
+    }
+}
+impl RtcEventLogger for InstalledLogger {
+    fn start(&self, output: EventLogOutput, _: EventLogOutputPeriod) -> bool {
+        let mut selected = self.output.lock().unwrap();
+        if selected.is_some() { return false; }
+        *selected = Some(output);
+        self.audit.active_outputs.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+    fn stop(&self) {
+        if let Some(mut output) = self.output.lock().unwrap().take() {
+            output.flush();
+            self.audit.active_outputs.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.audit.stops.fetch_add(1, Ordering::SeqCst);
+    }
+    fn log(&self, event: RtcEvent) {
+        let (packet, slot) = match event.data() {
+            RtcEventData::AudioSendStreamConfig(config) |
+            RtcEventData::AudioReceiveStreamConfig(config) => {
+                self.audit.configs.lock().unwrap().push(config);
+                return;
+            }
+            RtcEventData::RtpPacketIncoming(packet) => (packet, &self.audit.incoming),
+            RtcEventData::RtpPacketOutgoing { packet, .. } => (packet, &self.audit.outgoing),
+            _ => return,
+        };
+        if event.rtp_extension(RtcEventRtpExtensionKind::AudioLevel).is_none() { return; }
+        let mut retained = slot.lock().unwrap();
+        if retained.is_none() {
+            // This caller log writes the actual native event's header bytes,
+            // not a fabricated packet or the stock logger's serialization.
+            if let Some(output) = self.output.lock().unwrap().as_mut() {
+                assert!(output.write(&packet.raw_header));
+            }
+            *retained = Some(event);
+        }
+    }
+}
+impl Drop for InstalledLogger {
+    fn drop(&mut self) {
+        self.stop();
+        self.audit.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
     run_media_with_metronomes(addresses, impaired, None)
 }
@@ -606,6 +694,14 @@ fn run_media_with_metronomes(
     addresses: [IpAddr; 2],
     impaired: bool,
     metronomes: Option<&[Arc<DrivenMetronome>; 2]>,
+) -> Trace {
+    run_media_with_logs(addresses, impaired, metronomes, None)
+}
+fn run_media_with_logs(
+    addresses: [IpAddr; 2],
+    impaired: bool,
+    metronomes: Option<&[Arc<DrivenMetronome>; 2]>,
+    logs: Option<&[Arc<InstalledLog>; 2]>,
 ) -> Trace {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let trace = {
@@ -639,6 +735,9 @@ fn run_media_with_metronomes(
             .map(|who| {
                 let endpoint = &endpoints[who];
                 let mut builder = world.peer_factory_builder().unwrap();
+                if let Some(logs) = logs {
+                    builder = builder.event_log_factory(InstalledLogFactory(logs[who].clone()));
+                }
                 if let Some(metronomes) = metronomes {
                     builder = builder
                         .encode_metronome_provider(DrivenProvider(metronomes[0].clone()))
@@ -664,6 +763,12 @@ fn run_media_with_metronomes(
                 .create_peer_connection(PeerConfiguration::default())
                 .unwrap(),
         ];
+        if let Some(logs) = logs {
+            for (peer, log) in peers.iter().zip(logs) {
+                peer.start_event_log(EventLogOutput::from_sink(InstalledOutput(log.headers.clone())),
+                    Some(EventLogOutputPeriod::Immediate)).unwrap();
+            }
+        }
         let audio_sources: Vec<_> = factories
             .iter()
             .enumerate()
@@ -1428,6 +1533,9 @@ fn run_media_with_metronomes(
                 .kind,
             PeerErrorKind::ResourceExhausted
         );
+        if logs.is_some() {
+            for peer in &peers { peer.stop_event_log().unwrap(); }
+        }
         peers[0].close().unwrap();
         peers[0].close().unwrap();
         peers[1].close().unwrap();
@@ -1485,6 +1593,54 @@ fn run_media_with_metronomes(
     // All native roots have gone away; only passive owned outputs survive.
     eprintln!("CONTROLLED_MEDIA_END");
     trace
+}
+
+#[test]
+fn selected_logs_receive_native_rtp_and_extension_values_at_owned_outputs() {
+    let _guard = CONTROLLED_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let logs = [Arc::new(InstalledLog::default()), Arc::new(InstalledLog::default())];
+    run_media_with_logs([
+        Ipv4Addr::new(10, 79, 0, 1).into(), Ipv4Addr::new(10, 79, 0, 2).into(),
+    ], false, None, Some(&logs));
+    for (who, log) in logs.iter().enumerate() {
+        // The fixture also retires one unnegotiated peer on the first factory.
+        let creations = 1 + usize::from(who == 0);
+        assert_eq!(log.creations.load(Ordering::SeqCst), creations);
+        assert_eq!(log.drops.load(Ordering::SeqCst), creations);
+        assert!(log.stops.load(Ordering::SeqCst) >= creations);
+        assert_eq!(log.active_outputs.load(Ordering::SeqCst), 0);
+        let configs = log.configs.lock().unwrap();
+        assert!(configs.iter().any(|config| config.rtp_extensions.iter().any(|extension|
+            extension.uri == "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
+                && (1..=255).contains(&extension.id))));
+        drop(configs);
+        for (incoming, slot) in [(true, &log.incoming), (false, &log.outgoing)] {
+            let event = slot.lock().unwrap().take().expect("native RTP event was not delivered");
+            let copy = event.try_clone().unwrap();
+            drop(event);
+            let packet = match copy.data() {
+                RtcEventData::RtpPacketIncoming(packet) if incoming => packet,
+                RtcEventData::RtpPacketOutgoing { packet, .. } if !incoming => packet,
+                other => panic!("wrong native event: {other:?}"),
+            };
+            assert_eq!(packet.raw_header.len(), packet.header_length);
+            assert!(packet.payload_length > 0);
+            assert!(log.headers.lock().unwrap().contains(&packet.raw_header),
+                "selected output did not receive the native event bytes");
+            let source = if incoming { 1 - who } else { who };
+            let extension = copy.rtp_extension(RtcEventRtpExtensionKind::AudioLevel).unwrap();
+            assert_eq!(extension.decoded, Some(RtcEventDecodedRtpExtension::AudioLevel(
+                RtcEventAudioLevel { level: if source == 0 { 127 } else { 0 }, voice_activity: source == 1 }
+            )));
+            // Event bytes and the original parser map outlive all peer,
+            // logger, output, factory, endpoint and controlled-world owners.
+            std::thread::spawn(move || {
+                assert_eq!(copy.rtp_extension(RtcEventRtpExtensionKind::AudioLevel), Some(extension));
+            }).join().unwrap();
+        }
+    }
+    drop(logs);
+    let _next = ControlledWorld::acquire(731, Duration::from_secs(10)).unwrap();
 }
 
 fn run_h264_profile(temporal: bool, impaired: bool, simulcast_mode: u8) -> Trace {

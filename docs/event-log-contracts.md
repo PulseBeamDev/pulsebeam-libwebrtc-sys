@@ -12,7 +12,7 @@ Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_inter
 
 ## Outputs and values
 
-`EventLogOutput::from_sink` takes a `Send` sink. Its calls are serialized but can arrive on different native threads. Write failure or a callback panic permanently deactivates it. Output ownership transfers to the logger on start, including native rejection paths. Provider implementations must release output before reporting stop completion.
+`EventLogOutput::from_sink` takes a `Send` sink. Its calls are serialized but can arrive on different native threads. Write failure or a callback panic permanently deactivates it. Output ownership transfers to the logger on start, including native rejection paths. Provider implementations must release output before reporting stop completion. A custom logger receives native events but owns its output encoding; the sink is a byte destination, not an event observer or an automatic native serializer. Select the bundled logger when the engine's encoded event-log format is required.
 
 `EventLogOutput::file` uses the pinned engine's file implementation and optional size-limit semantics. It validates the UTF-8 filename and rejects embedded NUL. The file is opened only by this explicit operation. `is_active`, `write`, and `flush` forward through the actual native output, including file write and size-limit behavior. File output is not a deterministic controlled destination.
 
@@ -49,3 +49,7 @@ A custom factory or environment logger can be used with controlled execution if 
 ## Artifact configuration
 
 Linux packages default to protobuf enabled. Build with `PULSEBEAM_WEBRTC_PROTOBUF=false` for the pinned no-protobuf configuration, using a separate artifact work/output directory. This selects the upstream no-op built-in logger, which rejects output start. Ordinary event construction/copy and RTP-extension helpers do not require protobuf; caller-provided Rust loggers and outputs retain their own behavior. Use the matching manifest to distinguish configurations, not the presence of SDK headers.
+
+## API boundary
+
+Native logger factory creation is currently available through peer installation, not a standalone owning factory/product handle. Use the selected peer's start/stop operations and owned output. Provider environment views expose bound environment observations; standalone native clock, queue-factory and event-log utility products are not exposed by these views.
