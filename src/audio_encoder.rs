@@ -652,6 +652,11 @@ mod adaptor_admission_tests {
         assert!(immediate.duration_applied);
         assert_eq!(immediate.status, 6);
         assert!(!immediate.has_average);
+        let wrapped_period = probe(&advancing, 6000, 5000, 6_000_000, 7_000_000, Some(i32::MIN));
+        assert_eq!(wrapped_period.status, 0);
+        assert!(wrapped_period.duration_applied);
+        assert!(wrapped_period.has_average);
+        assert_eq!(wrapped_period.average, 6000.0);
         let amplifying = probe(&advancing, 6000, 5000, 6_000_000, 6_001_000, Some(-1));
         assert_eq!(amplifying.status, 0);
         assert!(amplifying.duration_applied);
