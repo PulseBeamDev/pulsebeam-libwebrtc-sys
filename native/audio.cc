@@ -11,9 +11,12 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "api/frame_transformer_interface.h"
+#include "pulsebeam-webrtc-sys/native/frame_callback_slot.h"
+#include "pulsebeam-webrtc-sys/native/media_values.h"
 #include "api/make_ref_counted.h"
 #include "api/media_stream_interface.h"
 #include "api/notifier.h"
@@ -222,19 +225,28 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
       else if (audio_frame->Type() == Type::kAudioFrameCN)
         saved.voice_activity = false;
     }
-    if (auto time = frame->CaptureTime()) saved.capture_us = time->us();
-    if (auto time = frame->ReceiveTime()) saved.receive_us = time->us();
+    if (auto time = frame->CaptureTime()) saved.capture_us = MediaTimestampBits(*time);
+    if (auto time = frame->ReceiveTime()) saved.receive_us = MediaTimestampBits(*time);
     bytes_ += saved.data.size();
     frames_.push_back(std::move(saved));
   }
   void RegisterTransformedFrameCallback(
       webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override {
-    std::lock_guard lock(mutex_);
-    callback_ = std::move(callback);
+    auto replacement = std::make_shared<StockFrameCallbackSlot>(std::move(callback));
+    std::shared_ptr<StockFrameCallbackSlot> retired;
+    {
+      std::lock_guard lock(mutex_);
+      retired = std::exchange(callback_, std::move(replacement));
+    }
+    if (retired) retired->Retire();
   }
   void UnregisterTransformedFrameCallback() override {
-    std::lock_guard lock(mutex_);
-    callback_ = nullptr;
+    std::shared_ptr<StockFrameCallbackSlot> retired;
+    {
+      std::lock_guard lock(mutex_);
+      retired = std::move(callback_);
+    }
+    if (retired) retired->Retire();
   }
   FfiEncodedAudioFrame Take() {
     std::lock_guard lock(mutex_);
@@ -290,7 +302,7 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
   };
   const std::shared_ptr<ReadinessSignal> readiness_;
   mutable std::mutex mutex_;
-  webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_;
+  std::shared_ptr<StockFrameCallbackSlot> callback_;
   std::deque<Frame> frames_;
   std::size_t bytes_ = 0;
   std::uint64_t dropped_ = 0;

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -17,6 +18,9 @@
 #include "api/packet_socket_factory.h"
 #include "p2p/base/async_stun_tcp_socket.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/src/lib.rs.h"
+#include "rtc_base/network_monitor.h"
+#include "rtc_base/network_monitor_factory.h"
 #include "rtc_base/async_packet_socket.h"
 #include "rtc_base/socket_adapters.h"
 #include "rtc_base/async_tcp_socket.h"
@@ -30,7 +34,129 @@
 #include "rtc_base/thread.h"
 
 namespace pulsebeam::webrtc_sys {
+
+struct NativeNetworkChange::State {
+  std::mutex mutex;
+  webrtc::Thread* thread = nullptr;
+  bool running = false;
+  std::uint64_t generation = 0;
+  std::function<void()> callback;
+};
+NativeNetworkChange::NativeNetworkChange(std::shared_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeNetworkChange::~NativeNetworkChange() = default;
+bool NativeNetworkChange::Notify() const noexcept {
+  auto state = state_;
+  // Posting under the retirement lock ensures the thread is still owned by
+  // the factory. Neither a retained notifier nor a queued task owns that thread.
+  std::lock_guard lock(state->mutex);
+  if (!state->running || !state->thread) return false;
+  auto generation = state->generation;
+  state->thread->PostTask([state, generation] {
+    std::function<void()> callback;
+    {
+      std::lock_guard lock(state->mutex);
+      if (!state->running || state->generation != generation) return;
+      callback = state->callback;
+    }
+    // Monitor retirement and this task run on the same network thread. The
+    // callback may reenter teardown, so no monitor access follows invocation.
+    if (callback) callback();
+  });
+  return true;
+}
+bool network_change_notify(const NativeNetworkChange& changes) noexcept {
+  return changes.Notify();
+}
+
 namespace {
+
+rust::Vec<std::uint8_t> FromIp(const webrtc::IPAddress& ip) noexcept;
+rust::Slice<const std::uint8_t> InterfaceBytes(absl::string_view name) {
+  return {reinterpret_cast<const std::uint8_t*>(name.data()), name.size()};
+}
+class RustNetworkMonitorAdapter final : public webrtc::NetworkMonitorInterface {
+ public:
+  RustNetworkMonitorAdapter(rust::Box<RustNetworkMonitor> monitor,
+                            std::shared_ptr<NativeNetworkChange::State> state)
+      : monitor_(std::move(monitor)), state_(std::move(state)) {
+    state_->callback = [this] { InvokeNetworksChangedCallback(); };
+  }
+  ~RustNetworkMonitorAdapter() override {
+    if (Suspend()) network_monitor_stop(*monitor_);
+    std::lock_guard lock(state_->mutex);
+    state_->thread = nullptr;
+    state_->callback = {};
+  }
+  void Start() override {
+    {
+      std::lock_guard lock(state_->mutex);
+      ++state_->generation;
+      state_->running = true;
+    }
+    if (!network_monitor_start(*monitor_)) {
+      Suspend();
+      network_monitor_stop(*monitor_);
+    }
+  }
+  void Stop() override {
+    Suspend();
+    network_monitor_stop(*monitor_);
+  }
+  InterfaceInfo GetInterfaceInfo(absl::string_view name) override {
+    auto info = network_monitor_info(*monitor_, InterfaceBytes(name));
+    InterfaceInfo result;
+    result.adapter_type = static_cast<webrtc::AdapterType>(info.adapter_type);
+    result.underlying_type_for_vpn = static_cast<webrtc::AdapterType>(info.underlying_type_for_vpn);
+    result.network_preference = static_cast<webrtc::NetworkPreference>(info.preference);
+    result.available = info.available;
+    result.slice = static_cast<webrtc::NetworkSlice>(info.slice);
+    return result;
+  }
+  bool SupportsBindSocketToNetwork() const override {
+    return network_monitor_supports_binding(*monitor_);
+  }
+  webrtc::NetworkBindingResult BindSocketToNetwork(
+      int socket, const webrtc::IPAddress& address,
+      absl::string_view name) override {
+    auto bytes = FromIp(address);
+    return static_cast<webrtc::NetworkBindingResult>(network_monitor_bind(
+        *monitor_, socket, {bytes.data(), bytes.size()}, InterfaceBytes(name)));
+  }
+ private:
+  bool Suspend() {
+    std::lock_guard lock(state_->mutex);
+    bool running = state_->running;
+    state_->running = false;
+    ++state_->generation;
+    return running;
+  }
+  rust::Box<RustNetworkMonitor> monitor_;
+  std::shared_ptr<NativeNetworkChange::State> state_;
+};
+class RustNetworkMonitorFactoryAdapter final : public webrtc::NetworkMonitorFactory {
+ public:
+  explicit RustNetworkMonitorFactoryAdapter(rust::Box<RustNetworkMonitorFactory> factory)
+      : factory_(std::move(factory)) {}
+  webrtc::NetworkMonitorInterface* CreateNetworkMonitor(
+      const webrtc::FieldTrialsView& trials) override {
+    auto state = std::make_shared<NativeNetworkChange::State>();
+    state->thread = webrtc::Thread::Current();
+    if (!state->thread) return nullptr;
+    auto monitor = network_monitor_create(*factory_,
+        std::make_unique<NativeFieldTrials>(trials.CreateCopy()),
+        std::make_shared<NativeNetworkChange>(state));
+    if (!network_monitor_present(*monitor)) {
+      std::lock_guard lock(state->mutex);
+      state->thread = nullptr;
+      return nullptr;
+    }
+    return new RustNetworkMonitorAdapter(std::move(monitor), std::move(state));
+  }
+ private:
+  rust::Box<RustNetworkMonitorFactory> factory_;
+};
+
 
 enum Error : std::uint8_t {
   kOk = 0,
@@ -125,6 +251,12 @@ rust::Vec<std::uint8_t> FromBytes(
 void CloseRegistration(const std::shared_ptr<SocketRegistration>& registration);
 
 }  // namespace
+
+std::unique_ptr<webrtc::NetworkMonitorFactory> network_monitor_factory_adapter(
+    rust::Box<RustNetworkMonitorFactory> factory) noexcept {
+  if (!network_monitor_factory_present(*factory)) return nullptr;
+  return std::make_unique<RustNetworkMonitorFactoryAdapter>(std::move(factory));
+}
 
 struct NativeSimulatedNetwork::State {
   explicit State(const NativeManualClock* clock_value) noexcept

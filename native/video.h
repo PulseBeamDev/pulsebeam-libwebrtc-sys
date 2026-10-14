@@ -8,14 +8,40 @@
 #include "rust/cxx.h"
 
 namespace webrtc {
+class RtpSenderInterface;
 class RtpReceiverInterface;
 class RtpTransceiverInterface;
 }  // namespace webrtc
 
 namespace pulsebeam::webrtc_sys {
 
+struct RustFrameEncryptorProvider;
+struct RustFrameDecryptorProvider;
+struct FfiFrameCryptoOutput;
+struct FfiFrameCryptoFailure;
+std::size_t frame_crypto_max_output_capacity() noexcept;
+class NativeFrameEncryptor final {
+ public:
+  struct State;
+  explicit NativeFrameEncryptor(std::unique_ptr<State> state) noexcept;
+  ~NativeFrameEncryptor();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+class NativeFrameDecryptor final {
+ public:
+  struct State;
+  explicit NativeFrameDecryptor(std::unique_ptr<State> state) noexcept;
+  ~NativeFrameDecryptor();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
 class NativePeerConnectionFactory;
 class NativePeerConnection;
+class NativeRtpCapabilities;
+class NativeRtcError;
 class NativeVideoFrame;
 struct FfiSenderParameters;
 struct FfiCodecFormat;
@@ -87,11 +113,92 @@ class NativeVideoSink final {
   std::unique_ptr<State> state_;
 };
 
+class NativeSframeEncrypterInit;
+class NativeRtcError;
+class NativePeerConnection;
+struct FfiSframeEncrypterCreation;
+struct FfiSframeDecrypterCreation;
+class NativeSframeEncrypter final {
+ public:
+  struct State;
+  explicit NativeSframeEncrypter(std::unique_ptr<State> state) noexcept;
+  ~NativeSframeEncrypter();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+class NativeSframeDecrypter final {
+ public:
+  struct State;
+  explicit NativeSframeDecrypter(std::unique_ptr<State> state) noexcept;
+  ~NativeSframeDecrypter();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+struct FfiRtpByteString;
+class NativeRtpSender;
+class NativeRtpReceiver;
+FfiSframeEncrypterCreation rtp_sender_create_sframe(const NativeRtpSender& sender, const NativePeerConnection& peer, const NativeSframeEncrypterInit& init) noexcept;
+FfiSframeDecrypterCreation rtp_receiver_create_sframe(const NativeRtpReceiver& receiver, const NativePeerConnection& peer, std::int32_t suite) noexcept;
+std::unique_ptr<NativeSframeEncrypter> sframe_encrypter_clone(const NativeSframeEncrypter& value) noexcept;
+std::unique_ptr<NativeSframeDecrypter> sframe_decrypter_clone(const NativeSframeDecrypter& value) noexcept;
+std::unique_ptr<NativeRtcError> sframe_set_encryption_key(const NativeSframeEncrypter& value, std::uint64_t id, rust::Slice<const std::uint8_t> key) noexcept;
+std::unique_ptr<NativeRtcError> sframe_add_decryption_key(const NativeSframeDecrypter& value, std::uint64_t id, rust::Slice<const std::uint8_t> key) noexcept;
+std::unique_ptr<NativeRtcError> sframe_remove_decryption_key(const NativeSframeDecrypter& value, std::uint64_t id) noexcept;
+
 class NativeRtpSender final {
  public:
   struct State;
   explicit NativeRtpSender(std::unique_ptr<State> state) noexcept;
   ~NativeRtpSender();
+  const std::unique_ptr<State>& state() const noexcept;
+  webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender() const noexcept;
+  webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> sframe_owner() const noexcept;
+
+ private:
+  std::unique_ptr<State> state_;
+};
+
+
+class NativeRtpReceiver;
+struct FfiRtpPacketEvent;
+class NativeRtpSenderObserver final {
+ public:
+  struct State;
+  explicit NativeRtpSenderObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeRtpSenderObserver();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeRtpSenderObserver> rtp_sender_observer(const NativeRtpSender& value) noexcept;
+std::size_t rtp_sender_observer_identity(const NativeRtpSenderObserver& value) noexcept;
+bool rtp_sender_observer_register(const NativeRtpSenderObserver& value, std::size_t capacity) noexcept;
+void rtp_sender_observer_unregister(const NativeRtpSenderObserver& value) noexcept;
+FfiRtpPacketEvent rtp_sender_observer_take(const NativeRtpSenderObserver& value) noexcept;
+std::uint64_t rtp_sender_observer_take_dropped(const NativeRtpSenderObserver& value) noexcept;
+class NativeRtpReceiverObserver final {
+ public:
+  struct State;
+  explicit NativeRtpReceiverObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeRtpReceiverObserver();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeRtpReceiverObserver> rtp_receiver_observer(const NativeRtpReceiver& value) noexcept;
+std::size_t rtp_receiver_observer_identity(const NativeRtpReceiverObserver& value) noexcept;
+bool rtp_receiver_observer_register(const NativeRtpReceiverObserver& value, std::size_t capacity) noexcept;
+void rtp_receiver_observer_unregister(const NativeRtpReceiverObserver& value) noexcept;
+FfiRtpPacketEvent rtp_receiver_observer_take(const NativeRtpReceiverObserver& value) noexcept;
+std::uint64_t rtp_receiver_observer_take_dropped(const NativeRtpReceiverObserver& value) noexcept;
+
+class NativeDtmfSender final {
+ public:
+  struct State;
+  explicit NativeDtmfSender(std::unique_ptr<State> state) noexcept;
+  ~NativeDtmfSender();
   const std::unique_ptr<State>& state() const noexcept;
 
  private:
@@ -105,6 +212,7 @@ class NativeRtpReceiver final {
   ~NativeRtpReceiver();
   const std::unique_ptr<State>& state() const noexcept;
   webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver() const noexcept;
+  webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> sframe_owner() const noexcept;
 
  private:
   std::unique_ptr<State> state_;
@@ -222,7 +330,8 @@ std::uint64_t encoded_video_sink_dropped_frames(
 bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept;
 
 std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
-    webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) noexcept;
+    webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
+    webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner = nullptr) noexcept;
 std::unique_ptr<NativeRtpSender> rtp_transceiver_sender(
     const NativeRtpTransceiver& transceiver) noexcept;
 std::unique_ptr<NativeRtpReceiver> rtp_transceiver_receiver(
@@ -231,8 +340,35 @@ std::uint8_t rtp_transceiver_direction(
     const NativeRtpTransceiver& transceiver) noexcept;
 std::int8_t rtp_transceiver_current_direction(
     const NativeRtpTransceiver& transceiver) noexcept;
+std::int32_t rtp_transceiver_direction_value(
+    const NativeRtpTransceiver& transceiver) noexcept;
+bool rtp_transceiver_current_direction_value(
+    const NativeRtpTransceiver& transceiver, std::int32_t& direction) noexcept;
+std::unique_ptr<NativeRtcError> rtp_transceiver_set_direction_value(
+    const NativeRtpTransceiver& transceiver, std::int32_t direction,
+    bool& safe) noexcept;
+std::unique_ptr<NativeRtcError> rtp_transceiver_stop_standard(
+    const NativeRtpTransceiver& transceiver) noexcept;
 bool rtp_transceiver_stopped(
     const NativeRtpTransceiver& transceiver) noexcept;
+std::int32_t rtp_transceiver_media_type(
+    const NativeRtpTransceiver& transceiver) noexcept;
+bool rtp_transceiver_stopping(const NativeRtpTransceiver& transceiver) noexcept;
+bool rtp_transceiver_receptive(const NativeRtpTransceiver& transceiver) noexcept;
+bool rtp_transceiver_fired_direction(
+    const NativeRtpTransceiver& transceiver, std::int32_t& direction) noexcept;
+bool rtp_transceiver_sframe_enabled(
+    const NativeRtpTransceiver& transceiver, bool& enabled) noexcept;
+std::unique_ptr<NativeRtpCapabilities> rtp_transceiver_codec_preferences_value(
+    const NativeRtpTransceiver& transceiver) noexcept;
+std::unique_ptr<NativeRtpCapabilities> rtp_transceiver_header_capabilities_value(
+    const NativeRtpTransceiver& transceiver, bool negotiated) noexcept;
+std::unique_ptr<NativeRtcError> rtp_transceiver_set_codec_preferences_value(
+    const NativeRtpTransceiver& transceiver,
+    const NativeRtpCapabilities& values) noexcept;
+std::unique_ptr<NativeRtcError> rtp_transceiver_set_header_capabilities_value(
+    const NativeRtpTransceiver& transceiver,
+    const NativeRtpCapabilities& values) noexcept;
 rust::Vec<FfiRtpHeaderExtension> rtp_transceiver_header_extensions(
     const NativeRtpTransceiver& transceiver, bool negotiated) noexcept;
 bool rtp_transceiver_set_header_extensions(
@@ -252,7 +388,54 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t direction,
                                    std::uint8_t& error_type,
                                    rust::String& error) noexcept;
+struct FfiDtmfToneChange;
+std::unique_ptr<NativeDtmfSender> rtp_sender_dtmf(const NativeRtpSender& sender) noexcept;
+bool dtmf_sender_can_insert(const NativeDtmfSender& sender) noexcept;
+std::uint8_t dtmf_sender_insert(const NativeDtmfSender& sender, rust::Str tones,
+    std::int32_t duration, std::int32_t gap, bool has_comma_delay,
+    std::int32_t comma_delay) noexcept;
+rust::String dtmf_sender_tones(const NativeDtmfSender& sender) noexcept;
+std::int32_t dtmf_sender_duration(const NativeDtmfSender& sender) noexcept;
+std::int32_t dtmf_sender_inter_tone_gap(const NativeDtmfSender& sender) noexcept;
+std::int32_t dtmf_sender_comma_delay(const NativeDtmfSender& sender) noexcept;
+bool dtmf_sender_register_observer(const NativeDtmfSender& sender, std::size_t capacity) noexcept;
+void dtmf_sender_unregister_observer(const NativeDtmfSender& sender) noexcept;
+FfiDtmfToneChange dtmf_sender_take_tone_change(const NativeDtmfSender& sender) noexcept;
+std::uint64_t dtmf_sender_take_dropped(const NativeDtmfSender& sender) noexcept;
+class NativeDtlsTransport;
+std::unique_ptr<NativeDtlsTransport> rtp_sender_dtls(
+    const NativeRtpSender& sender, const NativePeerConnection& peer) noexcept;
+std::unique_ptr<NativeDtlsTransport> rtp_receiver_dtls(
+    const NativeRtpReceiver& receiver, const NativePeerConnection& peer) noexcept;
+std::unique_ptr<NativeFrameEncryptor> frame_encryptor_new(rust::Box<RustFrameEncryptorProvider> provider) noexcept;
+std::unique_ptr<NativeFrameEncryptor> frame_encryptor_clone(const NativeFrameEncryptor& value) noexcept;
+bool frame_encryptor_same(const NativeFrameEncryptor& lhs, const NativeFrameEncryptor& rhs) noexcept;
+FfiFrameCryptoFailure frame_encryptor_failure(const NativeFrameEncryptor& value) noexcept;
+std::size_t frame_encryptor_max_size(const NativeFrameEncryptor& value, std::int32_t media, std::size_t size) noexcept;
+FfiFrameCryptoOutput frame_encryptor_encrypt(const NativeFrameEncryptor& value, std::int32_t media, std::uint32_t ssrc,
+    rust::Slice<const std::uint8_t> additional, rust::Slice<const std::uint8_t> input, std::size_t capacity) noexcept;
+std::unique_ptr<NativeFrameDecryptor> frame_decryptor_new(const NativeRtpReceiver& receiver, rust::Box<RustFrameDecryptorProvider> provider) noexcept;
+std::unique_ptr<NativeFrameDecryptor> frame_decryptor_clone(const NativeFrameDecryptor& value) noexcept;
+bool frame_decryptor_same(const NativeFrameDecryptor& lhs, const NativeFrameDecryptor& rhs) noexcept;
+FfiFrameCryptoFailure frame_decryptor_failure(const NativeFrameDecryptor& value) noexcept;
+std::size_t frame_decryptor_max_size(const NativeFrameDecryptor& value, std::int32_t media, std::size_t size) noexcept;
+FfiFrameCryptoOutput frame_decryptor_decrypt(const NativeFrameDecryptor& value, std::int32_t media, rust::Slice<const std::uint32_t> csrcs,
+    rust::Slice<const std::uint8_t> additional, rust::Slice<const std::uint8_t> input, std::size_t capacity) noexcept;
+void rtp_sender_set_frame_encryptor(const NativeRtpSender& sender, const NativeFrameEncryptor* value) noexcept;
+std::unique_ptr<NativeFrameEncryptor> rtp_sender_frame_encryptor(const NativeRtpSender& sender) noexcept;
+bool rtp_receiver_set_frame_decryptor(const NativeRtpReceiver& receiver, const NativeFrameDecryptor* value) noexcept;
+std::unique_ptr<NativeFrameDecryptor> rtp_receiver_frame_decryptor(const NativeRtpReceiver& receiver) noexcept;
+bool media_type_to_string(std::int32_t kind, rust::String& name) noexcept;
+std::uint32_t rtp_sender_ssrc(const NativeRtpSender& sender) noexcept;
+std::int32_t rtp_sender_media_type(const NativeRtpSender& sender) noexcept;
+rust::Vec<rust::String> rtp_sender_stream_ids(const NativeRtpSender& sender) noexcept;
+rust::Vec<FfiRtpByteString> rtp_sender_stream_id_bytes(const NativeRtpSender& sender) noexcept;
+void rtp_sender_set_streams(const NativeRtpSender& sender,
+    rust::Slice<const rust::String> ids) noexcept;
 rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept;
+std::unique_ptr<NativeRtcError> rtp_sender_generate_keyframe(
+    const NativeRtpSender& sender, const NativePeerConnection& peer,
+    rust::Slice<const FfiRtpByteString> rids) noexcept;
 bool rtp_sender_request_keyframe(const NativeRtpSender& sender,
                                  const NativePeerConnection& peer,
                                  rust::Slice<const rust::String> rids,
@@ -269,6 +452,8 @@ std::unique_ptr<NativeVideoTrack> rtp_sender_track(
 bool rtp_sender_set_video_track(const NativeRtpSender& sender,
                                 const NativeVideoTrack& track) noexcept;
 bool rtp_sender_clear_track(const NativeRtpSender& sender) noexcept;
+std::int32_t rtp_receiver_media_type(const NativeRtpReceiver& receiver) noexcept;
+rust::Vec<rust::String> rtp_receiver_stream_ids(const NativeRtpReceiver& receiver) noexcept;
 rust::String rtp_receiver_id(const NativeRtpReceiver& receiver) noexcept;
 std::unique_ptr<NativeVideoTrack> rtp_receiver_track(
     const NativeRtpReceiver& receiver) noexcept;

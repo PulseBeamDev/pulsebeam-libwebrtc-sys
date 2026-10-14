@@ -516,6 +516,7 @@ pub enum CodecError {
     CallbackUnavailable,
     Released,
     ProviderPanicked,
+    FormatProjection(crate::VideoFactoryQueryError),
 }
 
 impl fmt::Display for CodecError {
@@ -531,6 +532,7 @@ impl fmt::Display for CodecError {
                 Self::CallbackUnavailable => "codec output callback is unavailable",
                 Self::Released => "codec has been released",
                 Self::ProviderPanicked => "codec provider panicked",
+                Self::FormatProjection(_) => "complete native format is not representable by the legacy codec provider",
             }
         )
     }
@@ -539,7 +541,23 @@ impl fmt::Display for CodecError {
 impl std::error::Error for CodecError {}
 
 pub trait VideoEncoderFactory: Send + Sync + 'static {
-    fn supported_formats(&self) -> Vec<VideoCodecFormat>;
+    fn supported_formats(&self) -> Vec<VideoCodecFormat> { Vec::new() }
+    /// Complete owning SDK declarations; override for the full byte/field domain.
+    fn supported_format_values(&self) -> Vec<crate::SdpVideoFormat> {
+        self.supported_formats().iter().map(crate::SdpVideoFormat::from).collect()
+    }
+    fn implementation_values(&self) -> Vec<crate::SdpVideoFormat> {
+        self.implementations().iter().map(crate::SdpVideoFormat::from).collect()
+    }
+    fn query_support_value(&self, format: &crate::SdpVideoFormat, mode: Option<&[u8]>, resolution: Option<&crate::Resolution>) -> Result<CodecSupport, crate::VideoFactoryQueryError> {
+        let format = VideoCodecFormat::try_from(format)?;
+        let mode = mode.map(|mode| std::str::from_utf8(mode).map_err(|_| crate::VideoFactoryQueryError::LegacyModeBytes)).transpose()?;
+        Ok(self.query_support(&format, mode, crate::video_factory_values::legacy_resolution(resolution)?))
+    }
+
+    /// SDK GetImplementations is separate from signaling discovery. Its native
+    /// default uses GetSupportedFormats; implementation tags may differ.
+    fn implementations(&self) -> Vec<VideoCodecFormat> { self.supported_formats() }
     fn query_support(
         &self,
         format: &VideoCodecFormat,
@@ -547,10 +565,24 @@ pub trait VideoEncoderFactory: Send + Sync + 'static {
         resolution: Option<VideoResolution>,
     ) -> CodecSupport;
     fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoEncoder>, CodecError>;
+    fn create_value(&self, format: &crate::SdpVideoFormat) -> Result<Box<dyn VideoEncoder>, CodecError> {
+        self.create(&VideoCodecFormat::try_from(format).map_err(CodecError::FormatProjection)?)
+    }
+    fn create_with_context(&self, context: crate::VideoCodecCreationContext) -> Result<Box<dyn VideoEncoder>, CodecError> {
+        self.create_value(&context.format)
+    }
 }
 
 pub trait VideoDecoderFactory: Send + Sync + 'static {
-    fn supported_formats(&self) -> Vec<VideoCodecFormat>;
+    fn supported_formats(&self) -> Vec<VideoCodecFormat> { Vec::new() }
+    /// Complete owning SDK declarations; override for the full byte/field domain.
+    fn supported_format_values(&self) -> Vec<crate::SdpVideoFormat> {
+        self.supported_formats().iter().map(crate::SdpVideoFormat::from).collect()
+    }
+    fn query_support_value(&self, format: &crate::SdpVideoFormat, reference_scaling: bool, resolution: Option<&crate::Resolution>) -> Result<CodecSupport, crate::VideoFactoryQueryError> {
+        Ok(self.query_support(&VideoCodecFormat::try_from(format)?, reference_scaling, crate::video_factory_values::legacy_resolution(resolution)?))
+    }
+
     fn query_support(
         &self,
         format: &VideoCodecFormat,
@@ -558,6 +590,12 @@ pub trait VideoDecoderFactory: Send + Sync + 'static {
         resolution: Option<VideoResolution>,
     ) -> CodecSupport;
     fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError>;
+    fn create_value(&self, format: &crate::SdpVideoFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        self.create(&VideoCodecFormat::try_from(format).map_err(CodecError::FormatProjection)?)
+    }
+    fn create_with_context(&self, context: crate::VideoCodecCreationContext) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        self.create_value(&context.format)
+    }
 }
 
 pub trait VideoEncoder: Send + 'static {
@@ -697,13 +735,31 @@ impl DecodedImageCallback {
     }
 }
 
-pub struct RustVideoEncoderFactory {
-    provider: Box<dyn VideoEncoderFactory>,
+pub struct RustVideoEncoderFactory { state: Arc<RustVideoEncoderFactoryState> }
+pub struct RustVideoEncoderFactoryState {
+    provider: Option<Box<dyn VideoEncoderFactory>>,
     terminal: AtomicBool,
+    failure: crate::VideoFactoryFailureObserver,
 }
-pub struct RustVideoDecoderFactory {
-    provider: Box<dyn VideoDecoderFactory>,
+impl std::ops::Deref for RustVideoEncoderFactory {
+    type Target = RustVideoEncoderFactoryState;
+    fn deref(&self) -> &Self::Target { &self.state }
+}
+pub(crate) fn encoder_factory_clone(source: &RustVideoEncoderFactory) -> Box<RustVideoEncoderFactory> {
+    Box::new(RustVideoEncoderFactory { state: source.state.clone() })
+}
+pub struct RustVideoDecoderFactory { state: Arc<RustVideoDecoderFactoryState> }
+pub struct RustVideoDecoderFactoryState {
+    provider: Option<Box<dyn VideoDecoderFactory>>,
     terminal: AtomicBool,
+    failure: crate::VideoFactoryFailureObserver,
+}
+impl std::ops::Deref for RustVideoDecoderFactory {
+    type Target = RustVideoDecoderFactoryState;
+    fn deref(&self) -> &Self::Target { &self.state }
+}
+pub(crate) fn decoder_factory_clone(source: &RustVideoDecoderFactory) -> Box<RustVideoDecoderFactory> {
+    Box::new(RustVideoDecoderFactory { state: source.state.clone() })
 }
 pub struct RustVideoEncoder {
     codec: Option<Box<dyn VideoEncoder>>,
@@ -714,14 +770,46 @@ pub struct RustVideoDecoder {
     terminal: AtomicBool,
 }
 
+// Known standard payloads have non-panicking destructors and can be freed.
+// Unknown user payloads can themselves panic, including during field cleanup.
+fn discard_video_panic(payload: Box<dyn std::any::Any + Send>) {
+    if payload.is::<String>() || payload.is::<&'static str>() { drop(payload); }
+    else { std::mem::forget(payload); }
+}
+// No application destructor or panic-payload destructor may unwind through CXX.
+fn contained_video_drop<T>(value: T) -> bool {
+    match catch_unwind(AssertUnwindSafe(|| drop(value))) {
+        Ok(()) => true,
+        Err(payload) => { discard_video_panic(payload); false }
+    }
+}
+impl Drop for RustVideoEncoderFactoryState {
+    fn drop(&mut self) {
+        if !contained_video_drop(self.provider.take()) { self.failure.report(crate::VideoFactoryQueryError::ProviderPanicked); }
+    }
+}
+impl Drop for RustVideoDecoderFactoryState {
+    fn drop(&mut self) {
+        if !contained_video_drop(self.provider.take()) { self.failure.report(crate::VideoFactoryQueryError::ProviderPanicked); }
+    }
+}
+impl Drop for RustVideoEncoder {
+    fn drop(&mut self) { contained_video_drop(self.codec.take()); }
+}
+impl Drop for RustVideoDecoder {
+    fn drop(&mut self) { contained_video_drop(self.codec.take()); }
+}
+
 struct EncoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeVideoEncoderFactory>,
     direct_encoded: Option<crate::video::DirectEncodedVideo>,
+    failure: Option<crate::VideoFactoryFailureObserver>,
 }
 struct DecoderFactoryInner {
     native: cxx::UniquePtr<ffi::NativeVideoDecoderFactory>,
     builtin_vp8: bool,
     encoded_receive_only: Option<VideoCodecFormat>,
+    failure: Option<crate::VideoFactoryFailureObserver>,
 }
 
 // SAFETY: the provider is Send + Sync and native factory methods only perform shared calls.
@@ -739,17 +827,37 @@ pub struct VideoEncoderFactoryHandle(Arc<EncoderFactoryInner>);
 pub struct VideoDecoderFactoryHandle(Arc<DecoderFactoryInner>);
 
 impl VideoEncoderFactoryHandle {
-    pub fn new(provider: impl VideoEncoderFactory) -> Result<Self, CodecError> {
-        let native = ffi::new_video_encoder_factory(Box::new(RustVideoEncoderFactory {
-            provider: Box::new(provider),
-            terminal: AtomicBool::new(false),
-        }));
+    /// Select the pinned artifact's built-in video encoders. Discovery and
+    /// support queries report native capabilities; no codec is substituted.
+    /// Absence of a factory selection on a peer builder remains distinct and
+    /// does not implicitly enable video codecs.
+    pub fn builtin() -> Result<Self, CodecError> {
+        let native = ffi::new_builtin_video_encoder_factory();
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
             Ok(Self(Arc::new(EncoderFactoryInner {
                 native,
                 direct_encoded: None,
+                failure: None,
+            })))
+        }
+    }
+
+    pub fn new(provider: impl VideoEncoderFactory) -> Result<Self, CodecError> {
+        let failure = crate::VideoFactoryFailureObserver::default();
+        let native = ffi::new_video_encoder_factory(Box::new(RustVideoEncoderFactory { state: Arc::new(RustVideoEncoderFactoryState {
+            provider: Some(Box::new(provider)),
+            terminal: AtomicBool::new(false),
+            failure: failure.clone(),
+        }) }));
+        if native.is_null() {
+            Err(CodecError::ConstructionFailed)
+        } else {
+            Ok(Self(Arc::new(EncoderFactoryInner {
+                native,
+                direct_encoded: None,
+                failure: Some(failure),
             })))
         }
     }
@@ -779,11 +887,17 @@ impl VideoEncoderFactoryHandle {
         )
     }
 
+    /// Complete owning SDK values, including optional packetization/tx_mode.
+    pub fn supported_format_values(&self) -> Vec<crate::SdpVideoFormat> {
+        crate::video_codec_values::sdp_video_formats_from_list(ffi::video_encoder_formats_value(self.native()))
+    }
+    /// Actual selected factory GetImplementations, not a substituted discovery
+    /// list. The native default may delegate to GetSupportedFormats.
+    pub fn implementation_values(&self) -> Vec<crate::SdpVideoFormat> {
+        crate::video_codec_values::sdp_video_formats_from_list(ffi::video_encoder_implementations_value(self.native()))
+    }
     pub fn supported_formats(&self) -> Vec<VideoCodecFormat> {
-        ffi::video_encoder_formats(self.native())
-            .into_iter()
-            .map(from_ffi_format)
-            .collect()
+        self.try_supported_formats().expect("legacy format projection; use supported_format_values for complete native fields")
     }
     pub fn query_support(
         &self,
@@ -798,6 +912,7 @@ impl VideoEncoderFactoryHandle {
         let result = ffi::video_encoder_query(
             self.native(),
             &to_ffi_format(format),
+            scalability_mode.is_some(),
             scalability_mode.unwrap_or(""),
             resolution.width != 0 && resolution.height != 0,
             resolution.width,
@@ -808,6 +923,7 @@ impl VideoEncoderFactoryHandle {
             power_efficient: result.power_efficient,
         }
     }
+    pub fn failure_observer(&self) -> Option<crate::VideoFactoryFailureObserver> { self.0.failure.clone() }
     pub(crate) fn native(&self) -> &ffi::NativeVideoEncoderFactory {
         self.0.native.as_ref().expect("validated encoder factory")
     }
@@ -840,6 +956,23 @@ impl VideoDecoderFactory for EncodedReceiveFactory {
 }
 
 impl VideoDecoderFactoryHandle {
+    /// Select all built-in video decoders available in the pinned artifact.
+    /// This is not the single-thread VP8-only selection used by controlled
+    /// media. Codec discovery and support stay native and artifact-dependent.
+    pub fn builtin() -> Result<Self, CodecError> {
+        let native = ffi::new_builtin_video_decoder_factory();
+        if native.is_null() {
+            Err(CodecError::ConstructionFailed)
+        } else {
+            Ok(Self(Arc::new(DecoderFactoryInner {
+                native,
+                builtin_vp8: false,
+                encoded_receive_only: None,
+                failure: None,
+            })))
+        }
+    }
+
     pub(crate) fn encoded_receive(format: VideoCodecFormat) -> Result<Self, CodecError> {
         let mut handle = Self::new(EncodedReceiveFactory(format.clone()))?;
         Arc::get_mut(&mut handle.0)
@@ -870,6 +1003,7 @@ impl VideoDecoderFactoryHandle {
                 native,
                 builtin_vp8: true,
                 encoded_receive_only: None,
+                failure: None,
             })))
         }
     }
@@ -887,10 +1021,12 @@ impl VideoDecoderFactoryHandle {
     }
 
     pub fn new(provider: impl VideoDecoderFactory) -> Result<Self, CodecError> {
-        let native = ffi::new_video_decoder_factory(Box::new(RustVideoDecoderFactory {
-            provider: Box::new(provider),
+        let failure = crate::VideoFactoryFailureObserver::default();
+        let native = ffi::new_video_decoder_factory(Box::new(RustVideoDecoderFactory { state: Arc::new(RustVideoDecoderFactoryState {
+            provider: Some(Box::new(provider)),
             terminal: AtomicBool::new(false),
-        }));
+            failure: failure.clone(),
+        }) }));
         if native.is_null() {
             Err(CodecError::ConstructionFailed)
         } else {
@@ -898,14 +1034,15 @@ impl VideoDecoderFactoryHandle {
                 native,
                 builtin_vp8: false,
                 encoded_receive_only: None,
+                failure: Some(failure),
             })))
         }
     }
+    pub fn supported_format_values(&self) -> Vec<crate::SdpVideoFormat> {
+        crate::video_codec_values::sdp_video_formats_from_list(ffi::video_decoder_formats_value(self.native()))
+    }
     pub fn supported_formats(&self) -> Vec<VideoCodecFormat> {
-        ffi::video_decoder_formats(self.native())
-            .into_iter()
-            .map(from_ffi_format)
-            .collect()
+        self.try_supported_formats().expect("legacy format projection; use supported_format_values for complete native fields")
     }
     pub fn query_support(
         &self,
@@ -930,6 +1067,7 @@ impl VideoDecoderFactoryHandle {
             power_efficient: result.power_efficient,
         }
     }
+    pub fn failure_observer(&self) -> Option<crate::VideoFactoryFailureObserver> { self.0.failure.clone() }
     pub(crate) fn native(&self) -> &ffi::NativeVideoDecoderFactory {
         self.0.native.as_ref().expect("validated decoder factory")
     }
@@ -986,6 +1124,44 @@ impl AudioEncoderFactory {
             })))
         }
     }
+    /// Prioritized native discovery list. Query/Create may accept additional
+    /// formats not advertised here. Carrier discovery preserves its single
+    /// canonical Opus RTP identity and actual mono codec metadata.
+    pub fn supported_encoders(&self) -> Vec<crate::AudioCodecSpec> {
+        ffi::audio_encoder_formats(self.native()).into_iter()
+            .map(crate::AudioCodecSpec::from_native).collect()
+    }
+    /// Native capability query, including non-advertised formats. Safety errors
+    /// are distinct from the selected factory's ordinary unsupported result.
+    pub fn query_encoder(&self, format: &crate::SdpAudioFormat) -> Result<Option<crate::AudioCodecInfo>, CodecError> {
+        let result = ffi::audio_encoder_query(self.native(), &format.to_native());
+        if !result.valid { return Err(CodecError::InvalidConfiguration); }
+        Ok(result.present.then(|| crate::AudioCodecInfo::from_native(result.info)))
+    }
+    /// Create an owning encoder in the exact supplied environment. Neither an
+    /// unsupported format nor a native null result is replaced with a fallback.
+    pub fn create(&self, environment: &crate::Environment, format: &crate::SdpAudioFormat,
+        options: &crate::AudioEncoderOptions) -> Result<Option<crate::AudioEncoder>, CodecError> {
+        let absent = cxx::UniquePtr::null();
+        let pair_id = options.codec_pair_id.as_ref().map_or(&absent, crate::AudioCodecPairId::native);
+        let result = ffi::audio_encoder_create(self.native(), environment.native(), &format.to_native(),
+            options.payload_type, pair_id);
+        if !result.valid { return Err(CodecError::InvalidConfiguration); }
+        if result.encoder.is_null() { return Ok(None); }
+        Ok(Some(crate::AudioEncoder::from_native(result.encoder, environment.clone())))
+    }
+    /// Create using an independently owned SDK Options value, without projecting
+    /// it through Rust fields. Backend-specific admission and native unsupported
+    /// results are the same as `create`; the supplied options remain unmodified.
+    pub fn create_with_options(&self, environment: &crate::Environment,
+        format: &crate::SdpAudioFormat, options: &crate::OwnedAudioEncoderOptions)
+        -> Result<Option<crate::AudioEncoder>, CodecError> {
+        let result = ffi::audio_encoder_create_with_options(self.native(), environment.native(),
+            &format.to_native(), options.native());
+        if !result.valid { return Err(CodecError::InvalidConfiguration); }
+        if result.encoder.is_null() { return Ok(None); }
+        Ok(Some(crate::AudioEncoder::from_native(result.encoder, environment.clone())))
+    }
     pub(crate) fn supports_opus_frames(&self) -> bool {
         self.0.opus_frames
     }
@@ -1008,6 +1184,17 @@ impl AudioEncoderFactory {
     }
 }
 impl AudioDecoderFactory {
+    /// Internal exact SDK factory view for creation-provider contexts. This
+    /// owns the supplied refcounted factory, not a separately selected builtin.
+    /// SDK-null remains absent. Selected builtin capacity and telemetry evidence
+    /// transfer only after native comparison with the configured factory identity.
+    /// An unproven reference is retained, but stock parser/decoder operations
+    /// reject it before invoking a backend with unjustified capacity assumptions.
+    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeAudioDecoderFactory>) -> Option<Self> {
+        let factory = native.as_ref()?;
+        let builtin_opus = ffi::audio_decoder_factory_builtin_kind(factory) == 2;
+        Some(Self(Arc::new(AudioDecoderFactoryInner { native, builtin_opus })))
+    }
     /// Select only the pinned real software Opus decoder. Parsed primary and
     /// FEC frames retain their decoder and preserve upstream decode behavior.
     pub fn builtin_opus() -> Result<Self, CodecError> {
@@ -1020,6 +1207,68 @@ impl AudioDecoderFactory {
                 builtin_opus: true,
             })))
         }
+    }
+
+    /// Complete native advertised formats and implementation metadata. This is
+    /// an owned snapshot, not inferred from selected Opus configuration.
+    pub fn supported_decoders(&self) -> Vec<crate::AudioCodecSpec> {
+        ffi::audio_decoder_formats(self.native())
+            .into_iter()
+            .map(crate::AudioCodecSpec::from_native)
+            .collect()
+    }
+
+    /// Returns a native capability result, or an error before the stock
+    /// parser reaches an aborting conversion or overflowing configuration.
+    /// Full SDP values remain representable independently of parser safety.
+    pub fn is_supported_decoder(&self, format: &crate::SdpAudioFormat) -> Result<bool, CodecError> {
+        match ffi::audio_decoder_supported(self.native(), &format.to_native()) {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(CodecError::InvalidConfiguration),
+        }
+    }
+
+    /// Create a current owning decoder product. Native unsupported formats and
+    /// null constructor results remain `Ok(None)`; unsafe parser inputs error.
+    /// Products and parsed frames retain their environment independently.
+    pub fn create(
+        &self,
+        environment: &crate::Environment,
+        format: &crate::SdpAudioFormat,
+    ) -> Result<Option<crate::AudioDecoder>, CodecError> {
+        let value = ffi::audio_decoder_create(self.native(), environment.native(), &format.to_native());
+        Self::created_decoder(value, environment)
+    }
+
+    /// Call the distinct deprecated factory overload with exact optional pair
+    /// identity. This does not expose the unsafe obsolete decoder decode APIs.
+    pub fn create_with_codec_pair_id(
+        &self,
+        environment: &crate::Environment,
+        format: &crate::SdpAudioFormat,
+        codec_pair_id: Option<&crate::AudioCodecPairId>,
+    ) -> Result<Option<crate::AudioDecoder>, CodecError> {
+        let absent = cxx::UniquePtr::null();
+        let pair_id = codec_pair_id.map_or(&absent, crate::AudioCodecPairId::native);
+        let value = ffi::audio_decoder_create_with_pair_id(
+            self.native(), environment.native(), &format.to_native(), pair_id,
+        );
+        Self::created_decoder(value, environment)
+    }
+
+    fn created_decoder(
+        value: ffi::FfiAudioDecoderCreation,
+        environment: &crate::Environment,
+    ) -> Result<Option<crate::AudioDecoder>, CodecError> {
+        if !value.valid {
+            return Err(CodecError::InvalidConfiguration);
+        }
+        Ok(if value.decoder.is_null() {
+            None
+        } else {
+            Some(crate::AudioDecoder::from_native(value.decoder, environment.clone()))
+        })
     }
 
     pub(crate) fn is_builtin_opus(&self) -> bool {
@@ -1185,7 +1434,7 @@ fn to_ffi_format(format: &VideoCodecFormat) -> ffi::FfiCodecFormat {
             .collect(),
     }
 }
-fn from_ffi_format(format: ffi::FfiCodecFormat) -> VideoCodecFormat {
+pub(crate) fn from_ffi_format(format: ffi::FfiCodecFormat) -> VideoCodecFormat {
     VideoCodecFormat {
         name: format.name,
         scalability_modes: format
@@ -1234,58 +1483,57 @@ fn status(result: Result<(), CodecError>) -> i32 {
     }
 }
 
-pub(crate) fn encoder_factory_formats(
-    factory: &RustVideoEncoderFactory,
-) -> Vec<ffi::FfiCodecFormat> {
-    if factory.terminal.load(Ordering::Acquire) {
-        return Vec::new();
-    }
-    match catch_unwind(AssertUnwindSafe(|| factory.provider.supported_formats())) {
-        Ok(formats) => formats.iter().map(to_ffi_format).collect(),
-        Err(_) => {
+pub(crate) fn encoder_factory_formats(factory: &RustVideoEncoderFactory) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    if factory.terminal.load(Ordering::Acquire) { return crate::video_factory_values::native_formats(Vec::new()); }
+    match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").supported_format_values())) {
+        Ok(formats) => crate::video_factory_values::native_formats(formats),
+        Err(payload) => {
             factory.terminal.store(true, Ordering::Release);
-            Vec::new()
+            factory.failure.report(crate::VideoFactoryQueryError::ProviderPanicked);
+            discard_video_panic(payload);
+            crate::video_factory_values::native_formats(Vec::new())
+        }
+    }
+}
+pub(crate) fn encoder_factory_implementations(factory: &RustVideoEncoderFactory) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    if factory.terminal.load(Ordering::Acquire) { return crate::video_factory_values::native_formats(Vec::new()); }
+    match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").implementation_values())) {
+        Ok(formats) => crate::video_factory_values::native_formats(formats),
+        Err(payload) => {
+            factory.terminal.store(true, Ordering::Release);
+            factory.failure.report(crate::VideoFactoryQueryError::ProviderPanicked);
+            discard_video_panic(payload);
+            crate::video_factory_values::native_formats(Vec::new())
         }
     }
 }
 pub(crate) fn encoder_factory_query(
-    factory: &RustVideoEncoderFactory,
-    format: &ffi::FfiCodecFormat,
-    scalability_mode: &str,
-    has_resolution: bool,
-    width: u32,
-    height: u32,
-) -> ffi::FfiCodecSupport {
-    if factory.terminal.load(Ordering::Acquire) {
-        return ffi::FfiCodecSupport {
-            supported: false,
-            power_efficient: false,
-        };
-    }
-    let format = from_ffi_format_ref(format);
-    match catch_unwind(AssertUnwindSafe(|| {
-        factory.provider.query_support(
-            &format,
-            (!scalability_mode.is_empty()).then_some(scalability_mode),
-            resolution(has_resolution, width, height),
-        )
-    })) {
-        Ok(s) => ffi::FfiCodecSupport {
-            supported: s.supported,
-            power_efficient: s.power_efficient,
-        },
-        Err(_) => {
+    factory: &RustVideoEncoderFactory, format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
+    has_scalability_mode: bool, scalability_mode: &[u8],
+    resolution: cxx::UniquePtr<ffi::NativeRtpResolution>,
+) -> ffi::FfiVideoFactorySupport {
+    use crate::VideoFactoryQueryError;
+    if factory.terminal.load(Ordering::Acquire) { return crate::video_factory_values::ffi_support(Err(VideoFactoryQueryError::ProviderPanicked)); }
+    let format = crate::SdpVideoFormat::from_native(format);
+    let resolution = (!resolution.is_null()).then(|| crate::Resolution::from_native(resolution));
+    let result = match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").query_support_value(
+        &format, has_scalability_mode.then_some(scalability_mode), resolution.as_ref(),
+    ))) {
+        Ok(result) => result,
+        Err(payload) => {
             factory.terminal.store(true, Ordering::Release);
-            ffi::FfiCodecSupport {
-                supported: false,
-                power_efficient: false,
-            }
+            discard_video_panic(payload);
+            Err(VideoFactoryQueryError::ProviderPanicked)
         }
-    }
+    };
+    if let Err(error) = result { factory.failure.report(error); }
+    crate::video_factory_values::ffi_support(result)
 }
 pub(crate) fn encoder_factory_create(
     factory: &RustVideoEncoderFactory,
-    format: &ffi::FfiCodecFormat,
+    environment: cxx::UniquePtr<ffi::NativeEnvironment>,
+    retention: &crate::video_factory_values::RustVideoFactoryEnvironment,
+    format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
 ) -> Box<RustVideoEncoder> {
     if factory.terminal.load(Ordering::Acquire) {
         return Box::new(RustVideoEncoder {
@@ -1293,17 +1541,21 @@ pub(crate) fn encoder_factory_create(
             terminal: AtomicBool::new(true),
         });
     }
-    let format = from_ffi_format_ref(format);
-    match catch_unwind(AssertUnwindSafe(|| factory.provider.create(&format))) {
+    let context = crate::VideoCodecCreationContext {
+        environment: crate::Environment::from_sdk(environment, Some(&retention.0)),
+        format: crate::SdpVideoFormat::from_native(format),
+    };
+    match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").create_with_context(context))) {
         Ok(Ok(codec)) => Box::new(RustVideoEncoder {
             codec: Some(codec),
             terminal: AtomicBool::new(false),
         }),
-        Ok(Err(_)) => Box::new(RustVideoEncoder {
-            codec: None,
-            terminal: AtomicBool::new(false),
-        }),
-        Err(_) => {
+        Ok(Err(error)) => {
+            if let CodecError::FormatProjection(error) = error { factory.failure.report(error); }
+            Box::new(RustVideoEncoder { codec: None, terminal: AtomicBool::new(false) })
+        },
+        Err(payload) => {
+            discard_video_panic(payload);
             factory.terminal.store(true, Ordering::Release);
             Box::new(RustVideoEncoder {
                 codec: None,
@@ -1327,7 +1579,8 @@ fn with_encoder(
     };
     match catch_unwind(AssertUnwindSafe(|| operation(codec))) {
         Ok(result) => status(result),
-        Err(_) => {
+        Err(payload) => {
+            discard_video_panic(payload);
             encoder.terminal.store(true, Ordering::Release);
             CODEC_ERROR
         }
@@ -1410,16 +1663,20 @@ pub(crate) fn encoder_set_rates(encoder: &mut RustVideoEncoder, r: ffi::FfiRateC
 }
 pub(crate) fn encoder_release(encoder: &mut RustVideoEncoder) -> i32 {
     let result = with_encoder(encoder, |c| c.release());
-    encoder.codec = None;
-    result
+    if contained_video_drop(encoder.codec.take()) { result } else {
+        encoder.terminal.store(true, Ordering::Release);
+        CODEC_ERROR
+    }
 }
 pub(crate) fn encoder_get_info(encoder: &RustVideoEncoder) -> ffi::FfiEncoderInfo {
     encoder
         .codec
         .as_deref()
+        .filter(|_| !encoder.terminal.load(Ordering::Acquire))
         .and_then(|c| match catch_unwind(AssertUnwindSafe(|| c.info())) {
             Ok(info) => Some(info),
-            Err(_) => {
+            Err(payload) => {
+            discard_video_panic(payload);
                 encoder.terminal.store(true, Ordering::Release);
                 None
             }
@@ -1453,58 +1710,45 @@ fn encoder_info_to_ffi(info: VideoEncoderInfo) -> ffi::FfiEncoderInfo {
     }
 }
 
-pub(crate) fn decoder_factory_formats(
-    factory: &RustVideoDecoderFactory,
-) -> Vec<ffi::FfiCodecFormat> {
-    if factory.terminal.load(Ordering::Acquire) {
-        return Vec::new();
-    }
-    match catch_unwind(AssertUnwindSafe(|| factory.provider.supported_formats())) {
-        Ok(v) => v.iter().map(to_ffi_format).collect(),
-        Err(_) => {
+pub(crate) fn decoder_factory_formats(factory: &RustVideoDecoderFactory) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    if factory.terminal.load(Ordering::Acquire) { return crate::video_factory_values::native_formats(Vec::new()); }
+    match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").supported_format_values())) {
+        Ok(formats) => crate::video_factory_values::native_formats(formats),
+        Err(payload) => {
             factory.terminal.store(true, Ordering::Release);
-            Vec::new()
+            factory.failure.report(crate::VideoFactoryQueryError::ProviderPanicked);
+            discard_video_panic(payload);
+            crate::video_factory_values::native_formats(Vec::new())
         }
     }
 }
 pub(crate) fn decoder_factory_query(
-    factory: &RustVideoDecoderFactory,
-    format: &ffi::FfiCodecFormat,
+    factory: &RustVideoDecoderFactory, format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
     reference_scaling: bool,
-    has_resolution: bool,
-    width: u32,
-    height: u32,
-) -> ffi::FfiCodecSupport {
-    if factory.terminal.load(Ordering::Acquire) {
-        return ffi::FfiCodecSupport {
-            supported: false,
-            power_efficient: false,
-        };
-    }
-    let format = from_ffi_format_ref(format);
-    match catch_unwind(AssertUnwindSafe(|| {
-        factory.provider.query_support(
-            &format,
-            reference_scaling,
-            resolution(has_resolution, width, height),
-        )
-    })) {
-        Ok(s) => ffi::FfiCodecSupport {
-            supported: s.supported,
-            power_efficient: s.power_efficient,
-        },
-        Err(_) => {
+    resolution: cxx::UniquePtr<ffi::NativeRtpResolution>,
+) -> ffi::FfiVideoFactorySupport {
+    use crate::VideoFactoryQueryError;
+    if factory.terminal.load(Ordering::Acquire) { return crate::video_factory_values::ffi_support(Err(VideoFactoryQueryError::ProviderPanicked)); }
+    let format = crate::SdpVideoFormat::from_native(format);
+    let resolution = (!resolution.is_null()).then(|| crate::Resolution::from_native(resolution));
+    let result = match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").query_support_value(
+        &format, reference_scaling, resolution.as_ref(),
+    ))) {
+        Ok(result) => result,
+        Err(payload) => {
             factory.terminal.store(true, Ordering::Release);
-            ffi::FfiCodecSupport {
-                supported: false,
-                power_efficient: false,
-            }
+            discard_video_panic(payload);
+            Err(VideoFactoryQueryError::ProviderPanicked)
         }
-    }
+    };
+    if let Err(error) = result { factory.failure.report(error); }
+    crate::video_factory_values::ffi_support(result)
 }
 pub(crate) fn decoder_factory_create(
     factory: &RustVideoDecoderFactory,
-    format: &ffi::FfiCodecFormat,
+    environment: cxx::UniquePtr<ffi::NativeEnvironment>,
+    retention: &crate::video_factory_values::RustVideoFactoryEnvironment,
+    format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
 ) -> Box<RustVideoDecoder> {
     if factory.terminal.load(Ordering::Acquire) {
         return Box::new(RustVideoDecoder {
@@ -1512,17 +1756,21 @@ pub(crate) fn decoder_factory_create(
             terminal: AtomicBool::new(true),
         });
     }
-    let format = from_ffi_format_ref(format);
-    match catch_unwind(AssertUnwindSafe(|| factory.provider.create(&format))) {
+    let context = crate::VideoCodecCreationContext {
+        environment: crate::Environment::from_sdk(environment, Some(&retention.0)),
+        format: crate::SdpVideoFormat::from_native(format),
+    };
+    match catch_unwind(AssertUnwindSafe(|| factory.provider.as_ref().expect("live video factory provider").create_with_context(context))) {
         Ok(Ok(codec)) => Box::new(RustVideoDecoder {
             codec: Some(codec),
             terminal: AtomicBool::new(false),
         }),
-        Ok(Err(_)) => Box::new(RustVideoDecoder {
-            codec: None,
-            terminal: AtomicBool::new(false),
-        }),
-        Err(_) => {
+        Ok(Err(error)) => {
+            if let CodecError::FormatProjection(error) = error { factory.failure.report(error); }
+            Box::new(RustVideoDecoder { codec: None, terminal: AtomicBool::new(false) })
+        },
+        Err(payload) => {
+            discard_video_panic(payload);
             factory.terminal.store(true, Ordering::Release);
             Box::new(RustVideoDecoder {
                 codec: None,
@@ -1546,7 +1794,8 @@ fn with_decoder(
     };
     match catch_unwind(AssertUnwindSafe(|| operation(codec))) {
         Ok(result) => status(result),
-        Err(_) => {
+        Err(payload) => {
+            discard_video_panic(payload);
             decoder.terminal.store(true, Ordering::Release);
             CODEC_ERROR
         }
@@ -1596,16 +1845,20 @@ pub(crate) fn decoder_decode(
 }
 pub(crate) fn decoder_release(decoder: &mut RustVideoDecoder) -> i32 {
     let result = with_decoder(decoder, |c| c.release());
-    decoder.codec = None;
-    result
+    if contained_video_drop(decoder.codec.take()) { result } else {
+        decoder.terminal.store(true, Ordering::Release);
+        CODEC_ERROR
+    }
 }
 pub(crate) fn decoder_get_info(decoder: &RustVideoDecoder) -> ffi::FfiDecoderInfo {
     decoder
         .codec
         .as_deref()
+        .filter(|_| !decoder.terminal.load(Ordering::Acquire))
         .and_then(|c| match catch_unwind(AssertUnwindSafe(|| c.info())) {
             Ok(info) => Some(info),
-            Err(_) => {
+            Err(payload) => {
+            discard_video_panic(payload);
                 decoder.terminal.store(true, Ordering::Release);
                 None
             }
@@ -1651,6 +1904,87 @@ mod tests {
         assert_eq!(rates.layer_bitrates_bps[0][2], Some(0));
         assert_eq!(rates.layer_bitrates_bps[4][3], Some(7));
         assert_eq!(rates.layer_bitrates_bps[1][0], None);
+    }
+
+    struct PanicDropEncoder {
+        drops: Arc<std::sync::atomic::AtomicUsize>,
+        info_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl VideoEncoder for PanicDropEncoder {
+        fn initialize(&mut self, _: VideoEncoderSettings) -> Result<(), CodecError> { Ok(()) }
+        fn encode(&mut self, _: VideoFrame, _: &[VideoFrameType], _: EncodedImageCallback) -> Result<(), CodecError> { Err(CodecError::Released) }
+        fn set_rates(&mut self, _: VideoRateControl) -> Result<(), CodecError> { Ok(()) }
+        fn release(&mut self) -> Result<(), CodecError> { Ok(()) }
+        fn info(&self) -> VideoEncoderInfo { self.info_calls.fetch_add(1, Ordering::SeqCst); panic!("encoder info"); }
+    }
+    impl Drop for PanicDropEncoder {
+        fn drop(&mut self) { self.drops.fetch_add(1, Ordering::SeqCst); panic!("encoder destructor"); }
+    }
+    #[test]
+    fn native_release_boundary_contains_product_drop_and_does_not_report_success() {
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut encoder = RustVideoEncoder { codec: Some(Box::new(PanicDropEncoder { drops: drops.clone(), info_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })), terminal: AtomicBool::new(false) };
+        assert_eq!(encoder_release(&mut encoder), CODEC_ERROR);
+        assert!(encoder.codec.is_none());
+        assert!(encoder.terminal.load(Ordering::Acquire));
+        drop(encoder);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn poisoned_encoder_info_skips_provider_and_final_drop_is_contained() {
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let encoder = RustVideoEncoder { codec: Some(Box::new(PanicDropEncoder { drops: drops.clone(), info_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })), terminal: AtomicBool::new(true) };
+        assert_eq!(encoder_get_info(&encoder).implementation_name, "failed Rust encoder");
+        drop(encoder);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    struct PanicDropDecoder {
+        drops: Arc<std::sync::atomic::AtomicUsize>,
+        info_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl VideoDecoder for PanicDropDecoder {
+        fn configure(&mut self, _: VideoDecoderSettings) -> Result<(), CodecError> { Ok(()) }
+        fn decode(&mut self, _: EncodedVideoFrame, _: DecodedImageCallback) -> Result<(), CodecError> { Err(CodecError::Released) }
+        fn release(&mut self) -> Result<(), CodecError> { Ok(()) }
+        fn info(&self) -> VideoDecoderInfo { self.info_calls.fetch_add(1, Ordering::SeqCst); panic!("decoder info"); }
+    }
+    impl Drop for PanicDropDecoder {
+        fn drop(&mut self) { self.drops.fetch_add(1, Ordering::SeqCst); panic!("decoder destructor"); }
+    }
+    #[test]
+    fn decoder_release_and_poisoned_info_contain_destructor_failure() {
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut decoder = RustVideoDecoder { codec: Some(Box::new(PanicDropDecoder { drops: drops.clone(), info_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })), terminal: AtomicBool::new(true) };
+        assert_eq!(decoder_get_info(&decoder).implementation_name, "failed Rust decoder");
+        // Poisoned release still retires the product, without invoking release
+        // on its partially failed provider or letting its Drop escape CXX.
+        assert_eq!(decoder_release(&mut decoder), CODEC_ERROR);
+        assert!(decoder.codec.is_none());
+        drop(decoder);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn info_panics_poison_each_product_before_any_later_provider_call() {
+        let encoder_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let encoder_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let encoder = RustVideoEncoder { codec: Some(Box::new(PanicDropEncoder { drops: encoder_drops.clone(), info_calls: encoder_calls.clone() })), terminal: AtomicBool::new(false) };
+        assert_eq!(encoder_get_info(&encoder).implementation_name, "failed Rust encoder");
+        assert!(encoder.terminal.load(Ordering::Acquire));
+        assert_eq!(encoder_get_info(&encoder).implementation_name, "failed Rust encoder");
+        assert_eq!(encoder_calls.load(Ordering::SeqCst), 1);
+        drop(encoder);
+        assert_eq!(encoder_drops.load(Ordering::SeqCst), 1);
+        let decoder_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let decoder_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let decoder = RustVideoDecoder { codec: Some(Box::new(PanicDropDecoder { drops: decoder_drops.clone(), info_calls: decoder_calls.clone() })), terminal: AtomicBool::new(false) };
+        assert_eq!(decoder_get_info(&decoder).implementation_name, "failed Rust decoder");
+        assert!(decoder.terminal.load(Ordering::Acquire));
+        assert_eq!(decoder_get_info(&decoder).implementation_name, "failed Rust decoder");
+        assert_eq!(decoder_calls.load(Ordering::SeqCst), 1);
+        drop(decoder);
+        assert_eq!(decoder_drops.load(Ordering::SeqCst), 1);
     }
 
     const MASK: u8 = 0xa5;
@@ -2102,6 +2436,15 @@ mod tests {
             VideoFrameBuffer::i420(4, 4, vec![0; 23]),
             Err(CodecError::InvalidFrame)
         );
+    }
+
+    #[test]
+    fn sdk_factory_context_retains_identity_and_only_exact_selected_provenance() {
+        let environment = crate::Environment::builder().build().unwrap();
+        let other = AudioDecoderFactory::builtin().unwrap();
+        for factory in [AudioDecoderFactory::builtin().unwrap(), AudioDecoderFactory::builtin_opus().unwrap()] {
+            assert!(ffi::audio_decoder_factory_context_contract(factory.native(), other.native(), environment.native()));
+        }
     }
 
     #[test]

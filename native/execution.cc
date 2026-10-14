@@ -1,4 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/native/clock.h"
+#include "pulsebeam-webrtc-sys/native/event_log.h"
+#include "pulsebeam-webrtc-sys/native/task_queue_provider.h"
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +15,8 @@
 
 #include "api/environment/environment.h"
 #include "api/environment/environment_factory.h"
+#include "api/field_trials.h"
+#include "api/rtc_event_log_output_file.h"
 #include "api/task_queue/default_task_queue_factory.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/task_queue/task_queue_factory.h"
@@ -55,6 +60,41 @@ class SharedClock final : public webrtc::Clock {
 };
 
 class CooperativeTaskQueue;
+thread_local CooperativeTaskQueue* current_cooperative_queue = nullptr;
+thread_local webrtc::TaskQueueBase* controlled_driver_identity = nullptr;
+class CooperativeScope final {
+ public:
+  explicit CooperativeScope(CooperativeTaskQueue* queue) : previous_(current_cooperative_queue) { current_cooperative_queue = queue; }
+  ~CooperativeScope() { current_cooperative_queue = previous_; }
+ private:
+  CooperativeTaskQueue* previous_;
+};
+
+// No wrapper timestamp precheck: admission must remain safe if time advances
+// before the SDK samples it. SystemTime is an i64-ns clock converted to us;
+// Timestamp addition stores us. POSIX Event waits additionally add tv_nsec
+// (at most 999999999) to a finite remaining delay converted to ns.
+bool StdlibDelaySupported(std::int64_t bits) {
+  if (bits == INT64_MIN || bits == INT64_MAX) return true;
+#if defined(WEBRTC_WIN)
+  return bits <= (static_cast<std::int64_t>(UINT32_MAX) - 1) * 1000 - 999;
+#else
+  return bits <= (INT64_MAX - 999999999LL) / 1000;
+#endif
+}
+bool ThreadDelaySupported(std::int64_t bits) {
+  // SDK RoundUpTo(1ms) uses truncating division after adding 999us.
+  return bits >= -1998 && bits <= static_cast<std::int64_t>(INT32_MAX) * 1000;
+}
+webrtc::TimeDelta NativeDelay(std::int64_t bits) {
+  return bits == INT64_MAX ? webrtc::TimeDelta::PlusInfinity()
+      : bits == INT64_MIN ? webrtc::TimeDelta::MinusInfinity() : webrtc::TimeDelta::Micros(bits);
+}
+void PostNativeDelay(webrtc::TaskQueueBase& queue, std::int64_t bits, bool high_precision, rust::Box<RustTask> task) {
+  auto callback = [task = std::move(task)]() mutable { run_task(std::move(task)); };
+  if (high_precision) queue.PostDelayedHighPrecisionTask(std::move(callback), NativeDelay(bits));
+  else queue.PostDelayedTask(std::move(callback), NativeDelay(bits));
+}
 
 struct ScheduledTask {
   CooperativeTaskQueue* queue;
@@ -108,6 +148,15 @@ class CooperativeTaskQueueFactory final : public webrtc::TaskQueueFactory {
         new CooperativeTaskQueue(state_, std::string(name)));
   }
 
+ private:
+  std::shared_ptr<NativeTaskQueueFactory::State> state_;
+};
+
+class SharedTaskQueueFactory final : public webrtc::TaskQueueFactory {
+ public:
+  explicit SharedTaskQueueFactory(std::shared_ptr<NativeTaskQueueFactory::State> state) : state_(std::move(state)) {}
+  std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter>
+  CreateTaskQueue(absl::string_view name, Priority priority) const override;
  private:
   std::shared_ptr<NativeTaskQueueFactory::State> state_;
 };
@@ -173,6 +222,8 @@ struct NativeManualClock::State {
 
 struct NativeTaskQueueFactory::State {
   State() noexcept : default_factory(webrtc::CreateDefaultTaskQueueFactory()) {}
+  explicit State(rust::Box<RustTaskQueueFactory> provider) noexcept
+      : default_factory(task_queue_provider_adapter(std::move(provider))), provider_backed(true) {}
   explicit State(std::shared_ptr<NativeManualClock::State> clock_state) noexcept
       : clock(std::move(clock_state)) {}
 
@@ -180,6 +231,7 @@ struct NativeTaskQueueFactory::State {
 
   std::shared_ptr<NativeManualClock::State> clock;
   std::unique_ptr<webrtc::TaskQueueFactory> default_factory;
+  bool provider_backed = false;
   mutable std::mutex mutex;
   const std::thread::id creator = std::this_thread::get_id();
   std::map<TaskKey, ScheduledTask> tasks;
@@ -189,17 +241,21 @@ struct NativeTaskQueueFactory::State {
 
 struct NativeTaskQueue::State {
   explicit State(std::unique_ptr<webrtc::TaskQueueBase,
-                                 webrtc::TaskQueueDeleter> queue) noexcept
-      : queue(std::move(queue)) {}
+                                 webrtc::TaskQueueDeleter> queue, bool provider_backed, bool cooperative) noexcept
+      : queue(std::move(queue)), provider_backed(provider_backed), cooperative(cooperative) {}
 
   std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> queue;
+  const bool provider_backed;
+  const bool cooperative;
 };
 
 struct NativeEnvironment::State {
-  explicit State(webrtc::Environment value) noexcept
-      : environment(std::move(value)) {}
+  explicit State(webrtc::Environment value, FfiClockTimeBounds bounds = {}) noexcept
+      : environment(std::move(value)), clock_bounds(bounds) {}
 
   webrtc::Environment environment;
+  // Immutable adapter-enforced evidence, not a sampled current timestamp.
+  FfiClockTimeBounds clock_bounds;
 };
 
 namespace {
@@ -292,6 +348,7 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
     // Pending captures can release native peers/codec queues. Destroy them
     // while the driver is still current and cooperative lifecycle yields work.
     static_cast<ControlledThread*>(thread.get())->ClearPending();
+    controlled_driver_identity = nullptr;
     thread->UnwrapCurrent();
     thread.reset();
     yield_policy.reset();
@@ -358,6 +415,7 @@ void CooperativeTaskQueue::PostDelayedTaskImpl(
 }
 
 void CooperativeTaskQueue::Run(absl::AnyInvocable<void() &&> task) noexcept {
+  CooperativeScope scope(this);
   CurrentTaskQueueSetter current(identity_);
   std::move(task)();
   task = nullptr;
@@ -388,6 +446,7 @@ void CooperativeTaskQueue::Delete() {
     }
   }
   {
+    CooperativeScope scope(this);
     CurrentTaskQueueSetter current(identity_);
     immediate.clear();
   }
@@ -515,6 +574,16 @@ std::int64_t system_clock_time_us() noexcept {
   return webrtc::Clock::GetRealTimeClock()->TimeInMicroseconds();
 }
 
+std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter>
+SharedTaskQueueFactory::CreateTaskQueue(absl::string_view name, Priority priority) const {
+  return state_->default_factory->CreateTaskQueue(name, priority);
+}
+
+std::unique_ptr<NativeTaskQueueFactory> new_provider_task_queue_factory(rust::Box<RustTaskQueueFactory> provider) noexcept {
+  return std::make_unique<NativeTaskQueueFactory>(
+      std::make_shared<NativeTaskQueueFactory::State>(std::move(provider)));
+}
+
 std::unique_ptr<NativeTaskQueueFactory>
 new_default_task_queue_factory() noexcept {
   return std::make_unique<NativeTaskQueueFactory>(
@@ -540,10 +609,10 @@ bool task_queue_factory_uses_clock(const NativeTaskQueueFactory& factory,
 
 std::unique_ptr<NativeTaskQueue> create_task_queue(
     const NativeTaskQueueFactory& factory,
-    rust::Str name,
+    rust::Slice<const std::uint8_t> name,
     std::uint8_t priority) noexcept {
   if (!task_queue_factory_is_current(factory)) return nullptr;
-  const absl::string_view queue_name(name.data(), name.size());
+  const absl::string_view queue_name(reinterpret_cast<const char*>(name.data()), name.size());
   std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> queue;
   if (factory.state()->cooperative()) {
     // This entry point creates public caller queues, unlike the factory
@@ -554,11 +623,11 @@ std::unique_ptr<NativeTaskQueue> create_task_queue(
     queue = factory.state()->default_factory->CreateTaskQueue(
         queue_name, ToPriority(priority));
   }
-  if (!queue) {
+  if (!queue || (factory.state()->provider_backed && task_queue_provider_product_failed(*queue))) {
     return nullptr;
   }
   return std::make_unique<NativeTaskQueue>(
-      std::make_unique<NativeTaskQueue::State>(std::move(queue)));
+      std::make_unique<NativeTaskQueue::State>(std::move(queue), factory.state()->provider_backed, factory.state()->cooperative()));
 }
 
 bool post_task(const NativeTaskQueue& queue,
@@ -566,9 +635,10 @@ bool post_task(const NativeTaskQueue& queue,
   if (!queue.state() || !queue.state()->queue) {
     return false;
   }
+  if (task_queue_has_failed(queue)) return false;
   queue.state()->queue->PostTask(
       [task = std::move(task)]() mutable { run_task(std::move(task)); });
-  return true;
+  return !task_queue_has_failed(queue);
 }
 
 bool post_delayed_task(const NativeTaskQueue& queue,
@@ -577,10 +647,39 @@ bool post_delayed_task(const NativeTaskQueue& queue,
   if (!queue.state() || !queue.state()->queue || delay_us < 0) {
     return false;
   }
-  queue.state()->queue->PostDelayedTask(
-      [task = std::move(task)]() mutable { run_task(std::move(task)); },
-      webrtc::TimeDelta::Micros(delay_us));
-  return true;
+  if (delay_us == INT64_MAX) return false; // Duration is finite, not infinity.
+  return post_native_delayed_task(queue, delay_us, false, std::move(task)) == 0;
+}
+
+std::size_t task_queue_identity(const NativeTaskQueue& queue) noexcept {
+  return reinterpret_cast<std::uintptr_t>(queue.state()->queue.get());
+}
+bool task_queue_is_current(const NativeTaskQueue& queue) noexcept { return queue.state()->queue->IsCurrent(); }
+rust::Vec<std::uint8_t> task_queue_name(const NativeTaskQueue& queue) noexcept {
+  rust::Vec<std::uint8_t> result;
+  for (auto byte : queue.state()->queue->queue_name()) result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+bool task_queue_has_failed(const NativeTaskQueue& queue) noexcept {
+  return queue.state()->provider_backed && task_queue_provider_product_failed(*queue.state()->queue);
+}
+std::uint8_t post_native_delayed_task(const NativeTaskQueue& queue, std::int64_t bits, bool high_precision,
+                              rust::Box<RustTask> task) noexcept {
+  if (task_queue_has_failed(queue)) return 1;
+  if (!queue.state()->provider_backed && (queue.state()->cooperative
+      ? bits == INT64_MIN || bits == INT64_MAX : !StdlibDelaySupported(bits))) return 2;
+  PostNativeDelay(*queue.state()->queue, bits, high_precision, std::move(task));
+  return task_queue_has_failed(queue) ? 1 : 0;
+}
+
+bool task_queue_current_delay_supported(std::int64_t bits) noexcept {
+  auto* queue = webrtc::TaskQueueBase::Current();
+  if (!queue) return false;
+  if (queue == controlled_driver_identity ||
+      (current_cooperative_queue && current_cooperative_queue->identity() == queue))
+    return bits != INT64_MIN && bits != INT64_MAX;
+  if (queue == webrtc::Thread::Current()) return ThreadDelaySupported(bits);
+  return StdlibDelaySupported(bits);
 }
 
 namespace {
@@ -703,34 +802,197 @@ std::int64_t next_task_deadline_us(
   return state->tasks.empty() ? kNoDeadline : state->tasks.begin()->first.first;
 }
 
+namespace {
+class RustEventLogOutputAdapter final : public webrtc::RtcEventLogOutput {
+ public:
+  explicit RustEventLogOutputAdapter(rust::Box<RustEventLogOutput> output)
+      : output_(std::move(output)) {}
+  bool IsActive() const override { return event_log_output_active(*output_); }
+  bool Write(absl::string_view bytes) override {
+    return event_log_output_write(*output_, rust::Slice<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()));
+  }
+  void Flush() override { event_log_output_flush(*output_); }
+ private:
+  rust::Box<RustEventLogOutput> output_;
+};
+class RustFieldTrialsView final : public webrtc::FieldTrialsView {
+ public:
+  explicit RustFieldTrialsView(rust::Box<RustFieldTrials> view)
+      : view_(std::move(view)), cache_(std::make_shared<Cache>()) {}
+  std::string Lookup(absl::string_view key) const override {
+    // Native consumers may validate a group and read it again. Enforce the
+    // immutable-view contract even if a safe Rust provider changes its answer.
+    const std::string name(key.data(), key.size());
+    {
+      std::lock_guard lock(cache_->mutex);
+      const auto found = cache_->values.find(name);
+      if (found != cache_->values.end()) return found->second;
+    }
+    // Never hold the cache lock across application code. Immutable nested
+    // lookup of another key is not reentry into a mutable application owner.
+    auto value = std::string(rust_field_trials_lookup(*view_, rust::Str(key.data(), key.size())));
+    std::lock_guard lock(cache_->mutex);
+    // Concurrent misses may evaluate the provider more than once, but every
+    // reader receives the single winning value, including environment copies.
+    return cache_->values.emplace(name, std::move(value)).first->second;
+  }
+  std::unique_ptr<webrtc::FieldTrialsView> CreateCopy() const override {
+    auto copy = std::make_unique<RustFieldTrialsView>(rust_field_trials_copy(*view_));
+    copy->cache_ = cache_;
+    return copy;
+  }
+ private:
+  struct Cache {
+    std::mutex mutex;
+    std::map<std::string, std::string> values;
+  };
+  rust::Box<RustFieldTrials> view_;
+  std::shared_ptr<Cache> cache_;
+};
+}
+NativeEventLogOutput::NativeEventLogOutput(std::unique_ptr<webrtc::RtcEventLogOutput> output) noexcept
+    : output_(std::move(output)) {}
+NativeEventLogOutput::~NativeEventLogOutput() = default;
+webrtc::RtcEventLogOutput* NativeEventLogOutput::output() const noexcept { return output_.get(); }
+bool event_log_output_native_active(const NativeEventLogOutput& output) noexcept {
+  return output.output() && output.output()->IsActive();
+}
+bool event_log_output_native_write(NativeEventLogOutput& output, rust::Slice<const std::uint8_t> bytes) noexcept {
+  return output.output() && output.output()->Write(absl::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+void event_log_output_native_flush(NativeEventLogOutput& output) noexcept {
+  if (output.output()) output.output()->Flush();
+}
+std::unique_ptr<webrtc::RtcEventLogOutput> NativeEventLogOutput::Take() noexcept { return std::move(output_); }
+std::unique_ptr<NativeEventLogOutput> event_log_output_from_sink(rust::Box<RustEventLogOutput> output) noexcept {
+  return std::make_unique<NativeEventLogOutput>(std::make_unique<RustEventLogOutputAdapter>(std::move(output)));
+}
+std::unique_ptr<NativeEventLogOutput> event_log_output_file(rust::Str filename, std::size_t maximum_bytes) noexcept {
+  auto output = std::make_unique<webrtc::RtcEventLogOutputFile>(std::string(filename), maximum_bytes);
+  if (!output->IsActive()) return nullptr;
+  return std::make_unique<NativeEventLogOutput>(std::move(output));
+}
+std::unique_ptr<webrtc::FieldTrialsView> field_trials_adapter(rust::Box<RustFieldTrials> trials) noexcept {
+  if (!field_trials_present(*trials)) return nullptr;
+  return std::make_unique<RustFieldTrialsView>(std::move(trials));
+}
+
+NativeFieldTrials::NativeFieldTrials(std::unique_ptr<webrtc::FieldTrialsView> view) noexcept : view_(std::move(view)) {}
+NativeFieldTrials::~NativeFieldTrials() = default;
+const webrtc::FieldTrialsView& NativeFieldTrials::view() const noexcept { return *view_; }
+bool field_trials_validate(rust::Str configuration) noexcept {
+  return webrtc::FieldTrials::Create(absl::string_view(configuration.data(), configuration.size())) != nullptr;
+}
+std::unique_ptr<NativeFieldTrials> environment_field_trials(const NativeEnvironment& environment) noexcept {
+  return std::make_unique<NativeFieldTrials>(environment.environment().field_trials().CreateCopy());
+}
+std::unique_ptr<NativeFieldTrials> field_trials_copy(const NativeFieldTrials& view) noexcept {
+  return std::make_unique<NativeFieldTrials>(view.view().CreateCopy());
+}
+rust::String field_trials_lookup(const NativeFieldTrials& view, rust::Str key) noexcept {
+  return rust::String(view.view().Lookup(absl::string_view(key.data(), key.size())));
+}
+bool field_trials_is_enabled(const NativeFieldTrials& view, rust::Str key) noexcept {
+  return view.view().IsEnabled(absl::string_view(key.data(), key.size()));
+}
+bool field_trials_is_disabled(const NativeFieldTrials& view, rust::Str key) noexcept {
+  return view.view().IsDisabled(absl::string_view(key.data(), key.size()));
+}
+
 std::unique_ptr<NativeEnvironment> create_environment(
     const NativeManualClock* clock,
-    const NativeTaskQueueFactory& factory) noexcept {
+    const NativeClock* custom_clock,
+    const NativeTaskQueueFactory& factory,
+    rust::Box<RustFieldTrials> field_trials,
+    rust::Box<RustRtcEventLog> event_log,
+    std::int64_t clock_minimum_us, std::int64_t clock_maximum_us) noexcept {
+  // Private Rust registration supplies the selected adapter's enforced range.
+  if (clock_minimum_us == INT64_MIN || clock_maximum_us == INT64_MAX ||
+      clock_minimum_us > clock_maximum_us) return nullptr;
   if (!task_queue_factory_is_current(factory)) return nullptr;
+  if (custom_clock && (clock || factory.state()->cooperative())) return nullptr;
   webrtc::EnvironmentFactory environment_factory;
-  if (clock != nullptr) {
+  if (field_trials_present(*field_trials)) {
+    environment_factory.Set(field_trials_adapter(std::move(field_trials)));
+  }
+  if (rust_event_log_present(*event_log)) {
+    environment_factory.Set(rtc_event_log_adapter(std::move(event_log)));
+  }
+  if (custom_clock != nullptr) {
+    environment_factory.Set(clock_reference(*custom_clock));
+  } else if (clock != nullptr) {
     environment_factory.Set(std::make_unique<SharedClock>(clock->state()));
   }
   if (factory.state()->cooperative()) {
     environment_factory.Set(
         std::make_unique<CooperativeTaskQueueFactory>(factory.state()));
   } else {
-    environment_factory.Set(webrtc::CreateDefaultTaskQueueFactory());
+    environment_factory.Set(std::make_unique<SharedTaskQueueFactory>(factory.state()));
   }
   return std::make_unique<NativeEnvironment>(
-      std::make_unique<NativeEnvironment::State>(environment_factory.Create()));
+      std::make_unique<NativeEnvironment::State>(environment_factory.Create(),
+          FfiClockTimeBounds{true, clock_minimum_us, clock_maximum_us,
+              custom_clock ? custom_clock->monotonic() : clock != nullptr}));
+}
+
+std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
+    const webrtc::Environment& environment, const NativeEnvironment* selected) noexcept {
+  FfiClockTimeBounds bounds{};
+  if (selected && &environment.clock() == &selected->environment().clock()) {
+    bounds = selected->state()->clock_bounds;
+  }
+  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(environment, bounds));
+}
+std::unique_ptr<NativeEnvironment> rtc_event_log_factory_environment(const webrtc::Environment& environment) noexcept {
+  return retain_environment_from_sdk(environment);
 }
 
 std::unique_ptr<NativeEnvironment> clone_environment(
     const NativeEnvironment& environment) noexcept {
   return std::make_unique<NativeEnvironment>(
-      std::make_unique<NativeEnvironment::State>(
-          environment.state()->environment));
+      std::make_unique<NativeEnvironment::State>(*environment.state()));
+}
+FfiClockTimeBounds environment_clock_time_bounds(const NativeEnvironment& environment) noexcept {
+  return environment.state()->clock_bounds;
+}
+bool environment_clock_identity_matches(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept {
+  return &environment.environment().clock() == &other.environment().clock();
+}
+bool environment_queue_factory_identity_matches(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept {
+  return &environment.environment().task_queue_factory() == &other.environment().task_queue_factory();
+}
+bool environment_context_retention_contract(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept {
+  const auto original = environment.environment();
+  if (!environment.state()->clock_bounds.known || &original.clock() == &other.environment().clock()) return false;
+  const auto retained = retain_environment_from_sdk(original, &environment);
+  const auto unknown = retain_environment_from_sdk(original);
+  const auto mismatch = retain_environment_from_sdk(original, &other);
+  const auto copy = clone_environment(*retained);
+  const auto actual = copy->environment();
+  const auto bounds = environment_clock_time_bounds(*copy);
+  return &actual.clock() == &original.clock() &&
+      &actual.task_queue_factory() == &original.task_queue_factory() &&
+      &actual.field_trials() == &original.field_trials() &&
+      &actual.event_log() == &original.event_log() && bounds.known &&
+      bounds.minimum_us == environment.state()->clock_bounds.minimum_us &&
+      bounds.maximum_us == environment.state()->clock_bounds.maximum_us &&
+      bounds.monotonic == environment.state()->clock_bounds.monotonic &&
+      !environment_clock_time_bounds(*unknown).known &&
+      !environment_clock_time_bounds(*mismatch).known;
 }
 
 std::int64_t environment_time_us(
     const NativeEnvironment& environment) noexcept {
   return environment.state()->environment.clock().TimeInMicroseconds();
+}
+
+std::int64_t environment_timestamp(const NativeEnvironment& environment) noexcept {
+  const auto value = environment.environment().clock().CurrentTime();
+  return value.IsPlusInfinity() ? std::numeric_limits<std::int64_t>::max() : value.us_or(std::numeric_limits<std::int64_t>::min());
 }
 
 std::unique_ptr<NativeRandomnessLease> new_seeded_randomness(
@@ -767,6 +1029,7 @@ std::unique_ptr<NativeDriverThread> new_driver_thread(
   auto thread = std::make_unique<ControlledThread>(std::move(queues));
   if (!thread->WrapCurrent()) return nullptr;
   driver_active.store(true);
+  controlled_driver_identity = thread.get();
   return std::make_unique<NativeDriverThread>(
       std::make_unique<NativeDriverThread::State>(std::move(thread), clock.state()));
 }
@@ -788,6 +1051,7 @@ std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
   auto thread = std::make_unique<ControlledThread>(std::move(queues));
   if (!thread->WrapCurrent()) return nullptr;
   driver_active.store(true);
+  controlled_driver_identity = thread.get();
   randomness_active = true;
   webrtc::SetRandomGenerator(std::make_unique<SeededRandom>(seed));
   return std::make_unique<NativeDriverThread>(
@@ -816,7 +1080,7 @@ bool test_driver_lifecycle_yield(
   webrtc::Event event;
   CooperativeTaskQueueFactory implementation(factory.state());
   auto queue = implementation.CreateTaskQueue(
-      "lifecycle-probe", webrtc::TaskQueueFactory::Priority::NORMAL);
+      "lifecycle-probe", webrtc::TaskQueueFactory::Priority::kNormal);
   queue->PostTask([&event] { event.Set(); });
   return event.Wait(webrtc::TimeDelta::PlusInfinity()) &&
          driver.state()->clock.state->clock.TimeInMicroseconds() == before;
@@ -849,10 +1113,15 @@ bool thread_post_delayed_task(const NativeThread& thread,
       thread.state()->thread->IsQuitting()) {
     return false;
   }
-  thread.state()->thread->PostDelayedTask(
-      [task = std::move(task)]() mutable { run_task(std::move(task)); },
-      webrtc::TimeDelta::Micros(delay_us));
-  return true;
+  return thread_post_native_delayed_task(thread, delay_us, false, std::move(task)) == 0;
+}
+
+std::uint8_t thread_post_native_delayed_task(const NativeThread& thread, std::int64_t bits, bool high_precision, rust::Box<RustTask> task) noexcept {
+  if (!thread.thread() || thread.thread()->IsQuitting()) return 1;
+  const bool controlled = !thread.state()->owned;
+  if (controlled ? bits == INT64_MIN || bits == INT64_MAX : !ThreadDelaySupported(bits)) return 2;
+  PostNativeDelay(*thread.thread(), bits, high_precision, std::move(task));
+  return 0;
 }
 
 }  // namespace pulsebeam::webrtc_sys

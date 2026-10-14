@@ -8,6 +8,7 @@ from pathlib import Path
 
 from cxx_provenance import artifact_provenance, validate_artifact_provenance
 from native_provenance import adapter_digest
+from native_cc_wrapper import floating_point_configuration
 
 
 TARGETS = {
@@ -190,6 +191,12 @@ def main():
         "gn_args": args.gn_args_file.read_text().strip(),
         "cxx_defines": args.defines_file.read_text().splitlines(),
     }
+    if args.target == "linux-x86_64":
+        try:
+            native_configuration["floating_point"] = floating_point_configuration(
+                native_configuration["gn_args"])
+        except ValueError as error:
+            parser.error(str(error))
     license_files = []
     for path in sorted(path for path in args.licenses.rglob("*") if path.is_file()):
         license_files.append({

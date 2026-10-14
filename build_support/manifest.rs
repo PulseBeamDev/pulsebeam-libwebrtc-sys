@@ -18,18 +18,38 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "88547b9ffd34626afc9488f47383e4a7a00db9c120f4f97ec78b67e52d48b40e";
+    "1dbc18e44605e5a3250ed01be34e982d660b2f941e7e09ba30efc38098a7f4de";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "e5f5826843d377dfe7b1eb7d75bc4afa79d9d10b5f68f697155550dbee4cd1b9";
+    "e2e7898a21b474d81dad1ff679fc1d03a7c73546cd183e6e430f6d9c0de0bdf3";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "7d00750835751f532d92d20d91468f448878fd4918b1be234972a4e35a4f21bf";
+    "8fb91dd8396ee9922cfa6d9f0c1568678899f012ce50c4e8dcd6d26c69c3f697";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
 const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("Justfile", include_bytes!("../Justfile")),
+    ("tools/native_cc_wrapper.py", include_bytes!("../tools/native_cc_wrapper.py")),
     ("native/audio.cc", include_bytes!("../native/audio.cc")),
     ("native/audio.h", include_bytes!("../native/audio.h")),
+    ("native/frame_callback_slot.h", include_bytes!("../native/frame_callback_slot.h")),
+    ("native/audio_frame_values.cc", include_bytes!("../native/audio_frame_values.cc")),
+    ("native/audio_frame_values.h", include_bytes!("../native/audio_frame_values.h")),
+    ("native/certificate_generator.cc", include_bytes!("../native/certificate_generator.cc")),
+    ("native/certificate_generator.h", include_bytes!("../native/certificate_generator.h")),
+    ("native/async_dns.cc", include_bytes!("../native/async_dns.cc")),
+    ("native/async_dns.h", include_bytes!("../native/async_dns.h")),
+    ("native/video_bitrate.cc", include_bytes!("../native/video_bitrate.cc")),
+    ("native/video_bitrate.h", include_bytes!("../native/video_bitrate.h")),
+    ("native/video_metadata.cc", include_bytes!("../native/video_metadata.cc")),
+    ("native/video_metadata.h", include_bytes!("../native/video_metadata.h")),
+    ("native/network_control.cc", include_bytes!("../native/network_control.cc")),
+    ("native/network_control.h", include_bytes!("../native/network_control.h")),
+    ("native/network_predictor.cc", include_bytes!("../native/network_predictor.cc")),
+    ("native/network_predictor.h", include_bytes!("../native/network_predictor.h")),
+    ("native/fec.cc", include_bytes!("../native/fec.cc")),
+    ("native/fec.h", include_bytes!("../native/fec.h")),
+    ("native/clock.cc", include_bytes!("../native/clock.cc")),
+    ("native/clock.h", include_bytes!("../native/clock.h")),
     ("native/codec.cc", include_bytes!("../native/codec.cc")),
     ("native/codec.h", include_bytes!("../native/codec.h")),
     (
@@ -40,6 +60,8 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/data_channel.h",
         include_bytes!("../native/data_channel.h"),
     ),
+    ("native/event_log.cc", include_bytes!("../native/event_log.cc")),
+    ("native/event_log.h", include_bytes!("../native/event_log.h")),
     (
         "native/execution.cc",
         include_bytes!("../native/execution.cc"),
@@ -48,6 +70,12 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/execution.h",
         include_bytes!("../native/execution.h"),
     ),
+    ("native/local_network_permission.cc", include_bytes!("../native/local_network_permission.cc")),
+    ("native/local_network_permission.h", include_bytes!("../native/local_network_permission.h")),
+    ("native/media_values.cc", include_bytes!("../native/media_values.cc")),
+    ("native/media_values.h", include_bytes!("../native/media_values.h")),
+    ("native/metronome.cc", include_bytes!("../native/metronome.cc")),
+    ("native/metronome.h", include_bytes!("../native/metronome.h")),
     ("native/network.cc", include_bytes!("../native/network.cc")),
     ("native/network.h", include_bytes!("../native/network.h")),
     (
@@ -58,15 +86,36 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("native/peer.h", include_bytes!("../native/peer.h")),
     ("native/probe.cc", include_bytes!("../native/probe.cc")),
     ("native/probe.h", include_bytes!("../native/probe.h")),
+    ("native/socket_address.cc", include_bytes!("../native/socket_address.cc")),
+    ("native/socket_address.h", include_bytes!("../native/socket_address.h")),
+    ("native/task_queue_provider.cc", include_bytes!("../native/task_queue_provider.cc")),
+    ("native/task_queue_provider.h", include_bytes!("../native/task_queue_provider.h")),
+    ("native/tls.cc", include_bytes!("../native/tls.cc")),
+    ("native/tls.h", include_bytes!("../native/tls.h")),
     ("native/video.cc", include_bytes!("../native/video.cc")),
     ("native/video.h", include_bytes!("../native/video.h")),
+    ("native/frame_transformer.cc", include_bytes!("../native/frame_transformer.cc")),
+    ("native/frame_transformer.h", include_bytes!("../native/frame_transformer.h")),
+    ("native/rtc_error.cc", include_bytes!("../native/rtc_error.cc")),
+    ("native/rtc_error.h", include_bytes!("../native/rtc_error.h")),
+    ("native/rtp_values.cc", include_bytes!("../native/rtp_values.cc")),
+    ("native/rtp_values.h", include_bytes!("../native/rtp_values.h")),
+    ("native/string_builder.cc", include_bytes!("../native/string_builder.cc")),
+    ("native/string_builder.h", include_bytes!("../native/string_builder.h")),
+    ("native/transport.cc", include_bytes!("../native/transport.cc")),
+    ("native/transport.h", include_bytes!("../native/transport.h")),
+    ("native/video_codec_values.cc", include_bytes!("../native/video_codec_values.cc")),
+    ("native/video_codec_values.h", include_bytes!("../native/video_codec_values.h")),
+    ("native/video_encoder_selector.cc", include_bytes!("../native/video_encoder_selector.cc")),
+    ("native/video_encoder_selector.h", include_bytes!("../native/video_encoder_selector.h")),
 ];
 
 fn native_adapter_digest() -> String {
-    let inventory: Vec<_> = NATIVE_ADAPTER_INPUTS
+    let mut inventory: Vec<_> = NATIVE_ADAPTER_INPUTS
         .iter()
         .map(|(path, bytes)| (*path, format!("{:x}", Sha256::digest(bytes))))
         .collect();
+    inventory.sort_unstable_by_key(|(path, _)| *path);
     format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&inventory).unwrap())
@@ -223,6 +272,13 @@ impl ArtifactManifest {
                 "unsupported manifest schema {}",
                 manifest.schema_version
             ));
+        }
+        // Source-only FFI edits can change layouts/call signatures without
+        // changing a native adapter file. Never accept an older pin merely
+        // because its archived manifest matches the still-recorded constants.
+        let current_bridge_source = format!("{:x}", Sha256::digest(include_bytes!("../src/lib.rs")));
+        if current_bridge_source != BRIDGE_SOURCE_SHA256 {
+            return Err("recorded bridge source pin is stale for this Rust FFI; regenerate bridge provenance and build a matching native artifact".to_owned());
         }
         if manifest.bridge.native_adapter_sha256 != native_adapter_digest() {
             return Err("artifact was generated from stale native adapter/build inputs".to_owned());
@@ -437,7 +493,7 @@ mod tests {
     #[test]
     fn adapter_inventory_covers_all_native_sources_headers_and_build_recipe() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut expected = vec!["Justfile".to_owned()];
+        let mut expected = vec!["Justfile".to_owned(), "tools/native_cc_wrapper.py".to_owned()];
         for entry in std::fs::read_dir(root.join("native")).unwrap() {
             let path = entry.unwrap().path();
             if path.is_file()
@@ -450,13 +506,12 @@ mod tests {
             }
         }
         expected.sort();
-        assert_eq!(
-            expected,
-            NATIVE_ADAPTER_INPUTS
-                .iter()
-                .map(|(path, _)| path.to_string())
-                .collect::<Vec<_>>()
-        );
+        let mut actual = NATIVE_ADAPTER_INPUTS
+            .iter()
+            .map(|(path, _)| path.to_string())
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(expected, actual);
     }
 
     #[test]

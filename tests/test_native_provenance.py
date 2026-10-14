@@ -23,6 +23,8 @@ class NativeProvenanceTests(unittest.TestCase):
             for root, order in [(first, ["z.h", "a.cc"]), (second, ["a.cc", "z.h"])]:
                 (root / "native").mkdir(parents=True)
                 (root / "Justfile").write_bytes(b"compile recipe\n")
+                (root / "tools").mkdir()
+                (root / "tools/native_cc_wrapper.py").write_bytes(b"compiler wrapper\n")
                 for name in order:
                     (root / "native" / name).write_bytes(b"same bytes\n")
             original = native_provenance.adapter_digest(first)
@@ -36,6 +38,9 @@ class NativeProvenanceTests(unittest.TestCase):
             (second / "Justfile").write_bytes(b"different recipe\n")
             self.assertNotEqual(original, native_provenance.adapter_digest(second))
             (second / "Justfile").write_bytes(b"compile recipe\n")
+            (second / "tools/native_cc_wrapper.py").write_bytes(b"changed wrapper\n")
+            self.assertNotEqual(original, native_provenance.adapter_digest(second))
+            (second / "tools/native_cc_wrapper.py").write_bytes(b"compiler wrapper\n")
             # Generated manifests must not participate in their own identity.
             (second / "native/manifest.json").write_bytes(b"not a source")
             self.assertEqual(original, native_provenance.adapter_digest(second))

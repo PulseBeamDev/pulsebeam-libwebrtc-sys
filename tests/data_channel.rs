@@ -591,6 +591,79 @@ fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
 }
 
 #[test]
+fn owning_transport_aliases_observers_and_revocable_ice_internal() {
+    use pulsebeam_webrtc_sys::{DtlsTransportEvent, DtlsTransportState,
+        SctpTransportState, TransportObserverError, IceInternalUnavailable};
+    let mut pair = Pair::new(32);
+    assert!(pair.alice.sctp_transport().is_none());
+    let alice_channel = pair.alice.create_data_channel("transports", DataChannelConfiguration::default()).unwrap();
+    let (_, events) = pair.negotiate();
+    let bob_channel = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &alice_channel, &bob_channel);
+
+    let sctp = pair.alice.sctp_transport().unwrap();
+    let sctp_alias = pair.alice.sctp_transport().unwrap();
+    assert!(sctp.same_resource(&sctp_alias));
+    let sctp_info = sctp.information();
+    assert_eq!(sctp_info.state(), SctpTransportState::Connected);
+    assert!(sctp_info.max_message_size().is_some());
+    let dtls = sctp.dtls_transport().unwrap();
+    assert!(dtls.same_resource(&sctp_info.dtls_transport().unwrap()));
+    assert!(dtls.same_resource(&sctp_alias.dtls_transport().unwrap()));
+    let dtls_info = dtls.information();
+    assert_eq!(dtls_info.state(), DtlsTransportState::Connected);
+    assert!(dtls_info.role().is_some());
+    assert!(dtls_info.remote_ssl_certificates().is_some());
+    assert_eq!(dtls_info.clone().remote_certificate_data(), dtls_info.remote_certificate_data());
+    assert_eq!(dtls_info.remote_ssl_certificates().unwrap().len(), dtls_info.remote_certificate_data().unwrap().len());
+    let constructed = pulsebeam_webrtc_sys::SctpTransportInformation::from_parts(SctpTransportState::Connecting,
+        Some(&dtls), Some(0.0), Some(0));
+    assert!(dtls.same_resource(&constructed.dtls_transport().unwrap()));
+    assert_eq!(constructed.max_message_size(), Some(0.0));
+    assert_eq!(constructed.max_channels(), Some(0));
+    drop(constructed);
+    let ice = dtls.ice_transport().unwrap();
+    let internal = ice.internal().unwrap();
+    assert_eq!(internal.component(), Ok(1));
+
+    assert_eq!(sctp.register_observer(0), Err(TransportObserverError::ZeroCapacity));
+    assert_eq!(sctp.register_observer(1), Ok(()));
+    assert_eq!(sctp_alias.register_observer(1), Err(TransportObserverError::AlreadyRegistered));
+    let dtls_alias = sctp_info.dtls_transport().unwrap();
+    assert_eq!(dtls.register_observer(1), Ok(()));
+    assert_eq!(dtls_alias.register_observer(1), Err(TransportObserverError::AlreadyRegistered));
+    // Explicit peer teardown leaves owned interfaces/snapshots alive, but
+    // revokes the borrowed internal pointer. No pump or synthetic close event.
+    pair.alice.close().unwrap();
+    assert_eq!(dtls.information().state(), DtlsTransportState::Closed);
+    assert_eq!(sctp.information().state(), SctpTransportState::Closed);
+    assert!(sctp.dtls_transport().is_none());
+    assert!(ice.internal().is_none());
+    assert_eq!(internal.component(), Err(IceInternalUnavailable));
+    assert_eq!(dtls_info.state(), DtlsTransportState::Connected);
+    assert_eq!(sctp_info.state(), SctpTransportState::Connected);
+    assert!(dtls.same_resource(&sctp_info.dtls_transport().unwrap()));
+    assert_eq!(sctp_alias.take_event().unwrap().state(), SctpTransportState::Closed);
+    match dtls_alias.take_event().unwrap() {
+        DtlsTransportEvent::StateChange(info) => assert_eq!(info.state(), DtlsTransportState::Closed),
+        DtlsTransportEvent::Error(error) => panic!("unexpected DTLS error: {error}"),
+    }
+    assert_eq!(dtls.take_dropped_events(), 0);
+    assert_eq!(sctp.take_dropped_events(), 0);
+    sctp_alias.unregister_observer();
+    dtls_alias.unregister_observer();
+    assert_eq!(dtls.register_observer(1), Ok(()));
+    // Drop while registered: native unregistration occurs before observer
+    // destruction, and retained peer context keeps the network thread alive.
+    drop(dtls_alias);
+    drop(sctp_info);
+    drop(sctp_alias);
+    drop(sctp);
+    drop(dtls);
+    pair.bob.close().unwrap();
+}
+
+#[test]
 fn invalid_data_channel_configuration_is_explicit() {
     let factory = PeerConnectionFactory::builder().build().unwrap();
     let peer = factory

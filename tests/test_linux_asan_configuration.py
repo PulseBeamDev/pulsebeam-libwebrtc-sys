@@ -18,7 +18,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         for flavor in FLAVORS:
             with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as temporary:
                 calls = self._run_bridge(Path(temporary), flavor, sanitizer="address")
-                self.assertEqual(len(calls), 10)
+                self._assert_bridge_sources(calls)
                 self.assertTrue(all("-fsanitize=address" in call for call in calls), calls)
 
     def test_asan_instruments_cpp_smoke_for_both_flavors(self):
@@ -65,9 +65,19 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
             calls = self._run_bridge(Path(temporary), "core", sanitizer=None)
         with tempfile.TemporaryDirectory() as temporary:
             cpp_call = self._run_cpp_smoke(Path(temporary), "core", sanitizer=None)
-        self.assertEqual(len(calls), 10)
+        self._assert_bridge_sources(calls)
         self.assertTrue(all("-fsanitize=address" not in call for call in calls), calls)
         self.assertNotIn("-fsanitize=address", cpp_call)
+
+    def _assert_bridge_sources(self, calls: list[list[str]]) -> None:
+        sources = [arg for call in calls for arg in call if arg.endswith(".cc")]
+        self.assertEqual(len(sources), len(calls), calls)
+        expected = {str(path) for path in ROOT.glob("native/*.cc")}
+        expected.add(str(ROOT / "vendor/cxx/src/cxx.cc"))
+        generated = [path for path in sources if Path(path).name == "lib.rs.cc"]
+        self.assertEqual(len(generated), 1, sources)
+        self.assertEqual(set(sources) - set(generated), expected)
+        self.assertEqual(len(sources), len(expected) + 1)
 
     def _recipe(self, start: str, end: str) -> str:
         recipe = JUSTFILE.read_text(encoding="utf-8")
@@ -157,6 +167,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
         kit = temporary / "kit"
         kit.mkdir()
+        (kit / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
         result = subprocess.run(
             ["just", "--justfile", str(JUSTFILE), "_rust-smoke", flavor, "linux-x86_64", str(kit)],
             cwd=ROOT,
@@ -172,10 +183,10 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
         source = temporary / "artifact-source"
         source.mkdir()
-        (source / "placeholder").touch()
+        (source / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
         archive = temporary / "artifact.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
-            tar.add(source, arcname="artifact")
+            tar.add(source / "build.txt", arcname="build.txt")
         result = subprocess.run(
             ["just", "--justfile", str(JUSTFILE), "_runtime-test", flavor, "linux-x86_64", str(archive)],
             cwd=ROOT,
@@ -197,7 +208,18 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         clang.parent.mkdir(parents=True)
         clang.touch()
         clang_plus_plus = clang.with_name("clang++")
-        clang_plus_plus.touch()
+        # This is a command/flag probe only, not a substitute for native linking.
+        # Model the new companion output so the runtime recipe can execute it.
+        clang_plus_plus.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "printf '%s\\n' \"$@\" >> \"$PULSEBEAM_TEST_COMPILER_LOG\"\n"
+            "for ((i = 1; i <= $#; i++)); do if test \"${!i}\" = -o; then "
+            "j=$((i + 1)); mkdir -p \"$(dirname \"${!j}\")\"; "
+            "printf '#!/usr/bin/env bash\\nexit 0\\n' > \"${!j}\"; "
+            "chmod +x \"${!j}\"; fi; done\n",
+            encoding="utf-8",
+        )
+        clang_plus_plus.chmod(0o755)
         tools.mkdir()
         cargo = tools / "cargo"
         cargo.write_text(
@@ -212,6 +234,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
             "WEBRTC_WORK": str(work),
             "PATH": f"{tools}:{os.environ['PATH']}",
             "PULSEBEAM_TEST_CARGO_LOG": str(log),
+            "PULSEBEAM_TEST_COMPILER_LOG": str(temporary / "compiler-arguments"),
             "XDG_RUNTIME_DIR": str(runtime),
         }
         if sanitizer:

@@ -1,4 +1,15 @@
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/native/rtp_values.h"
+#include "pulsebeam-webrtc-sys/native/metronome.h"
+#include "pulsebeam-webrtc-sys/native/certificate_generator.h"
+#include "pulsebeam-webrtc-sys/native/async_dns.h"
+#include "pulsebeam-webrtc-sys/native/video_bitrate.h"
+#include "pulsebeam-webrtc-sys/native/network_predictor.h"
+#include "pulsebeam-webrtc-sys/native/fec.h"
+#include "pulsebeam-webrtc-sys/native/network_control.h"
+#include "api/metronome/metronome.h"
+#include "pulsebeam-webrtc-sys/native/tls.h"
+#include "pulsebeam-webrtc-sys/native/local_network_permission.h"
 
 #include <array>
 #include <atomic>
@@ -29,10 +40,12 @@
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/frame_transformer_interface.h"
 #include "api/enable_media.h"
+#include "pc/media_factory.h"
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtc_error.h"
+#include "api/rtc_event_log/rtc_event_log_factory.h"
 #include "api/scoped_refptr.h"
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
@@ -42,6 +55,7 @@
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/data_channel.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/native/event_log.h"
 #include "pulsebeam-webrtc-sys/native/network.h"
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "modules/audio_device/include/audio_device_default.h"
@@ -75,6 +89,9 @@ enum EventKind : std::uint8_t {
   kTrack = 10,
   kTrackRemoved = 11,
   kStatsReport = 12,
+  kLegacyIceConnectionState = 13,
+  kStandardizedIceConnectionState = 14,
+  kIceCandidateRemoved = 15,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -126,6 +143,11 @@ webrtc::PeerConnectionInterface::RTCOfferAnswerOptions OfferAnswerOptions(
   return result;
 }
 
+rust::Vec<std::uint8_t> PeerTextBytes(std::string_view text) {
+  rust::Vec<std::uint8_t> bytes; bytes.reserve(text.size());
+  for (unsigned char byte : text) bytes.push_back(byte);
+  return bytes;
+}
 FfiPeerEvent EmptyEvent() { return FfiPeerEvent{}; }
 
 FfiPeerEvent ErrorEvent(std::uint64_t operation_id,
@@ -135,7 +157,7 @@ FfiPeerEvent ErrorEvent(std::uint64_t operation_id,
   event.kind = kOperationComplete;
   event.operation_id = operation_id;
   event.error_type = static_cast<std::uint8_t>(type);
-  event.message = message;
+  event.message = PeerTextBytes(message);
   return event;
 }
 
@@ -144,7 +166,7 @@ FfiPeerEvent ClosedOperation(std::uint64_t operation_id) {
   event.kind = kOperationComplete;
   event.operation_id = operation_id;
   event.error_type = kClosedError;
-  event.message = "peer connection is closed";
+  event.message = PeerTextBytes("peer connection is closed");
   return event;
 }
 
@@ -154,6 +176,10 @@ struct NotifyOnExit {
 };
 
 struct EventState {
+  struct ReceiverArrival {
+    webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver;
+    webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner;
+  };
   explicit EventState(std::shared_ptr<ReadinessSignal> signal)
       : readiness(std::move(signal)) {}
 
@@ -322,7 +348,8 @@ struct EventState {
   }
 
   void RemoveReceiver(
-      webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) {
+      webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
+      webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner) {
     NotifyOnExit notify{readiness};
     std::lock_guard lock(mutex);
     if (closed) {
@@ -333,15 +360,14 @@ struct EventState {
     event.kind = kTrackRemoved;
     event.operation_id = arrival_id;
     if (AdmitArrivalLocked(std::move(event)))
-      receivers.emplace(arrival_id, std::move(receiver));
+      receivers.emplace(arrival_id, ReceiverArrival{std::move(receiver), std::move(owner)});
   }
 
-  webrtc::scoped_refptr<webrtc::RtpReceiverInterface> TakeReceiver(
-      std::uint64_t arrival_id) {
+  ReceiverArrival TakeReceiver(std::uint64_t arrival_id) {
     std::lock_guard lock(mutex);
     auto found = receivers.find(arrival_id);
     if (found == receivers.end()) {
-      return nullptr;
+      return {};
     }
     auto receiver = std::move(found->second);
     receivers.erase(found);
@@ -357,9 +383,7 @@ struct EventState {
         std::uint64_t,
         webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>>
         abandoned_transceivers;
-    std::unordered_map<std::uint64_t,
-                       webrtc::scoped_refptr<webrtc::RtpReceiverInterface>>
-        abandoned_receivers;
+    std::unordered_map<std::uint64_t, ReceiverArrival> abandoned_receivers;
     {
       std::lock_guard lock(mutex);
       if (closed) {
@@ -405,9 +429,7 @@ struct EventState {
   std::unordered_map<
       std::uint64_t,
       webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> transceivers;
-  std::unordered_map<std::uint64_t,
-                     webrtc::scoped_refptr<webrtc::RtpReceiverInterface>>
-      receivers;
+  std::unordered_map<std::uint64_t, ReceiverArrival> receivers;
   std::uint64_t next_media_id = 1;
   bool closed = false;
 };
@@ -416,6 +438,10 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
  public:
   explicit PeerObserver(std::shared_ptr<EventState> state) noexcept
       : state_(std::move(state)) {}
+
+  // Borrowed SDK proxy, assigned/cleared on signaling. Native peer teardown
+  // closes before releasing the proxy or observer, so callbacks cannot outlive it.
+  void SetPeer(webrtc::PeerConnectionInterface* peer) { peer_ = peer; }
 
   void OnSignalingChange(
       webrtc::PeerConnectionInterface::SignalingState state) override {
@@ -437,7 +463,15 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
 
   void OnRemoveTrack(
       webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) override {
-    state_->RemoveReceiver(std::move(receiver));
+    webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner;
+    if (peer_ && peer_->GetConfiguration().sdp_semantics == webrtc::SdpSemantics::kUnifiedPlan) {
+      for (const auto& candidate : peer_->GetTransceivers()) {
+        if (candidate->receiver() == receiver) { owner = candidate; break; }
+      }
+    }
+    // Retain before completed negotiation removes a stopped graph owner.
+    // Rollback can already have removed it; creation must then fail closed.
+    state_->RemoveReceiver(std::move(receiver), std::move(owner));
   }
 
   void OnNegotiationNeededEvent(std::uint32_t event_id) override {
@@ -455,6 +489,17 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     state_->Push(std::move(event));
   }
 
+  void OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState state) override {
+    FfiPeerEvent event; event.kind = kLegacyIceConnectionState;
+    event.ice_state = static_cast<std::int32_t>(state);
+    state_->Push(std::move(event));
+  }
+  void OnStandardizedIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState state) override {
+    FfiPeerEvent event; event.kind = kStandardizedIceConnectionState;
+    event.ice_state = static_cast<std::int32_t>(state);
+    state_->Push(std::move(event));
+  }
+
   void OnIceGatheringChange(
       webrtc::PeerConnectionInterface::IceGatheringState state) override {
     FfiPeerEvent event;
@@ -469,9 +514,18 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     }
     FfiPeerEvent event;
     event.kind = kIceCandidate;
-    event.sdp_mid = candidate->sdp_mid();
+    event.sdp_mid = PeerTextBytes(candidate->sdp_mid());
     event.sdp_mline_index = candidate->sdp_mline_index();
-    event.candidate = candidate->ToString();
+    event.candidate = PeerTextBytes(candidate->ToString());
+    state_->Push(std::move(event));
+  }
+
+  void OnIceCandidateRemoved(const webrtc::IceCandidate* candidate) override {
+    if (!candidate) return;
+    FfiPeerEvent event; event.kind = kIceCandidateRemoved;
+    event.sdp_mid = PeerTextBytes(candidate->sdp_mid());
+    event.sdp_mline_index = candidate->sdp_mline_index();
+    event.candidate = PeerTextBytes(candidate->ToString());
     state_->Push(std::move(event));
   }
 
@@ -486,12 +540,13 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     event.port = port;
     event.url = url;
     event.error_code = error_code;
-    event.message = error_text;
+    event.message = PeerTextBytes(error_text);
     state_->Push(std::move(event));
   }
 
  private:
   std::shared_ptr<EventState> state_;
+  webrtc::PeerConnectionInterface* peer_ = nullptr;  // signaling only
 };
 
 class CreateDescriptionObserver
@@ -509,11 +564,13 @@ class CreateDescriptionObserver
     if (owned) {
       event.has_description = true;
       event.sdp_type = static_cast<std::uint8_t>(owned->GetType());
-      event.sdp = owned->ToString();
+      const auto sdp = owned->ToString();
+      event.sdp.reserve(sdp.size());
+      for (unsigned char byte : sdp) event.sdp.push_back(byte);
     } else {
       event.error_type = static_cast<std::uint8_t>(
           webrtc::RTCErrorType::INTERNAL_ERROR);
-      event.message = "WebRTC returned an empty session description";
+      event.message = PeerTextBytes("WebRTC returned an empty session description");
     }
     state_->Complete(std::move(event));
   }
@@ -694,6 +751,13 @@ class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
     return factory_.factory().GetSupportedFormats();
   }
+  std::vector<webrtc::SdpVideoFormat> GetImplementations() const override {
+    return factory_.factory().GetImplementations();
+  }
+  std::unique_ptr<webrtc::VideoEncoderFactory::EncoderSelectorInterface>
+  GetEncoderSelector() const override {
+    return factory_.factory().GetEncoderSelector();
+  }
   CodecSupport QueryCodecSupport(
       const webrtc::SdpVideoFormat& format,
       std::optional<std::string> scalability_mode,
@@ -744,9 +808,195 @@ std::optional<webrtc::SdpType> SdpType(std::uint8_t value) {
   return std::nullopt;
 }
 
+// Private, source-pinned observation only. This is not an allocator registry or
+// a safety/admission proof. No caller API exposes MediaFactory or these types.
+struct CallObservation {
+  std::mutex mutex;
+  std::optional<webrtc::Environment> creation_environment;
+  bool live = false;
+};
+
+struct PeerCallCreationContext {
+  std::mutex mutex;
+  std::vector<std::shared_ptr<CallObservation>> pending;
+};
+
+// Construct and retire only inside the selected SDK signaling-thread operation.
+// The worker reads a synchronized copy while CreatePeerConnectionOrError waits
+// for CreateCall_w. A caller-thread pending field would misassociate concurrent
+// migrated production sessions. Lexical nesting handles same-thread reentry.
+class PeerCallCreationScope final {
+ public:
+  PeerCallCreationScope(std::shared_ptr<PeerCallCreationContext> context,
+                        std::shared_ptr<CallObservation> observation)
+      : context_(std::move(context)) {
+    std::lock_guard lock(context_->mutex);
+    context_->pending.push_back(std::move(observation));
+  }
+  ~PeerCallCreationScope() {
+    std::lock_guard lock(context_->mutex);
+    context_->pending.pop_back();
+  }
+  PeerCallCreationScope(const PeerCallCreationScope&) = delete;
+  PeerCallCreationScope& operator=(const PeerCallCreationScope&) = delete;
+
+ private:
+  std::shared_ptr<PeerCallCreationContext> context_;
+};
+
+// Own the real selected Call and preserve its stream pointers and implementations.
+// Stream/configuration observation and the Encode-prefix witness are NOT installed
+// here. In particular, creation_environment is an input snapshot, not an effective
+// allocator weight/capacity snapshot. Every virtual operation delegates unchanged.
+class ObservedCall final : public webrtc::Call {
+ public:
+  ObservedCall(std::unique_ptr<webrtc::Call> actual,
+               std::shared_ptr<CallObservation> observation,
+               const webrtc::Environment& environment)
+      : actual_(std::move(actual)), observation_(std::move(observation)) {
+    std::lock_guard lock(observation_->mutex);
+    observation_->creation_environment.emplace(environment);
+    observation_->live = true;
+  }
+  ~ObservedCall() override {
+    // The stock Call retires on its normal SDK sequence, before its observation.
+    actual_.reset();
+    std::lock_guard lock(observation_->mutex);
+    observation_->live = false;
+  }
+  webrtc::AudioSendStream* CreateAudioSendStream(
+      const webrtc::AudioSendStream::Config& config) override {
+    return actual_->CreateAudioSendStream(config);
+  }
+  void DestroyAudioSendStream(webrtc::AudioSendStream* stream) override {
+    actual_->DestroyAudioSendStream(stream);
+  }
+  webrtc::AudioReceiveStreamInterface* CreateAudioReceiveStream(
+      const webrtc::AudioReceiveStreamInterface::Config& config) override {
+    return actual_->CreateAudioReceiveStream(config);
+  }
+  void DestroyAudioReceiveStream(
+      webrtc::AudioReceiveStreamInterface* stream) override {
+    actual_->DestroyAudioReceiveStream(stream);
+  }
+  webrtc::VideoSendStream* CreateVideoSendStream(
+      webrtc::VideoSendStream::Config config,
+      webrtc::VideoEncoderConfig encoder_config,
+      webrtc::EncoderSwitchRequestCallback callback) override {
+    return actual_->CreateVideoSendStream(
+        std::move(config), std::move(encoder_config), std::move(callback));
+  }
+  webrtc::VideoSendStream* CreateVideoSendStream(
+      webrtc::VideoSendStream::Config config,
+      webrtc::VideoEncoderConfig encoder_config,
+      webrtc::EncoderSwitchRequestCallback callback,
+      std::unique_ptr<webrtc::FecController> fec_controller) override {
+    return actual_->CreateVideoSendStream(
+        std::move(config), std::move(encoder_config), std::move(callback),
+        std::move(fec_controller));
+  }
+  void DestroyVideoSendStream(webrtc::VideoSendStream* stream) override {
+    actual_->DestroyVideoSendStream(stream);
+  }
+  webrtc::VideoReceiveStreamInterface* CreateVideoReceiveStream(
+      webrtc::VideoReceiveStreamInterface::Config config) override {
+    return actual_->CreateVideoReceiveStream(std::move(config));
+  }
+  void DestroyVideoReceiveStream(
+      webrtc::VideoReceiveStreamInterface* stream) override {
+    actual_->DestroyVideoReceiveStream(stream);
+  }
+  webrtc::FlexfecReceiveStream* CreateFlexfecReceiveStream(
+      const webrtc::FlexfecReceiveStream::Config config) override {
+    return actual_->CreateFlexfecReceiveStream(config);
+  }
+  void DestroyFlexfecReceiveStream(webrtc::FlexfecReceiveStream* stream) override {
+    actual_->DestroyFlexfecReceiveStream(stream);
+  }
+  void AddAdaptationResource(
+      webrtc::scoped_refptr<webrtc::Resource> resource) override {
+    actual_->AddAdaptationResource(std::move(resource));
+  }
+  webrtc::PacketReceiver* Receiver() override { return actual_->Receiver(); }
+  webrtc::RtpTransportControllerSendInterface* GetTransportControllerSend() override {
+    return actual_->GetTransportControllerSend();
+  }
+  Stats GetStats() const override { return actual_->GetStats(); }
+  void SignalChannelNetworkState(webrtc::MediaType media,
+                                 webrtc::NetworkState state) override {
+    actual_->SignalChannelNetworkState(media, state);
+  }
+  void OnAudioTransportOverheadChanged(int overhead) override {
+    actual_->OnAudioTransportOverheadChanged(overhead);
+  }
+  void OnUpdateSyncGroup(webrtc::AudioReceiveStreamInterface& stream,
+                         absl::string_view sync_group) override {
+    actual_->OnUpdateSyncGroup(stream, sync_group);
+  }
+  void OnSentPacket(const webrtc::SentPacketInfo& packet) override {
+    actual_->OnSentPacket(packet);
+  }
+  void SetClientBitratePreferences(
+      const webrtc::BitrateSettings& preferences) override {
+    actual_->SetClientBitratePreferences(preferences);
+  }
+  void SetPreferredRtcpCcAckType(webrtc::RtcpFeedbackType type) override {
+    actual_->SetPreferredRtcpCcAckType(type);
+  }
+  std::optional<int> FeedbackAccordingToRfc8888Count() override {
+    return actual_->FeedbackAccordingToRfc8888Count();
+  }
+  std::optional<int> FeedbackAccordingToTransportCcCount() override {
+    return actual_->FeedbackAccordingToTransportCcCount();
+  }
+  void DisconnectFromNetworkThread() override {
+    actual_->DisconnectFromNetworkThread();
+  }
+  webrtc::TaskQueueBase* network_thread() const override {
+    return actual_->network_thread();
+  }
+  webrtc::TaskQueueBase* worker_thread() const override {
+    return actual_->worker_thread();
+  }
+
+ private:
+  std::unique_ptr<webrtc::Call> actual_;
+  std::shared_ptr<CallObservation> observation_;
+};
+
+class ObservedMediaFactory final : public webrtc::MediaFactory {
+ public:
+  ObservedMediaFactory(std::unique_ptr<webrtc::MediaFactory> selected,
+                       std::shared_ptr<PeerCallCreationContext> context)
+      : selected_(std::move(selected)), context_(std::move(context)) {}
+  std::unique_ptr<webrtc::MediaEngineInterface> CreateMediaEngine(
+      const webrtc::Environment& environment,
+      webrtc::PeerConnectionFactoryDependencies& dependencies) override {
+    return selected_->CreateMediaEngine(environment, dependencies);
+  }
+  std::unique_ptr<webrtc::Call> CreateCall(webrtc::CallConfig config) override {
+    std::shared_ptr<CallObservation> observation;
+    {
+      std::lock_guard lock(context_->mutex);
+      if (!context_->pending.empty()) observation = context_->pending.back();
+    }
+    // Capture before delegation, without holding the context mutex across any
+    // selected provider. Never synchronously query signaling from this worker.
+    const auto environment = config.env;
+    auto actual = selected_->CreateCall(std::move(config));
+    if (!actual || !observation) return actual;
+    return std::make_unique<ObservedCall>(
+        std::move(actual), std::move(observation), environment);
+  }
+
+ private:
+  std::unique_ptr<webrtc::MediaFactory> selected_;
+  std::shared_ptr<PeerCallCreationContext> context_;
+};
+
 std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
     std::uint8_t type,
-    rust::Str sdp,
+    rust::Slice<const std::uint8_t> sdp,
     webrtc::SdpParseError& error) {
   const auto parsed_type = SdpType(type);
   if (!parsed_type) {
@@ -758,7 +1008,7 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
     return nullptr;
   }
   return webrtc::CreateSessionDescription(
-      *parsed_type, std::string_view(sdp.data(), sdp.size()), &error);
+      *parsed_type, std::string_view(reinterpret_cast<const char *>(sdp.data()), sdp.size()), &error);
 }
 
 }  // namespace
@@ -769,6 +1019,9 @@ struct NativePeerConnectionFactory::State {
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
+  std::unique_ptr<CertificateGeneratorScope> certificate_generator_scope;
+  std::shared_ptr<PeerCallCreationContext> call_creation;
+  webrtc::Thread* network_thread = nullptr;
   webrtc::Thread* signaling_thread = nullptr;
   webrtc::Thread* worker_thread = nullptr;
 };
@@ -781,6 +1034,8 @@ struct NativePeerConnection::State {
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer;
   std::shared_ptr<EventState> events;
   std::unique_ptr<PeerObserver> observer;
+  std::shared_ptr<CallObservation> call_observation;
+  webrtc::Thread* network_thread = nullptr;
   webrtc::Thread* signaling_thread = nullptr;
   webrtc::Thread* worker_thread = nullptr;
   std::set<std::string> encoded_receiver_ids;
@@ -793,7 +1048,12 @@ NativePeerConnectionFactory::NativePeerConnectionFactory(
     : state_(std::move(state)) {}
 NativePeerConnectionFactory::~NativePeerConnectionFactory() {
   if (state_ && state_->factory && state_->signaling_thread) {
-    state_->signaling_thread->BlockingCall([this] { state_->factory = nullptr; });
+    state_->signaling_thread->BlockingCall([this] {
+      state_->factory = nullptr;
+      // Generator callbacks may outlive their peer. Retire on signaling only
+      // when the factory owner will release that queue, not on generator drop.
+      state_->certificate_generator_scope->Retire();
+    });
   }
   if (state_ && state_->audio_device && state_->worker_thread) {
     // PulseAudio's ADM must also be destroyed on its construction thread.
@@ -826,7 +1086,10 @@ NativePeerConnection::NativePeerConnection(std::unique_ptr<State> state) noexcep
 NativePeerConnection::~NativePeerConnection() {
   close_peer_connection(*this);
   if (state_ && state_->peer && state_->signaling_thread) {
-    state_->signaling_thread->BlockingCall([this] { state_->peer = nullptr; });
+    state_->signaling_thread->BlockingCall([this] {
+      state_->observer->SetPeer(nullptr);
+      state_->peer = nullptr;
+    });
   }
   if (state_) {
     state_->observer.reset();
@@ -839,6 +1102,9 @@ NativePeerConnection::state() const noexcept {
 webrtc::scoped_refptr<webrtc::PeerConnectionInterface>
 NativePeerConnection::peer() const noexcept {
   return state_->peer;
+}
+webrtc::Thread* NativePeerConnection::network_thread() const noexcept {
+  return state_->network_thread;
 }
 webrtc::Thread* NativePeerConnection::signaling_thread() const noexcept {
   return state_->signaling_thread;
@@ -873,17 +1139,36 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeThread& worker_thread,
     const NativeThread& signaling_thread,
     const NativeNetworkManagerProvider* network_manager,
+    rust::Box<RustNetworkMonitorFactory> network_monitor_factory,
+    rust::Box<RustNetworkStatePredictorFactory> network_predictor_factory,
+    rust::Box<RustFecControllerFactory> fec_factory,
+    rust::Box<RustNetworkControllerFactory> network_controller_factory,
     const NativePacketSocketFactoryProvider* packet_socket_factory,
     const NativeAudioEncoderFactory* audio_encoder,
     const NativeAudioDecoderFactory* audio_decoder,
     const NativeVideoEncoderFactory* video_encoder,
     const NativeVideoDecoderFactory* video_decoder,
+    rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
     bool native_audio,
+    bool event_logging,
+    const NativeRtcEventLogFactory* event_log_factory,
+    rust::Box<RustMetronome> encode_metronome,
+    rust::Box<RustMetronome> decode_metronome,
     const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
     rust::String& error) noexcept {
   webrtc::PeerConnectionFactoryDependencies dependencies;
   dependencies.env = environment.environment();
+  dependencies.network_state_predictor_factory = network_predictor_factory_adapter(std::move(network_predictor_factory));
+  dependencies.fec_controller_factory = fec_factory_adapter(std::move(fec_factory));
+  dependencies.network_controller_factory = network_controller_factory_adapter(std::move(network_controller_factory));
+  dependencies.encode_metronome = metronome_adapter(std::move(encode_metronome));
+  dependencies.decode_metronome = metronome_adapter(std::move(decode_metronome));
+  if (event_log_factory != nullptr) {
+    dependencies.event_log_factory = event_log_factory->CreateAdapter();
+  } else if (event_logging) {
+    dependencies.event_log_factory = std::make_unique<webrtc::RtcEventLogFactory>();
+  }
   dependencies.network_thread = network_thread.thread();
   dependencies.worker_thread = worker_thread.thread();
   dependencies.signaling_thread = signaling_thread.thread();
@@ -892,6 +1177,11 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     error = "a required WebRTC thread is closed";
     return nullptr;
   }
+  if (network_manager && network_monitor_factory_present(*network_monitor_factory)) {
+    error = "network manager and network monitor factory are mutually exclusive";
+    return nullptr;
+  }
+  dependencies.network_monitor_factory = network_monitor_factory_adapter(std::move(network_monitor_factory));
   if (network_manager) {
     dependencies.network_manager = network_manager->Create();
     if (!dependencies.network_manager) {
@@ -954,13 +1244,17 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   dependencies.audio_decoder_factory =
       audio_decoder ? audio_decoder->factory()
                     : webrtc::CreateBuiltinAudioDecoderFactory();
+  auto video_retention = std::make_shared<rust::Box<RustVideoFactoryEnvironment>>(
+      std::move(video_creation_environment));
   if (video_encoder) {
-    dependencies.video_encoder_factory =
-        std::make_unique<BorrowedVideoEncoderFactory>(*video_encoder);
+    dependencies.video_encoder_factory = video_encoder->rust_factory()
+        ? video_encoder->CreateAdapter(video_retention)
+        : std::make_unique<BorrowedVideoEncoderFactory>(*video_encoder);
   }
   if (video_decoder) {
-    dependencies.video_decoder_factory =
-        std::make_unique<BorrowedVideoDecoderFactory>(*video_decoder);
+    dependencies.video_decoder_factory = video_decoder->rust_factory()
+        ? video_decoder->CreateAdapter(video_retention)
+        : std::make_unique<BorrowedVideoDecoderFactory>(*video_decoder);
   }
   if (processing.enabled) {
     if (processing.noise_suppression > 4 || processing.gain_control > 4) {
@@ -990,6 +1284,11 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
         std::make_unique<webrtc::BuiltinAudioProcessingBuilder>(config);
   }
   webrtc::EnableMedia(dependencies);
+  auto call_creation = std::make_shared<PeerCallCreationContext>();
+  // Wrap the actual selected instance. Do not substitute engines, encoder stream
+  // factories, default providers, or a newly constructed stock Call.
+  dependencies.media_factory = std::make_unique<ObservedMediaFactory>(
+      std::move(dependencies.media_factory), call_creation);
   auto factory =
       webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));
   if (!factory) {
@@ -1005,7 +1304,10 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   state->audio_device = std::move(platform_audio_device);
   state->opus_transformer = audio_encoder ? audio_encoder->opus_transformer() : nullptr;
   state->factory = std::move(factory);
+  state->call_creation = std::move(call_creation);
+  state->network_thread = network_thread.thread();
   state->signaling_thread = signaling_thread.thread();
+  state->certificate_generator_scope = std::make_unique<CertificateGeneratorScope>(state->signaling_thread);
   state->worker_thread = worker_thread.thread();
   return std::make_unique<NativePeerConnectionFactory>(std::move(state));
 }
@@ -1137,14 +1439,17 @@ FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept {
     result.modulus_bits = params.rsa_params().mod_size;
     result.public_exponent = params.rsa_params().pub_exp;
   } else {
-    result.curve = static_cast<std::uint8_t>(params.ec_curve());
+    result.curve = static_cast<std::int32_t>(params.ec_curve());
   }
   return result;
 }
 
 bool certificate_key_params_valid(
     const FfiCertificateKeyParams& params) noexcept {
-  return params.kind <= 1 && NativeCertificateKeyParams(params).IsValid();
+  // Avoid converting arbitrary signed values to the SDK's non-fixed enum.
+  // P-256 is its only valid curve; invalid representable inputs remain queryable.
+  if (params.kind > 1 || (params.kind == 1 && params.curve != 0)) return false;
+  return NativeCertificateKeyParams(params).IsValid();
 }
 
 std::shared_ptr<NativeCertificate> certificate_generate(
@@ -1231,6 +1536,16 @@ bool certificate_equal(const NativeCertificate& a,
 bool certificate_same_resource(const NativeCertificate& a,
                                const NativeCertificate& b) noexcept {
   return a.certificate().get() == b.certificate().get();
+}
+
+std::unique_ptr<NativeRtpCapabilities> factory_rtp_capabilities_value(const NativePeerConnectionFactory& factory, std::int32_t kind, bool sender) noexcept {
+  // This concrete factory returns actual empty SDK capabilities for all other
+  // MediaType values. Its default switch returns before the unreachable check.
+  auto capabilities = factory.signaling_thread()->BlockingCall([&] {
+    return sender ? factory.factory()->GetRtpSenderCapabilities(static_cast<webrtc::MediaType>(kind))
+                  : factory.factory()->GetRtpReceiverCapabilities(static_cast<webrtc::MediaType>(kind));
+  });
+  return std::make_unique<NativeRtpCapabilities>(capabilities);
 }
 
 void factory_set_options(const NativePeerConnectionFactory& factory,
@@ -1601,6 +1916,12 @@ std::uint8_t peer_set_configuration(const NativePeerConnection& peer, const Nati
 std::unique_ptr<NativePeerConnection> create_peer_connection(
     const NativePeerConnectionFactory& factory,
     const NativePeerConfiguration& native,
+    rust::Box<RustFieldTrials> field_trials,
+    rust::Box<RustTlsCertificateVerifier> tls_verifier,
+    rust::Box<RustLocalNetworkPermissionFactory> local_permission,
+    rust::Box<RustCertificateGenerator> certificate_generator,
+    rust::Box<RustAsyncDnsFactory> async_dns_factory,
+    rust::Box<RustVideoBitrateAllocatorFactory> video_bitrate_factory,
     std::uint8_t& error_kind,
     rust::String& error) noexcept {
   const auto& configuration = native.state()->configuration;
@@ -1618,6 +1939,16 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   auto events = std::make_shared<EventState>(factory.readiness());
   auto observer = std::make_unique<PeerObserver>(events);
   webrtc::PeerConnectionDependencies dependencies(observer.get());
+  dependencies.trials = field_trials_adapter(std::move(field_trials));
+  dependencies.lna_permission_factory = MakeLocalNetworkPermissionFactory(std::move(local_permission));
+  dependencies.cert_generator = certificate_generator_adapter(std::move(certificate_generator), *factory.state()->certificate_generator_scope);
+  dependencies.async_dns_resolver_factory = async_dns_factory_adapter(std::move(async_dns_factory));
+  dependencies.video_bitrate_allocator_factory = video_bitrate_factory_adapter(std::move(video_bitrate_factory));
+  if (!turn_tls_ca_pem.empty() && tls_certificate_verifier_present(*tls_verifier)) {
+    error = "custom TLS verifier and selected TURN CA verifier occupy the same native dependency";
+    return nullptr;
+  }
+  dependencies.tls_cert_verifier = tls_certificate_verifier_adapter(std::move(tls_verifier));
   if (!turn_tls_ca_pem.empty()) {
     if (turn_tls_ca_pem.size() > INT_MAX) {
       error = "invalid TURN TLS CA certificate";
@@ -1636,8 +1967,18 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
     dependencies.tls_cert_verifier =
         std::make_unique<TurnCaVerifier>(ca.release());
   }
-  auto result = factory.state()->factory->CreatePeerConnectionOrError(
-      configuration, std::move(dependencies));
+  auto call_observation = std::make_shared<CallObservation>();
+  using CreationResult = webrtc::RTCErrorOr<
+      webrtc::scoped_refptr<webrtc::PeerConnectionInterface>>;
+  std::optional<CreationResult> creation_result;
+  factory.signaling_thread()->BlockingCall([&] {
+    PeerCallCreationScope scope(factory.state()->call_creation, call_observation);
+    creation_result.emplace(factory.state()->factory->CreatePeerConnectionOrError(
+        configuration, std::move(dependencies)));
+  });
+  // BlockingCall executes its functor synchronously, including the already-current
+  // controlled driver case. The result retains the SDK's actual value/error.
+  auto& result = *creation_result;
   if (!result.ok()) {
     error_kind = static_cast<std::uint8_t>(result.error().type());
     error = result.error().message();
@@ -1651,6 +1992,9 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   state->peer = result.MoveValue();
   state->events = std::move(events);
   state->observer = std::move(observer);
+  factory.state()->signaling_thread->BlockingCall([&] { state->observer->SetPeer(state->peer.get()); });
+  state->call_observation = std::move(call_observation);
+  state->network_thread = factory.state()->network_thread;
   state->signaling_thread = factory.state()->signaling_thread;
   state->worker_thread = factory.state()->worker_thread;
   return std::make_unique<NativePeerConnection>(std::move(state));
@@ -1697,6 +2041,19 @@ bool peer_set_bitrate(const NativePeerConnection& peer, std::int32_t minimum,
   return result.ok();
 }
 
+FfiPeerIceSnapshot peer_ice_snapshot(const NativePeerConnection &peer) noexcept {
+  const auto &state = peer.state();
+  FfiPeerIceSnapshot result{};
+  state->signaling_thread->BlockingCall([&] {
+    result.legacy_state = static_cast<std::int32_t>(state->peer->ice_connection_state());
+    result.standardized_state = static_cast<std::int32_t>(state->peer->standardized_ice_connection_state());
+    const auto trickle = state->peer->can_trickle_ice_candidates();
+    result.has_can_trickle = trickle.has_value();
+    result.can_trickle = trickle.value_or(false);
+  });
+  return result;
+}
+
 std::uint8_t peer_descriptions(
     const NativePeerConnection& peer,
     rust::Vec<FfiDescriptionSnapshot>& descriptions) noexcept {
@@ -1719,7 +2076,8 @@ std::uint8_t peer_descriptions(
       FfiDescriptionSnapshot snapshot;
       snapshot.slot = slot;
       snapshot.kind = static_cast<std::uint8_t>(description->GetType());
-      snapshot.sdp = sdp;
+      snapshot.sdp.reserve(sdp.size());
+      for (unsigned char byte : sdp) snapshot.sdp.push_back(byte);
       descriptions.push_back(std::move(snapshot));
       return true;
     };
@@ -1745,6 +2103,30 @@ std::uint8_t peer_create_answer(const NativePeerConnection& peer,
                                                           operation_id);
   state->peer->CreateAnswer(observer.get(), OfferAnswerOptions(options));
   return 0;
+}
+
+std::uint8_t peer_start_event_log(const NativePeerConnection& peer,
+    std::unique_ptr<NativeEventLogOutput> output, bool has_period,
+    std::int64_t period_ms) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
+    if (state->closed) return 1;
+    if (!output) return 2;
+    auto sink = output->Take();
+    if (!sink || !sink->IsActive()) return 2;
+    const bool accepted = has_period
+        ? state->peer->StartRtcEventLog(std::move(sink), period_ms)
+        : state->peer->StartRtcEventLog(std::move(sink));
+    return accepted ? 0 : 3;
+  });
+}
+bool peer_stop_event_log(const NativePeerConnection& peer) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&] {
+    if (state->closed) return false;
+    state->peer->StopRtcEventLog();
+    return true;
+  });
 }
 
 bool peer_restart_ice(const NativePeerConnection& peer) noexcept {
@@ -1781,17 +2163,17 @@ std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
 }
 
 std::uint8_t peer_modify_ice_candidate(const NativePeerConnection& peer,
-    bool remove, rust::Str sdp_mid, std::int32_t sdp_mline_index,
-    rust::Str candidate_sdp, rust::String& message) noexcept {
+    bool remove, rust::Slice<const std::uint8_t> sdp_mid, std::int32_t sdp_mline_index,
+    rust::Slice<const std::uint8_t> candidate_sdp, rust::Vec<std::uint8_t>& message) noexcept {
   const auto& state = peer.state();
   return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
     if (state->closed) return 1;
     webrtc::SdpParseError parse_error;
     auto candidate = webrtc::IceCandidate::Create(
-        std::string_view(sdp_mid.data(), sdp_mid.size()), sdp_mline_index,
-        std::string_view(candidate_sdp.data(), candidate_sdp.size()), &parse_error);
+        std::string_view(reinterpret_cast<const char *>(sdp_mid.data()), sdp_mid.size()), sdp_mline_index,
+        std::string_view(reinterpret_cast<const char *>(candidate_sdp.data()), candidate_sdp.size()), &parse_error);
     if (!candidate) {
-      message = parse_error.description;
+      message = PeerTextBytes(parse_error.description);
       return 2;
     }
     const bool accepted = remove ? state->peer->RemoveIceCandidate(candidate.get())
@@ -1803,7 +2185,7 @@ std::uint8_t peer_modify_ice_candidate(const NativePeerConnection& peer,
 std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
                                 std::uint64_t operation_id,
                                 std::uint8_t sdp_type,
-                                rust::Str sdp) noexcept {
+                                rust::Slice<const std::uint8_t> sdp) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
@@ -1828,7 +2210,7 @@ std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
 std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
                                  std::uint64_t operation_id,
                                  std::uint8_t sdp_type,
-                                 rust::Str sdp) noexcept {
+                                 rust::Slice<const std::uint8_t> sdp) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
@@ -1861,16 +2243,16 @@ std::uint8_t peer_reject_controlled_media(const NativePeerConnection& peer,
 
 std::uint8_t peer_add_ice_candidate(const NativePeerConnection& peer,
                             std::uint64_t operation_id,
-                            rust::Str sdp_mid,
+                            rust::Slice<const std::uint8_t> sdp_mid,
                             std::int32_t sdp_mline_index,
-                            rust::Str candidate_sdp) noexcept {
+                            rust::Slice<const std::uint8_t> candidate_sdp) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id);
   if (status != 0) return status;
   webrtc::SdpParseError parse_error;
   auto candidate = webrtc::IceCandidate::Create(
-      std::string_view(sdp_mid.data(), sdp_mid.size()), sdp_mline_index,
-      std::string_view(candidate_sdp.data(), candidate_sdp.size()),
+      std::string_view(reinterpret_cast<const char *>(sdp_mid.data()), sdp_mid.size()), sdp_mline_index,
+      std::string_view(reinterpret_cast<const char *>(candidate_sdp.data()), candidate_sdp.size()),
       &parse_error);
   if (!candidate) {
     state->events->Complete(ErrorEvent(
@@ -1897,6 +2279,25 @@ FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept {
 }
 FfiPeerEventObservation peer_event_observation(const NativePeerConnection& peer) noexcept {
   return peer.state()->events->Observation();
+}
+bool test_peer_candidate_observation(const NativePeerConnection &peer, rust::Slice<const std::uint8_t> mid, std::int32_t index, rust::Slice<const std::uint8_t> sdp, bool removed) noexcept {
+  auto candidate = webrtc::IceCandidate::Create(
+      std::string_view(reinterpret_cast<const char *>(mid.data()), mid.size()), index,
+      std::string_view(reinterpret_cast<const char *>(sdp.data()), sdp.size()));
+  if (!candidate) return false;
+  PeerObserver observer(peer.state()->events);
+  if (removed) observer.OnIceCandidateRemoved(candidate.get());
+  else observer.OnIceCandidate(candidate.get());
+  return true;
+}
+bool test_peer_ice_observations(const NativePeerConnection &peer, std::int32_t legacy, std::int32_t standardized, std::uint32_t repetitions) noexcept {
+  if (legacy < 0 || legacy > 7 || standardized < 0 || standardized > 7) return false;
+  PeerObserver observer(peer.state()->events);
+  for (std::uint32_t i = 0; i < repetitions; ++i) {
+    observer.OnIceConnectionChange(static_cast<webrtc::PeerConnectionInterface::IceConnectionState>(legacy));
+    observer.OnStandardizedIceConnectionChange(static_cast<webrtc::PeerConnectionInterface::IceConnectionState>(standardized));
+  }
+  return true;
 }
 // Binding-only unit hook: exercise the provided observer callback methods,
 // not a transport/media claim or a simulated native protocol implementation.
@@ -1936,7 +2337,8 @@ std::unique_ptr<NativeRtpTransceiver> peer_take_transceiver(
 
 std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
     const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept {
-  return wrap_rtp_receiver(peer.state()->events->TakeReceiver(arrival_id));
+  auto arrival = peer.state()->events->TakeReceiver(arrival_id);
+  return wrap_rtp_receiver(std::move(arrival.receiver), std::move(arrival.owner));
 }
 
 bool peer_set_native_audio_enabled(const NativePeerConnection& peer,

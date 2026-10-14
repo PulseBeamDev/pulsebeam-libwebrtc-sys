@@ -2,7 +2,10 @@
 use pulsebeam_webrtc_sys::*;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -97,8 +100,47 @@ struct WireCapture {
 }
 
 #[derive(Default)]
+struct DrivenMetronome {
+    now_us: AtomicU64,
+    requests: AtomicUsize,
+    periods: AtomicUsize,
+    pending: Mutex<Vec<(u64, MetronomeTick)>>,
+}
+struct DrivenProvider(Arc<DrivenMetronome>);
+impl MetronomeProvider for DrivenProvider {
+    fn tick_period(&self) -> TimeDelta {
+        self.0.periods.fetch_add(1, Ordering::Relaxed);
+        TimeDelta::from_millis(10).unwrap()
+    }
+    fn request_call_on_next_tick(&mut self, tick: MetronomeTick) {
+        assert!(TaskQueueContext::current().unwrap().is_current());
+        self.0.requests.fetch_add(1, Ordering::Relaxed);
+        let deadline = self.0.now_us.load(Ordering::Relaxed) + 10_000;
+        self.0.pending.lock().unwrap().push((deadline, tick));
+    }
+}
+impl DrivenMetronome {
+    fn drive(&self, time: Duration) {
+        let now = time.as_micros() as u64;
+        self.now_us.store(now, Ordering::Relaxed);
+        let ready: Vec<_> = {
+            let mut pending = self.pending.lock().unwrap();
+            let (ready, remaining): (Vec<_>, Vec<_>) = pending
+                .drain(..)
+                .partition(|(deadline, _)| *deadline <= now);
+            *pending = remaining;
+            ready
+        };
+        for (_, tick) in ready {
+            tick.signal().unwrap();
+        }
+    }
+}
+
+#[derive(Default)]
 struct Observations {
     impaired: bool,
+    metronomes: Vec<Arc<DrivenMetronome>>,
     link_sequence: u64,
     pending_packets: Vec<(Duration, u64, bool)>,
     retired: bool,
@@ -129,6 +171,9 @@ impl Observations {
         media: bool,
     ) {
         let now = world.now();
+        for metronome in &self.metronomes {
+            metronome.drive(now);
+        }
         let pump = world.pump(512);
         assert!(pump.dispatched <= 512);
         assert_eq!(world.now(), now, "pumping advanced virtual time");
@@ -515,10 +560,22 @@ impl DeclaredOpusSource {
 }
 
 fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
+    run_media_with_metronomes(addresses, impaired, None)
+}
+fn run_media_with_metronomes(
+    addresses: [IpAddr; 2],
+    impaired: bool,
+    metronomes: Option<&[Arc<DrivenMetronome>; 2]>,
+) -> Trace {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let trace = {
         let world = ControlledWorld::acquire(731, Duration::from_secs(10)).unwrap();
         let network = world.create_network().unwrap();
+        if let Some(metronomes) = metronomes {
+            for metronome in metronomes {
+                metronome.drive(world.now());
+            }
+        }
         let input = EncodedVideoInput::new_for_format(VideoCodecFormat::new("VP8")).unwrap();
         let audio_decoders = [
             AudioDecoderFactory::builtin_opus().unwrap(),
@@ -541,9 +598,13 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
         let factories: Vec<_> = (0..2)
             .map(|who| {
                 let endpoint = &endpoints[who];
-                world
-                    .peer_factory_builder()
-                    .unwrap()
+                let mut builder = world.peer_factory_builder().unwrap();
+                if let Some(metronomes) = metronomes {
+                    builder = builder
+                        .encode_metronome_provider(DrivenProvider(metronomes[0].clone()))
+                        .decode_metronome_provider(DrivenProvider(metronomes[1].clone()));
+                }
+                builder
                     .network_manager(endpoint.network_manager().unwrap())
                     .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
                     .audio_encoder_factory(audio_encoders[who].clone())
@@ -617,6 +678,7 @@ fn run_media(addresses: [IpAddr; 2], impaired: bool) -> Trace {
             .unwrap();
         let mut observations = Observations {
             impaired,
+            metronomes: metronomes.map_or_else(Vec::new, |sources| sources.to_vec()),
             ..Observations::default()
         };
         let offer = observations
@@ -2453,6 +2515,53 @@ fn replay_normalization_excludes_only_crypto_values() {
     ] {
         assert_ne!(normalized_sdp(sdp), normalized_sdp(&sdp.replace(old, new)));
     }
+}
+
+#[test]
+fn controlled_metronomes_deliver_real_media_and_retire_pending_ticks() {
+    let _guard = CONTROLLED_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let addresses = [
+        Ipv4Addr::new(10, 77, 2, 1).into(),
+        Ipv4Addr::new(10, 77, 2, 2).into(),
+    ];
+    let mut traces = Vec::new();
+    for _ in 0..2 {
+        let metronomes = [
+            Arc::new(DrivenMetronome::default()),
+            Arc::new(DrivenMetronome::default()),
+        ];
+        traces.push(run_media_with_metronomes(
+            addresses,
+            false,
+            Some(&metronomes),
+        ));
+        for source in &metronomes {
+            assert!(source.periods.load(Ordering::Relaxed) > 0);
+            assert!(source.requests.load(Ordering::Relaxed) > 0);
+        }
+        let pending: Vec<_> = metronomes
+            .iter()
+            .flat_map(|source| {
+                std::mem::take(&mut *source.pending.lock().unwrap())
+                    .into_iter()
+                    .map(|(_, tick)| tick)
+            })
+            .collect();
+        assert!(
+            !pending.is_empty(),
+            "decode consumers must retain their next tick"
+        );
+        // No native factory, world, task identity or worker survives. Retained
+        // tickets can migrate and reject delivery without accessing that worker.
+        std::thread::spawn(move || {
+            for tick in pending {
+                assert_eq!(tick.signal(), Err(MetronomeTickError::Retired));
+            }
+        })
+        .join()
+        .unwrap();
+    }
+    assert_eq!(traces[0], traces[1]);
 }
 
 #[test]

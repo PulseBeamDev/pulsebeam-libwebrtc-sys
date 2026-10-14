@@ -6,6 +6,8 @@ use crate::{PeerError, PeerErrorKind, ffi};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertificateCurve {
     P256,
+    /// Preserves native curve values, including representable invalid inputs.
+    Other(i32),
 }
 
 /// Native key parameters. Native validity is necessary, not a guarantee that
@@ -47,25 +49,23 @@ impl CertificateKeyParams {
                 public_exponent,
                 curve: 0,
             },
-            Self::Ecdsa {
-                curve: CertificateCurve::P256,
-            } => ffi::FfiCertificateKeyParams {
+            Self::Ecdsa { curve } => ffi::FfiCertificateKeyParams {
                 kind: 1,
                 modulus_bits: 0,
                 public_exponent: 0,
-                curve: 0,
+                curve: match curve { CertificateCurve::P256 => 0, CertificateCurve::Other(value) => value },
             },
         }
     }
 
-    fn from_native(value: ffi::FfiCertificateKeyParams) -> Self {
+    pub(crate) fn from_native(value: ffi::FfiCertificateKeyParams) -> Self {
         match value.kind {
             0 => Self::Rsa {
                 modulus_bits: value.modulus_bits,
                 public_exponent: value.public_exponent,
             },
-            1 if value.curve == 0 => Self::Ecdsa {
-                curve: CertificateCurve::P256,
+            1 => Self::Ecdsa {
+                curve: if value.curve == 0 { CertificateCurve::P256 } else { CertificateCurve::Other(value.curve) },
             },
             _ => unreachable!("pinned native generator returned an unknown default key parameter"),
         }

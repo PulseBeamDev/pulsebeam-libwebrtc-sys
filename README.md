@@ -161,8 +161,12 @@ with the same public WebRTC API:
   responsibility so clients can use one consistent implementation across
   platforms.
 
-Bundled H.264 is disabled in both flavors. H.264 signaling and the public codec
-factory interfaces remain available for caller-supplied implementations.
+Linux x86_64 build configuration enables bundled OpenH264 encoding and FFmpeg
+H.264 decoding in both flavors. Explicit `VideoEncoderFactoryHandle::builtin()`
+and `VideoDecoderFactoryHandle::builtin()` selections expose the artifact's
+native discovery/support. Other target configurations still disable bundled
+H.264. Codec availability comes from the matching native artifact, not from a
+Rust source update alone.
 
 Headless audio sources accept owned, interleaved signed 16-bit PCM in exactly
 10 ms blocks at 8, 16, 32 or 48 kHz, mono or stereo. The source's capture
@@ -356,7 +360,8 @@ sinks fail explicitly, and `attach_encoded_sink()` is the receive path. Ordinary
 H.264 needs no DD; `new_l1t3()` requires native DD negotiation and sender L1T3
 selection. The caller alone delivers packets, advances time and pumps queues.
 Closing an encoded sink is terminal for that receiver; a new receiver is needed
-to intercept again. It does not make H.264 decoding available.
+to intercept again. This controlled selection does not admit H.264 decoding,
+even when the artifact bundles a decoder.
 The controlled network supports externally scheduled UDP delivery, client-side
 TCP connect/data decisions, and caller-provided DNS answers for STUN/TURN
 servers. Unknown names fail deterministically. A delivered TCP connect succeeds;
@@ -389,18 +394,26 @@ Linux spec and its acceptance requirements are not amended by this guidance.
 
 ## H.264 boundary
 
-The build always uses `rtc_use_h264=false`; it does not compile or publish the
-built-in OpenH264 encoder or FFmpeg H.264 decoder, and there is no separate
-H.264-enabled artifact. The consumer smoke test preserves the public
-`VideoEncoderFactory` and `VideoDecoderFactory` path so downstream code can
-advertise and inject H.264 implementations.
+Linux x86_64 core and native configurations use `proprietary_codecs=true`,
+`ffmpeg_branding="Chrome"`, `rtc_use_h264=true` and
+`rtc_system_openh264=false`. The FFmpeg branding is required for actual H.264
+decoding, not just advertised formats. Use matching exports built with these
+arguments, not archives produced with the historical disabled configuration.
+The shipped-archive C++ smoke fixture checks actual H.264 encode/decode output;
+`tests/video.rs` exercises Rust peer transport with the built-in factories.
 
-`pulsebeam-libwebrtc` owns any optional OpenH264 adapter. OpenH264 acquisition,
-distribution, enablement, attribution, licensing, and version checks belong to
-that adapter and the consuming product. A consumer may instead provide a
-hardware-backed or separately licensed implementation. Absence of an external
-implementation must leave raw-input H.264 encoding and decoded H.264 output
-unavailable or produce an explicit error; it must not change these artifacts.
+Use explicit `VideoEncoderFactoryHandle::builtin()` and
+`VideoDecoderFactoryHandle::builtin()` peer-builder selections for the stock
+video codecs. Omitted selections do not silently install video factories, and
+custom creation failure does not fall back to a stock codec. Controlled media
+still admits only its documented selections; packaged H.264 is not a proof of
+caller-pumped decoding with no extra threads.
+
+The export includes dependency notices, WebRTC PATENTS and configuration
+provenance. OpenH264/FFmpeg licenses and H.264 patent obligations must be reviewed
+for the consuming product's use and distribution. Technical enablement and
+passing tests are not patent clearance or publication authorization. Consumers
+may instead explicitly select a hardware-backed or separately licensed factory.
 Direct encoded H.264 transport uses the native packetizer with caller-provided
 access units and does not require a compression or decoding implementation.
 
@@ -741,6 +754,14 @@ close, or drop, even if caller-owned track and source handles are dropped.
 Renegotiate if the remote track identity must change. A sender's `track()`
 returns the retained local track when present.
 
+`RtpSender::dtmf_sender()` is source-wired for the native audio sender's owning
+DTMF proxy (native video senders return `None`). It preserves native default
+and explicit comma-delay insertion, capability/getters, and both observer
+callback forms through bounded polling, with an explicit retained guard against
+consumed signed-delay overflow. Repeated getters share a registration; the
+handle retains its peer/factory origin. New fixtures are unrun, not qualification.
+See [DTMF contracts](docs/dtmf-contracts.md) for sequence, lifetime and loss rules.
+
 `video_sender_capabilities()` and `video_receiver_capabilities()` expose
 actual video RTP codec profiles, FMTP parameters, RTCP feedback and scalability
 modes for each peer's factory. Select and order discovered sender capabilities
@@ -991,7 +1012,7 @@ Build workspaces and release artifacts are disposable local/CI output.
 Non-goals include:
 
 - maintaining a WebRTC or BoringSSL fork;
-- bundling an H.264 encoder or decoder;
+- certifying H.264 patent clearance or licensing a consuming product;
 - deterministic cryptographic output;
 - exposing CXX or libwebrtc's C++ ABI as the public Rust API;
 - implementing Rust, wgpu, or zero-copy rendering here;

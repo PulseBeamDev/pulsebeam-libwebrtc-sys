@@ -96,6 +96,10 @@ fn received_audio_extension_profile(include_level: bool) {
     finish(&alice, alice.set_remote_description(gathered).unwrap());
 
     let receivers = bob.audio_receivers().unwrap();
+    let sent_observer = transceiver.sender().packet_observer();
+    let received_observer = receivers[0].packet_observer();
+    sent_observer.register_observer(8).unwrap();
+    received_observer.register_observer(8).unwrap();
     let mut sink = receivers[0].attach_encoded_audio_sink().unwrap();
     assert_eq!(
         receivers[0].attach_audio_sink().err().unwrap().kind,
@@ -107,6 +111,8 @@ fn received_audio_extension_profile(include_level: bool) {
     );
     let frame = AudioPcmFrame::i16_interleaved(48_000, 1, 1_000_000, vec![1000; 480]).unwrap();
     let mut received = None;
+    let mut first_sent = false;
+    let mut first_received = false;
     for tick in 0..100_000 {
         if tick % 10 == 0 {
             source.push_frame(&frame).unwrap();
@@ -116,13 +122,36 @@ fn received_audio_extension_profile(include_level: bool) {
         }
         while alice.try_next_event().is_some() {}
         while bob.try_next_event().is_some() {}
-        received = sink.try_next_frame();
-        if received.is_some() {
+        if received.is_none() { received = sink.try_next_frame(); }
+        while let Some(event) = sent_observer.take_event() {
+            first_sent |= event == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(pulsebeam_webrtc_sys::MediaType::Audio);
+        }
+        while let Some(event) = received_observer.take_event() {
+            first_received |= event == pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(pulsebeam_webrtc_sys::MediaType::Audio);
+        }
+        if received.is_some() && first_sent && first_received {
             break;
         }
         clock.advance(Duration::from_millis(1)).unwrap();
         thread::yield_now();
     }
+    assert!(first_sent && first_received, "actual SDK first-media notifications missing");
+    assert_eq!(sent_observer.take_dropped_events(), 0);
+    assert_eq!(received_observer.take_dropped_events(), 0);
+    // Retire through one alias and register through another. SDK stock proxies
+    // synchronously replay actual first-packet history on late registration.
+    sent_observer.unregister_observer();
+    received_observer.unregister_observer();
+    let sender_alias = transceiver.sender().packet_observer();
+    let receiver_alias = receivers[0].packet_observer();
+    assert!(sender_alias.same_resource(&sent_observer));
+    assert!(receiver_alias.same_resource(&received_observer));
+    sender_alias.register_observer(1).unwrap();
+    receiver_alias.register_observer(1).unwrap();
+    assert_eq!(sender_alias.take_event(), Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketSent(pulsebeam_webrtc_sys::MediaType::Audio)));
+    assert_eq!(receiver_alias.take_event(), Some(pulsebeam_webrtc_sys::RtpPacketEvent::FirstPacketReceived(pulsebeam_webrtc_sys::MediaType::Audio)));
+    sender_alias.unregister_observer();
+    receiver_alias.unregister_observer();
     let received = received
         .unwrap_or_else(|| panic!("missing Opus packets, dropped={}", sink.dropped_frames()));
     assert!(!received.data.is_empty());

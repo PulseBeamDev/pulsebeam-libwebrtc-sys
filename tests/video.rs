@@ -16,7 +16,8 @@ use pulsebeam_webrtc_sys::{
     EncodedVideoAccessUnit, EncodedVideoCodec, EncodedVideoFrame, EncodedVideoInput,
     EncodedVideoMetadata, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
     PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
-    PeerStatsRecord, RtpTransceiver, RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
+    PeerStatsRecord, RtcErrorType, RtpSenderOperationError, RtpTransceiver,
+    RtpTransceiverDirection, SessionDescription, SimulatedNetwork,
     VideoCodecFormat, VideoDecoder, VideoDecoderFactory, VideoDecoderFactoryHandle,
     VideoDecoderInfo, VideoDecoderSettings, VideoEncoder, VideoEncoderFactory,
     VideoEncoderFactoryHandle, VideoEncoderInfo, VideoEncoderSettings, VideoFrame,
@@ -32,6 +33,7 @@ struct Counters {
     encoder_release: AtomicUsize,
     encoder_rotation: AtomicU32,
     encoder_settings: Mutex<Vec<VideoEncoderSettings>>,
+    encoder_rates: Mutex<Vec<VideoRateControl>>,
     decoder_factory: AtomicUsize,
     decoder_create: AtomicUsize,
     decode: AtomicUsize,
@@ -114,7 +116,8 @@ impl VideoEncoder for TestEncoder {
         })
     }
 
-    fn set_rates(&mut self, _: VideoRateControl) -> Result<(), CodecError> {
+    fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
+        self.0.encoder_rates.lock().unwrap().push(rates);
         Ok(())
     }
 
@@ -218,6 +221,41 @@ impl Pair {
         Self::new_with_encoder(counters, fail_encoder, None)
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn new_builtin() -> Self {
+        let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
+        let environment = Environment::builder().clock(&clock).build().unwrap();
+        let network = SimulatedNetwork::new(&clock).unwrap();
+        let alice_endpoint = network.register_endpoint(Ipv4Addr::new(10, 22, 0, 1).into()).unwrap();
+        let bob_endpoint = network.register_endpoint(Ipv4Addr::new(10, 22, 0, 2).into()).unwrap();
+        let encoder = VideoEncoderFactoryHandle::builtin().unwrap();
+        let decoder = VideoDecoderFactoryHandle::builtin().unwrap();
+        assert!(encoder.supported_formats().iter().any(|format| format.name == "H264"));
+        assert!(decoder.supported_formats().iter().any(|format| format.name == "H264"));
+        assert!(encoder.query_support(&h264(), None, None).supported);
+        assert!(decoder.query_support(&h264(), false, None).supported);
+        let alice_factory = PeerConnectionFactory::builder()
+            .environment(environment.clone())
+            .network_manager(alice_endpoint.network_manager().unwrap())
+            .packet_socket_factory(alice_endpoint.packet_socket_factory().unwrap())
+            .video_encoder_factory(encoder.clone())
+            .video_decoder_factory(decoder.clone())
+            .build().unwrap();
+        let bob_factory = PeerConnectionFactory::builder()
+            .environment(environment)
+            .network_manager(bob_endpoint.network_manager().unwrap())
+            .packet_socket_factory(bob_endpoint.packet_socket_factory().unwrap())
+            .video_encoder_factory(encoder)
+            .video_decoder_factory(decoder)
+            .build().unwrap();
+        // The peer factories, not caller-owned selection variables, retain the
+        // actual codec implementations through use and teardown.
+        let alice = alice_factory.create_peer_connection(PeerConfiguration::default()).unwrap();
+        let bob = bob_factory.create_peer_connection(PeerConfiguration::default()).unwrap();
+        Self { clock, network, alice_factory, bob_factory, alice, bob,
+            _alice_endpoint: alice_endpoint, _bob_endpoint: bob_endpoint }
+    }
+
     fn new_with_encoder(
         counters: Arc<Counters>,
         fail_encoder: bool,
@@ -232,8 +270,72 @@ impl Pair {
         encoder: Option<VideoEncoderFactoryHandle>,
         decoder_format: VideoCodecFormat,
     ) -> Self {
+        Self::new_with_dependencies(
+            counters,
+            fail_encoder,
+            encoder,
+            decoder_format,
+            Default::default(),
+        )
+    }
+
+    fn new_with_dependencies(
+        counters: Arc<Counters>,
+        fail_encoder: bool,
+        encoder: Option<VideoEncoderFactoryHandle>,
+        decoder_format: VideoCodecFormat,
+        dependencies: pulsebeam_webrtc_sys::PeerConnectionDependencies,
+    ) -> Self {
+        Self::new_with_fec(
+            counters,
+            fail_encoder,
+            encoder,
+            decoder_format,
+            dependencies,
+            None,
+        )
+    }
+
+    fn new_with_fec(
+        counters: Arc<Counters>,
+        fail_encoder: bool,
+        encoder: Option<VideoEncoderFactoryHandle>,
+        decoder_format: VideoCodecFormat,
+        dependencies: pulsebeam_webrtc_sys::PeerConnectionDependencies,
+        fec: Option<&pulsebeam_webrtc_sys::FecControllerFactory>,
+    ) -> Self {
+        Self::new_with_call_factories(
+            counters,
+            fail_encoder,
+            encoder,
+            decoder_format,
+            dependencies,
+            fec,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_call_factories(
+        counters: Arc<Counters>,
+        fail_encoder: bool,
+        encoder: Option<VideoEncoderFactoryHandle>,
+        decoder_format: VideoCodecFormat,
+        dependencies: pulsebeam_webrtc_sys::PeerConnectionDependencies,
+        fec: Option<&pulsebeam_webrtc_sys::FecControllerFactory>,
+        network_controller: Option<&pulsebeam_webrtc_sys::NetworkControllerFactory>,
+    ) -> Self {
         let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
-        let environment = Environment::builder().clock(&clock).build().unwrap();
+        let mut environment = Environment::builder().clock(&clock);
+        if network_controller.is_some() {
+            environment = environment.field_trials(
+                pulsebeam_webrtc_sys::FieldTrials::parse(
+                    "WebRTC-Bwe-InjectedCongestionController/Enabled/",
+                )
+                .unwrap(),
+            );
+        }
+        let environment = environment.build().unwrap();
         let network = SimulatedNetwork::new(&clock).unwrap();
         let alice_endpoint = network
             .register_endpoint(Ipv4Addr::new(10, 22, 0, 1).into())
@@ -241,13 +343,15 @@ impl Pair {
         let bob_endpoint = network
             .register_endpoint(Ipv4Addr::new(10, 22, 0, 2).into())
             .unwrap();
-        let alice_factory = factory(
+        let alice_factory = factory_with_call_factories(
             environment.clone(),
             &alice_endpoint,
             counters.clone(),
             fail_encoder,
             encoder,
             h264(),
+            fec,
+            network_controller,
         );
         let bob_factory = factory(
             environment,
@@ -258,7 +362,7 @@ impl Pair {
             decoder_format,
         );
         let alice = alice_factory
-            .create_peer_connection(PeerConfiguration::default())
+            .create_peer_connection_with_dependencies(PeerConfiguration::default().into(), dependencies)
             .unwrap();
         let bob = bob_factory
             .create_peer_connection(PeerConfiguration::default())
@@ -392,7 +496,50 @@ fn factory(
     encoder: Option<VideoEncoderFactoryHandle>,
     decoder_format: VideoCodecFormat,
 ) -> PeerConnectionFactory {
-    PeerConnectionFactory::builder()
+    factory_with_fec(
+        environment,
+        endpoint,
+        counters,
+        fail_encoder,
+        encoder,
+        decoder_format,
+        None,
+    )
+}
+
+fn factory_with_fec(
+    environment: Environment,
+    endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint,
+    counters: Arc<Counters>,
+    fail_encoder: bool,
+    encoder: Option<VideoEncoderFactoryHandle>,
+    decoder_format: VideoCodecFormat,
+    fec: Option<&pulsebeam_webrtc_sys::FecControllerFactory>,
+) -> PeerConnectionFactory {
+    factory_with_call_factories(
+        environment,
+        endpoint,
+        counters,
+        fail_encoder,
+        encoder,
+        decoder_format,
+        fec,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn factory_with_call_factories(
+    environment: Environment,
+    endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint,
+    counters: Arc<Counters>,
+    fail_encoder: bool,
+    encoder: Option<VideoEncoderFactoryHandle>,
+    decoder_format: VideoCodecFormat,
+    fec: Option<&pulsebeam_webrtc_sys::FecControllerFactory>,
+    network_controller: Option<&pulsebeam_webrtc_sys::NetworkControllerFactory>,
+) -> PeerConnectionFactory {
+    let mut builder = PeerConnectionFactory::builder()
         .environment(environment)
         .network_manager(endpoint.network_manager().unwrap())
         .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
@@ -405,9 +552,14 @@ fn factory(
         }))
         .video_decoder_factory(
             VideoDecoderFactoryHandle::new(DecoderFactory(counters, decoder_format)).unwrap(),
-        )
-        .build()
-        .unwrap()
+        );
+    if let Some(factory) = fec {
+        builder = builder.fec_controller_factory(factory);
+    }
+    if let Some(factory) = network_controller {
+        builder = builder.network_controller_factory(factory);
+    }
+    builder.build().unwrap()
 }
 
 fn synthetic_i420(width: u32, height: u32) -> Vec<u8> {
@@ -598,6 +750,51 @@ fn video_sink_bounds_retention_and_reports_loss() {
     pair.bob.close().unwrap();
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn builtin_h264_encodes_and_decodes_over_real_peer_transport() {
+    let mut pair = Pair::new_builtin();
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair.alice_factory.create_video_track("builtin-h264", &source).unwrap();
+    let transceiver = pair.alice.add_video_transceiver(&track, RtpTransceiverDirection::SendOnly).unwrap();
+    let codecs: Vec<_> = pair.alice.video_sender_capabilities().unwrap().into_iter()
+        .filter(|codec| codec.format().name == "H264").collect();
+    assert!(!codecs.is_empty());
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    let mut events = pair.negotiate();
+    let remote = (0..2_000_000).find_map(|_| {
+        if let Some(remote) = take_remote_transceiver(&mut events) { return Some(remote); }
+        events.extend(pair.progress().1);
+        None
+    }).expect("native H.264 remote transceiver");
+    let remote_track = remote.receiver().track().unwrap();
+    let mut sink = remote_track.attach_sink().unwrap();
+    let mut pixels = vec![48; 64 * 64];
+    pixels.extend(vec![96; 32 * 32]);
+    pixels.extend(vec![160; 32 * 32]);
+    let mut received = None;
+    // Repeated input permits ordinary native asynchronous codec/transport
+    // startup. Only an actual decoded frame with representative contents passes.
+    for index in 0..20 {
+        let timestamp_us = i64::try_from(pair.clock.now().as_micros()).unwrap();
+        source.push_frame(&VideoFrame::i420(64, 64, pixels.clone(), timestamp_us,
+            90_000 + index * 3_000).unwrap()).unwrap();
+        received = (0..100_000).find_map(|_| {
+            pair.progress();
+            sink.try_next_frame()
+        });
+        if received.is_some() { break; }
+    }
+    let received = received.expect("bundled OpenH264/FFmpeg decoded output");
+    assert_eq!((received.width, received.height), (64, 64));
+    let output = received.buffer.as_bytes();
+    assert_eq!(output.len(), pixels.len());
+    assert!(output.iter().zip(&pixels).all(|(&actual, &expected)| actual.abs_diff(expected) <= 2));
+    sink.close().unwrap();
+    pair.alice.close().unwrap();
+    pair.bob.close().unwrap();
+}
+
 const DIRECT_H264_KEY: &[u8] = &[
     0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0, 0x3c,
     0x48, 0x99, 0x20, 0, 0, 0, 1, 0x68, 0xcb, 0x80, 0xc4, 0xb2, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0xf1,
@@ -742,6 +939,30 @@ fn direct_encoded_h264_input_reaches_remote_without_decode() {
         })
         .expect("keyframe did not resume encoded delivery");
     assert_eq!(next.data, frame.data);
+    // Exercise the full owning native operation separately from the older
+    // active-video convenience method, and observe the actual encoder callback.
+    let _ = source.take_keyframe_request();
+    transceiver.sender().generate_keyframe(&[]).unwrap();
+    for _ in 0..1000 {
+        pair.progress();
+    }
+    source.push(H264AccessUnit {
+        data: vec![0, 0, 0, 1, 0x41, 0x88, 0x84, 0xf1],
+        key_frame: false,
+        timestamp_us: 5_000_000,
+        ..frame.clone()
+    }).unwrap();
+    assert!((0..100_000).any(|_| {
+        pair.progress();
+        source.take_keyframe_request()
+    }), "native GenerateKeyFrame did not reach the actual encoded source callback");
+    source.push(H264AccessUnit { timestamp_us: 6_000_000, ..frame.clone() }).unwrap();
+    let native_recovery = (0..2_000_000).find_map(|_| {
+        pair.progress();
+        sink.try_next_frame()
+    }).expect("native keyframe request did not resume encoded delivery");
+    assert_eq!(native_recovery.data, frame.data);
+    assert!(native_recovery.key_frame);
     assert_eq!(
         source.push(H264AccessUnit {
             key_frame: false,
@@ -1353,6 +1574,639 @@ fn direct_encoded_sources_keep_stream_identity_and_isolate_teardown() {
     pair.bob.close().unwrap();
 }
 
+#[derive(Default)]
+struct AllocationObservations {
+    codecs: Mutex<Vec<pulsebeam_webrtc_sys::VideoCodecConfiguration>>,
+    environment: Mutex<Option<pulsebeam_webrtc_sys::VideoBitrateAllocatorEnvironment>>,
+    parameters: Mutex<Vec<pulsebeam_webrtc_sys::VideoBitrateAllocationParameters>>,
+    legacy: Mutex<Vec<bool>>,
+    factory_drops: AtomicUsize,
+    product_drops: AtomicUsize,
+}
+
+struct AllocationFactory(Arc<AllocationObservations>, std::cell::Cell<usize>);
+impl pulsebeam_webrtc_sys::VideoBitrateAllocatorFactoryProvider for AllocationFactory {
+    fn create(
+        &mut self,
+        environment: pulsebeam_webrtc_sys::VideoBitrateAllocatorEnvironment,
+        codec: pulsebeam_webrtc_sys::VideoCodecConfiguration,
+    ) -> pulsebeam_webrtc_sys::VideoBitrateAllocatorProduct {
+        self.1.set(self.1.get() + 1);
+        *self.0.environment.lock().unwrap() = Some(environment);
+        self.0.codecs.lock().unwrap().push(codec);
+        pulsebeam_webrtc_sys::VideoBitrateAllocatorProduct::Provider(Box::new(AllocationProduct(
+            self.0.clone(),
+            std::cell::Cell::new(0),
+        )))
+    }
+}
+impl Drop for AllocationFactory {
+    fn drop(&mut self) {
+        self.0.factory_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct AllocationProduct(Arc<AllocationObservations>, std::cell::Cell<usize>);
+impl pulsebeam_webrtc_sys::VideoBitrateAllocator for AllocationProduct {
+    fn allocate(
+        &mut self,
+        parameters: pulsebeam_webrtc_sys::VideoBitrateAllocationParameters,
+    ) -> pulsebeam_webrtc_sys::VideoBitrateAllocation {
+        self.1.set(self.1.get() + 1);
+        self.0.parameters.lock().unwrap().push(parameters);
+        let mut result = pulsebeam_webrtc_sys::VideoBitrateAllocation {
+            bandwidth_limited: true,
+            ..Default::default()
+        };
+        result.layer_bitrates_bps[0][0] = Some(123_456);
+        result.layer_bitrates_bps[0][1] = Some(0);
+        result
+    }
+    fn set_legacy_conference_mode(&mut self, enabled: bool) {
+        self.0.legacy.lock().unwrap().push(enabled);
+    }
+}
+impl Drop for AllocationProduct {
+    fn drop(&mut self) {
+        self.0.product_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_environment() {
+    use pulsebeam_webrtc_sys::{
+        DataRate, PeerConnectionDependencies, VideoBitrateAllocatorFactory, VideoCodecType,
+    };
+    let counters = Arc::new(Counters::default());
+    let observations = Arc::new(AllocationObservations::default());
+    let registration = VideoBitrateAllocatorFactory::from_provider(AllocationFactory(
+        observations.clone(),
+        std::cell::Cell::new(0),
+    ));
+    let pair = Pair::new_with_dependencies(
+        counters.clone(),
+        false,
+        None,
+        h264(),
+        PeerConnectionDependencies::default().video_bitrate_allocator_factory(&registration),
+    );
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("custom-allocation", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    drop(pair.negotiate());
+    source
+        .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
+        .unwrap();
+    let observed = (0..2_000_000).any(|_| {
+        pair.progress();
+        counters.encode.load(Ordering::SeqCst) > 0
+            && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
+                rates.layer_bitrates_bps[0][0] == Some(123_456)
+                    && rates.layer_bitrates_bps[0][1] == Some(0)
+                    && rates.layer_bitrates_bps[0][2].is_none()
+            })
+    });
+    assert!(
+        observed,
+        "native encoder did not consume the custom sparse allocation"
+    );
+    assert!(!registration.failed());
+    let codecs = observations.codecs.lock().unwrap();
+    assert!(!codecs.is_empty());
+    assert!(
+        codecs
+            .iter()
+            .all(|codec| codec.codec_type == VideoCodecType::H264
+                && codec.width == 16
+                && codec.height == 16)
+    );
+    assert!(
+        codecs
+            .iter()
+            .all(|codec| codec.simulcast_streams.len() == 3 && codec.spatial_layers.len() == 5)
+    );
+    drop(codecs);
+    assert!(observations.legacy.lock().unwrap().contains(&false));
+    assert!(observations.parameters.lock().unwrap().iter().any(
+        |parameters| matches!(parameters.total_bitrate, DataRate::BitsPerSecond(value) if value > 0)
+            && parameters.framerate > 0.0
+    ));
+    let environment = observations
+        .environment
+        .lock()
+        .unwrap()
+        .take()
+        .expect("factory environment");
+    let timestamp = environment.timestamp();
+    let trials = environment.field_trials();
+    drop(registration);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 0);
+    drop(transceiver);
+    drop(track);
+    drop(source);
+    drop(pair);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 1);
+    assert!(observations.product_drops.load(Ordering::SeqCst) > 0);
+    assert_eq!(environment.timestamp(), timestamp);
+    assert_eq!(environment.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+}
+
+#[derive(Default)]
+struct FecObservations {
+    creates: AtomicUsize,
+    factory_drops: AtomicUsize,
+    product_drops: AtomicUsize,
+    environment: Mutex<Option<pulsebeam_webrtc_sys::FecControllerEnvironment>>,
+    callback: Mutex<Option<pulsebeam_webrtc_sys::FecProtectionCallback>>,
+    methods: Mutex<Vec<(bool, bool)>>,
+    encoding: Mutex<Vec<pulsebeam_webrtc_sys::FecEncodingData>>,
+    encoded: Mutex<Vec<(usize, pulsebeam_webrtc_sys::FecEncodedFrameType)>>,
+    rates: Mutex<Vec<pulsebeam_webrtc_sys::FecRateUpdate>>,
+    async_started: std::sync::atomic::AtomicBool,
+    protection: Mutex<
+        Option<
+            pulsebeam_webrtc_sys::FecCallbackOperation<pulsebeam_webrtc_sys::FecProtectionResponse>,
+        >,
+    >,
+    retransmission: Mutex<Option<pulsebeam_webrtc_sys::FecCallbackOperation<()>>>,
+}
+struct FecFactory(Arc<FecObservations>, std::cell::Cell<usize>);
+impl pulsebeam_webrtc_sys::FecControllerFactoryProvider for FecFactory {
+    fn create_fec_controller(
+        &mut self,
+        environment: pulsebeam_webrtc_sys::FecControllerEnvironment,
+    ) -> pulsebeam_webrtc_sys::FecControllerCreation {
+        self.1.set(self.1.get() + 1);
+        self.0.creates.fetch_add(1, Ordering::SeqCst);
+        *self.0.environment.lock().unwrap() = Some(environment);
+        pulsebeam_webrtc_sys::FecControllerCreation::Provider(Box::new(FecProduct(self.0.clone())))
+    }
+}
+impl Drop for FecFactory {
+    fn drop(&mut self) {
+        self.0.factory_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct FecProduct(Arc<FecObservations>);
+impl pulsebeam_webrtc_sys::FecController for FecProduct {
+    fn set_protection_callback(
+        &self,
+        callback: Option<pulsebeam_webrtc_sys::FecProtectionCallback>,
+    ) {
+        *self.0.callback.lock().unwrap() = callback;
+    }
+    fn set_protection_method(&self, fec: bool, nack: bool) {
+        self.0.methods.lock().unwrap().push((fec, nack));
+    }
+    fn set_encoding_data(&self, data: pulsebeam_webrtc_sys::FecEncodingData) {
+        self.0.encoding.lock().unwrap().push(data);
+    }
+    fn update_fec_rates(&self, update: pulsebeam_webrtc_sys::FecRateUpdate) -> u32 {
+        use pulsebeam_webrtc_sys::{
+            FecProtectionCallbackError, FecProtectionParams, FecRetransmissionMode,
+        };
+        let callback = self
+            .0
+            .callback
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("native callback installed");
+        // This is the SDK's synchronous protection callback path, on worker.
+        callback
+            .request(
+                FecProtectionParams::default(),
+                FecProtectionParams::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            callback.set_retransmission_mode(FecRetransmissionMode::ALL_LAYERS),
+            Err(FecProtectionCallbackError::ReentrantNativeLock)
+        );
+        if !self.0.async_started.swap(true, Ordering::SeqCst) {
+            *self.0.protection.lock().unwrap() = Some(callback.request_async(
+                FecProtectionParams::default(),
+                FecProtectionParams::default(),
+            ));
+            *self.0.retransmission.lock().unwrap() =
+                Some(callback.set_retransmission_mode_async(FecRetransmissionMode::ALL_LAYERS));
+        }
+        let rate = update.estimated_bitrate_bps;
+        self.0.rates.lock().unwrap().push(update);
+        rate
+    }
+    fn update_with_encoded_data(
+        &self,
+        length: usize,
+        frame_type: pulsebeam_webrtc_sys::FecEncodedFrameType,
+    ) {
+        self.0.encoded.lock().unwrap().push((length, frame_type));
+    }
+    fn use_loss_vector_mask(&self) -> bool {
+        true
+    }
+}
+impl Drop for FecProduct {
+    fn drop(&mut self) {
+        self.0.product_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Default)]
+struct NetworkControlObservations {
+    creates: AtomicUsize,
+    factory_drops: AtomicUsize,
+    product_drops: AtomicUsize,
+    callbacks: std::sync::Mutex<Vec<&'static str>>,
+    environment: std::sync::Mutex<Option<pulsebeam_webrtc_sys::NetworkControllerEnvironment>>,
+}
+struct NetworkControlFactory(Arc<NetworkControlObservations>, std::cell::Cell<u32>);
+struct NetworkControlProduct(Arc<NetworkControlObservations>, std::cell::Cell<u32>);
+impl Drop for NetworkControlFactory {
+    fn drop(&mut self) {
+        self.0.factory_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl Drop for NetworkControlProduct {
+    fn drop(&mut self) {
+        self.0.product_drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl pulsebeam_webrtc_sys::NetworkControllerFactoryProvider for NetworkControlFactory {
+    fn create(
+        &mut self,
+        config: pulsebeam_webrtc_sys::NetworkControllerConfig,
+    ) -> Box<dyn pulsebeam_webrtc_sys::NetworkController> {
+        self.1.set(self.1.get() + 1);
+        assert!(
+            config
+                .environment
+                .field_trials()
+                .is_enabled("WebRTC-Bwe-InjectedCongestionController")
+        );
+        assert_eq!(
+            config.default_pacing_time_window,
+            pulsebeam_webrtc_sys::PacerConfig::DEFAULT_TIME_WINDOW
+        );
+        self.0.creates.fetch_add(1, Ordering::SeqCst);
+        *self.0.environment.lock().unwrap() = Some(config.environment);
+        Box::new(NetworkControlProduct(
+            self.0.clone(),
+            std::cell::Cell::new(0),
+        ))
+    }
+    fn process_interval(&mut self) -> pulsebeam_webrtc_sys::TimeDelta {
+        pulsebeam_webrtc_sys::TimeDelta::from_native_microsecond_bits(25_000)
+    }
+}
+impl NetworkControlProduct {
+    fn update(
+        &mut self,
+        method: &'static str,
+        at_time: pulsebeam_webrtc_sys::Timestamp,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        use pulsebeam_webrtc_sys::{
+            DataRate, NetworkControlUpdate, NetworkEstimate, PacerConfig, TargetTransferRate,
+            TimeDelta,
+        };
+        self.1.set(self.1.get() + 1);
+        self.0.callbacks.lock().unwrap().push(method);
+        let at_time = if at_time.is_finite() {
+            at_time
+        } else {
+            self.0
+                .environment
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .timestamp()
+        };
+        NetworkControlUpdate {
+            pacer_config: Some(
+                PacerConfig::create(
+                    at_time,
+                    DataRate::BitsPerSecond(2_000_000),
+                    DataRate::BitsPerSecond(0),
+                    PacerConfig::DEFAULT_TIME_WINDOW,
+                )
+                .unwrap(),
+            ),
+            target_rate: Some(TargetTransferRate {
+                at_time,
+                target_rate: DataRate::BitsPerSecond(1_500_000),
+                network_estimate: NetworkEstimate {
+                    at_time,
+                    bandwidth: DataRate::BitsPerSecond(1_500_000),
+                    round_trip_time: TimeDelta::from_native_microsecond_bits(10_000),
+                    bwe_period: TimeDelta::from_native_microsecond_bits(25_000),
+                    loss_rate_ratio: 0.0,
+                },
+                cwnd_reduce_ratio: 0.0,
+            }),
+            ..Default::default()
+        }
+    }
+}
+impl pulsebeam_webrtc_sys::NetworkController for NetworkControlProduct {
+    fn on_network_availability(
+        &mut self,
+        value: pulsebeam_webrtc_sys::NetworkAvailability,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("network_availability", value.at_time)
+    }
+    fn on_network_route_change(
+        &mut self,
+        value: pulsebeam_webrtc_sys::NetworkRouteChange,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("network_route_change", value.at_time)
+    }
+    fn on_process_interval(
+        &mut self,
+        value: pulsebeam_webrtc_sys::ProcessInterval,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("process_interval", value.at_time)
+    }
+    fn on_remote_bitrate_report(
+        &mut self,
+        value: pulsebeam_webrtc_sys::RemoteBitrateReport,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("remote_bitrate_report", value.receive_time)
+    }
+    fn on_round_trip_time_update(
+        &mut self,
+        value: pulsebeam_webrtc_sys::RoundTripTimeUpdate,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("round_trip_time_update", value.receive_time)
+    }
+    fn on_sent_packet(
+        &mut self,
+        value: pulsebeam_webrtc_sys::SentPacket,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("sent_packet", value.send_time)
+    }
+    fn on_received_packet(
+        &mut self,
+        value: pulsebeam_webrtc_sys::NetworkControlReceivedPacket,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("received_packet", value.receive_time)
+    }
+    fn on_streams_config(
+        &mut self,
+        value: pulsebeam_webrtc_sys::StreamsConfig,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("streams_config", value.at_time)
+    }
+    fn on_target_rate_constraints(
+        &mut self,
+        value: pulsebeam_webrtc_sys::TargetRateConstraints,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("target_rate_constraints", value.at_time)
+    }
+    fn on_transport_loss_report(
+        &mut self,
+        value: pulsebeam_webrtc_sys::TransportLossReport,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("transport_loss_report", value.receive_time)
+    }
+    fn on_transport_packets_feedback(
+        &mut self,
+        value: pulsebeam_webrtc_sys::TransportPacketsFeedback,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("transport_packets_feedback", value.feedback_time)
+    }
+    fn on_network_state_estimate(
+        &mut self,
+        value: pulsebeam_webrtc_sys::NetworkStateEstimate,
+    ) -> pulsebeam_webrtc_sys::NetworkControlUpdate {
+        self.update("network_state_estimate", value.update_time)
+    }
+    fn supports_ecn_adaptation(&mut self) -> bool {
+        true
+    }
+}
+#[test]
+fn injected_network_controller_drives_native_video_without_an_additional_owner() {
+    use pulsebeam_webrtc_sys::NetworkControllerFactory;
+    let counters = Arc::new(Counters::default());
+    let observations = Arc::new(NetworkControlObservations::default());
+    let registration = NetworkControllerFactory::from_provider(NetworkControlFactory(
+        observations.clone(),
+        std::cell::Cell::new(0),
+    ));
+    let pair = Pair::new_with_call_factories(
+        counters.clone(),
+        false,
+        None,
+        h264(),
+        Default::default(),
+        None,
+        Some(&registration),
+    );
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("custom-network-control", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    drop(pair.negotiate());
+    source
+        .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
+        .unwrap();
+    let observed = (0..2_000_000).any(|_| {
+        pair.progress();
+        counters.encode.load(Ordering::SeqCst) > 0
+            && observations
+                .callbacks
+                .lock()
+                .unwrap()
+                .contains(&"sent_packet")
+    });
+    assert!(
+        observed,
+        "injected native controller did not encode/send a packet"
+    );
+    assert!(!registration.has_failed());
+    assert!(observations.creates.load(Ordering::SeqCst) > 0);
+    assert!(
+        observations
+            .callbacks
+            .lock()
+            .unwrap()
+            .contains(&"network_availability")
+    );
+    let retained = observations.environment.lock().unwrap().take().unwrap();
+    let trials = retained.field_trials();
+    let timestamp = retained.timestamp();
+    drop(registration);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 0);
+    drop(transceiver);
+    drop(track);
+    drop(source);
+    drop(pair);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observations.product_drops.load(Ordering::SeqCst),
+        observations.creates.load(Ordering::SeqCst)
+    );
+    assert_eq!(retained.timestamp(), timestamp);
+    assert_eq!(retained.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+}
+
+#[test]
+fn factory_fec_product_uses_native_protection_callback_and_existing_worker_dispatch() {
+    use pulsebeam_webrtc_sys::{
+        FecControllerFactory, FecEncodedFrameType, FecProtectionCallbackError, FecProtectionParams,
+    };
+    let counters = Arc::new(Counters::default());
+    let observations = Arc::new(FecObservations::default());
+    let registration = FecControllerFactory::from_provider(FecFactory(
+        observations.clone(),
+        std::cell::Cell::new(0),
+    ));
+    let pair = Pair::new_with_fec(
+        counters.clone(),
+        false,
+        None,
+        h264(),
+        Default::default(),
+        Some(&registration),
+    );
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair
+        .alice_factory
+        .create_video_track("custom-fec", &source)
+        .unwrap();
+    let transceiver = pair
+        .alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let codecs: Vec<_> = pair
+        .alice
+        .video_sender_capabilities()
+        .unwrap()
+        .into_iter()
+        .filter(|codec| codec.format().name == "H264")
+        .collect();
+    transceiver.set_codec_preferences(&codecs).unwrap();
+    drop(pair.negotiate());
+    source
+        .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
+        .unwrap();
+    let mut protection = None;
+    let mut retransmission = None;
+    let observed = (0..2_000_000).any(|_| {
+        pair.progress();
+        if protection.is_none() {
+            protection = observations
+                .protection
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|operation| operation.try_take());
+        }
+        if retransmission.is_none() {
+            retransmission = observations
+                .retransmission
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|operation| operation.try_take());
+        }
+        counters.encode.load(Ordering::SeqCst) > 0
+            && !observations.encoded.lock().unwrap().is_empty()
+            && protection.is_some()
+            && retransmission.is_some()
+    });
+    assert!(
+        observed,
+        "native FEC callback or queued operation was not consumed"
+    );
+    assert_eq!(protection.unwrap().unwrap().native_result, 0);
+    assert_eq!(retransmission, Some(Ok(())));
+    assert!(!registration.has_failed());
+    assert!(observations.creates.load(Ordering::SeqCst) > 0);
+    assert!(!observations.methods.lock().unwrap().is_empty());
+    assert!(
+        observations
+            .encoding
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|data| data.width == 16 && data.height == 16)
+    );
+    assert!(
+        observations
+            .encoded
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(length, frame_type)| *length > 0 && *frame_type == FecEncodedFrameType::Key)
+    );
+    assert!(!observations.rates.lock().unwrap().is_empty());
+    let callback = observations.callback.lock().unwrap().clone().unwrap();
+    // Affinity is not sufficient outside a known live native invocation.
+    assert_eq!(
+        callback.request(
+            FecProtectionParams::default(),
+            FecProtectionParams::default()
+        ),
+        Err(FecProtectionCallbackError::OutsideInvocation)
+    );
+    let environment = observations.environment.lock().unwrap().take().unwrap();
+    let timestamp = environment.timestamp();
+    let trials = environment.field_trials();
+    drop(registration);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 0);
+    drop(transceiver);
+    drop(track);
+    drop(source);
+    drop(pair);
+    assert_eq!(observations.factory_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observations.product_drops.load(Ordering::SeqCst),
+        observations.creates.load(Ordering::SeqCst)
+    );
+    assert_eq!(
+        callback
+            .request_async(
+                FecProtectionParams::default(),
+                FecProtectionParams::default()
+            )
+            .try_take(),
+        Some(Err(FecProtectionCallbackError::Retired))
+    );
+    assert_eq!(environment.timestamp(), timestamp);
+    assert_eq!(environment.field_trials().lookup("WebRTC-Bwe-InjectedCongestionController"),
+        trials.lookup("WebRTC-Bwe-InjectedCongestionController"));
+}
+
 #[test]
 fn injected_h264_provider_carries_a_frame_between_peers() {
     let counters = Arc::new(Counters::default());
@@ -1369,6 +2223,9 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
         .unwrap();
     assert_eq!(transceiver.direction(), RtpTransceiverDirection::SendOnly);
     assert_eq!(transceiver.sender().track().unwrap().id(), "synthetic");
+    assert!(transceiver.sender().dtmf_sender().is_none());
+    assert_eq!(transceiver.sender().media_type(), pulsebeam_webrtc_sys::MediaType::Video);
+    assert_eq!(transceiver.sender().init_send_encodings(), vec![pulsebeam_webrtc_sys::RtpEncodingParameters::default()]);
 
     let sender_codecs = pair.alice.video_sender_capabilities().unwrap();
     let receiver_codecs = pair.bob.video_receiver_capabilities().unwrap();
@@ -1853,6 +2710,29 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
 }
 
 #[test]
+fn full_native_keyframe_operation_preserves_noop_and_rid_error_order() {
+    let pair = Pair::new(Arc::new(Counters::default()), false);
+    let source = pair.alice_factory.create_video_source().unwrap();
+    let track = pair.alice_factory.create_video_track("native-keyframe", &source).unwrap();
+    let transceiver = pair.alice.add_video_transceiver(&track, RtpTransceiverDirection::SendOnly).unwrap();
+    let sender = transceiver.sender();
+    assert_eq!(sender.ssrc(), 0);
+    // The actual SDK succeeds before validating RIDs without an active channel.
+    sender.generate_keyframe(&[vec![], vec![0xff, 0]]).unwrap();
+    pair.negotiate();
+    let error = sender.generate_keyframe(&[vec![]]).unwrap_err();
+    let RtpSenderOperationError::Native(error) = error else { panic!("actual native RID error required") };
+    assert_eq!(error.kind(), RtcErrorType::InvalidParameter);
+    assert_eq!(error.message_bytes(), b"Attempted to specify an empty rid.");
+    let error = sender.generate_keyframe(&[vec![0xff, 0]]).unwrap_err();
+    let RtpSenderOperationError::Native(error) = error else { panic!("actual native RID error required") };
+    assert_eq!(error.kind(), RtcErrorType::InvalidParameter);
+    assert_eq!(error.message_bytes(), b"Attempted to specify a rid not configured.");
+    transceiver.stop_standard().unwrap();
+    sender.generate_keyframe(&[vec![], vec![0xff, 0]]).unwrap();
+}
+
+#[test]
 fn sender_encoding_updates_preserve_transaction_and_validate_values() {
     let counters = Arc::new(Counters::default());
     let pair = Pair::new(counters, false);
@@ -1904,6 +2784,15 @@ fn sender_encoding_updates_preserve_transaction_and_validate_values() {
     assert!(sender.set_parameters(invalid).is_err());
     let mut invalid = sender.parameters().unwrap();
     invalid.encodings[0].rid = "changed".into();
+    assert!(sender.set_parameters(invalid).is_err());
+    let mut invalid = sender.parameters().unwrap();
+    invalid.encodings[0].max_framerate = Some((i32::MAX as f64) + 1.0);
+    assert!(sender.set_parameters(invalid).is_err());
+    let mut invalid = sender.parameters().unwrap();
+    invalid.encodings[0].scale_resolution_down_to = Some(VideoResolution {
+        width: i32::MAX as u32,
+        height: 2,
+    });
     assert!(sender.set_parameters(invalid).is_err());
     let mut current = sender.parameters().unwrap();
     current.encodings[0].active = true;

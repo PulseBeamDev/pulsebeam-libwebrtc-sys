@@ -5,6 +5,8 @@
 #include <memory>
 
 #include "api/environment/environment.h"
+#include "api/field_trials_view.h"
+#include "api/rtc_event_log_output.h"
 #include "rust/cxx.h"
 
 namespace webrtc {
@@ -14,7 +16,28 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct RustTask;
+struct RustTaskQueueFactory;
+class NativeClock;
 struct RustReadiness;
+struct RustFieldTrials;
+std::unique_ptr<webrtc::FieldTrialsView> field_trials_adapter(rust::Box<RustFieldTrials> trials) noexcept;
+struct RustEventLogOutput;
+struct RustRtcEventLog;
+
+class NativeEventLogOutput final {
+ public:
+  explicit NativeEventLogOutput(std::unique_ptr<webrtc::RtcEventLogOutput> output) noexcept;
+  ~NativeEventLogOutput();
+  std::unique_ptr<webrtc::RtcEventLogOutput> Take() noexcept;
+  webrtc::RtcEventLogOutput* output() const noexcept;
+ private:
+  std::unique_ptr<webrtc::RtcEventLogOutput> output_;
+};
+std::unique_ptr<NativeEventLogOutput> event_log_output_from_sink(rust::Box<RustEventLogOutput> output) noexcept;
+std::unique_ptr<NativeEventLogOutput> event_log_output_file(rust::Str filename, std::size_t maximum_bytes) noexcept;
+bool event_log_output_native_active(const NativeEventLogOutput& output) noexcept;
+bool event_log_output_native_write(NativeEventLogOutput& output, rust::Slice<const std::uint8_t> bytes) noexcept;
+void event_log_output_native_flush(NativeEventLogOutput& output) noexcept;
 
 // Contains only a thread-safe Rust notification state, never engine handles.
 class ReadinessSignal final {
@@ -176,6 +199,7 @@ std::int64_t system_clock_time_us() noexcept;
 
 std::unique_ptr<NativeTaskQueueFactory>
 new_default_task_queue_factory() noexcept;
+std::unique_ptr<NativeTaskQueueFactory> new_provider_task_queue_factory(rust::Box<RustTaskQueueFactory> provider) noexcept;
 std::unique_ptr<NativeTaskQueueFactory> new_cooperative_task_queue_factory(
     const NativeManualClock& clock) noexcept;
 bool task_queue_factory_is_cooperative(
@@ -186,24 +210,62 @@ bool task_queue_factory_uses_clock(const NativeTaskQueueFactory& factory,
                                    const NativeManualClock& clock) noexcept;
 std::unique_ptr<NativeTaskQueue> create_task_queue(
     const NativeTaskQueueFactory& factory,
-    rust::Str name,
+    rust::Slice<const std::uint8_t> name,
     std::uint8_t priority) noexcept;
 bool post_task(const NativeTaskQueue& queue, rust::Box<RustTask> task) noexcept;
 bool post_delayed_task(const NativeTaskQueue& queue,
                        std::int64_t delay_us,
                        rust::Box<RustTask> task) noexcept;
+std::size_t task_queue_identity(const NativeTaskQueue& queue) noexcept;
+bool task_queue_is_current(const NativeTaskQueue& queue) noexcept;
+rust::Vec<std::uint8_t> task_queue_name(const NativeTaskQueue& queue) noexcept;
+bool task_queue_has_failed(const NativeTaskQueue& queue) noexcept;
+std::uint8_t post_native_delayed_task(const NativeTaskQueue& queue, std::int64_t bits, bool high_precision,
+                              rust::Box<RustTask> task) noexcept;
 std::size_t run_ready_tasks(const NativeTaskQueueFactory& factory) noexcept;
 std::size_t pump_ready_tasks(const NativeTaskQueueFactory& factory,
                             std::size_t budget) noexcept;
 std::int64_t next_task_deadline_us(
     const NativeTaskQueueFactory& factory) noexcept;
 
+class NativeFieldTrials final {
+ public:
+  explicit NativeFieldTrials(std::unique_ptr<webrtc::FieldTrialsView> view) noexcept;
+  ~NativeFieldTrials();
+  const webrtc::FieldTrialsView& view() const noexcept;
+ private:
+  std::unique_ptr<webrtc::FieldTrialsView> view_;
+};
+bool field_trials_validate(rust::Str configuration) noexcept;
+std::unique_ptr<NativeFieldTrials> environment_field_trials(const NativeEnvironment& environment) noexcept;
+std::unique_ptr<NativeFieldTrials> field_trials_copy(const NativeFieldTrials& view) noexcept;
+rust::String field_trials_lookup(const NativeFieldTrials& view, rust::Str key) noexcept;
+bool field_trials_is_enabled(const NativeFieldTrials& view, rust::Str key) noexcept;
+bool field_trials_is_disabled(const NativeFieldTrials& view, rust::Str key) noexcept;
+
 std::unique_ptr<NativeEnvironment> create_environment(
     const NativeManualClock* clock,
-    const NativeTaskQueueFactory& factory) noexcept;
+    const NativeClock* custom_clock,
+    const NativeTaskQueueFactory& factory,
+    rust::Box<RustFieldTrials> field_trials,
+    rust::Box<RustRtcEventLog> event_log,
+    std::int64_t clock_minimum_us, std::int64_t clock_maximum_us) noexcept;
+// Retain the actual SDK value. Transfer clock bounds only after exact clock
+// identity comparison; absent/unmatched selection evidence stays unknown.
+std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
+    const webrtc::Environment& environment, const NativeEnvironment* selected = nullptr) noexcept;
+struct FfiClockTimeBounds;
+FfiClockTimeBounds environment_clock_time_bounds(const NativeEnvironment& environment) noexcept;
+bool environment_clock_identity_matches(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept;
+bool environment_queue_factory_identity_matches(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept;
+bool environment_context_retention_contract(const NativeEnvironment& environment,
+    const NativeEnvironment& other) noexcept;
 std::unique_ptr<NativeEnvironment> clone_environment(
     const NativeEnvironment& environment) noexcept;
 std::int64_t environment_time_us(const NativeEnvironment& environment) noexcept;
+std::int64_t environment_timestamp(const NativeEnvironment& environment) noexcept;
 
 std::unique_ptr<NativeRandomnessLease> new_seeded_randomness(
     std::uint64_t seed) noexcept;
@@ -227,6 +289,8 @@ std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept;
 bool driver_is_current(const NativeDriverThread& driver) noexcept;
 bool thread_post_task(const NativeThread& thread,
                       rust::Box<RustTask> task) noexcept;
+bool task_queue_current_delay_supported(std::int64_t bits) noexcept;
+std::uint8_t thread_post_native_delayed_task(const NativeThread& thread, std::int64_t bits, bool high_precision, rust::Box<RustTask> task) noexcept;
 bool thread_post_delayed_task(const NativeThread& thread,
                               std::int64_t delay_us,
                               rust::Box<RustTask> task) noexcept;

@@ -39,7 +39,11 @@ resource_id!(
     SessionSourceId,
     SessionTransceiverId,
     SessionSenderId,
-    SessionReceiverId
+    SessionReceiverId,
+    SessionFrameEncryptorId,
+    SessionFrameDecryptorId,
+    SessionSframeEncrypterId,
+    SessionSframeDecrypterId
 );
 
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
@@ -108,10 +112,17 @@ enum Source {
 pub enum SessionEvent {
     Stats(PeerStatsSnapshot),
     OperationComplete(OperationCompletion),
+    OperationCompleteBytes { operation_id: OperationId, description: crate::SessionDescriptionBytes },
+    OperationFailedBytes { operation_id: OperationId, error: crate::PeerErrorBytes },
     IceCandidate(IceCandidate),
+    IceCandidateBytes(crate::IceCandidateBytes),
+    IceCandidateRemoved(IceCandidate),
+    IceCandidateRemovedBytes(crate::IceCandidateBytes),
     ConnectionStateChanged(crate::ConnectionState),
     SignalingStateChanged(crate::SignalingState),
     IceGatheringStateChanged(crate::IceGatheringState),
+    IceConnectionStateChanged(crate::PeerIceConnectionState),
+    StandardizedIceConnectionStateChanged(crate::PeerIceConnectionState),
     NegotiationNeeded {
         event_id: u32,
     },
@@ -122,6 +133,7 @@ pub enum SessionEvent {
         error_code: i32,
         message: String,
     },
+    IceCandidateErrorBytes { address: String, port: i32, url: String, error_code: i32, message: Vec<u8> },
     DataChannel {
         channel: SessionChannelId,
         label: String,
@@ -151,6 +163,12 @@ pub enum SessionEvent {
 /// assert_sync::<pulsebeam_webrtc_sys::ProductionSession>();
 /// ```
 pub struct ProductionSession {
+    sframe_encrypters: HashMap<SessionSframeEncrypterId, Resource<crate::SframeEncrypter>>,
+    sframe_decrypters: HashMap<SessionSframeDecrypterId, Resource<crate::SframeDecrypter>>,
+    frame_encryptors: HashMap<SessionFrameEncryptorId, crate::FrameEncryptor>,
+    frame_decryptors: HashMap<SessionFrameDecryptorId, Resource<crate::FrameDecryptor>>,
+    sender_observers: HashMap<SessionSenderId, Resource<crate::RtpSenderObserver>>,
+    receiver_observers: HashMap<SessionReceiverId, Resource<crate::RtpReceiverObserver>>,
     channels: HashMap<SessionChannelId, Resource<DataChannel>>,
     video_sinks: HashMap<SessionReceiverId, EncodedVideoSink>,
     audio_sinks: HashMap<SessionReceiverId, EncodedAudioSink>,
@@ -168,8 +186,9 @@ pub struct ProductionSession {
 
 // SAFETY: the *entire* Rc graph is captive here. Construction accepts only owned
 // Send configuration and creates production resources internally. No method
-// returns or imports a handle, callback, provider, Rc, or reference to that
-// graph. Rc/Cell/RefCell mutations and destruction occur only under exclusive
+// returns or imports a handle, Rc, or reference to that graph. Field-trial
+// providers require Send + Sync; returned views are independent immutable
+// native copies, not handles into the captive graph. Rc/Cell/RefCell mutations and destruction occur only under exclusive
 // session ownership, even after migration; native callbacks never touch them.
 // Native objects marshal affine operations and final releases to retained live
 // engine role threads (including the bypass-proxy SDP initiation overloads).
@@ -178,9 +197,155 @@ pub struct ProductionSession {
 // This rationale does NOT apply to any individual legacy/local handle.
 unsafe impl Send for ProductionSession {}
 
+/// Owned construction options for the production actor. Provider registrations
+/// require thread-safe owned contracts, never local native handles. Existing
+/// convenience constructors retain their defaults.
+pub struct ProductionSessionBuilder {
+    config: ProductionSessionConfig,
+    audio_encoder_factory: Option<AudioEncoderFactory>,
+    audio_decoder_factory: Option<AudioDecoderFactory>,
+    video_encoder_factory: Option<crate::VideoEncoderFactoryHandle>,
+    video_decoder_factory: Option<crate::VideoDecoderFactoryHandle>,
+    temporal_fps: Option<[u8; 3]>,
+    simulcast: bool,
+    field_trials: Option<Arc<dyn crate::FieldTrialsView>>,
+    event_logging: bool,
+    event_log_factory: Option<Arc<dyn crate::RtcEventLogFactory>>,
+    encode_metronome: Option<crate::Metronome>,
+    decode_metronome: Option<crate::Metronome>,
+    network_monitor_factory: Option<Arc<dyn crate::NetworkMonitorFactory>>,
+    network_predictor_factory: Option<crate::NetworkStatePredictorFactory>,
+    fec_factory: Option<crate::FecControllerFactory>,
+    network_controller_factory: Option<crate::NetworkControllerFactory>,
+    environment_event_log: Option<Box<dyn crate::RtcEventLogger>>,
+    clock: Option<crate::Clock>,
+    task_queue_factory: Option<crate::TaskQueueFactory>,
+}
+
+impl ProductionSessionBuilder {
+    /// Explicit selection, distinct from this builder's absent carrier default.
+    pub fn audio_encoder_factory(mut self, factory: &AudioEncoderFactory) -> Self { self.audio_encoder_factory = Some(factory.clone()); self }
+    pub fn audio_decoder_factory(mut self, factory: &AudioDecoderFactory) -> Self { self.audio_decoder_factory = Some(factory.clone()); self }
+    pub fn video_encoder_factory(mut self, factory: &crate::VideoEncoderFactoryHandle) -> Self { self.video_encoder_factory = Some(factory.clone()); self }
+    pub fn video_decoder_factory(mut self, factory: &crate::VideoDecoderFactoryHandle) -> Self { self.video_decoder_factory = Some(factory.clone()); self }
+    pub fn video_encoder_provider(self, provider: impl crate::VideoEncoderFactoryProvider) -> Result<Self, CodecError> { Ok(self.video_encoder_factory(&crate::VideoEncoderFactoryHandle::from_provider(provider)?)) }
+    pub fn video_decoder_provider(self, provider: impl crate::VideoDecoderFactoryProvider) -> Result<Self, CodecError> { Ok(self.video_decoder_factory(&crate::VideoDecoderFactoryHandle::from_provider(provider)?)) }
+    pub fn network_controller_factory(mut self, factory: &crate::NetworkControllerFactory) -> Self {
+        self.network_controller_factory = Some(factory.clone());
+        self
+    }
+    pub fn network_controller_provider(self, provider: impl crate::NetworkControllerFactoryProvider) -> Self {
+        self.network_controller_factory(&crate::NetworkControllerFactory::from_provider(provider))
+    }
+    pub fn fec_controller_factory(mut self, factory: &crate::FecControllerFactory) -> Self {
+        self.fec_factory = Some(factory.clone());
+        self
+    }
+    pub fn fec_controller_provider(self, provider: impl crate::FecControllerFactoryProvider) -> Self {
+        self.fec_controller_factory(&crate::FecControllerFactory::from_provider(provider))
+    }
+    pub fn network_state_predictor_factory(mut self, factory: &crate::NetworkStatePredictorFactory) -> Self {
+        self.network_predictor_factory = Some(factory.clone());
+        self
+    }
+    pub fn network_state_predictor_provider(self, provider: impl crate::NetworkStatePredictorFactoryProvider) -> Self {
+        self.network_state_predictor_factory(&crate::NetworkStatePredictorFactory::from_provider(provider))
+    }
+    /// Register a worker-sequence encode metronome without importing a local
+    /// native handle into the actor's captive resource graph.
+    pub fn encode_metronome(mut self, metronome: &crate::Metronome) -> Self {
+        self.encode_metronome = Some(metronome.clone());
+        self
+    }
+    pub fn encode_metronome_provider(self, provider: impl crate::MetronomeProvider) -> Self {
+        self.encode_metronome(&crate::Metronome::from_provider(provider))
+    }
+    pub fn decode_metronome(mut self, metronome: &crate::Metronome) -> Self {
+        self.decode_metronome = Some(metronome.clone());
+        self
+    }
+    pub fn decode_metronome_provider(self, provider: impl crate::MetronomeProvider) -> Self {
+        self.decode_metronome(&crate::Metronome::from_provider(provider))
+    }
+
+    /// Select a thread-safe production scheduler. Controlled factories remain
+    /// excluded from the actor resource graph.
+    pub fn task_queue_factory(mut self, factory: &crate::TaskQueueFactory) -> Self {
+        self.task_queue_factory = Some(factory.clone());
+        self
+    }
+
+    pub fn task_queue_provider(self, provider: impl crate::TaskQueueFactoryProvider) -> Result<Self, crate::BuildEnvironmentError> {
+        Ok(self.task_queue_factory(&crate::TaskQueueFactory::from_provider(provider)?))
+    }
+
+    /// Select an owned clock without replacing WebRTC's process time hooks.
+    pub fn clock_handle(mut self, clock: &crate::Clock) -> Self {
+        self.clock = Some(clock.clone());
+        self
+    }
+
+    pub fn clock_provider(self, provider: impl crate::ClockProvider) -> Self {
+        self.clock_handle(&crate::Clock::from_provider(provider))
+    }
+
+    /// Register an owned monitor factory with native network-thread callbacks.
+    pub fn network_monitor_factory(mut self, factory: impl crate::NetworkMonitorFactory) -> Self {
+        self.network_monitor_factory = Some(Arc::new(factory));
+        self
+    }
+
+    pub fn environment_event_log(mut self, logger: impl crate::RtcEventLogger) -> Self {
+        self.environment_event_log = Some(Box::new(logger));
+        self
+    }
+
+    pub fn event_log_factory(mut self, factory: impl crate::RtcEventLogFactory) -> Self {
+        self.event_log_factory = Some(Arc::new(factory));
+        self
+    }
+
+    pub fn field_trials(mut self, view: impl crate::FieldTrialsView) -> Self {
+        self.field_trials = Some(Arc::new(view));
+        self
+    }
+
+    /// Make the bundled native event logger available to subsequently created
+    /// peers. Does not start logging or create an output file.
+    pub fn event_logging(mut self, enabled: bool) -> Self {
+        self.event_logging = enabled;
+        self
+    }
+
+    /// Direct single-encoding L1T3 convenience configuration.
+    pub fn l1t3_input(mut self, fractions: [u8; 3]) -> Self {
+        self.temporal_fps = Some(fractions);
+        self.simulcast = false;
+        self
+    }
+
+    /// Direct three-rung simulcast convenience configuration.
+    pub fn simulcast_input(mut self) -> Self {
+        self.temporal_fps = None;
+        self.simulcast = true;
+        self
+    }
+
+    pub fn build(self) -> Result<ProductionSession, PeerError> {
+        if (self.temporal_fps.is_some() || self.simulcast) && self.config.video_format.is_none() {
+            return Err(error(PeerErrorKind::UnsupportedParameter, "layered input requires a video format"));
+        }
+        ProductionSession::build(self)
+    }
+}
+
 impl ProductionSession {
+    pub fn builder(config: ProductionSessionConfig) -> ProductionSessionBuilder {
+        ProductionSessionBuilder { config, audio_encoder_factory: None, audio_decoder_factory: None, video_encoder_factory: None, video_decoder_factory: None, temporal_fps: None, simulcast: false, field_trials: None, event_logging: false, event_log_factory: None, encode_metronome: None, decode_metronome: None, network_monitor_factory: None, network_predictor_factory: None, fec_factory: None, network_controller_factory: None, environment_event_log: None, clock: None, task_queue_factory: None }
+    }
+
     pub fn new(config: ProductionSessionConfig) -> Result<Self, PeerError> {
-        Self::build(config, None, false)
+        Self::builder(config).build()
     }
 
     /// Create the actor with direct, single-encoding H264 L1T3 input.
@@ -194,7 +359,7 @@ impl ProductionSession {
                 "L1T3 requires an H264 video format",
             ));
         }
-        Self::build(config, Some(fps), false)
+        Self::builder(config).l1t3_input(fps).build()
     }
 
     /// Create direct three-rung H264 input through native sender callbacks.
@@ -209,14 +374,75 @@ impl ProductionSession {
                 "simulcast requires an H264 video format",
             ));
         }
-        Self::build(config, None, true)
+        Self::builder(config).simulcast_input().build()
     }
 
-    fn build(
+    /// Install owned values or a caller-defined immutable provider before
+    /// native factory construction. Provider callbacks may run on native threads.
+    pub fn new_with_field_trials(
         config: ProductionSessionConfig,
-        temporal_fps: Option<[u8; 3]>,
-        simulcast: bool,
+        view: impl crate::FieldTrialsView,
     ) -> Result<Self, PeerError> {
+        Self::builder(config).field_trials(view).build()
+    }
+
+    /// L1T3 constructor with an immutable field-trial provider.
+    pub fn new_l1t3_with_field_trials(
+        config: ProductionSessionConfig,
+        fps: [u8; 3],
+        view: impl crate::FieldTrialsView,
+    ) -> Result<Self, PeerError> {
+        if config.video_format.is_none() {
+            return Err(error(
+                PeerErrorKind::UnsupportedParameter,
+                "L1T3 requires an H264 video format",
+            ));
+        }
+        Self::builder(config).l1t3_input(fps).field_trials(view).build()
+    }
+
+    /// Simulcast constructor with an immutable field-trial provider.
+    pub fn new_simulcast_with_field_trials(
+        config: ProductionSessionConfig,
+        view: impl crate::FieldTrialsView,
+    ) -> Result<Self, PeerError> {
+        if config.video_format.is_none() {
+            return Err(error(
+                PeerErrorKind::UnsupportedParameter,
+                "simulcast requires an H264 video format",
+            ));
+        }
+        Self::builder(config).simulcast_input().field_trials(view).build()
+    }
+
+    /// Full owning SDK capability metadata from this actor's selected factory.
+    /// Safe after caller migration; no local engine handle escapes.
+    pub fn get_rtp_sender_capabilities(&self, kind: crate::MediaType) -> Result<crate::RtpCapabilities, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.get_rtp_sender_capabilities(kind))
+    }
+
+    /// Full owning SDK receiver capability metadata through the retained factory.
+    pub fn get_rtp_receiver_capabilities(&self, kind: crate::MediaType) -> Result<crate::RtpCapabilities, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.get_rtp_receiver_capabilities(kind))
+    }
+
+    /// Copy the actual factory environment's view, including after migration.
+    pub fn field_trials(&self) -> Result<crate::FieldTrialsSnapshot, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.field_trials())
+    }
+
+    /// Owned reading from the factory's effective native clock, including
+    /// signed values. No local engine handle is returned to the actor caller.
+    pub fn clock_timestamp(&self) -> Result<crate::Timestamp, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.clock_timestamp())
+    }
+
+    fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
+        let ProductionSessionBuilder { config, audio_encoder_factory, audio_decoder_factory, video_encoder_factory, video_decoder_factory, temporal_fps, simulcast, field_trials, event_logging, event_log_factory, encode_metronome, decode_metronome, network_monitor_factory, network_predictor_factory, fec_factory, network_controller_factory, environment_event_log, clock, task_queue_factory } = options;
         if config
             .video_format
             .as_ref()
@@ -227,11 +453,37 @@ impl ProductionSession {
                 "production session supports encoded H264 or VP8",
             ));
         }
+        if config.video_format.is_some() && video_encoder_factory.is_some() {
+            return Err(error(PeerErrorKind::InvalidParameter, "the configured encoded input requires its own selected encoder factory; choose encoded input or an explicit encoder factory"));
+        }
         let readiness = Arc::new(Readiness::default());
+        let selected_audio_encoder = match audio_encoder_factory { Some(factory) => factory, None => AudioEncoderFactory::with_opus_frames().map_err(codec_error)? };
+        let selected_audio_decoder = match audio_decoder_factory { Some(factory) => factory, None => AudioDecoderFactory::builtin_opus().map_err(codec_error)? };
         let mut builder = PeerConnectionFactory::builder()
-            .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().map_err(codec_error)?)
-            .audio_decoder_factory(AudioDecoderFactory::builtin_opus().map_err(codec_error)?)
-            .readiness(readiness.clone());
+            .audio_encoder_factory(selected_audio_encoder)
+            .audio_decoder_factory(selected_audio_decoder)
+            .readiness(readiness.clone())
+            .event_logging(event_logging);
+        if let Some(metronome) = encode_metronome { builder = builder.encode_metronome(&metronome); }
+        if let Some(metronome) = decode_metronome { builder = builder.decode_metronome(&metronome); }
+        if let Some(factory) = event_log_factory { builder = builder.shared_event_log_factory(factory); }
+        if let Some(factory) = network_monitor_factory { builder = builder.shared_network_monitor_factory(factory); }
+        if let Some(factory) = network_predictor_factory { builder = builder.network_state_predictor_factory(&factory); }
+        if let Some(factory) = fec_factory { builder = builder.fec_controller_factory(&factory); }
+        if let Some(factory) = network_controller_factory { builder = builder.network_controller_factory(&factory); }
+        if task_queue_factory.as_ref().is_some_and(crate::TaskQueueFactory::is_cooperative) {
+            return Err(error(PeerErrorKind::UnsupportedParameter, "controlled task queue factories cannot enter the production actor"));
+        }
+        if field_trials.is_some() || environment_event_log.is_some() || clock.is_some() || task_queue_factory.is_some() {
+            let mut environment = crate::Environment::builder();
+            if let Some(factory) = task_queue_factory { environment = environment.task_queue_factory(&factory); }
+            if let Some(clock) = clock { environment = environment.clock_handle(&clock); }
+            if let Some(view) = field_trials { environment = environment.field_trials(view); }
+            if let Some(logger) = environment_event_log { environment = environment.owned_event_log(logger); }
+            let environment = environment.build()
+                .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
+            builder = builder.environment(environment);
+        }
         let input = config
             .video_format
             .map(|format| {
@@ -255,8 +507,16 @@ impl ProductionSession {
         } else {
             None
         };
+        if let Some(factory) = video_encoder_factory { builder = builder.video_encoder_factory(factory); }
+        if let Some(factory) = video_decoder_factory { builder = builder.video_decoder_factory(factory); }
         let factory = builder.build()?;
         Ok(Self {
+            sframe_encrypters: HashMap::new(),
+            sframe_decrypters: HashMap::new(),
+            frame_encryptors: HashMap::new(),
+            frame_decryptors: HashMap::new(),
+            sender_observers: HashMap::new(),
+            receiver_observers: HashMap::new(),
             channels: HashMap::new(),
             video_sinks: HashMap::new(),
             audio_sinks: HashMap::new(),
@@ -302,11 +562,20 @@ impl ProductionSession {
         &mut self,
         config: RtcConfiguration,
     ) -> Result<SessionPeerId, PeerError> {
+        self.create_peer_with_dependencies(config, crate::PeerConnectionDependencies::default())
+    }
+
+    /// Actor-safe creation with owned per-peer executable providers.
+    pub fn create_peer_with_dependencies(
+        &mut self,
+        config: RtcConfiguration,
+        dependencies: crate::PeerConnectionDependencies,
+    ) -> Result<SessionPeerId, PeerError> {
         self.check_open()?;
         let id = SessionPeerId(next_id()?);
         let value = self
             .factory
-            .create_peer_connection_with_configuration(config)?;
+            .create_peer_connection_with_dependencies(config, dependencies)?;
         self.peers.insert(
             id,
             Peer {
@@ -427,6 +696,14 @@ impl ProductionSession {
             .value
             .add_ice_candidate_sync(candidate)
     }
+    pub fn add_ice_candidate_sync_bytes(&mut self, peer: SessionPeerId, candidate: crate::IceCandidateBytes) -> Result<IceCandidateDisposition, crate::PeerErrorBytes> {
+        self.check_open().map_err(|error| crate::PeerErrorBytes { kind: error.kind, message: error.message.into_bytes() })?;
+        self.peers.get(&peer).ok_or_else(|| crate::PeerErrorBytes { kind: PeerErrorKind::InvalidParameter, message: b"resource does not belong to this session".to_vec() })?.value.add_ice_candidate_sync_bytes(candidate)
+    }
+    pub fn remove_ice_candidate_bytes(&mut self, peer: SessionPeerId, candidate: crate::IceCandidateBytes) -> Result<IceCandidateDisposition, crate::PeerErrorBytes> {
+        self.check_open().map_err(|error| crate::PeerErrorBytes { kind: error.kind, message: error.message.into_bytes() })?;
+        self.peers.get(&peer).ok_or_else(|| crate::PeerErrorBytes { kind: PeerErrorKind::InvalidParameter, message: b"resource does not belong to this session".to_vec() })?.value.remove_ice_candidate_bytes(candidate)
+    }
     pub fn remove_ice_candidate(
         &mut self,
         peer: SessionPeerId,
@@ -438,6 +715,9 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .value
             .remove_ice_candidate(candidate)
+    }
+    pub fn add_ice_candidate_bytes(&mut self, peer: SessionPeerId, candidate: crate::IceCandidateBytes) -> Result<OperationId, PeerError> {
+        self.operation(peer, |value| value.add_ice_candidate_bytes(candidate))
     }
     pub fn create_answer(&mut self, peer: SessionPeerId) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::create_answer)
@@ -455,6 +735,12 @@ impl ProductionSession {
         description: SessionDescription,
     ) -> Result<OperationId, PeerError> {
         self.operation(peer, |p| p.set_remote_description(description))
+    }
+    pub fn set_local_description_bytes(&mut self, peer: SessionPeerId, description: crate::SessionDescriptionBytes) -> Result<OperationId, PeerError> {
+        self.operation(peer, |value| value.set_local_description_bytes(description))
+    }
+    pub fn set_remote_description_bytes(&mut self, peer: SessionPeerId, description: crate::SessionDescriptionBytes) -> Result<OperationId, PeerError> {
+        self.operation(peer, |value| value.set_remote_description_bytes(description))
     }
     pub fn add_ice_candidate(
         &mut self,
@@ -474,10 +760,24 @@ impl ProductionSession {
             .descriptions()
     }
 
+    pub fn peer_ice_snapshot(&mut self, peer: SessionPeerId) -> Result<crate::PeerIceSnapshot, PeerError> {
+        self.check_open()?;
+        Ok(self.peers.get(&peer).ok_or_else(missing)?.value.ice_snapshot())
+    }
+    pub fn peer_ice_connection_state(&mut self, peer: SessionPeerId) -> Result<crate::PeerIceConnectionState, PeerError> { Ok(self.peer_ice_snapshot(peer)?.legacy_state) }
+    pub fn peer_standardized_ice_connection_state(&mut self, peer: SessionPeerId) -> Result<crate::PeerIceConnectionState, PeerError> { Ok(self.peer_ice_snapshot(peer)?.standardized_state) }
+    pub fn peer_can_trickle_ice_candidates(&mut self, peer: SessionPeerId) -> Result<Option<bool>, PeerError> { Ok(self.peer_ice_snapshot(peer)?.can_trickle_ice_candidates) }
+
+    pub fn descriptions_bytes(&mut self, peer: SessionPeerId) -> Result<crate::PeerDescriptionBytes, PeerError> {
+        self.peers.get(&peer).ok_or_else(missing)?.value.descriptions_bytes()
+    }
+
     /// Activity notification only, not proof of a particular queued event.
     /// Drain owned events/frames, then wait. Signals coalesce and may be spurious.
     /// Polling never enters the engine, pumps work or advances a clock. A single
     /// actor waiter may register; its waker must schedule, not execute engine work.
+    /// First-packet observer queues are explicit-poll-only and do not signal this
+    /// readiness source; it is not a waiter for those observer records.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.readiness.poll(cx)
     }
@@ -502,7 +802,18 @@ impl ProductionSession {
                 value.outstanding.remove(&done.operation_id);
                 SessionEvent::OperationComplete(done)
             }
+            PeerConnectionEvent::OperationCompleteBytes { operation_id, description } => {
+                value.outstanding.remove(&operation_id);
+                SessionEvent::OperationCompleteBytes { operation_id, description }
+            }
+            PeerConnectionEvent::OperationFailedBytes { operation_id, error } => {
+                value.outstanding.remove(&operation_id);
+                SessionEvent::OperationFailedBytes { operation_id, error }
+            }
             PeerConnectionEvent::IceCandidate(v) => SessionEvent::IceCandidate(v),
+            PeerConnectionEvent::IceCandidateBytes(value) => SessionEvent::IceCandidateBytes(value),
+            PeerConnectionEvent::IceCandidateRemoved(value) => SessionEvent::IceCandidateRemoved(value),
+            PeerConnectionEvent::IceCandidateRemovedBytes(value) => SessionEvent::IceCandidateRemovedBytes(value),
             PeerConnectionEvent::ConnectionStateChanged(v) => {
                 SessionEvent::ConnectionStateChanged(v)
             }
@@ -510,6 +821,8 @@ impl ProductionSession {
             PeerConnectionEvent::IceGatheringStateChanged(v) => {
                 SessionEvent::IceGatheringStateChanged(v)
             }
+            PeerConnectionEvent::IceConnectionStateChanged(value) => SessionEvent::IceConnectionStateChanged(value),
+            PeerConnectionEvent::StandardizedIceConnectionStateChanged(value) => SessionEvent::StandardizedIceConnectionStateChanged(value),
             PeerConnectionEvent::NegotiationNeeded { event_id } => {
                 SessionEvent::NegotiationNeeded { event_id }
             }
@@ -526,6 +839,7 @@ impl ProductionSession {
                 error_code,
                 message,
             },
+            PeerConnectionEvent::IceCandidateErrorBytes { address, port, url, error_code, message } => SessionEvent::IceCandidateErrorBytes { address, port, url, error_code, message },
             PeerConnectionEvent::DataChannel(value) => {
                 let channel = SessionChannelId(next_id()?);
                 let label = value.label();
@@ -708,6 +1022,26 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .value
             .close()
+    }
+
+    /// Start an owned native event-log destination on the peer's engine
+    /// sequences. Output callbacks do not need reentrant actor access.
+    pub fn start_peer_event_log(
+        &mut self,
+        peer: SessionPeerId,
+        output: crate::EventLogOutput,
+        period: Option<crate::EventLogOutputPeriod>,
+    ) -> Result<(), crate::EventLogError> {
+        if self.closed { return Err(crate::EventLogError::Closed); }
+        self.peers.get(&peer).ok_or(crate::EventLogError::Closed)?
+            .value.start_event_log(output, period)
+    }
+
+    /// Wait for native output shutdown. Safe after moving the application actor.
+    pub fn stop_peer_event_log(&mut self, peer: SessionPeerId) -> Result<(), crate::EventLogError> {
+        if self.closed { return Err(crate::EventLogError::Closed); }
+        self.peers.get(&peer).ok_or(crate::EventLogError::Closed)?
+            .value.stop_event_log()
     }
 
     /// Forward native bandwidth-estimation constraints without a binding allocator.
@@ -1027,6 +1361,246 @@ impl ProductionSession {
             .value
             .receiver)
     }
+    /// Register the actual SDK sender slot with explicit bounded polling.
+    pub fn register_sender_packet_observer(&mut self, sender: SessionSenderId, capacity: usize) -> Result<(), PeerError> {
+        self.check_open()?;
+        let resource = self.senders.get(&sender).ok_or_else(missing)?;
+        let observer = self.sender_observers.entry(sender).or_insert_with(|| Resource { peer: resource.peer, value: resource.value.packet_observer() });
+        observer.value.register_observer(capacity).map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    pub fn unregister_sender_packet_observer(&mut self, sender: SessionSenderId) -> Result<(), PeerError> {
+        self.senders.get(&sender).ok_or_else(missing)?;
+        if let Some(observer) = self.sender_observers.get(&sender) { observer.value.unregister_observer(); }
+        Ok(())
+    }
+    pub fn take_sender_packet_event(&mut self, sender: SessionSenderId) -> Result<Option<crate::RtpPacketEvent>, PeerError> {
+        self.senders.get(&sender).ok_or_else(missing)?;
+        Ok(self.sender_observers.get(&sender).and_then(|observer| observer.value.take_event()))
+    }
+    pub fn take_sender_dropped_packet_events(&mut self, sender: SessionSenderId) -> Result<u64, PeerError> {
+        self.senders.get(&sender).ok_or_else(missing)?;
+        Ok(self.sender_observers.get(&sender).map_or(0, |observer| observer.value.take_dropped_events()))
+    }
+
+    /// Register the actual SDK receiver slot with explicit bounded polling.
+    pub fn register_receiver_packet_observer(&mut self, receiver: SessionReceiverId, capacity: usize) -> Result<(), PeerError> {
+        self.check_open()?;
+        let resource = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let observer = self.receiver_observers.entry(receiver).or_insert_with(|| Resource { peer: resource.peer, value: resource.value.packet_observer() });
+        observer.value.register_observer(capacity).map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
+    }
+    pub fn unregister_receiver_packet_observer(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        self.receivers.get(&receiver).ok_or_else(missing)?;
+        if let Some(observer) = self.receiver_observers.get(&receiver) { observer.value.unregister_observer(); }
+        Ok(())
+    }
+    /// Actual SDK callback record for this slot. FirstPacketReceived may fan
+    /// out to every same-kind receiver; it is not receiver-SSRC delivery proof.
+    pub fn take_receiver_packet_event(&mut self, receiver: SessionReceiverId) -> Result<Option<crate::RtpPacketEvent>, PeerError> {
+        self.receivers.get(&receiver).ok_or_else(missing)?;
+        Ok(self.receiver_observers.get(&receiver).and_then(|observer| observer.value.take_event()))
+    }
+    pub fn take_receiver_dropped_packet_events(&mut self, receiver: SessionReceiverId) -> Result<u64, PeerError> {
+        self.receivers.get(&receiver).ok_or_else(missing)?;
+        Ok(self.receiver_observers.get(&receiver).map_or(0, |observer| observer.value.take_dropped_events()))
+    }
+
+    /// Preserve native creation failures and renegotiation side effects; no
+    /// local handle is imported or exported, even after actor migration.
+    pub fn create_sframe_encrypter(&mut self, sender: SessionSenderId, init: &crate::SframeEncrypterInit) -> Result<SessionSframeEncrypterId, crate::SframeCreateError> {
+        self.check_open()?;
+        let sender = self.senders.get(&sender).ok_or_else(missing)?;
+        let id = SessionSframeEncrypterId(next_id()?);
+        let value = sender.value.create_sframe_encrypter(init)?;
+        self.sframe_encrypters.insert(id, Resource { peer: sender.peer, value });
+        Ok(id)
+    }
+    pub fn create_sframe_decrypter(&mut self, receiver: SessionReceiverId, suite: crate::SframeCipherSuite) -> Result<SessionSframeDecrypterId, crate::SframeCreateError> {
+        self.check_open()?;
+        let receiver = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let id = SessionSframeDecrypterId(next_id()?);
+        let value = receiver.value.create_sframe_decrypter(suite)?;
+        self.sframe_decrypters.insert(id, Resource { peer: receiver.peer, value });
+        Ok(id)
+    }
+    pub fn sframe_set_encryption_key(&mut self, value: SessionSframeEncrypterId, id: u64, key: &[u8]) -> Result<crate::RtcError, PeerError> {
+        self.check_open()?;
+        Ok(self.sframe_encrypters.get(&value).ok_or_else(missing)?.value.set_encryption_key(id, key))
+    }
+    pub fn sframe_add_decryption_key(&mut self, value: SessionSframeDecrypterId, id: u64, key: &[u8]) -> Result<crate::RtcError, PeerError> {
+        self.check_open()?;
+        Ok(self.sframe_decrypters.get(&value).ok_or_else(missing)?.value.add_decryption_key(id, key))
+    }
+    pub fn sframe_remove_decryption_key(&mut self, value: SessionSframeDecrypterId, id: u64) -> Result<crate::RtcError, PeerError> {
+        self.check_open()?;
+        Ok(self.sframe_decrypters.get(&value).ok_or_else(missing)?.value.remove_decryption_key(id))
+    }
+    pub fn release_sframe_encrypter(&mut self, value: SessionSframeEncrypterId) -> Result<(), PeerError> {
+        self.sframe_encrypters.remove(&value).map(|_| ()).ok_or_else(missing)
+    }
+    pub fn release_sframe_decrypter(&mut self, value: SessionSframeDecrypterId) -> Result<(), PeerError> {
+        self.sframe_decrypters.remove(&value).map(|_| ()).ok_or_else(missing)
+    }
+    /// Construct inside the captive graph; no local native handle is imported.
+    pub fn create_frame_encryptor(&mut self, provider: impl crate::FrameEncryptorProvider) -> Result<SessionFrameEncryptorId, PeerError> {
+        self.check_open()?;
+        let id = SessionFrameEncryptorId(next_id()?);
+        self.frame_encryptors.insert(id, crate::FrameEncryptor::from_provider(provider));
+        Ok(id)
+    }
+    pub fn create_frame_decryptor(&mut self, receiver: SessionReceiverId, provider: impl crate::FrameDecryptorProvider) -> Result<SessionFrameDecryptorId, PeerError> {
+        self.check_open()?;
+        let receiver = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let id = SessionFrameDecryptorId(next_id()?);
+        let value = receiver.value.create_frame_decryptor(provider);
+        self.frame_decryptors.insert(id, Resource { peer: receiver.peer, value });
+        Ok(id)
+    }
+    pub fn set_sender_frame_encryptor(&mut self, sender: SessionSenderId, encryptor: Option<SessionFrameEncryptorId>) -> Result<(), PeerError> {
+        self.check_open()?;
+        let value = encryptor.map(|id| self.frame_encryptors.get(&id).ok_or_else(missing)).transpose()?;
+        self.senders.get(&sender).ok_or_else(missing)?.value.set_frame_encryptor(value);
+        Ok(())
+    }
+    pub fn set_receiver_frame_decryptor(&mut self, receiver: SessionReceiverId, decryptor: Option<SessionFrameDecryptorId>) -> Result<(), crate::FrameDecryptorInstallError> {
+        let binding = crate::FrameDecryptorInstallError::Binding;
+        self.check_open().map_err(binding)?;
+        let value = decryptor.map(|id| self.frame_decryptors.get(&id).map(|r| &r.value).ok_or_else(missing)).transpose().map_err(binding)?;
+        self.receivers.get(&receiver).ok_or_else(missing).map_err(binding)?.value.set_frame_decryptor(value)
+    }
+    pub fn sender_frame_encryptor(&mut self, sender: SessionSenderId) -> Result<Option<SessionFrameEncryptorId>, PeerError> {
+        self.check_open()?;
+        let Some(value) = self.senders.get(&sender).ok_or_else(missing)?.value.frame_encryptor() else { return Ok(None); };
+        if let Some((&id, _)) = self.frame_encryptors.iter().find(|(_, existing)| existing.same_resource(&value)) { return Ok(Some(id)); }
+        let id = SessionFrameEncryptorId(next_id()?);
+        self.frame_encryptors.insert(id, value);
+        Ok(Some(id))
+    }
+    pub fn receiver_frame_decryptor(&mut self, receiver: SessionReceiverId) -> Result<Option<SessionFrameDecryptorId>, PeerError> {
+        self.check_open()?;
+        let receiver = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let Some(value) = receiver.value.frame_decryptor() else { return Ok(None); };
+        if let Some((&id, _)) = self.frame_decryptors.iter().find(|(_, existing)| existing.value.same_resource(&value)) { return Ok(Some(id)); }
+        let id = SessionFrameDecryptorId(next_id()?);
+        self.frame_decryptors.insert(id, Resource { peer: receiver.peer, value });
+        Ok(Some(id))
+    }
+    pub fn frame_encryptor_failure(&mut self, encryptor: SessionFrameEncryptorId) -> Result<Option<crate::FrameCryptoFailure>, PeerError> {
+        self.check_open()?;
+        Ok(self.frame_encryptors.get(&encryptor).ok_or_else(missing)?.failure())
+    }
+    pub fn frame_decryptor_failure(&mut self, decryptor: SessionFrameDecryptorId) -> Result<Option<crate::FrameCryptoFailure>, PeerError> {
+        self.check_open()?;
+        Ok(self.frame_decryptors.get(&decryptor).ok_or_else(missing)?.value.failure())
+    }
+    pub fn frame_encryptor_max_ciphertext_byte_size(&mut self, encryptor: SessionFrameEncryptorId, media: crate::MediaType, frame_size: usize) -> Result<usize, PeerError> {
+        self.check_open()?;
+        Ok(self.frame_encryptors.get(&encryptor).ok_or_else(missing)?.max_ciphertext_byte_size(media, frame_size))
+    }
+    pub fn frame_decryptor_max_plaintext_byte_size(&mut self, decryptor: SessionFrameDecryptorId, media: crate::MediaType, frame_size: usize) -> Result<usize, PeerError> {
+        self.check_open()?;
+        Ok(self.frame_decryptors.get(&decryptor).ok_or_else(missing)?.value.max_plaintext_byte_size(media, frame_size))
+    }
+    pub fn encrypt_frame(&mut self, encryptor: SessionFrameEncryptorId, media: crate::MediaType, ssrc: u32,
+        additional_data: &[u8], frame: &[u8], capacity: usize) -> Result<crate::EncryptedFrame, crate::FrameCryptoOperationError> {
+        self.check_open()?;
+        self.frame_encryptors.get(&encryptor).ok_or_else(missing)?.encrypt(media, ssrc, additional_data, frame, capacity)
+    }
+    pub fn decrypt_frame(&mut self, decryptor: SessionFrameDecryptorId, media: crate::MediaType, csrcs: &[u32],
+        additional_data: &[u8], frame: &[u8], capacity: usize) -> Result<crate::DecryptedFrame, crate::FrameCryptoOperationError> {
+        self.check_open()?;
+        self.frame_decryptors.get(&decryptor).ok_or_else(missing)?.value.decrypt(media, csrcs, additional_data, frame, capacity)
+    }
+    /// Release this application identity. An installed SDK reference remains
+    /// alive until replaced/cleared or its sender/receiver is destroyed.
+    pub fn release_frame_encryptor(&mut self, encryptor: SessionFrameEncryptorId) -> Result<(), PeerError> {
+        self.check_open()?; self.frame_encryptors.remove(&encryptor).ok_or_else(missing)?; Ok(())
+    }
+    pub fn release_frame_decryptor(&mut self, decryptor: SessionFrameDecryptorId) -> Result<(), PeerError> {
+        self.check_open()?; self.frame_decryptors.remove(&decryptor).ok_or_else(missing)?; Ok(())
+    }
+
+    /// Actual native GenerateKeyFrame, including audio unsupported results and
+    /// the stock stopped/unconfigured video's successful no-op. Native errors
+    /// are independent owning values, not a narrowed message/type pair.
+    pub fn generate_sender_keyframe(&mut self, sender: SessionSenderId, rids: &[Vec<u8>]) -> Result<(), crate::RtpSenderOperationError> {
+        self.check_open()?;
+        self.senders.get(&sender).ok_or_else(missing)?.value.generate_keyframe(rids)
+    }
+
+    /// Actual primary SDK SSRC; zero is the native not-yet-determined value.
+    pub fn sender_ssrc(&mut self, sender: SessionSenderId) -> Result<u32, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.ssrc())
+    }
+
+    /// SDK-generated sender identity, distinct from the actor resource ID.
+    pub fn sender_native_id(&mut self, sender: SessionSenderId) -> Result<String, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.id())
+    }
+
+    pub fn sender_media_type(&mut self, sender: SessionSenderId) -> Result<crate::MediaType, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.media_type())
+    }
+
+    /// A single native snapshot of stream IDs with their full byte domain.
+    pub fn sender_stream_ids(&mut self, sender: SessionSenderId) -> Result<Vec<Vec<u8>>, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.stream_id_bytes())
+    }
+
+    /// UTF-8 convenience installation through SDK SetStreams. Native
+    /// de-duplication applies. This void operation is not a negotiation ack.
+    pub fn set_sender_streams(&mut self, sender: SessionSenderId, ids: &[String]) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.senders.get(&sender).ok_or_else(missing)?.value.set_streams(ids);
+        Ok(())
+    }
+
+    /// Initial encodings are independent complete SDK value copies, not a
+    /// GetParameters transaction or a reliable seed for a reused sender.
+    pub fn sender_initial_encodings(&mut self, sender: SessionSenderId) -> Result<Vec<crate::RtpEncodingParameters>, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.init_send_encodings())
+    }
+
+    /// Entire actual SDK snapshot; each successful SDK get starts a fresh
+    /// transaction, invalidating older snapshots for a subsequent native set.
+    pub fn get_sender_parameters(&mut self, sender: SessionSenderId) -> Result<crate::RtpParameters, PeerError> {
+        self.check_open()?;
+        Ok(self.senders.get(&sender).ok_or_else(missing)?.value.get_parameters())
+    }
+
+    /// Native SSRC/CSRC observations copied through the receiver worker proxy.
+    pub fn receiver_sources(&mut self, receiver: SessionReceiverId) -> Result<Vec<crate::RtpSource>, PeerError> {
+        self.check_open()?;
+        Ok(self.receivers.get(&receiver).ok_or_else(missing)?.value.get_sources())
+    }
+
+    /// Entire independently owned SDK receiver snapshot.
+    pub fn get_receiver_parameters(&mut self, receiver: SessionReceiverId) -> Result<crate::RtpParameters, PeerError> {
+        self.check_open()?;
+        Ok(self.receivers.get(&receiver).ok_or_else(missing)?.value.get_parameters())
+    }
+
+    /// Preserves the legacy SDK receiver setter's unsupported false result.
+    pub fn set_receiver_parameters(&mut self, receiver: SessionReceiverId, parameters: &crate::RtpParameters) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(self.receivers.get(&receiver).ok_or_else(missing)?.value.set_parameters(parameters))
+    }
+
+    pub fn set_receiver_jitter_buffer_minimum_delay(
+        &mut self,
+        receiver: SessionReceiverId,
+        seconds: Option<f64>,
+    ) -> Result<(), crate::RtpReceiverOperationError> {
+        self.check_open()?;
+        self.receivers.get(&receiver).ok_or_else(missing)?
+            .value.set_jitter_buffer_minimum_delay(seconds)
+    }
+
     pub fn sender_parameters(
         &mut self,
         sender: SessionSenderId,
@@ -1061,6 +1635,53 @@ impl ProductionSession {
             .header_extensions_to_negotiate()
     }
 
+    /// Full owned SDK preferences without legacy format reconstruction.
+    pub fn rtp_codec_preferences(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Vec<crate::RtpCodecCapability>, PeerError> {
+        self.transceivers.get(&transceiver).ok_or_else(missing)?
+            .value.value.rtp_codec_preferences()
+    }
+
+    pub fn header_extension_capabilities_to_negotiate(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Vec<crate::RtpHeaderExtensionCapabilityValue>, PeerError> {
+        self.transceivers.get(&transceiver).ok_or_else(missing)?
+            .value.value.header_extension_capabilities_to_negotiate()
+    }
+
+    pub fn negotiated_header_extension_capabilities(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Vec<crate::RtpHeaderExtensionCapabilityValue>, PeerError> {
+        self.transceivers.get(&transceiver).ok_or_else(missing)?
+            .value.value.negotiated_header_extension_capabilities()
+    }
+
+    pub fn set_rtp_codec_preferences(
+        &mut self,
+        transceiver: SessionTransceiverId,
+        codecs: &[crate::RtpCodecCapability],
+    ) -> Result<(), crate::RtpCapabilityInstallError> {
+        self.check_open().map_err(crate::RtpCapabilityInstallError::Binding)?;
+        self.transceivers.get(&transceiver)
+            .ok_or_else(|| crate::RtpCapabilityInstallError::Binding(missing()))?
+            .value.value.set_rtp_codec_preferences(codecs)
+    }
+
+    pub fn set_header_extension_capabilities_to_negotiate(
+        &mut self,
+        transceiver: SessionTransceiverId,
+        extensions: &[crate::RtpHeaderExtensionCapabilityValue],
+    ) -> Result<(), crate::RtpCapabilityInstallError> {
+        self.check_open().map_err(crate::RtpCapabilityInstallError::Binding)?;
+        self.transceivers.get(&transceiver)
+            .ok_or_else(|| crate::RtpCapabilityInstallError::Binding(missing()))?
+            .value.value.set_header_extension_capabilities_to_negotiate(extensions)
+    }
+
     pub fn negotiated_header_extensions(
         &mut self,
         transceiver: SessionTransceiverId,
@@ -1085,6 +1706,77 @@ impl ProductionSession {
             .value
             .value
             .set_header_extensions_to_negotiate(extensions)
+    }
+
+    pub fn transceiver_media_type(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<crate::MediaType, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.media_type())
+    }
+
+    pub fn transceiver_stopping(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<bool, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.stopping())
+    }
+
+    pub fn transceiver_receptive(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<bool, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.receptive())
+    }
+
+    pub fn fired_direction(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<Option<crate::RtpTransceiverDirectionValue>, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.fired_direction())
+    }
+
+    pub fn sframe_enabled(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<Option<bool>, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.sframe_enabled())
+    }
+
+    pub fn direction_value(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<crate::RtpTransceiverDirectionValue, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?
+            .value.value.direction_value())
+    }
+
+    pub fn current_direction_value(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Option<crate::RtpTransceiverDirectionValue>, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?
+            .value.value.current_direction_value())
+    }
+
+    pub fn set_direction_value(
+        &mut self, transceiver: SessionTransceiverId,
+        direction: crate::RtpTransceiverDirectionValue,
+    ) -> Result<(), crate::RtpTransceiverOperationError> {
+        self.check_open().map_err(crate::RtpTransceiverOperationError::Binding)?;
+        self.transceivers.get(&transceiver).ok_or_else(missing)
+            .map_err(crate::RtpTransceiverOperationError::Binding)?
+            .value.value.set_direction_value(direction)
+    }
+
+    pub fn stop_standard(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<(), crate::RtpTransceiverOperationError> {
+        self.check_open().map_err(crate::RtpTransceiverOperationError::Binding)?;
+        self.transceivers.get(&transceiver).ok_or_else(missing)
+            .map_err(crate::RtpTransceiverOperationError::Binding)?
+            .value.value.stop_standard()
+    }
+
+    pub fn transceiver_stopped(
+        &mut self, transceiver: SessionTransceiverId,
+    ) -> Result<bool, PeerError> {
+        Ok(self.transceivers.get(&transceiver).ok_or_else(missing)?.value.value.stopped())
     }
 
     pub fn set_direction(
@@ -1196,6 +1888,11 @@ impl ProductionSession {
     /// Close without removing the peer's observation identity. Accepted pending
     /// operations still yield exactly one outcome through try_peer_event.
     pub fn close_peer(&mut self, peer: SessionPeerId) -> Result<(), PeerError> {
+        self.peers.get(&peer).ok_or_else(missing)?;
+        // Retire raw observer slots before stopping the peer's resource graph.
+        // Already queued records remain available, including after close.
+        for observer in self.sender_observers.values().filter(|value| value.peer == peer) { observer.value.unregister_observer(); }
+        for observer in self.receiver_observers.values().filter(|value| value.peer == peer) { observer.value.unregister_observer(); }
         self.peers
             .get_mut(&peer)
             .ok_or_else(missing)?

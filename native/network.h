@@ -7,10 +7,24 @@
 
 namespace webrtc {
 class NetworkManager;
+class NetworkMonitorFactory;
 class PacketSocketFactory;
 }
 
 namespace pulsebeam::webrtc_sys {
+
+struct RustNetworkMonitorFactory;
+class NativeNetworkChange final {
+ public:
+  struct State;
+  explicit NativeNetworkChange(std::shared_ptr<State> state) noexcept;
+  ~NativeNetworkChange();
+  bool Notify() const noexcept;
+ private:
+  std::shared_ptr<State> state_;
+};
+bool network_change_notify(const NativeNetworkChange& changes) noexcept;
+std::unique_ptr<webrtc::NetworkMonitorFactory> network_monitor_factory_adapter(rust::Box<RustNetworkMonitorFactory> factory) noexcept;
 
 class NativeManualClock;
 class NativeDriverThread;

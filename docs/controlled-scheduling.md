@@ -170,8 +170,8 @@ Harness worker creation outside these markers is not library creation. Initial
 and final thread snapshots are not used as proof. A watchdog only detects hangs
 and never drives progress.
 
-The exact acceptance contract is `plans/single-thread-simulation/spec.md`.
-Recorded source/artifact identities and verification results, including the
-status of sanitizer and production regression gates, are maintained in
-`plans/single-thread-simulation/progress.md`. Source inspection or an earlier
-artifact is not substitute runtime evidence.
+The controlled-simulation acceptance contract and remaining qualification gates
+are consolidated in `plans/completion.md`. That single plan distinguishes
+historical baseline evidence from pending source/artifact, sanitizer and
+production regression qualification. Source inspection or an earlier artifact
+is not substitute runtime evidence.

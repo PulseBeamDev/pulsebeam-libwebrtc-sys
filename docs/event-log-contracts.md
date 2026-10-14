@@ -1,0 +1,55 @@
+# RTC event-log contracts
+
+Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_interface,_output}.h`, `api/rtc_event_log/rtc_event.h`, the environment factory, and concrete `logging/rtc_event_log/events/rtc_event_*.h` headers.
+
+## Implementation status
+
+This implementation is in progress and has not been built or tested yet. Validation and matched artifact regeneration are deferred to the consolidated qualification phase. This document describes the current implementation, not an assertion of complete event-log or environment parity.
+
+## Selection and actor access
+
+`PeerConnectionFactory::builder().event_logging(true)` selects the bundled native event-log factory for new peers. Logging is opt-in and does not create a file or start an output by itself. `event_log_factory(provider)` instead selects a caller-defined `RtcEventLogFactory`; it takes precedence over the built-in boolean. The factory is retained independently of the builder and can be invoked for multiple peers. Its `create` receives an owned native environment view and returns an owned logger. Native factory creation requires a non-null logger. A panicking Rust factory is contained and replaced with the native no-op logger, which rejects output start.
+
+`Environment::builder().event_log(logger)` installs a caller-defined logger in the native owning environment leaf. Native environment copies retain that leaf. A peer-specific factory can supersede this logger through the pinned native environment composition semantics. Without a peer-specific factory, the environment logger can be shared by multiple peers; output coordination belongs to the supplied logger, not a fabricated binding-level per-peer logger.
+
+`ProductionSession::builder(config)` accepts `environment_event_log`, `event_log_factory`, and the built-in `event_logging` selection without importing local handles. `start_peer_event_log` consumes an owned output and accepts either the native default period or an explicit period. `stop_peer_event_log` waits for native output shutdown. The corresponding local peer operations are `start_event_log` and `stop_event_log`. These operations marshal through the peer's native roles and can be used after moving the production actor.
+
+## Outputs and values
+
+`EventLogOutput::from_sink` takes a `Send` sink. Its calls are serialized but can arrive on different native threads. Write failure or a callback panic permanently deactivates it. Output ownership transfers to the logger on start, including native rejection paths. Provider implementations must release output before reporting stop completion.
+
+`EventLogOutput::file` uses the pinned engine's file implementation and optional size-limit semantics. It validates the UTF-8 filename and rejects embedded NUL. The file is opened only by this explicit operation. `is_active`, `write`, and `flush` forward through the actual native output, including file write and size-limit behavior. File output is not a deterministic controlled destination.
+
+Immediate output is distinct from a periodic whole-positive-millisecond interval. Invalid or overflowing durations return a typed error before native entry.
+
+`RtcEvent` owns the original native polymorphic event independently of a peer or factory graph. It exposes kind, configuration status, group key, microsecond/millisecond timestamp, and finite signed timestamp mutation. `data` copies typed payload snapshots for the 25 ordinary event classes, preserving optional audio-adaptation fields, stream configurations, rates including infinity, candidate descriptions, RTCP bytes, RTP raw headers and scalar fields, frame metadata, and probe results. These snapshots do not claim to expose RTP payload bytes that the concrete event API does not return.
+
+`RtcEvent::from_data` creates ordinary events through their native typed constructors. Optional audio-adaptation fields retain presence independently of false or zero values. Stream values become owned non-null native configuration objects. Native enum sentinel/out-of-domain values and invalid finite data rates return typed errors. Other scalar values retain native constructor storage semantics, with no invented bitrate, dimension, or loss-range restriction. RTCP bytes are copied without additional validation, matching the native constructor. RTP constructors parse the complete input packet through the native parser and own its buffer and extension map; invalid packets and extension IDs return typed errors. Unknown extension URIs follow native registration behavior and are not decoded. `begin_log` accepts local and UTC finite microsecond timestamps; `end_log` accepts the local timestamp. RTP and boundary snapshots alone lack required constructor inputs and return `IncompleteEventData` from `from_data`.
+
+`try_clone` calls the ordinary concrete class's public native `Copy` (24 classes) or public implicit copy constructor (remote estimate), retaining native packet/configuration ownership and event timestamps. The pinned begin/end-log classes and unknown kinds have no public copy operation and return a typed unsupported-kind error. Begin/end event snapshots expose common timestamps, not the begin class's private UTC constructor field.
+
+## Typed RTP extensions
+
+`RtcEvent::rtp_extension` selects a native registered trait through `RtcEventRtpExtensionKind`. Absence is `None`; a present extension retains its exact raw bytes and an optional typed decoded value. Malformed values therefore remain distinct from absent extensions. This covers all 17 traits in the pinned ordinary extension header plus generic frame descriptor ID00, video-layers allocation, corruption detection, and dependency-descriptor mandatory fields. Both incoming and outgoing events use their own retained extension-ID maps and native trait parsers, including after `try_clone` or dropping the original constructor inputs.
+
+Decoded values retain meaningful native presence and conditional validity. Generic frame descriptor start fields exist only on first packets. Allocation resolution and frame rate exist only when the native allocation marks them valid. Color space retains optional HDR metadata, exact enumerated codepoints, chroma siting, and the native HDR validity result. Transport sequence v2 feedback requests, estimated capture-clock offsets, and video timing flags/deltas remain independent fields.
+
+`rtp_dependency_descriptor` exposes the full native parser separately from mandatory-only decoding. Pass an optional `RtcEventDependencyStructure` from a prior descriptor's `attached_structure`; the native parser uses an attached structure in the current packet in preference to that context. Full parsing without required context yields a present snapshot with raw bytes and no decoded value, even when mandatory-only parsing succeeds. No structure or dependency metadata is fabricated. The result includes template dependencies, optional resolution, optional active-target bitmask, and the complete optional attached structure, including target protection, resolutions, templates, indications, and frame/chain diffs. Supplied context is checked for native bit-count, template-array shape, and resolution-index preconditions before native entry; invalid context returns `InvalidDependencyStructure`.
+
+## Provider execution and completion
+
+`RtcEventLogger` requires `Send + Sync`. Native start, stop, async stop, and owned event delivery are forwarded to the Rust provider; callbacks can occur on multiple native threads. The event's original native timestamp is preserved. Ordinary native producers leave timestamp assignment to the logger, so a custom logger that needs log-time stamping should assign `EventLogEnvironment::time_us()` through `RtcEvent::set_timestamp_us` before storing the event. The provider must not reenter the mutable actor or wait for actor-owner work. Synchronous stop must wait for output release. Async stop receives an exactly-once owned `EventLogStopCompletion` and must complete only after output release. Dropping the token also invokes completion so panic/cancellation cannot silently discard it. A token must not be retained forever. The default async implementation performs synchronous stop then completes.
+
+Callback panics are contained. Start/log failures deactivate further start/log calls; cleanup callbacks remain attempted. Provider resource destructors must not panic. Factory/logger registration persists through native ownership, not just through Rust builder scope. `Arc` registrations are supported for shared application state.
+
+`EventLogEnvironment` owns a native environment value and exposes time and independently owned field-trial snapshots. It is not a sequence-bound peer/factory handle and may be retained by a provider. Other environment utility access is still implementation work.
+
+## Controlled execution
+
+The built-in logger's synchronous stop posts to its output task queue and waits. That cannot be used with a caller-pumped cooperative queue without deadlocking. The current built-in selection therefore rejects that controlled combination on evidenced native dependency grounds.
+
+A custom factory or environment logger can be used with controlled execution if its own work and outputs remain caller-controlled. It must not start autonomous threads, use physical sockets, depend on wall-clock progress, or retain stop completions without caller-controlled progress. The binding does not claim to make arbitrary externally supplied provider work deterministic.
+
+## Deferred qualification
+
+Required consolidated checks include core/native builds and tests, provider retention/drop and panic cases, output failure and limit behavior, native event payload/copy fidelity, actor migration/shutdown, and controlled logger execution without autonomous work. Remaining environment utility operations and the version-specific coverage inventory remain incomplete. Event constructor/copy, typed extension, and stateful dependency-descriptor test sources are present but have not been run.

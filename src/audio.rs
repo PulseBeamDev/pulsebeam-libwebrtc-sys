@@ -269,7 +269,9 @@ pub struct EncodedAudioFrame {
     /// getter. This is not inferred from PCM or codec speech classification.
     pub voice_activity: Option<bool>,
     pub samples_per_channel: u32,
+    /// Native capture microseconds; i64::MIN/i64::MAX retain infinity sentinels.
     pub capture_time_us: Option<i64>,
+    /// Native receive microseconds; i64::MIN/i64::MAX retain infinity sentinels.
     pub receive_time_us: Option<i64>,
 }
 

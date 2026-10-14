@@ -23,8 +23,9 @@ check:
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nci\nci-preflight\nci-release\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
     test "$(find .github/workflows -maxdepth 1 -name '*.yml' | wc -l)" -eq 1
     grep -Fq '  released-consumer:' .github/workflows/release.yml
-    test "$(find consumer -type f | wc -l)" -eq 3
-    grep -Fq 'rtc_use_h264=false' Justfile
+    test -f consumer/rust-only/Cargo.toml.in
+    test -f consumer/rust-only/src/main.rs
+    grep -Fq 'proprietary_codecs=true ffmpeg_branding="Chrome" rtc_use_h264=true rtc_system_openh264=false' Justfile
     grep -Fq 'rtc_build_libvpx=true' Justfile
     grep -Fq 'rtc_include_dav1d_in_internal_decoder_factory=true' Justfile
     grep -Eq '^set windows-shell := \["C:/Program Files/Git/bin/bash\.exe"' Justfile
@@ -41,6 +42,7 @@ check:
     python3 -m unittest tests/test_linux_runtime_host.py
     python3 -m unittest tests/test_linux_toolchain_host.py
     python3 -m unittest tests/test_linux_container.py
+    python3 -m unittest tests/test_linux_h264_configuration.py
     python3 -m unittest tests/test_linux_asan_configuration.py
     python3 -m unittest tests/test_linux_asan_static_closure.py
     python3 -m unittest tests/test_controlled_lifecycle_trace.py
@@ -334,10 +336,17 @@ _target-dependencies target:
 _gn-args flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
-    common='is_debug=false is_component_build=false use_rtti=false rtc_include_tests=false rtc_build_examples=false rtc_build_tools=false rtc_use_h264=false rtc_include_opus=true rtc_build_opus=true rtc_build_libvpx=true rtc_libvpx_build_vp9=true rtc_include_builtin_audio_codecs=true rtc_include_dav1d_in_internal_decoder_factory=true rtc_enable_protobuf=false symbol_level=0 use_siso=false treat_warnings_as_errors=false'
+    common='is_debug=false is_component_build=false use_rtti=false rtc_include_tests=false rtc_build_examples=false rtc_build_tools=false rtc_include_opus=true rtc_build_opus=true rtc_build_libvpx=true rtc_libvpx_build_vp9=true rtc_include_builtin_audio_codecs=true rtc_include_dav1d_in_internal_decoder_factory=true symbol_level=0 use_siso=false treat_warnings_as_errors=false'
+    # Linux x86_64 parity includes real non-device H.264 in both flavors.
+    # rtc_use_h264 alone does not make FFmpeg capable of decoding H.264.
+    case "{{ target }}" in linux-x86_64) common+=' proprietary_codecs=true ffmpeg_branding="Chrome" rtc_use_h264=true rtc_system_openh264=false';; *) common+=' rtc_use_h264=false';; esac
+    case "{{ target }}" in linux-*) common+=' rtc_enable_protobuf=true';; *) common+=' rtc_enable_protobuf=false';; esac
     case "${PULSEBEAM_WEBRTC_SANITIZER:-}" in '') ;; address) common+=' is_asan=true dcheck_always_on=true';; *) echo 'PULSEBEAM_WEBRTC_SANITIZER must be empty or address' >&2; exit 1;; esac
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
-    case "{{ target }}" in linux-*) wrapper=$(command -v sccache); common+=" cc_wrapper=\"$wrapper\"";; esac
+    case "{{ target }}" in
+      linux-x86_64) cache=$(command -v sccache); common+=" cc_wrapper=$(python3 "{{ root }}/tools/native_cc_wrapper.py" --gn-wrapper "$cache")";;
+      linux-arm64) wrapper=$(command -v sccache); common+=" cc_wrapper=\"$wrapper\"";;
+    esac
     case "{{ target }}" in
       linux-x86_64) platform='target_os="linux" target_cpu="x64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_amd64-sysroot" use_custom_libcxx=true' ;;
       linux-arm64) platform='target_os="linux" target_cpu="arm64" use_sysroot=true target_sysroot="//build/linux/debian_bullseye_arm64-sysroot" use_custom_libcxx=true use_custom_libunwind=true clang_use_chrome_plugins=false' ;;
@@ -389,7 +398,7 @@ _apple-host-protoc flavor target:
 _roots flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
-    printf '%s\n' //:webrtc //api/video_codecs:builtin_video_encoder_factory //api/video_codecs:builtin_video_decoder_factory
+    printf '%s\n' //:webrtc //api:field_trials //api:frame_transformer_factory //api:rtc_event_log_output_file //api/rtc_event_log:rtc_event_log_factory //api/video_codecs:builtin_video_encoder_factory //api/video_codecs:builtin_video_decoder_factory
     if test "{{ flavor }}" = native; then case "{{ target }}" in android-*) printf '%s\n' //sdk/android:native_api;; ios-*) printf '%s\n' //sdk:framework_objc;; macos-*) printf '%s\n' //sdk:mac_framework_objc;; esac; fi
 
 _compile flavor target:
@@ -479,13 +488,19 @@ _export flavor target:
     archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
     just --justfile "{{ root }}/Justfile" _export-static-closure "{{ flavor }}" "{{ target }}" "$src" "$out" "$src_native" "$out_native" "$archives" "$objects"
     if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
-    roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video)
+    # AudioEncoderOpus's public transitive headers use this pinned relative path.
+    roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video third_party/opus/src/include)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
     # The adapter and SDK consumers must use the pinned engine crypto headers,
     # never a platform OpenSSL header set with a different backend ABI.
     cp -R "$src/third_party/boringssl/src/include/openssl" "$stage/include/"
     if test -d "$out/gen"; then (cd "$out/gen" && find . -type f \( -name '*.h' -o -name '*.inc' \) -print0 | tar --null -T - -cf -) | tar -C "$stage/include" -xf -; fi
+    # Generated ANA protobuf headers depend on this exact pinned runtime header
+    # set. Do not resolve their google/protobuf includes through host packages.
+    if test -f "$out/gen/modules/audio_coding/audio_network_adaptor/config.pb.h"; then
+      (cd "$src/third_party/protobuf/src" && find google/protobuf -type f \( -name '*.h' -o -name '*.inc' \) -print0 | tar --null -T - -cf -) | tar -C "$stage/include" -xf -
+    fi
     if [[ "{{ target }}" = linux-* || "{{ target }}" = android-* ]]; then mkdir -p "$stage/include/c++/v1"; cp -R "$src/third_party/libc++/src/include/." "$stage/include/c++/v1/"; cp "$src/buildtools/third_party/libc++/__config_site" "$src/buildtools/third_party/libc++/__assertion_handler" "$stage/include/c++/v1/"; fi
     "$gn" desc --root="$src_native" "$out_native" //:webrtc defines --all | sed 's/^/-D/' > "$definitions_file"
     # DesktopCaptureOptions has an X11-dependent C++ layout. This define is
@@ -499,7 +514,7 @@ _export flavor target:
     library_native=$(just --justfile "{{ root }}/Justfile" _native-path "$library")
     { printf 'CREATE %s\n' "$library_native"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
     members=$("$ar" t "$library_native") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "a readable member list for $library" 'llvm-ar could not list archive members'
-    for member in bridge execution network codec peer data_channel video audio probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "${member}.o or ${member}.obj in $library" "member ${member} is absent"; done
+    for member in bridge execution network codec peer transport rtc_error rtp_values string_builder data_channel video audio frame_transformer video_codec_values video_encoder_selector probe cxx; do grep -E "(^|/)${member}\\.(o|obj)$" <<< "$members" >/dev/null || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "${member}.o or ${member}.obj in $library" "member ${member} is absent"; done
     bridge_symbol="pulsebeam\$webrtc_sys\$cxxbridge1\$$cxx_abi\$bridge_identity"
     nm=$(just --justfile "{{ root }}/Justfile" _native-path "$src/third_party/llvm-build/Release+Asserts/bin/llvm-nm")
     nm_output=$("$nm" "$library_native") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" bridge-identity "$bridge_symbol in $library" 'llvm-nm could not inspect archive symbols'
@@ -516,6 +531,9 @@ _export flavor target:
     just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
     source_state=pristine; case "{{ flavor }}:{{ target }}" in core:ios-arm64|core:ios-simulator-arm64) source_state=applied;; esac
     { printf 'webrtc_repository=%s\nwebrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_url }}' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
+    if test "{{ target }}" = linux-x86_64; then
+      printf 'native_floating_point_flags=-fno-fast-math -ffp-contract=off\nnative_cc_wrapper_sha256=%s\n' "$(sha256sum "{{ root }}/tools/native_cc_wrapper.py" | cut -d' ' -f1)" >> "$stage/build.txt"
+    fi
     python3 "$root_native/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "$root_native/src/lib.rs" --generated-header "$stage_native/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc")" --toolchain-file "$(just --justfile "{{ root }}/Justfile" _native-path "$toolchain_file")" --gn-args-file "$out_native/pulsebeam-gn-args.txt" --defines-file "$(just --justfile "{{ root }}/Justfile" _native-path "$definitions_file")" --licenses "$stage_native/LICENSES" --output "$stage_native/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
@@ -531,7 +549,7 @@ _bridge-objects flavor target stage definitions_file:
     src="{{ work }}/checkout/src"; bridge="{{ work }}/bridge/{{ flavor }}/{{ target }}"; root_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ root }}"); src_native=$(just --justfile "{{ root }}/Justfile" _native-path "$src"); bridge_native=$(just --justfile "{{ root }}/Justfile" _native-path "$bridge"); stage_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ stage }}")
     generator=$(CARGO_HOME="$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home")" python3 "$root_native/tools/cxx_import.py" install-generator --root "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cxxbridge-tools")")
     rm -rf "$bridge"; mkdir -p "$bridge/obj" "{{ stage }}/include/rust" "{{ stage }}/include/pulsebeam-webrtc-sys/src" "{{ stage }}/include/pulsebeam-webrtc-sys/native"
-    cp "{{ root }}/native/probe.h" "{{ root }}/native/execution.h" "{{ root }}/native/network.h" "{{ root }}/native/codec.h" "{{ root }}/native/peer.h" "{{ root }}/native/data_channel.h" "{{ root }}/native/video.h" "{{ root }}/native/audio.h" "{{ root }}/native/opus_carrier.h" "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
+    cp "{{ root }}"/native/*.h "{{ stage }}/include/pulsebeam-webrtc-sys/native/"
     cp "{{ root }}/vendor/cxx/include/cxx.h" "{{ stage }}/include/rust/cxx.h"
     "$generator" "$root_native/src/lib.rs" --header > "{{ stage }}/include/pulsebeam-webrtc-sys/src/lib.rs.h"
     "$generator" "$root_native/src/lib.rs" > "$bridge/lib.rs.cc"
@@ -543,7 +561,7 @@ _bridge-objects flavor target stage definitions_file:
     defs=(); while IFS= read -r definition; do defs+=("$definition"); done < "{{ definitions_file }}"
     include=(-I"{{ stage }}/include")
     case "{{ target }}" in
-      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
+      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread -fno-fast-math -ffp-contract=off); suffix=o;;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
       android-x86_64|android-arm64-v8a)
         prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -579,10 +597,33 @@ _bridge-objects flavor target stage definitions_file:
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then args+=(-fsanitize=address); fi
     if test "{{ target }}" = windows-x86_64; then
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$bridge_native\\lib.rs.cc" "/Fo$bridge_native\\obj\\bridge.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\event_log.cc" "/Fo$bridge_native\\obj\\event_log.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\execution.cc" "/Fo$bridge_native\\obj\\execution.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network.cc" "/Fo$bridge_native\\obj\\network.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\clock.cc" "/Fo$bridge_native\\obj\\clock.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\metronome.cc" "/Fo$bridge_native\\obj\\metronome.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\certificate_generator.cc" "/Fo$bridge_native\\obj\\certificate_generator.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\async_dns.cc" "/Fo$bridge_native\\obj\\async_dns.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video_bitrate.cc" "/Fo$bridge_native\\obj\\video_bitrate.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video_metadata.cc" "/Fo$bridge_native\\obj\\video_metadata.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\frame_transformer.cc" "/Fo$bridge_native\\obj\\frame_transformer.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video_codec_values.cc" "/Fo$bridge_native\\obj\\video_codec_values.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video_encoder_selector.cc" "/Fo$bridge_native\\obj\\video_encoder_selector.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network_predictor.cc" "/Fo$bridge_native\\obj\\network_predictor.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\fec.cc" "/Fo$bridge_native\\obj\\fec.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network_control.cc" "/Fo$bridge_native\\obj\\network_control.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\codec.cc" "/Fo$bridge_native\\obj\\codec.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\media_values.cc" "/Fo$bridge_native\\obj\\media_values.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\audio_frame_values.cc" "/Fo$bridge_native\\obj\\audio_frame_values.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\peer.cc" "/Fo$bridge_native\\obj\\peer.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\transport.cc" "/Fo$bridge_native\\obj\\transport.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\rtc_error.cc" "/Fo$bridge_native\\obj\\rtc_error.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\string_builder.cc" "/Fo$bridge_native\\obj\\string_builder.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\rtp_values.cc" "/Fo$bridge_native\\obj\\rtp_values.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\local_network_permission.cc" "/Fo$bridge_native\\obj\\local_network_permission.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\socket_address.cc" "/Fo$bridge_native\\obj\\socket_address.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\task_queue_provider.cc" "/Fo$bridge_native\\obj\\task_queue_provider.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\tls.cc" "/Fo$bridge_native\\obj\\tls.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\data_channel.cc" "/Fo$bridge_native\\obj\\data_channel.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video.cc" "/Fo$bridge_native\\obj\\video.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\audio.cc" "/Fo$bridge_native\\obj\\audio.$suffix"
@@ -590,10 +631,33 @@ _bridge-objects flavor target stage definitions_file:
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\vendor\\cxx\\src\\cxx.cc" "/Fo$bridge_native\\obj\\cxx.$suffix"
     else
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "$bridge/lib.rs.cc" -o "$bridge/obj/bridge.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/event_log.cc" -o "$bridge/obj/event_log.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/execution.cc" -o "$bridge/obj/execution.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/network.cc" -o "$bridge/obj/network.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/clock.cc" -o "$bridge/obj/clock.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/metronome.cc" -o "$bridge/obj/metronome.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/certificate_generator.cc" -o "$bridge/obj/certificate_generator.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/async_dns.cc" -o "$bridge/obj/async_dns.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video_bitrate.cc" -o "$bridge/obj/video_bitrate.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video_metadata.cc" -o "$bridge/obj/video_metadata.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/frame_transformer.cc" -o "$bridge/obj/frame_transformer.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video_codec_values.cc" -o "$bridge/obj/video_codec_values.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video_encoder_selector.cc" -o "$bridge/obj/video_encoder_selector.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/network_predictor.cc" -o "$bridge/obj/network_predictor.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/fec.cc" -o "$bridge/obj/fec.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/network_control.cc" -o "$bridge/obj/network_control.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/codec.cc" -o "$bridge/obj/codec.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/media_values.cc" -o "$bridge/obj/media_values.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/audio_frame_values.cc" -o "$bridge/obj/audio_frame_values.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/peer.cc" -o "$bridge/obj/peer.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/transport.cc" -o "$bridge/obj/transport.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/rtc_error.cc" -o "$bridge/obj/rtc_error.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/string_builder.cc" -o "$bridge/obj/string_builder.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/rtp_values.cc" -o "$bridge/obj/rtp_values.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/local_network_permission.cc" -o "$bridge/obj/local_network_permission.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/socket_address.cc" -o "$bridge/obj/socket_address.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/task_queue_provider.cc" -o "$bridge/obj/task_queue_provider.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/tls.cc" -o "$bridge/obj/tls.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/data_channel.cc" -o "$bridge/obj/data_channel.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video.cc" -o "$bridge/obj/video.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/audio.cc" -o "$bridge/obj/audio.$suffix"
@@ -601,7 +665,7 @@ _bridge-objects flavor target stage definitions_file:
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.$suffix"
     fi
     if test "{{ target }}" = windows-x86_64; then "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\llvm-readobj" --file-headers "$bridge_native\\obj\\bridge.obj" | grep -F 'Format: COFF-x86-64' >/dev/null; fi
-    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/audio.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
+    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/event_log.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/clock.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/video_bitrate.$suffix" "$bridge/obj/video_metadata.$suffix" "$bridge/obj/frame_transformer.$suffix" "$bridge/obj/video_codec_values.$suffix" "$bridge/obj/video_encoder_selector.$suffix" "$bridge/obj/network_predictor.$suffix" "$bridge/obj/fec.$suffix" "$bridge/obj/network_control.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/media_values.$suffix" "$bridge/obj/audio_frame_values.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/transport.$suffix" "$bridge/obj/rtc_error.$suffix" "$bridge/obj/string_builder.$suffix" "$bridge/obj/rtp_values.$suffix" "$bridge/obj/local_network_permission.$suffix" "$bridge/obj/metronome.$suffix" "$bridge/obj/certificate_generator.$suffix" "$bridge/obj/async_dns.$suffix" "$bridge/obj/socket_address.$suffix" "$bridge/obj/task_queue_provider.$suffix" "$bridge/obj/tls.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/audio.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
 
 _link-flags flavor target:
     #!/usr/bin/env bash
@@ -623,15 +687,23 @@ _cpp-smoke flavor target kit:
     read -r -a exported_defines <<< "$(sed -n 's/^cxx_defines=//p' "{{ kit }}/build.txt")"
     defs=(-std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness "${exported_defines[@]}")
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then defs+=(-fsanitize=address); fi
+    sources=("$root_native/consumer/smoke.cc" "$root_native/consumer/frame_callback_slot.cc" "$root_native/consumer/video_frame_metadata.cc")
+    library="$kit_native/lib/libwebrtc.a"; program=smoke
+    # Only the Rust-linked companion may consume adapter/CXX-owned values.
+    if test -n "${PULSEBEAM_WEBRTC_CONSUMER_STATICLIB:-}"; then
+      sources=("$root_native/consumer/bridge_smoke.cc" "$root_native/consumer/transformable_frame.cc")
+      library=$(just --justfile "{{ root }}/Justfile" _native-path "$PULSEBEAM_WEBRTC_CONSUMER_STATICLIB"); program=bridge-smoke
+      case "{{ target }}" in linux-*) link+=(-lutil);; macos-*|ios-*) link+=(-liconv);; windows-*) link+=(userenv.lib ntdll.lib);; esac
+    fi
     case "{{ target }}" in
       linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1");;
       macos-x86_64|macos-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -DWEBRTC_POSIX -DWEBRTC_MAC);;
       ios-arm64|ios-simulator-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; sdk=$(case "{{ target }}" in ios-arm64) printf iphoneos;; *) printf iphonesimulator;; esac); minimum=$(case "{{ target }}" in ios-arm64) printf '%s' -miphoneos-version-min=18.0;; *) printf '%s' -mios-simulator-version-min=18.0;; esac); args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -DWEBRTC_POSIX -DWEBRTC_IOS -DWEBRTC_MAC);;
-      windows-x86_64) MSYS2_ARG_CONV_EXCL='*' "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"$kit_native\\include" "$root_native\\consumer\\smoke.cc" "$kit_native\\lib\\webrtc.lib" "${link[@]}" "/Fe:$kit_native\\smoke.exe"; exit;;
+      windows-x86_64) if test -z "${PULSEBEAM_WEBRTC_CONSUMER_STATICLIB:-}"; then library="$kit_native\\lib\\webrtc.lib"; fi; MSYS2_ARG_CONV_EXCL='*' "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"$kit_native\\include" "${sources[@]}" "$library" "${link[@]}" "/Fe:$kit_native\\$program.exe"; exit;;
     esac
-    "$cxx" "${defs[@]}" "${args[@]}" -I"{{ kit }}/include" "{{ root }}/consumer/smoke.cc" "{{ kit }}/lib/libwebrtc.a" "${link[@]}" -o "{{ kit }}/smoke"
+    "$cxx" "${defs[@]}" "${args[@]}" -I"{{ kit }}/include" "${sources[@]}" "$library" "${link[@]}" -o "{{ kit }}/$program"
 
 _rust-smoke flavor target kit:
     #!/usr/bin/env bash
@@ -654,6 +726,9 @@ _rust-smoke flavor target kit:
     test -z "$cxx" || command+=("$linker_env=$cxx")
     features=(); test "{{ flavor }}" = core || features=(--features native)
     "${command[@]}" cargo test --locked --target "$cargo_target" "${features[@]}" --test identity --no-run
+    "${command[@]}" cargo rustc --locked --target "$cargo_target" "${features[@]}" --lib --crate-type staticlib
+    case "{{ target }}" in windows-*) library="$smoke_native/$cargo_target/debug/pulsebeam_webrtc_sys.lib";; *) library="$smoke_native/$cargo_target/debug/libpulsebeam_webrtc_sys.a";; esac
+    PULSEBEAM_WEBRTC_CONSUMER_STATICLIB="$library" just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "{{ kit }}"
 
 # Execute the complete Rust runtime suite against an extracted host-native artifact.
 _runtime-test flavor target archive:
@@ -676,6 +751,8 @@ _runtime-test flavor target archive:
     cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); runtime_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/runtime/{{ flavor }}/{{ target }}"); artifact_native=$(just --justfile "{{ root }}/Justfile" _native-path "$artifact")
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native")
     test -z "$linker" || command+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$linker")
+    just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$artifact"
+    case "{{ target }}" in windows-*) "$artifact/bridge-smoke.exe";; *) "$artifact/bridge-smoke";; esac
     "${command[@]}" cargo test --locked "${features[@]}" --tests -- --test-threads=1
 
 _gn:

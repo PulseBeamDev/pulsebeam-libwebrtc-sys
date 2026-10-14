@@ -7,6 +7,7 @@ use std::{
 };
 
 use pulsebeam_webrtc_sys::*;
+#[path = "support/frame_crypto.rs"] mod frame_crypto_support;
 
 #[derive(Default)]
 struct Notification {
@@ -149,10 +150,13 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
             .set_header_extensions_to_negotiate(transceiver, &extensions)
             .unwrap();
     }
+    let crypto_trace = Arc::new(frame_crypto_support::Trace::default());
     let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut encrypted_configuration = RtcConfiguration::default();
+    encrypted_configuration.options.crypto_options.require_frame_encryption = true;
     let peers = [
-        session.create_peer(PeerConfiguration::default()).unwrap(),
-        session.create_peer(PeerConfiguration::default()).unwrap(),
+        session.create_peer_with_configuration(encrypted_configuration.clone()).unwrap(),
+        session.create_peer_with_configuration(encrypted_configuration).unwrap(),
     ];
     let sources = [
         session.create_opus_source(1).unwrap(),
@@ -169,8 +173,14 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
             )
             .unwrap();
         capture_extension(&mut session, transceiver);
+        let sender = session.sender(transceiver).unwrap();
+        let encryptor = session.create_frame_encryptor(frame_crypto_support::Cipher::encoder(crypto_trace.clone())).unwrap();
+        session.set_sender_frame_encryptor(sender, Some(encryptor)).unwrap();
+        assert_eq!(session.sender_frame_encryptor(sender).unwrap(), Some(encryptor));
+        session.release_frame_encryptor(encryptor).unwrap();
         outgoing.push(transceiver);
     }
+    let receive_crypto_trace = crypto_trace.clone();
     let (session, receivers) = thread::spawn(move || {
         let mut session = session;
         let mut observed = Observations::default();
@@ -195,6 +205,19 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
             }
         }
         for (_, receiver) in &observed.arrivals {
+            let snapshot = session.get_receiver_parameters(*receiver).unwrap();
+            assert!(!snapshot.codecs().is_empty());
+            assert_eq!(session.set_receiver_parameters(*receiver, &snapshot), Ok(false));
+            for delay in [Some(0.0), Some(f64::INFINITY), None] {
+                session.set_receiver_jitter_buffer_minimum_delay(*receiver, delay).unwrap();
+            }
+            assert_eq!(session.set_receiver_jitter_buffer_minimum_delay(*receiver, Some(f64::NAN)),
+                Err(pulsebeam_webrtc_sys::RtpReceiverOperationError::UnsafeDelayNaN));
+            session.receiver_sources(*receiver).unwrap();
+            let decryptor = session.create_frame_decryptor(*receiver, frame_crypto_support::Cipher::decoder(receive_crypto_trace.clone())).unwrap();
+            session.set_receiver_frame_decryptor(*receiver, Some(decryptor)).unwrap();
+            assert_eq!(session.receiver_frame_decryptor(*receiver).unwrap(), Some(decryptor));
+            session.release_frame_decryptor(decryptor).unwrap();
             session.attach_encoded_audio(*receiver).unwrap();
         }
         for transceiver in outgoing
@@ -220,8 +243,10 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
     })
     .join()
     .unwrap();
+    let send_crypto_trace = crypto_trace.clone();
     let (session, frames) = thread::spawn(move || {
         let mut session = session;
+        let media_caller_thread = thread::current().id();
         let capture_now = session.opus_capture_time_now(sources[0]).unwrap();
         let wall_ntp_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -282,6 +307,13 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
                 "capture={capture}, expected={expected}"
             );
         }
+        let calls = send_crypto_trace.calls.lock().unwrap();
+        assert!(calls.iter().filter(|call| call.encrypt).count() >= 2);
+        assert!(calls.iter().filter(|call| !call.encrypt).count() >= 2);
+        assert!(calls.iter().all(|call| call.media == MediaType::Audio && call.thread != media_caller_thread));
+        assert!(calls.iter().filter(|call| call.encrypt).all(|call| call.ssrc != 0 && call.input == packet.data));
+        assert!(calls.iter().filter(|call| !call.encrypt).all(|call| call.input.first() == Some(&0xa5)));
+        drop(calls);
         // Retire actor ownership and preserve already-returned owned output.
         for source in sources {
             session.close_source(source).unwrap();
@@ -297,6 +329,8 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
         drop(session);
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].data, vec![0xf8, 0xff, 0xfe]);
+        assert_eq!(crypto_trace.encoder_drops.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(crypto_trace.decoder_drops.load(std::sync::atomic::Ordering::SeqCst), 2);
         let _world = ControlledWorld::acquire(742, Duration::from_secs(1)).unwrap();
     })
     .join()
@@ -341,13 +375,26 @@ fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
         )
         .unwrap();
     let sender = session.sender(transceiver).unwrap();
+    let receiver = session.receiver(transceiver).unwrap();
+    session.register_sender_packet_observer(sender, 2).unwrap();
+    session.register_receiver_packet_observer(receiver, 2).unwrap();
     assert!(ControlledWorld::acquire(9, Duration::from_secs(1)).is_err());
 
+    let capabilities = session.get_rtp_sender_capabilities(pulsebeam_webrtc_sys::MediaType::Audio).unwrap();
+    assert!(!capabilities.codecs().is_empty());
     let (session, offer) = thread::spawn(move || {
+        assert_eq!(session.get_rtp_sender_capabilities(pulsebeam_webrtc_sys::MediaType::Audio).unwrap(), capabilities);
+        assert!(!session.get_rtp_receiver_capabilities(pulsebeam_webrtc_sys::MediaType::Audio).unwrap().codecs().is_empty());
         assert_eq!(
             session.sender_parameters(sender).unwrap().encodings.len(),
             1
         );
+        assert_eq!(session.get_sender_parameters(sender).unwrap().encodings().len(), 1);
+        assert!(session.register_sender_packet_observer(sender, 1).is_err());
+        assert!(session.take_sender_packet_event(sender).unwrap().is_none());
+        assert!(session.take_receiver_packet_event(receiver).unwrap().is_none());
+        assert_eq!(session.take_sender_dropped_packet_events(sender).unwrap(), 0);
+        assert_eq!(session.take_receiver_dropped_packet_events(receiver).unwrap(), 0);
         let offer_id = session.create_offer(peer, false).unwrap();
         let offer = finish(&mut session, peer, offer_id).unwrap();
         assert!(offer.sdp.contains("H264/90000"));
@@ -411,6 +458,10 @@ fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
         let mut session = session;
         session.close_channel(channel).unwrap();
         session.close_peer(peer).unwrap();
+        session.unregister_sender_packet_observer(sender).unwrap();
+        session.unregister_receiver_packet_observer(receiver).unwrap();
+        assert!(session.take_sender_packet_event(sender).unwrap().is_none());
+        assert!(session.take_receiver_packet_event(receiver).unwrap().is_none());
         session.close_peer(peer).unwrap();
         session.shutdown().unwrap();
         session.shutdown().unwrap();
@@ -1068,6 +1119,43 @@ fn accepted_operations_are_bounded_until_outcomes_are_consumed_and_survive_close
     .join()
     .unwrap();
     drop(session);
+}
+
+#[test]
+fn sframe_after_negotiated_disabled_preserves_native_invalid_modification() {
+    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let alice = session.create_peer(PeerConfiguration::default()).unwrap();
+    let bob = session.create_peer(PeerConfiguration::default()).unwrap();
+    let source = session.create_opus_source(1).unwrap();
+    let transceiver = session.publish_opus(alice, source, "sframe-disabled", RtpTransceiverDirection::SendReceive).unwrap();
+    let sender = session.sender(transceiver).unwrap();
+    let receiver = session.receiver(transceiver).unwrap();
+    assert_eq!(session.sframe_enabled(transceiver).unwrap(), None);
+    let operation = session.create_offer(alice, false).unwrap();
+    let offer = finish(&mut session, alice, operation).unwrap();
+    let operation = session.set_local_description(alice, offer.clone()).unwrap();
+    finish(&mut session, alice, operation);
+    let operation = session.set_remote_description(bob, offer).unwrap();
+    finish(&mut session, bob, operation);
+    let operation = session.create_answer(bob).unwrap();
+    let answer = finish(&mut session, bob, operation).unwrap();
+    let operation = session.set_local_description(bob, answer.clone()).unwrap();
+    finish(&mut session, bob, operation);
+    let operation = session.set_remote_description(alice, answer).unwrap();
+    finish(&mut session, alice, operation);
+    assert_eq!(session.sframe_enabled(transceiver).unwrap(), Some(false));
+    let init = SframeEncrypterInit::new(SframeMode::PerPacket, SframeCipherSuite::Aes128CtrHmacSha256_80);
+    for error in [session.create_sframe_encrypter(sender, &init).unwrap_err(),
+        session.create_sframe_decrypter(receiver, init.cipher_suite()).unwrap_err()] {
+        match error {
+            SframeCreateError::Native(error) => {
+                assert_eq!(error.kind(), RtcErrorType::InvalidModification);
+                assert_eq!(error.message(), "Cannot enable Sframe after it has been disabled by a completed negotiation.");
+            }
+            error => panic!("expected native invalid modification, got {error:?}"),
+        }
+    }
+    assert_eq!(session.sframe_enabled(transceiver).unwrap(), Some(false));
 }
 
 #[test]

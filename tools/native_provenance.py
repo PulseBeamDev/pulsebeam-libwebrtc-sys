@@ -1,8 +1,8 @@
 """Path-aware identity of repository adapters and their native build recipe.
 
 The generated bridge and vendor CXX runtime have separate provenance. Include
-all native C++ sources/headers (but not manifest fixtures) and the Justfile that
-selects, compiles and links them. JSON arrays use UTF-8 and compact separators.
+all native C++ sources/headers (but not manifest fixtures), the Justfile and
+native compiler wrapper that select, compile and link them. JSON arrays use UTF-8 and compact separators.
 """
 
 import hashlib
@@ -12,7 +12,8 @@ from pathlib import Path
 
 def adapter_inputs(root: Path) -> list[Path]:
     return sorted(
-        [root / "Justfile", *root.glob("native/*.cc"), *root.glob("native/*.h")],
+        [root / "Justfile", root / "tools/native_cc_wrapper.py",
+         *root.glob("native/*.cc"), *root.glob("native/*.h")],
         key=lambda path: path.relative_to(root).as_posix(),
     )
 
