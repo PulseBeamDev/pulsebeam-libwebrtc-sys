@@ -6,6 +6,9 @@
 #include "api/make_ref_counted.h"
 #include "modules/audio_mixer/audio_mixer_impl.h"
 #include "modules/audio_mixer/default_output_rate_calculator.h"
+#include <cstring>
+#include <limits>
+#include <vector>
 #include "api/audio/audio_frame.h"
 #include "api/audio/audio_view.h"
 #include "api/audio/channel_layout.h"
@@ -15,6 +18,69 @@
 
 namespace pulsebeam::webrtc_sys {
 namespace {
+template <typename View>
+FfiPcmViewInfo PcmInfo(const View& view) {
+  FfiPcmViewInfo out;
+  out.valid = true;
+  out.channels = webrtc::NumChannels(view);
+  out.samples = webrtc::SamplesPerChannel(view);
+  out.size = view.size();
+  out.empty = view.empty();
+  out.mono = webrtc::IsMono(view);
+  out.interleaved = webrtc::IsInterleavedView(view);
+  return out;
+}
+template <typename T>
+FfiPcmViewInfo PcmShape(rust::Slice<const T> data, std::size_t samples,
+                      std::size_t channels, std::uint8_t layout) {
+  if (layout == 0) return PcmInfo(webrtc::MonoView<const T>(data.data(), data.size()));
+  if (channels && samples > data.size() / channels) return {};
+  if (layout == 1) {
+    if (channels > webrtc::kMaxNumberOfAudioChannels || (channels && !samples)) return {};
+    return PcmInfo(webrtc::InterleavedView<const T>(data.data(), samples, channels));
+  }
+  if (layout == 2) return PcmInfo(webrtc::DeinterleavedView<const T>(data.data(), samples, channels));
+  return {};
+}
+template <typename T>
+FfiPcmViewInfo PlanarShape(rust::Slice<const std::size_t> pointers, std::size_t samples) {
+  if (!pointers.empty() && samples > std::numeric_limits<std::size_t>::max() / pointers.size()) return {};
+  std::vector<const T*> channels;
+  for (auto pointer : pointers) channels.push_back(reinterpret_cast<const T*>(pointer));
+  return PcmInfo(webrtc::DeinterleavedView<const T>(channels, samples));
+}
+template <typename T>
+void PlanarClear(rust::Slice<const std::size_t> pointers, std::size_t samples) {
+  std::vector<T*> channels;
+  for (auto pointer : pointers) channels.push_back(reinterpret_cast<T*>(pointer));
+  webrtc::DeinterleavedView<T>(channels, samples).Clear();
+}
+template <typename T>
+std::uint8_t PcmCopy(rust::Slice<T> destination, rust::Slice<const T> source,
+                     std::size_t samples, std::size_t channels,
+                     bool destination_mono, bool source_mono, bool method) {
+  if (channels > webrtc::kMaxNumberOfAudioChannels ||
+      (channels && samples > source.size() / channels) ||
+      (channels && samples > destination.size() / channels) ||
+      ((destination_mono || source_mono) && channels != 1)) return 1;
+  const auto size = samples * channels;  // Division checks proved no overflow.
+  if (!size) return 2;  // Pinned memcpy helpers form element-zero addresses.
+  webrtc::InterleavedView<T> out(destination.data(), samples, channels);
+  webrtc::InterleavedView<const T> in(source.data(), samples, channels);
+  if (method) { out.CopyFrom(in); return 0; }
+  if (destination_mono && source_mono) {
+    auto mono_out = out.AsMono();
+    webrtc::CopySamples(mono_out, in.AsMono());
+  } else if (destination_mono) {
+    auto mono_out = out.AsMono();
+    webrtc::CopySamples(mono_out, in);
+  } else if (source_mono) {
+    webrtc::CopySamples(out, in.AsMono());
+  } else {
+    webrtc::CopySamples(out, in);
+  }
+  return 0;
+}
 static_assert(webrtc::AudioFrame::kMaxDataSizeSamples == 7680);
 static_assert(webrtc::kMaxNumberOfAudioChannels == 16);
 bool CapacityShape(std::size_t samples, std::size_t channels) {
@@ -32,6 +98,15 @@ void Initialize(webrtc::AudioFrame& frame) {
   frame.Mute();
 }
 }  // namespace
+FfiPcmViewInfo pcm_i16_shape(rust::Slice<const std::int16_t> data, std::size_t samples, std::size_t channels, std::uint8_t layout) noexcept { return PcmShape(data, samples, channels, layout); }
+FfiPcmViewInfo pcm_f32_shape(rust::Slice<const float> data, std::size_t samples, std::size_t channels, std::uint8_t layout) noexcept { return PcmShape(data, samples, channels, layout); }
+FfiPcmViewInfo pcm_i16_planar_shape(rust::Slice<const std::size_t> pointers, std::size_t samples) noexcept { return PlanarShape<std::int16_t>(pointers, samples); }
+FfiPcmViewInfo pcm_f32_planar_shape(rust::Slice<const std::size_t> pointers, std::size_t samples) noexcept { return PlanarShape<float>(pointers, samples); }
+void pcm_i16_clear(rust::Slice<const std::size_t> pointers, std::size_t samples) noexcept { PlanarClear<std::int16_t>(pointers, samples); }
+void pcm_f32_clear(rust::Slice<const std::size_t> pointers, std::size_t samples) noexcept { PlanarClear<float>(pointers, samples); }
+std::uint8_t pcm_i16_copy(rust::Slice<std::int16_t> out, rust::Slice<const std::int16_t> in, std::size_t samples, std::size_t channels, bool dm, bool sm, bool method) noexcept { return PcmCopy(out, in, samples, channels, dm, sm, method); }
+std::uint8_t pcm_f32_copy(rust::Slice<float> out, rust::Slice<const float> in, std::size_t samples, std::size_t channels, bool dm, bool sm, bool method) noexcept { return PcmCopy(out, in, samples, channels, dm, sm, method); }
+
 NativeAudioFrame::NativeAudioFrame()
     : owned_(std::make_unique<webrtc::AudioFrame>()), frame_(owned_.get()) { Initialize(*frame_); }
 NativeAudioFrame::NativeAudioFrame(std::int32_t rate, std::size_t channels, std::int32_t layout)

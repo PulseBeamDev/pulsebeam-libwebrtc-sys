@@ -346,6 +346,23 @@ retirement. Releasing an outer view/producer identifier does not invalidate an
 observer or discard its queued callbacks. Polling notifications does not pump
 media or advance a controlled clock.
 
+Borrowed `MonoPcm`, `InterleavedPcm` and `DeinterleavedPcm` views support signed
+16-bit and float PCM without owning or copying their storage. Mutable variants
+carry exclusive borrows; separate-channel views retain each channel borrow.
+Native shape helpers, interleaved `copy_from`, supported `copy_samples` and
+planar `clear` preserve active prefixes and leave extra storage untouched.
+Interleaved mono access requires one channel; native planar mono access returns
+the first channel, including for a multichannel view. No layout conversion or
+channel inference is performed.
+
+`AudioFrame` and callback `AudioFrameMut` typed interleaved accessors retain the
+existing shape, initialized-prefix and mute gates. Shape-taking mutable access
+uses native prefix-only mute clearing, not full-buffer clearing. Frames are not
+presented as planar storage. The pinned `CopySamples` template is ill-formed
+for deinterleaved operands; these calls report `NativePlanarCopyUnavailable`
+rather than substituting a copy algorithm. Empty copies report `EmptyCopy`
+before native helpers can form invalid element-zero addresses.
+
 A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. Audio sink close releases its reservation for reattachment
 or a mode change. Encoded close restores native decoding for future packets;

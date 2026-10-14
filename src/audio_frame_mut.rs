@@ -345,6 +345,15 @@ mod tests {
             Err(AudioFrameValueError::UninitializedStorage)
         );
         assert_eq!(
+            view.interleaved_view().err(),
+            Some(AudioFrameValueError::UninitializedStorage)
+        );
+        assert_eq!(
+            view.interleaved_view_mut_with_shape(2, 2).err(),
+            Some(AudioFrameValueError::UninitializedStorage)
+        );
+        assert_eq!(view.fields(), before);
+        assert_eq!(
             view.mutable_data(),
             Err(AudioFrameValueError::UninitializedStorage)
         );
@@ -354,6 +363,7 @@ mod tests {
         );
         assert_eq!(view.fill_data_with_shape(2, 2, 7).unwrap(), &[7; 4]);
         assert_eq!(view.data_view().unwrap(), &[7; 4]);
+        assert_eq!(&*view.interleaved_view().unwrap(), &[7; 4]);
         assert_eq!(view.data(), Err(AudioFrameValueError::UninitializedStorage));
         let written = view.fields();
         assert_eq!(
@@ -361,6 +371,11 @@ mod tests {
             Err(AudioFrameValueError::UninitializedStorage)
         );
         assert_eq!(view.fields(), written); // Failed access never changes shape.
+        assert_eq!(
+            view.interleaved_view_mut_with_shape(3, 2).err(),
+            Some(AudioFrameValueError::UninitializedStorage)
+        );
+        assert_eq!(view.fields(), written);
         let mut fields = view.fields();
         fields.samples_per_channel = 3;
         view.set_fields(&fields).unwrap();

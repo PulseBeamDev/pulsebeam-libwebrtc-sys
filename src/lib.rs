@@ -241,6 +241,11 @@ mod rtp_sources;
 pub use rtp_sources::{RtpSource, RtpSourceExtensions, RtpSourceType};
 mod rtp_packet_values;
 pub use rtp_packet_values::{AbsoluteCaptureTime, RtpReceivedPacketInfo, RtpReceivedPacketInfos};
+mod pcm_view;
+pub use pcm_view::{
+    DeinterleavedPcm, DeinterleavedPcmMut, InterleavedPcm, InterleavedPcmMut, MonoPcm, MonoPcmMut,
+    PcmLayout, PcmRead, PcmSample, PcmViewError, PcmViewInfo, PcmWrite, copy_samples,
+};
 mod audio_frame_mut;
 mod audio_frame_values;
 pub use audio_frame_mut::AudioFrameMut;
@@ -643,14 +648,13 @@ pub use peer_configuration::{
     SdpSemantics, TcpCandidatePolicy, TlsCertificatePolicy, TurnPortPrunePolicy, VpnPreference,
 };
 pub use production::{
-    ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioProcessorId,
-    SessionChannelId, SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEvent,
-    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId,
-    SessionMediaTrackId, SessionPeerId, SessionReceiverId, SessionSctpTransportId,
-    SessionSctpTransportInformation, SessionSenderId, SessionSframeDecrypterId,
-    SessionSframeEncrypterId, SessionSourceId, SessionTrackSourceId, SessionTransceiverId,
-    SessionTransportError,
-    SessionAudioObserverId, SessionAudioSourceViewId,
+    ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioObserverId,
+    SessionAudioProcessorId, SessionAudioSourceViewId, SessionChannelId, SessionDtlsTransportId,
+    SessionDtmfError, SessionDtmfSenderId, SessionEvent, SessionFrameDecryptorId,
+    SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId, SessionMediaTrackId,
+    SessionPeerId, SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation,
+    SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId,
+    SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -1203,6 +1207,16 @@ mod ffi {
         frame: UniquePtr<NativeAudioFrame>,
         failed: bool,
     }
+    struct FfiPcmViewInfo {
+        valid: bool,
+        channels: usize,
+        samples: usize,
+        size: usize,
+        empty: bool,
+        mono: bool,
+        interleaved: bool,
+    }
+
     struct FfiAudioFrameFields {
         timestamp: u32,
         elapsed_time_ms: i64,
@@ -4272,6 +4286,40 @@ mod ffi {
             error: &mut u8,
         ) -> UniquePtr<NativeAudioFrame>;
         type NativeAudioFrame;
+        fn pcm_i16_shape(
+            data: &[i16],
+            samples: usize,
+            channels: usize,
+            layout: u8,
+        ) -> FfiPcmViewInfo;
+        fn pcm_f32_shape(
+            data: &[f32],
+            samples: usize,
+            channels: usize,
+            layout: u8,
+        ) -> FfiPcmViewInfo;
+        unsafe fn pcm_i16_planar_shape(pointers: &[usize], samples: usize) -> FfiPcmViewInfo;
+        unsafe fn pcm_f32_planar_shape(pointers: &[usize], samples: usize) -> FfiPcmViewInfo;
+        unsafe fn pcm_i16_clear(pointers: &[usize], samples: usize);
+        unsafe fn pcm_f32_clear(pointers: &[usize], samples: usize);
+        fn pcm_i16_copy(
+            destination: &mut [i16],
+            source: &[i16],
+            samples: usize,
+            channels: usize,
+            destination_mono: bool,
+            source_mono: bool,
+            method: bool,
+        ) -> u8;
+        fn pcm_f32_copy(
+            destination: &mut [f32],
+            source: &[f32],
+            samples: usize,
+            channels: usize,
+            destination_mono: bool,
+            source_mono: bool,
+            method: bool,
+        ) -> u8;
         fn media_audio_frame_new() -> UniquePtr<NativeAudioFrame>;
         fn media_audio_frame_with_format(
             rate: i32,

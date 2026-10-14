@@ -8,6 +8,15 @@ namespace webrtc { class AudioFrame; class AudioMixer; }
 namespace pulsebeam::webrtc_sys {
 struct FfiAudioFrameFields;
 struct FfiMixerFrame;
+struct FfiPcmViewInfo;
+FfiPcmViewInfo pcm_i16_shape(rust::Slice<const std::int16_t>, std::size_t, std::size_t, std::uint8_t) noexcept;
+FfiPcmViewInfo pcm_f32_shape(rust::Slice<const float>, std::size_t, std::size_t, std::uint8_t) noexcept;
+FfiPcmViewInfo pcm_i16_planar_shape(rust::Slice<const std::size_t>, std::size_t) noexcept;
+FfiPcmViewInfo pcm_f32_planar_shape(rust::Slice<const std::size_t>, std::size_t) noexcept;
+void pcm_i16_clear(rust::Slice<const std::size_t>, std::size_t) noexcept;
+void pcm_f32_clear(rust::Slice<const std::size_t>, std::size_t) noexcept;
+std::uint8_t pcm_i16_copy(rust::Slice<std::int16_t>, rust::Slice<const std::int16_t>, std::size_t, std::size_t, bool, bool, bool) noexcept;
+std::uint8_t pcm_f32_copy(rust::Slice<float>, rust::Slice<const float>, std::size_t, std::size_t, bool, bool, bool) noexcept;
 
 // Native operations mutate one uniquely owned frame. The full backing buffer
 // is initialized once before any Rust view or public-field assignment.

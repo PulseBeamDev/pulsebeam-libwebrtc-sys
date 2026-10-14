@@ -191,6 +191,9 @@ fn drive_pcm_tones(
                 let (dot, energy) = correlation(period);
                 let (opposite, half_energy) = correlation(period / 2);
                 if energy > 1_000_000 && dot > energy / 2 && opposite < -half_energy / 2 {
+                    let typed = frame.interleaved_view().unwrap();
+                    assert_eq!((typed.num_channels(), typed.samples_per_channel()), (1, 480));
+                    assert_eq!(&*typed, &frame.samples);
                     assert_eq!(
                         (
                             frame.sample_rate_hz,
