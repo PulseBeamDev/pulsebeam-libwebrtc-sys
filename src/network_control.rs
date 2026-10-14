@@ -1,8 +1,9 @@
 //! Owned native congestion-controller injection, including callable products.
 use crate::network_control_values::*;
 use crate::{EventLogEnvironment, FieldTrialsSnapshot, TimeDelta, Timestamp, ffi};
+use crate::provider_panic::catch_provider as catch_unwind;
 use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, Ordering},

@@ -202,7 +202,7 @@ struct StopState {
 impl Drop for StopState {
     fn drop(&mut self) {
         let waker = self.waker.take();
-        let _ = crate::event_log::catch_provider(|| drop(waker));
+        let _ = crate::provider_panic::catch_provider(|| drop(waker));
     }
 }
 pub(crate) struct RustEventLogProductStop(Arc<Mutex<StopState>>);
@@ -220,7 +220,7 @@ pub(crate) fn event_log_product_stopped(completion: &RustEventLogProductStop, fa
         state.waker.take()
     };
     if let Some(waker) = waker {
-        let _ = crate::event_log::catch_provider(|| waker.wake());
+        let _ = crate::provider_panic::catch_provider(|| waker.wake());
     }
 }
 /// Runtime-neutral, move-only Send completion. Success means native output

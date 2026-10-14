@@ -1,12 +1,6 @@
 //! Owned asynchronous local-network permission providers.
-use crate::{SocketAddress, ffi};
-use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use crate::{ffi, SocketAddress, provider_panic::catch_provider as catch_unwind};
+use std::{panic::AssertUnwindSafe, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalNetworkPermissionStatus {
     Granted,
@@ -80,6 +74,12 @@ pub(crate) struct RustLocalNetworkPermissionFactory {
     provider: Option<Arc<dyn LocalNetworkPermissionFactory>>,
     failed: AtomicBool,
 }
+impl Drop for RustLocalNetworkPermissionFactory {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        let _ = catch_unwind(|| drop(provider));
+    }
+}
 impl RustLocalNetworkPermissionFactory {
     pub(crate) fn new(provider: Option<Arc<dyn LocalNetworkPermissionFactory>>) -> Box<Self> {
         Box::new(Self {
@@ -91,6 +91,12 @@ impl RustLocalNetworkPermissionFactory {
 pub(crate) struct RustLocalNetworkPermission {
     provider: Option<Arc<dyn LocalNetworkPermission>>,
     failed: AtomicBool,
+}
+impl Drop for RustLocalNetworkPermission {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        let _ = catch_unwind(|| drop(provider));
+    }
 }
 pub(crate) fn local_permission_factory_present(
     factory: &RustLocalNetworkPermissionFactory,

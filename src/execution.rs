@@ -10,10 +10,16 @@ pub const MAX_CONTROLLED_TIME: Duration =
 // Non-Send closures enter native code only through creator-thread cooperative
 // queues. Threaded posting methods continue to require Send closures.
 pub(crate) struct RustTask(Option<Box<dyn FnOnce() + 'static>>);
+impl Drop for RustTask {
+    fn drop(&mut self) {
+        let task = self.0.take();
+        let _ = crate::provider_panic::catch_provider(|| drop(task));
+    }
+}
 
 pub(crate) fn run_task(mut task: Box<RustTask>) {
     if let Some(task) = task.0.take() {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+        let _ = crate::provider_panic::catch_provider(task);
     }
 }
 
@@ -459,6 +465,8 @@ impl Environment {
     }
 
     pub fn close(&mut self) {
+        // Destroy the native environment before releasing this handle's Rust
+        // dependency leases. Independent environment/product owners keep theirs.
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
         // Native teardown precedes the Rust capability owners it can call.
         self._task_queue_factory = None;

@@ -1,9 +1,7 @@
-use crate::{FiniteTimestamp, NtpTime, TimeValueError, Timestamp, ffi};
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicI64, Ordering},
-};
+use crate::{ffi, FiniteTimestamp, NtpTime, TimeValueError, Timestamp};
+use crate::provider_panic::catch_provider as catch_unwind;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, atomic::{AtomicBool, AtomicI64, Ordering}};
 
 /// Both virtual methods of the pinned Clock interface. Reads and conversion
 /// can run concurrently on any engine role thread. Current time must be finite
@@ -76,20 +74,24 @@ impl ClockTimeBounds {
 }
 
 struct ProviderState {
-    provider: Box<dyn ClockProvider>,
+    provider: Option<Box<dyn ClockProvider>>,
     bounds: ClockTimeBounds,
     failed: AtomicBool,
     last_time: AtomicI64,
     monotonic_time: Option<std::sync::Mutex<Option<i64>>>,
 }
+impl Drop for ProviderState {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        let _ = catch_unwind(|| drop(provider));
+    }
+}
 pub(crate) struct RustClockProvider(Arc<ProviderState>);
 
 pub(crate) fn clock_provider_current_time(provider: &RustClockProvider) -> i64 {
     let state = &provider.0;
-    if state.failed.load(Ordering::Acquire) {
-        return state.last_time.load(Ordering::Acquire);
-    }
-    let result = catch_unwind(AssertUnwindSafe(|| state.provider.current_time()));
+    if state.failed.load(Ordering::Acquire) { return state.last_time.load(Ordering::Acquire); }
+    let result = catch_unwind(AssertUnwindSafe(|| state.provider.as_ref().expect("live clock provider").current_time()));
     if let Some(mutex) = &state.monotonic_time {
         let mut last = mutex
             .lock()
@@ -123,14 +125,8 @@ pub(crate) fn clock_provider_current_time(provider: &RustClockProvider) -> i64 {
 }
 pub(crate) fn clock_provider_convert_ntp(provider: &RustClockProvider, timestamp: i64) -> u64 {
     let state = &provider.0;
-    if state.failed.load(Ordering::Acquire) {
-        return 0;
-    }
-    match catch_unwind(AssertUnwindSafe(|| {
-        state
-            .provider
-            .convert_timestamp_to_ntp_time(Timestamp::from_native_microsecond_bits(timestamp))
-    })) {
+    if state.failed.load(Ordering::Acquire) { return 0; }
+    match catch_unwind(AssertUnwindSafe(|| state.provider.as_ref().expect("live clock provider").convert_timestamp_to_ntp_time(Timestamp::from_native_microsecond_bits(timestamp)))) {
         Ok(value) => value.raw(),
         Err(_) => {
             let _guard = state.monotonic_time.as_ref().map(|mutex| {
@@ -199,9 +195,7 @@ impl Clock {
     ) -> Self {
         let fallback = 0i64.clamp(bounds.minimum.microseconds(), bounds.maximum.microseconds());
         let state = Arc::new(ProviderState {
-            provider: Box::new(provider),
-            bounds,
-            failed: AtomicBool::new(false),
+            provider: Some(Box::new(provider)), bounds, failed: AtomicBool::new(false),
             last_time: AtomicI64::new(fallback),
             monotonic_time: monotonic.then(|| std::sync::Mutex::new(None)),
         });

@@ -1,4 +1,6 @@
 use pulsebeam_webrtc_sys::*;
+#[path = "common/panic_payload.rs"]
+mod panic_payload;
 use std::{
     sync::{
         Arc, Mutex,
@@ -13,6 +15,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct Observed {
+    panic_drop: bool,
     requests: Mutex<
         Vec<(
             CertificateKeyParams,
@@ -42,16 +45,24 @@ impl CertificateGeneratorProvider for Provider {
 impl Drop for Provider {
     fn drop(&mut self) {
         self.0.dropped.fetch_add(1, Ordering::SeqCst);
+        if self.0.panic_drop { panic_payload::raise(); }
     }
 }
 
 #[test]
 fn completion_outlives_generator_but_not_the_factory_signaling_queue() {
+    run_completion_lifecycle(false);
+}
+#[test]
+fn native_generator_destruction_contains_hostile_payloads_with_pending_work() {
+    run_completion_lifecycle(true);
+}
+fn run_completion_lifecycle(panic_drop: bool) {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     fn send_sync<T: Send + Sync>() {}
     send_sync::<CertificateGenerator>();
     send_sync::<CertificateCompletion>();
-    let observed = Arc::new(Observed::default());
+    let observed = Arc::new(Observed { panic_drop, ..Observed::default() });
     let signaling = SignalingThread::start().unwrap();
     let (tx, rx) = mpsc::channel();
     assert!(signaling.post(move || tx.send(std::thread::current().id()).unwrap()));
@@ -114,7 +125,7 @@ fn provider_failure_is_contained_and_latches_diagnostics() {
             completion: CertificateCompletion,
         ) {
             *self.0.lock().unwrap() = Some(completion);
-            panic!("intentional generation panic");
+            panic_payload::raise();
         }
     }
     let pending = Arc::new(Mutex::new(None));

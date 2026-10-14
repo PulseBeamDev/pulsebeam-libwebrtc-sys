@@ -431,6 +431,9 @@ fn bad_turn_credentials_fail_without_relay_candidates() {
     peer.close().unwrap();
 }
 
+#[path = "common/panic_payload.rs"]
+mod panic_payload;
+
 #[test]
 fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
     use pulsebeam_webrtc_sys::{
@@ -446,17 +449,16 @@ fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
     impl TlsCertificateVerifier for Verify {
         fn verify_chain(&self, chain: &TlsCertificateChain) -> bool {
             self.observed.lock().unwrap().push(chain.clone());
-            assert!(!self.panic, "intentional verifier callback panic");
-            self.permit
-                && chain
-                    .get(0)
-                    .is_some_and(|leaf| leaf.to_der() == self.expected)
+            if self.panic { panic_payload::raise(); }
+            self.permit && chain.get(0).is_some_and(|leaf| leaf.to_der() == self.expected)
         }
     }
-    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
-        .unwrap()
-        .trim()
-        .to_owned();
+    impl Drop for Verify {
+        fn drop(&mut self) {
+            if self.panic { panic_payload::raise(); }
+        }
+    }
+    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout).unwrap().trim().to_owned();
     let fixture = FixtureCertificate::new(&hostname);
     let expected = TlsCertificate::from_pem(&std::fs::read_to_string(&fixture.cert).unwrap())
         .unwrap()

@@ -12,6 +12,10 @@ Trial names and groups are open strings. No binding allowlist is imposed, includ
 
 The native adapter owns the Rust provider and implements both native virtual operations, including `CreateCopy`. Panics cannot unwind into native frames: lookup panics produce an empty group, and copy panics produce an empty provider. This is failure containment, not a successful provider result or a recommended way to reject a query. There is no fallible native lookup result.
 
+Adapter-owned provider destruction and task cancellation use the shared
+[provider panic containment policy](provider-panic-contracts.md), including safe
+handling of unknown panic payloads. Ordinary string panics are recommended.
+
 ## Environment access and lifetime
 
 Without an override, native environment defaults are retained. The default deprecated process-global trial source is not replaced with an empty map. Its native copies continue to use the pinned process-global lookup semantics and registration checks. The binding does not add a process-global setter.
@@ -19,6 +23,11 @@ Without an override, native environment defaults are retained. The default depre
 `Environment::field_trials()` and `PeerConnectionFactory::field_trials()` return owned `FieldTrialsSnapshot` views. Copies call the actual native view's `CreateCopy`, not a cached Rust configuration echo. Snapshots are `Send + Sync`, retain their provider dependencies, and can outlive the environment or factory. Custom provider registrations last through all retaining environment/factory copies; snapshots own their own copies.
 
 `ProductionSession::new_with_field_trials` configures the ordinary actor constructor before factory creation; `field_trials` reads its effective environment after actor migration. Existing constructors and configuration literals are unchanged. The corresponding L1T3 and simulcast constructors also have field-trial variants, preserving their existing encoded-input validation and setup choices. Actor shutdown rejects further session queries, but previously returned independent snapshots remain readable.
+
+`Environment::close()` releases the native environment first, then that handle's
+Rust clock/queue and randomness leases. Repeated close is harmless. Independent
+environment copies and retaining products keep their own dependencies until
+closed or finally retired; closing an original handle does not revoke them.
 
 Field-trial configuration also works with manual-clock cooperative environments. It adds no task queues, autonomous threads, sockets, or time advancement. Provider lookup work still has the provider's own execution contract; a caller provider must not introduce autonomous work when used in controlled execution.
 

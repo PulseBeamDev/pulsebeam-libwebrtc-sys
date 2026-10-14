@@ -634,6 +634,7 @@ pub use event_log::{
 };
 pub use event_log::{EventLogError, EventLogOutput, EventLogOutputPeriod, EventLogOutputSink};
 mod event_log_product;
+mod provider_panic;
 pub use event_log_product::{RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation};
 pub(crate) use event_log_product::{RustEventLogRetention, RustEventLogProductStop, event_log_product_stopped};
 pub(crate) use event_log::{

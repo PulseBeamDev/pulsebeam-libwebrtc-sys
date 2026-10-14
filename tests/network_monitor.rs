@@ -6,9 +6,15 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[path = "common/panic_payload.rs"]
+mod panic_payload;
 
 #[derive(Default)]
 struct Observed {
+    panic_drop: bool,
+    factory_drops: AtomicUsize,
+    factory_drop_threads: Mutex<Vec<std::thread::ThreadId>>,
+    monitor_drop_threads: Mutex<Vec<std::thread::ThreadId>>,
     created: AtomicUsize,
     starts: AtomicUsize,
     stops: AtomicUsize,
@@ -19,6 +25,13 @@ struct Observed {
 }
 struct Factory(Arc<Observed>);
 struct Monitor(Arc<Observed>);
+impl Drop for Factory {
+    fn drop(&mut self) {
+        self.0.factory_drops.fetch_add(1, Ordering::SeqCst);
+        self.0.factory_drop_threads.lock().unwrap().push(std::thread::current().id());
+        if self.0.panic_drop { panic_payload::raise(); }
+    }
+}
 impl NetworkMonitorFactory for Factory {
     fn create(
         &self,
@@ -58,6 +71,7 @@ impl NetworkMonitor for Monitor {
             .unwrap()
             .push(std::thread::current().id());
         assert!(!self.0.changes.lock().unwrap().as_ref().unwrap().notify());
+        if self.0.panic_drop { panic_payload::raise(); }
     }
     fn interface_info(&self, _name: &[u8]) -> NetworkInterfaceInfo {
         self.0.info.fetch_add(1, Ordering::SeqCst);
@@ -77,12 +91,9 @@ impl NetworkMonitor for Monitor {
 }
 impl Drop for Monitor {
     fn drop(&mut self) {
-        self.0
-            .threads
-            .lock()
-            .unwrap()
-            .push(std::thread::current().id());
+        self.0.monitor_drop_threads.lock().unwrap().push(std::thread::current().id());
         self.0.drops.fetch_add(1, Ordering::SeqCst);
+        if self.0.panic_drop { panic_payload::raise(); }
     }
 }
 fn finish(
@@ -105,9 +116,16 @@ fn finish(
 }
 #[test]
 fn actor_monitor_owns_provider_and_retires_cross_thread_notifications() {
+    run_monitor(false);
+}
+#[test]
+fn actor_monitor_stop_and_factory_product_destruction_contain_hostile_payloads() {
+    run_monitor(true);
+}
+fn run_monitor(panic_drop: bool) {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<NetworkChangeNotifier>();
-    let observed = Arc::new(Observed::default());
+    let observed = Arc::new(Observed { panic_drop, ..Observed::default() });
     let session = ProductionSession::builder(ProductionSessionConfig::default())
         .field_trials(FieldTrials::parse("Monitor-Provider/EnabledOwned/").unwrap())
         .network_monitor_factory(Factory(observed.clone()))
@@ -151,19 +169,26 @@ fn actor_monitor_owns_provider_and_retires_cross_thread_notifications() {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    std::thread::spawn(move || {
+    let close_thread = std::thread::spawn(move || {
         let mut session = session;
         session.shutdown().unwrap();
         drop(session);
-    })
-    .join()
-    .unwrap();
+        std::thread::current().id()
+    }).join().unwrap();
     assert_eq!(observed.stops.load(Ordering::SeqCst), 1);
     assert_eq!(observed.drops.load(Ordering::SeqCst), 1);
+    assert_eq!(observed.factory_drops.load(Ordering::SeqCst), 1);
     assert!(!changes.notify());
     std::thread::spawn(move || assert!(!changes.notify()))
         .join()
         .unwrap();
     let threads = observed.threads.lock().unwrap();
-    assert!(threads.iter().all(|thread| *thread == threads[0]));
+    assert!(threads.iter().all(|thread| *thread == threads[0]),
+        "creation/start/metadata/stop must share the native network sequence");
+    let monitor_drop_threads = observed.monitor_drop_threads.lock().unwrap();
+    let factory_drop_threads = observed.factory_drop_threads.lock().unwrap();
+    assert_eq!(*monitor_drop_threads, *factory_drop_threads,
+        "the pinned ConnectionContext retires manager/monitor and factory on signaling");
+    assert_ne!(monitor_drop_threads[0], close_thread,
+        "migration must not move native-owned destruction to the actor caller");
 }

@@ -1,8 +1,8 @@
 //! Owned DNS factory/product interfaces with a live, callable result view.
-use crate::{AddressFamily, SocketAddress, ffi};
+use crate::{AddressFamily, SocketAddress, ffi, provider_panic::catch_provider as catch_unwind};
 use std::{
     fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},

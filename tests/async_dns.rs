@@ -1,4 +1,6 @@
 use pulsebeam_webrtc_sys::*;
+#[path = "common/panic_payload.rs"]
+mod panic_payload;
 use std::{
     net::Ipv4Addr,
     sync::{
@@ -9,8 +11,13 @@ use std::{
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum DropPoint { #[default] None, Factory, Resolver, Result }
 #[derive(Default)]
 struct Observed {
+    drop_point: DropPoint,
+    factory_dropped: AtomicUsize,
+    result_dropped: AtomicUsize,
     address: Mutex<Option<SocketAddress>>,
     pending: Mutex<Vec<(AddressFamily, TaskQueueContext, DnsResolutionCompletion)>>,
     calls: Mutex<Vec<(AddressFamily, SocketAddress)>>,
@@ -22,6 +29,12 @@ struct Observed {
     dropped: AtomicUsize,
 }
 struct ResultProvider(Arc<Observed>);
+impl Drop for ResultProvider {
+    fn drop(&mut self) {
+        self.0.result_dropped.fetch_add(1, Ordering::SeqCst);
+        if self.0.drop_point == DropPoint::Result { panic_payload::raise(); }
+    }
+}
 impl AsyncDnsResolverResult for ResultProvider {
     fn resolved_address(&self, family: AddressFamily) -> Option<SocketAddress> {
         self.0.families.lock().unwrap().push(family);
@@ -67,9 +80,16 @@ impl AsyncDnsResolver for Resolver {
 impl Drop for Resolver {
     fn drop(&mut self) {
         self.observed.dropped.fetch_add(1, Ordering::SeqCst);
+        if self.observed.drop_point == DropPoint::Resolver { panic_payload::raise(); }
     }
 }
 struct Factory(Arc<Observed>);
+impl Drop for Factory {
+    fn drop(&mut self) {
+        self.0.factory_dropped.fetch_add(1, Ordering::SeqCst);
+        if self.0.drop_point == DropPoint::Factory { panic_payload::raise(); }
+    }
+}
 impl AsyncDnsResolverFactoryProvider for Factory {
     fn create(&self) -> Box<dyn AsyncDnsResolver> {
         self.0.created.fetch_add(1, Ordering::SeqCst);
@@ -137,11 +157,11 @@ fn result_panics_latch_and_non_sync_owned_providers_are_supported() {
     struct Panics(std::cell::Cell<usize>);
     impl AsyncDnsResolverResult for Panics {
         fn resolved_address(&self, _: AddressFamily) -> Option<SocketAddress> {
-            panic!("intentional result panic")
+            panic_payload::raise()
         }
         fn error(&self) -> i32 {
             self.0.set(self.0.get() + 1);
-            panic!("intentional error panic")
+            panic_payload::raise()
         }
     }
     for address_first in [true, false] {
@@ -159,6 +179,15 @@ fn result_panics_latch_and_non_sync_owned_providers_are_supported() {
 
 #[test]
 fn native_hostname_candidates_query_live_results_only_after_controlled_origin_delivery() {
+    run_native_dns(DropPoint::None);
+}
+#[test]
+fn native_dns_factory_resolver_and_result_drops_contain_hostile_payloads() {
+    for drop_point in [DropPoint::Factory, DropPoint::Resolver, DropPoint::Result] {
+        run_native_dns(drop_point);
+    }
+}
+fn run_native_dns(drop_point: DropPoint) {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let certificate = Certificate::generate(CertificateKeyParams::default(), None).unwrap();
     let world = ControlledWorld::acquire(0xd05, Duration::from_secs(1)).unwrap();
@@ -210,7 +239,7 @@ fn native_hostname_candidates_query_live_results_only_after_controlled_origin_de
         .unwrap()
         .to_owned();
     for retire_before_delivery in [false, true] {
-        let observed = Arc::new(Observed::default());
+        let observed = Arc::new(Observed { drop_point, ..Observed::default() });
         let dns = AsyncDnsResolverFactory::from_provider(Factory(observed.clone()));
         let mut peer = factory
             .create_peer_connection_with_dependencies(
@@ -260,9 +289,9 @@ fn native_hostname_candidates_query_live_results_only_after_controlled_origin_de
         assert_eq!(original.port(), 3478);
         assert_eq!(observed.errors_queried.load(Ordering::SeqCst), 0);
         if retire_before_delivery {
+            drop(dns);
             peer.close().unwrap();
             drop(peer);
-            drop(dns);
             for (_, _, completion) in pending {
                 assert_eq!(
                     std::thread::spawn(move || completion.complete())
@@ -323,7 +352,12 @@ fn native_hostname_candidates_query_live_results_only_after_controlled_origin_de
                         && address.port() == original.port())
             );
             drop(calls);
-            assert!(!dns.has_failed());
+            let dropped_with_panic =
+                (drop_point == DropPoint::Resolver && observed.dropped.load(Ordering::SeqCst) != 0)
+                || (drop_point == DropPoint::Result && observed.result_dropped.load(Ordering::SeqCst) != 0);
+            assert_eq!(dns.has_failed(), dropped_with_panic,
+                "destructor failure must latch as soon as native resolution retires its owner");
+            drop(dns);
             peer.close().unwrap();
             drop(peer);
             assert_eq!(
@@ -332,6 +366,8 @@ fn native_hostname_candidates_query_live_results_only_after_controlled_origin_de
             );
         }
         world.pump(256);
+        assert_eq!(observed.factory_dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(observed.result_dropped.load(Ordering::SeqCst), observed.created.load(Ordering::SeqCst));
     }
     remote.close().unwrap();
     drop(remote_channel);

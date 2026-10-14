@@ -3,7 +3,6 @@ use std::{
     fmt,
     marker::PhantomData,
     num::NonZeroUsize,
-    panic::AssertUnwindSafe,
     path::Path,
     sync::{
         Arc, Mutex,
@@ -12,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::ffi;
+use crate::{ffi, provider_panic::catch_provider};
 
 /// Destination for native encoded RTC event-log bytes, not decoded events.
 ///
@@ -413,23 +412,6 @@ impl<T: RtcEventLogger + ?Sized> RtcEventLogger for Box<T> {
 impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
     fn create(&self, environment: EventLogEnvironment) -> Box<dyn RtcEventLogger> {
         (**self).create(environment)
-    }
-}
-
-// A panic payload may itself have an untrusted destructor. Do not drop such
-// a payload after catching it at an ABI boundary. Standard string payloads
-// have known non-panicking destructors and can be released normally.
-pub(crate) fn catch_provider<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
-    match std::panic::catch_unwind(AssertUnwindSafe(call)) {
-        Ok(value) => Ok(value),
-        Err(payload) => {
-            if payload.is::<String>() || payload.is::<&'static str>() {
-                drop(payload);
-            } else {
-                std::mem::forget(payload);
-            }
-            Err(())
-        }
     }
 }
 

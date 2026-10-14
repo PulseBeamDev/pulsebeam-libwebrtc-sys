@@ -144,7 +144,13 @@ fn custom_provider_is_retained_copied_and_retired_after_native_owners() {
     assert_eq!(live.load(Ordering::SeqCst), 2);
     drop(view);
     assert_eq!(live.load(Ordering::SeqCst), 1);
-    std::thread::spawn(move || assert!(copy.is_enabled("Open")))
+    let copied_lookups = lookups.clone();
+    std::thread::spawn(move || {
+        assert!(copy.is_enabled("Open"));
+        assert_eq!(copied_lookups.load(Ordering::SeqCst), 1,
+            "native immutable copies share previously observed groups");
+        assert!(copy.lookup("Uncached").is_empty());
+    })
         .join()
         .unwrap();
     assert_eq!(live.load(Ordering::SeqCst), 0);

@@ -1,13 +1,5 @@
-use crate::ffi;
-use std::{
-    fmt,
-    num::NonZeroUsize,
-    panic::AssertUnwindSafe,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{fmt, num::NonZeroUsize, panic::AssertUnwindSafe, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use crate::{ffi, provider_panic::catch_provider};
 
 /// Deeply owned native certificate statistics, including the issuer chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,6 +192,12 @@ pub(crate) struct RustTlsCertificateVerifier {
     provider: Option<Arc<dyn TlsCertificateVerifier>>,
     failed: AtomicBool,
 }
+impl Drop for RustTlsCertificateVerifier {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        let _ = catch_provider(|| drop(provider));
+    }
+}
 impl RustTlsCertificateVerifier {
     pub(crate) fn new(provider: Option<Arc<dyn TlsCertificateVerifier>>) -> Box<Self> {
         Box::new(Self {
@@ -211,7 +209,7 @@ impl RustTlsCertificateVerifier {
         if self.failed.load(Ordering::Acquire) {
             return false;
         }
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let result = catch_provider(AssertUnwindSafe(|| {
             self.provider
                 .as_ref()
                 .is_some_and(|provider| call(provider.as_ref()))

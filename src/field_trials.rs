@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt, panic::AssertUnwindSafe, sync::Arc};
 
-use crate::ffi;
+use crate::{ffi, provider_panic::catch_provider};
 
 /// Immutable native field-trial provider.
 ///
@@ -171,13 +171,19 @@ impl FieldTrialsView for FieldTrialsSnapshot {
 }
 
 pub(crate) struct RustFieldTrials(pub(crate) Option<Arc<dyn FieldTrialsView>>);
+impl Drop for RustFieldTrials {
+    fn drop(&mut self) {
+        let provider = self.0.take();
+        let _ = catch_provider(|| drop(provider));
+    }
+}
 
 pub(crate) fn field_trials_present(view: &RustFieldTrials) -> bool {
     view.0.is_some()
 }
 
 pub(crate) fn rust_field_trials_lookup(view: &RustFieldTrials, key: &str) -> String {
-    std::panic::catch_unwind(AssertUnwindSafe(|| {
+    catch_provider(AssertUnwindSafe(|| {
         view.0
             .as_ref()
             .map_or_else(String::new, |view| view.lookup(key))
@@ -186,7 +192,7 @@ pub(crate) fn rust_field_trials_lookup(view: &RustFieldTrials, key: &str) -> Str
 }
 
 pub(crate) fn rust_field_trials_copy(view: &RustFieldTrials) -> Box<RustFieldTrials> {
-    let copy = std::panic::catch_unwind(AssertUnwindSafe(|| {
+    let copy = catch_provider(AssertUnwindSafe(|| {
         view.0.as_ref().map(|view| view.create_copy())
     }))
     .unwrap_or_else(|_| Some(Arc::new(FieldTrials::default())));

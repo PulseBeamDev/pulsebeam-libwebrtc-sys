@@ -1,5 +1,6 @@
+use crate::provider_panic::catch_provider as catch_unwind;
 use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},

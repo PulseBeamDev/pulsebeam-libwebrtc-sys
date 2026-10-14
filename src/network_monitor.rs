@@ -100,7 +100,9 @@ impl NetworkChangeNotifier {
 /// may be used concurrently. Stop must quiesce the provider's event source.
 /// Interface names are bytes because OS interface names need not be UTF-8.
 /// A callback panic disables subsequent operations (unavailable interfaces and
-/// failed binds); Stop is still attempted for cleanup. Drop must not panic.
+/// failed binds); Stop is still attempted for cleanup. Final destruction can
+/// occur on another native role thread. Non-panicking destructors are recommended;
+/// adapter-owned destruction contains a single unwind.
 pub trait NetworkMonitor: Send + Sync + 'static {
     fn start(&self);
     fn stop(&self);
@@ -161,9 +163,21 @@ impl<T: NetworkMonitorFactory + ?Sized> NetworkMonitorFactory for Arc<T> {
 }
 
 pub(crate) struct RustNetworkMonitorFactory(pub Option<Arc<dyn NetworkMonitorFactory>>);
+impl Drop for RustNetworkMonitorFactory {
+    fn drop(&mut self) {
+        let provider = self.0.take();
+        let _ = crate::provider_panic::catch_provider(|| drop(provider));
+    }
+}
 pub(crate) struct RustNetworkMonitor {
     monitor: Option<Box<dyn NetworkMonitor>>,
     failed: AtomicBool,
+}
+impl Drop for RustNetworkMonitor {
+    fn drop(&mut self) {
+        let monitor = self.monitor.take();
+        let _ = crate::provider_panic::catch_provider(|| drop(monitor));
+    }
 }
 impl RustNetworkMonitor {
     fn call<T>(&self, fallback: T, operation: impl FnOnce(&dyn NetworkMonitor) -> T) -> T {
@@ -173,7 +187,7 @@ impl RustNetworkMonitor {
         let Some(monitor) = &self.monitor else {
             return fallback;
         };
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(monitor.as_ref())))
+        match crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| operation(monitor.as_ref())))
         {
             Ok(value) => value,
             Err(_) => {
@@ -192,7 +206,7 @@ pub(crate) fn network_monitor_create(
     changes: cxx::SharedPtr<ffi::NativeNetworkChange>,
 ) -> Box<RustNetworkMonitor> {
     let monitor = factory.0.as_ref().and_then(|factory| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| {
             factory.create(
                 FieldTrialsSnapshot::from_native(trials),
                 NetworkChangeNotifier { native: changes },
@@ -218,7 +232,7 @@ pub(crate) fn network_monitor_start(monitor: &RustNetworkMonitor) -> bool {
 pub(crate) fn network_monitor_stop(monitor: &RustNetworkMonitor) {
     // Cleanup remains attempted even after a preceding callback panic.
     if let Some(value) = &monitor.monitor {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.stop())).is_err() {
+        if crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| value.stop())).is_err() {
             monitor.failed.store(true, Ordering::Release);
         }
     }

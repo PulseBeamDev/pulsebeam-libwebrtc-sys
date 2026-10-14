@@ -1,5 +1,6 @@
 use crate::{QueuePriority, TimeDelta, ffi};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use crate::provider_panic::catch_provider as catch_unwind;
+use std::panic::AssertUnwindSafe;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -219,16 +220,22 @@ impl TaskQueueTask {
 }
 
 pub(crate) struct FactoryState {
-    provider: Box<dyn TaskQueueFactoryProvider>,
+    provider: Option<Box<dyn TaskQueueFactoryProvider>>,
     disabled: AtomicBool,
     failed: AtomicBool,
+}
+impl Drop for FactoryState {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        let _ = catch_unwind(|| drop(provider));
+    }
 }
 impl FactoryState {
     pub(crate) fn register(
         provider: impl TaskQueueFactoryProvider,
     ) -> (Arc<Self>, Box<RustTaskQueueFactory>) {
         let state = Arc::new(Self {
-            provider: Box::new(provider),
+            provider: Some(Box::new(provider)),
             disabled: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         });
@@ -243,6 +250,14 @@ pub(crate) struct RustTaskQueueProvider {
     provider: Option<Box<dyn TaskQueueProvider>>,
     failed: AtomicBool,
     factory: Arc<FactoryState>,
+}
+impl Drop for RustTaskQueueProvider {
+    fn drop(&mut self) {
+        let provider = self.provider.take();
+        if catch_unwind(|| drop(provider)).is_err() {
+            task_queue_provider_mark_failed(self);
+        }
+    }
 }
 pub(crate) fn task_queue_provider_create(
     factory: &RustTaskQueueFactory,
@@ -261,7 +276,7 @@ pub(crate) fn task_queue_provider_create(
             _ => QueuePriority::Normal,
         };
         match catch_unwind(AssertUnwindSafe(|| {
-            state.provider.create_task_queue(name, priority)
+            state.provider.as_ref().expect("live queue factory").create_task_queue(name, priority)
         })) {
             Ok(provider) => Some(provider),
             Err(_) => {

@@ -12,9 +12,10 @@ qualification. The new provider tests have not been run.
 the Rust registration independently of its builder. The native network manager
 owns each freshly returned monitor.
 
-- Creation and all operations on a monitor run on the native network thread.
-  Factory destruction may occur on another native role thread. Providers and
-  shared application state therefore require `Send + Sync`.
+- Creation and operational calls on a monitor run on the native network thread.
+  Final monitor and factory destruction can occur on another native role thread:
+  the pinned default `ConnectionContext` releases its manager on signaling.
+  Providers and shared application state therefore require `Send + Sync`.
 - Creation receives an independently owned field-trial copy and a notification
   handle. Returning `None` selects the native no-monitor fallback.
 - Interface metadata preserves adapter type, VPN underlying type, preference,
@@ -32,7 +33,8 @@ owns each freshly returned monitor.
   its target, including when a factory callback panics.
 - An operation panic disables subsequent provider operations, returning
   unavailable metadata or a failed bind. Stop is still attempted for cleanup.
-  A factory panic selects the no-monitor fallback. Destructors must not panic.
+  A factory panic selects the no-monitor fallback. Adapter-owned destruction
+  follows the shared [panic containment policy](provider-panic-contracts.md).
 - Native dependencies prohibit combining a custom network manager with a monitor
   factory. Rust rejects that combination before constructing native resources;
   the C++ bridge also checks before entering native factory creation. Controlled
@@ -109,8 +111,9 @@ The permission receives a deep-owned `SocketAddress`, preserving IP family,
 hostname bytes, resolution/literal state, port, and signed scope ID. Creation,
 queries, requests and product destruction occur on the native network sequence.
 Factory destruction can occur on another native role thread. Providers require
-Send + Sync, must not synchronously wait for or reenter their owning actor, and
-must not panic in destructors.
+Send + Sync and must not synchronously wait for or reenter their owning actor.
+Non-panicking destructors are recommended; adapter-owned release follows the
+[provider panic containment policy](provider-panic-contracts.md).
 
 `LocalNetworkPermissionCompletion` is cloneable and Send + Sync. First submission
 wins. Delivery is always posted to the originating native sequence, not invoked
@@ -131,10 +134,14 @@ inputs are checked before native assertions, while supported native parser
 quirks and failure-without-mutation outcomes remain observable. Sockaddr bytes
 are ABI-specific values, not portable serialization or borrowed pointers.
 
-Unrun tests cover actor migration, cross-thread grant and one-shot rejection,
-unanswered query cancellation at teardown, denial, query bypass, factory/query/
-request panics, native STUN release or suppression, and retained address reads.
-A focused static review found no actionable defects in the permission bridge.
+The runtime fixture targets the pinned default peer's actual remote ICE
+candidate permission checks: actor migration, cross-thread grant and one-shot
+rejection, pending-query retirement, denial, query bypass, factory/query/request
+panics, connectivity-check packet release or suppression, and retained addresses.
+It does not certify permission-gated STUN-server gathering. The SDK default peer
+factory does not pass the selected permission factory into `BasicPortAllocator`;
+that allocator has a separate owning factory input. Binding and qualifying that
+additional construction path remains incomplete, not a claim of native absence.
 
 ## Custom clocks and time leaves
 
@@ -1105,7 +1112,7 @@ substitutes for caller-supplied interface implementations.
 | Peer TLS certificate verifier | Selected TURN CA verifier and owned custom Verify / VerifyChain | None for this provider |
 | Peer async DNS | Owned factory/product overloads, live callable result resources and origin-queue completion | None for this provider |
 | Peer allocator, ICE/DTLS/RTP transport | Not generally exposed | Full owned factory/product interfaces |
-| Peer local-network permissions | Owned factory/products, query overrides and asynchronous completion | None for this provider |
+| Peer local-network permissions | Owned factory/products, query overrides, asynchronous completion and actual remote ICE checks | Separate `BasicPortAllocator` factory input for STUN/relay permission checks is not wired by the default peer path |
 | Peer certificate generator | Owned asynchronous provider, reused key/certificate resources and signaling-posted completion | None for this provider |
 | Peer video bitrate allocator | Owned factories, callable products and full codec/allocation values | Consolidated runtime qualification pending |
 
