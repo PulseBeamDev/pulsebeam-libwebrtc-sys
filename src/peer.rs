@@ -898,7 +898,7 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    pub fn build(self) -> Result<PeerConnectionFactory, PeerError> {
+    pub fn build(mut self) -> Result<PeerConnectionFactory, PeerError> {
         #[cfg(all(feature = "native", target_os = "linux"))]
         if self.audio_device_module.is_some() && self.worker_thread.is_some() {
             return Err(PeerError { kind: PeerErrorKind::AudioDeviceAdmission, message: "an owning ADM adopts its construction worker; a separate factory worker is incompatible".into() });
@@ -910,6 +910,20 @@ impl PeerConnectionFactoryBuilder {
             && (self.audio_processor.is_some() || self.audio_processor_builder.is_some())
         {
             return Err(PeerError { kind: PeerErrorKind::AudioProcessingAdmission, message: "owning APM native-device integration is not yet qualified: physical capture ignores wrapper/callback failure outcomes; use caller-driven headless PCM".into() });
+        }
+        // Native media needs both video factory dependencies. An omitted side
+        // keeps the stock default, independently of the explicitly selected
+        // side. This is construction-time selection, never Create fallback.
+        if self.video_encoder.is_some() && self.video_decoder.is_none() {
+            self.video_decoder = Some(
+                VideoDecoderFactoryHandle::builtin()
+                    .map_err(|e| native_build_error(e.to_string()))?,
+            );
+        } else if self.video_decoder.is_some() && self.video_encoder.is_none() {
+            self.video_encoder = Some(
+                VideoEncoderFactoryHandle::builtin()
+                    .map_err(|e| native_build_error(e.to_string()))?,
+            );
         }
         if self.network_manager.is_some() && self.network_monitor_factory.is_some() {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter,

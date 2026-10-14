@@ -120,8 +120,64 @@ struct Transceiver {
 }
 enum Source {
     Pcm(crate::AudioSource),
+    RawVideo(crate::VideoSource),
     Opus(EncodedAudioSource),
     Video(EncodedVideoSource),
+}
+impl Source {
+    fn close(&mut self) -> Result<(), PeerError> {
+        match self {
+            Self::Pcm(source) => source
+                .close()
+                .map_err(|e| error(PeerErrorKind::Internal, &e.to_string())),
+            Self::RawVideo(source) => source.close().map_err(codec_error),
+            Self::Opus(source) => source
+                .close()
+                .map_err(|e| error(PeerErrorKind::Internal, &e.to_string())),
+            Self::Video(source) => source.close().map_err(codec_error),
+        }
+    }
+    fn video_track(
+        &self,
+        factory: &PeerConnectionFactory,
+        id: &str,
+    ) -> Result<crate::VideoTrack, PeerError> {
+        match self {
+            Self::RawVideo(source) => factory.create_video_track(id, source),
+            Self::Video(source) => source.create_track(factory, id),
+            _ => Err(missing()),
+        }
+    }
+}
+
+// One explicit receive mode per actor receiver, matching the native audio
+// reservation and avoiding accidental decoded/encoded double consumption.
+enum MediaSink {
+    Pcm(crate::AudioSink),
+    RawVideo(crate::VideoSink),
+    EncodedAudio(EncodedAudioSink),
+    EncodedVideo(EncodedVideoSink),
+}
+impl MediaSink {
+    fn close(&mut self) -> Result<(), PeerError> {
+        match self {
+            Self::Pcm(sink) => sink.close(),
+            Self::RawVideo(sink) => sink.close(),
+            Self::EncodedAudio(sink) => sink.close(),
+            Self::EncodedVideo(sink) => {
+                sink.close();
+                Ok(())
+            }
+        }
+    }
+    fn dropped_frames(&self) -> u64 {
+        match self {
+            Self::Pcm(sink) => sink.dropped_frames(),
+            Self::RawVideo(sink) => sink.dropped_frames(),
+            Self::EncodedAudio(sink) => sink.dropped_frames(),
+            Self::EncodedVideo(sink) => sink.dropped_frames(),
+        }
+    }
 }
 
 /// Owned peer notifications. Resource arrivals contain IDs, not local handles.
@@ -222,15 +278,13 @@ pub struct ProductionSession {
     sender_observers: HashMap<SessionSenderId, Resource<crate::RtpSenderObserver>>,
     receiver_observers: HashMap<SessionReceiverId, Resource<crate::RtpReceiverObserver>>,
     channels: HashMap<SessionChannelId, Resource<DataChannel>>,
-    video_sinks: HashMap<SessionReceiverId, EncodedVideoSink>,
-    audio_sinks: HashMap<SessionReceiverId, EncodedAudioSink>,
+    media_sinks: HashMap<SessionReceiverId, MediaSink>,
     track_observers: HashMap<SessionMediaTrackId, Resource<crate::MediaObserver>>,
     stream_observers: HashMap<SessionMediaStreamId, Resource<crate::MediaObserver>>,
     media_streams: HashMap<SessionMediaStreamId, Resource<crate::MediaStream>>,
     track_sources: HashMap<SessionTrackSourceId, Resource<crate::MediaTrackSource>>,
     audio_processors: HashMap<SessionAudioProcessorId, Resource<crate::AudioProcessor>>,
     media_tracks: HashMap<SessionMediaTrackId, Resource<crate::MediaTrack>>,
-    pcm_sinks: HashMap<SessionReceiverId, crate::AudioSink>,
     transceivers: HashMap<SessionTransceiverId, Resource<Transceiver>>,
     senders: HashMap<SessionSenderId, Resource<RtpSender>>,
     receivers: HashMap<SessionReceiverId, Resource<RtpReceiver>>,
@@ -825,9 +879,7 @@ impl ProductionSession {
             sender_observers: HashMap::new(),
             receiver_observers: HashMap::new(),
             channels: HashMap::new(),
-            video_sinks: HashMap::new(),
-            audio_sinks: HashMap::new(),
-            pcm_sinks: HashMap::new(),
+            media_sinks: HashMap::new(),
             transceivers: HashMap::new(),
             senders: HashMap::new(),
             receivers: HashMap::new(),
@@ -1746,18 +1798,41 @@ impl ProductionSession {
     /// Previously returned owned output is unaffected.
     pub fn close_source(&mut self, id: SessionSourceId) -> Result<(), PeerError> {
         if let Some(source) = self.sources.get_mut(&id) {
-            match source {
-                Source::Pcm(source) => source
-                    .close()
-                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
-                Source::Opus(source) => source
-                    .close()
-                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
-                Source::Video(source) => source.close().map_err(codec_error)?,
-            }
+            source.close()?;
             self.sources.remove(&id);
         }
         Ok(())
+    }
+
+    /// Create an owning raw-video producer for the selected encoder factory.
+    pub fn create_raw_video_source(&mut self) -> Result<SessionSourceId, PeerError> {
+        self.check_open()?;
+        let id = SessionSourceId(next_id()?);
+        let source = self.factory.create_video_source()?;
+        self.sources.insert(id, Source::RawVideo(source));
+        Ok(id)
+    }
+
+    /// Submit a raw frame with capture time in the native clock's timeline.
+    /// The engine retains its own frame-dropping and RTP timestamp semantics.
+    pub fn push_raw_video(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::VideoFrame,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::RawVideo(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source.push_frame(frame).map_err(codec_error)
+    }
+
+    pub fn create_opus_source(&mut self, channels: u8) -> Result<SessionSourceId, PeerError> {
+        self.check_open()?;
+        let id = SessionSourceId(next_id()?);
+        let source = self.factory.create_encoded_audio_source(channels)?;
+        self.sources.insert(id, Source::Opus(source));
+        Ok(id)
     }
 
     #[cfg(all(feature = "native", target_os = "linux"))]
@@ -2669,10 +2744,11 @@ impl ProductionSession {
         rids: &[String],
     ) -> Result<SessionTransceiverId, PeerError> {
         self.check_open()?;
-        let Some(Source::Video(source)) = self.sources.get(&source) else {
-            return Err(missing());
-        };
-        let track = source.create_track(&self.factory, track_id)?;
+        let track = self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .video_track(&self.factory, track_id)?;
         let value = self
             .peers
             .get(&peer)
@@ -2861,6 +2937,20 @@ impl ProductionSession {
             .value
             .set_enabled(enabled))
     }
+    /// Media kind from the actual native receiver, independent of track IDs.
+    pub fn receiver_media_type(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<crate::MediaType, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .media_type())
+    }
+
     /// Register the actual SDK sender slot with explicit bounded polling.
     pub fn register_sender_packet_observer(
         &mut self,
@@ -3726,10 +3816,10 @@ impl ProductionSession {
         self.check_open()?;
         let track = source
             .map(|id| {
-                let Some(Source::Video(source)) = self.sources.get(&id) else {
-                    return Err(missing());
-                };
-                source.create_track(&self.factory, track_id)
+                self.sources
+                    .get(&id)
+                    .ok_or_else(missing)?
+                    .video_track(&self.factory, track_id)
             })
             .transpose()?;
         self.senders
@@ -3747,123 +3837,121 @@ impl ProductionSession {
             .request_keyframe()
     }
     pub fn attach_pcm_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        self.attach_pcm(receiver)
+    }
+
+    /// Caller-paced headless playout, sharing the exclusive receiver mode.
+    pub fn try_pcm_audio_frame(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::AudioPcmFrame>, PeerError> {
+        self.try_pcm_frame(receiver)
+    }
+
+    fn receiver_without_sink(
+        &self,
+        receiver: SessionReceiverId,
+    ) -> Result<&RtpReceiver, PeerError> {
         self.check_open()?;
-        if self.audio_sinks.contains_key(&receiver)
-            || self.pcm_sinks.contains_key(&receiver)
-            || self.video_sinks.contains_key(&receiver)
-        {
+        if self.media_sinks.contains_key(&receiver) {
             return Err(error(
                 PeerErrorKind::InvalidState,
                 "receiver already has a sink",
             ));
         }
-        let sink = self
-            .receivers
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .value
-            .attach_audio_sink()?;
-        self.pcm_sinks.insert(receiver, sink);
+        Ok(&self.receivers.get(&receiver).ok_or_else(missing)?.value)
+    }
+
+    /// Select decoded PCM. Headless playout is explicitly pulled by
+    /// `try_pcm_frame`, not by actor readiness or a hidden audio device.
+    pub fn attach_pcm(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        let sink = self.receiver_without_sink(receiver)?.attach_audio_sink()?;
+        self.media_sinks.insert(receiver, MediaSink::Pcm(sink));
         Ok(())
     }
 
-    /// Caller-paced headless playout. Readiness is not an audio playout timer.
-    pub fn try_pcm_audio_frame(
-        &mut self,
-        receiver: SessionReceiverId,
-    ) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
-        Ok(self
-            .pcm_sinks
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .try_next_frame())
-    }
-
-    /// Detach either audio receive mode before selecting another one. Stop
-    /// reception first if future encoded packets must never enter a decoder.
-    pub fn detach_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
-        if let Some(sink) = self.pcm_sinks.get_mut(&receiver) {
-            sink.close()?;
-        }
-        if let Some(sink) = self.audio_sinks.get_mut(&receiver) {
-            sink.close()?;
-        }
-        self.pcm_sinks.remove(&receiver);
-        self.audio_sinks.remove(&receiver);
+    pub fn attach_raw_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        let track = self
+            .receiver_without_sink(receiver)?
+            .track()
+            .ok_or_else(missing)?;
+        let sink = track.attach_sink()?;
+        self.media_sinks.insert(receiver, MediaSink::RawVideo(sink));
         Ok(())
     }
 
     pub fn attach_encoded_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
-        self.check_open()?;
-        if self.audio_sinks.contains_key(&receiver)
-            || self.pcm_sinks.contains_key(&receiver)
-            || self.video_sinks.contains_key(&receiver)
-        {
-            return Err(error(
-                PeerErrorKind::InvalidState,
-                "receiver already has a sink",
-            ));
-        }
         let sink = self
-            .receivers
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .value
+            .receiver_without_sink(receiver)?
             .attach_encoded_audio_sink()?;
-        self.audio_sinks.insert(receiver, sink);
+        self.media_sinks
+            .insert(receiver, MediaSink::EncodedAudio(sink));
         Ok(())
     }
     pub fn attach_encoded_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
-        self.check_open()?;
-        if self.video_sinks.contains_key(&receiver)
-            || self.audio_sinks.contains_key(&receiver)
-            || self.pcm_sinks.contains_key(&receiver)
-        {
-            return Err(error(
-                PeerErrorKind::InvalidState,
-                "receiver already has a sink",
-            ));
-        }
         let sink = self
-            .receivers
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .value
+            .receiver_without_sink(receiver)?
             .attach_encoded_sink()?;
-        self.video_sinks.insert(receiver, sink);
+        self.media_sinks
+            .insert(receiver, MediaSink::EncodedVideo(sink));
         Ok(())
+    }
+
+    /// Detach before releasing the actor's sink. Audio may then switch modes;
+    /// encoded-video reattachment retains its native receiver-lifetime limit.
+    /// Owned frames already returned to the caller are unaffected.
+    pub fn close_media_sink(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.receivers.get(&receiver).ok_or_else(missing)?;
+        if let Some(sink) = self.media_sinks.get_mut(&receiver) {
+            sink.close()?;
+        }
+        self.media_sinks.remove(&receiver);
+        Ok(())
+    }
+
+    pub fn try_pcm_frame(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
+        let Some(MediaSink::Pcm(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.try_next_frame())
+    }
+    pub fn try_raw_video_frame(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::VideoFrame>, PeerError> {
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.try_next_frame())
     }
     pub fn try_audio_frame(
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<EncodedAudioFrame>, PeerError> {
-        Ok(self
-            .audio_sinks
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .try_next_frame())
+        let Some(MediaSink::EncodedAudio(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.try_next_frame())
     }
     pub fn try_video_frame(
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<EncodedReceivedVideoFrame>, PeerError> {
-        Ok(self
-            .video_sinks
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .try_next_frame())
+        let Some(MediaSink::EncodedVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.try_next_frame())
     }
     pub fn dropped_frames(&mut self, receiver: SessionReceiverId) -> Result<u64, PeerError> {
-        if let Some(sink) = self.video_sinks.get(&receiver) {
-            return Ok(sink.dropped_frames());
-        }
-        if let Some(sink) = self.audio_sinks.get(&receiver) {
-            return Ok(sink.dropped_frames());
-        }
-        if let Some(sink) = self.pcm_sinks.get(&receiver) {
-            return Ok(sink.dropped_frames());
-        }
-        Err(missing())
+        Ok(self
+            .media_sinks
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .dropped_frames())
     }
 
     /// Close without removing the peer's observation identity. Accepted pending
@@ -3897,14 +3985,8 @@ impl ProductionSession {
         }
         for (&id, resource) in &self.receivers {
             if resource.peer == peer {
-                if let Some(sink) = self.audio_sinks.get_mut(&id) {
+                if let Some(sink) = self.media_sinks.get_mut(&id) {
                     sink.close()?;
-                }
-                if let Some(sink) = self.pcm_sinks.get_mut(&id) {
-                    sink.close()?;
-                }
-                if let Some(sink) = self.video_sinks.get_mut(&id) {
-                    sink.close();
                 }
             }
         }
@@ -3918,15 +4000,7 @@ impl ProductionSession {
             self.close_peer(peer)?;
         }
         for source in self.sources.values_mut() {
-            match source {
-                Source::Pcm(source) => source
-                    .close()
-                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
-                Source::Opus(source) => source
-                    .close()
-                    .map_err(|e| error(PeerErrorKind::Internal, &e.to_string()))?,
-                Source::Video(source) => source.close().map_err(codec_error)?,
-            }
+            source.close()?;
         }
         self.sources.clear();
         self.closed = true;

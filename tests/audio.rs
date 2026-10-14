@@ -342,7 +342,10 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
     // Rejected NaN must not poison the receiver's cached delay or later media.
     assert_ne!(sender.ssrc(), 0);
     let mut sink = receivers[0].attach_audio_sink().unwrap();
-    let frame = AudioPcmFrame::i16_interleaved(48_000, 1, 1_000_000, vec![1000; 480]).unwrap();
+    let samples = (0..480)
+        .map(|index| if index % 48 < 24 { 12000 } else { -12000 })
+        .collect();
+    let frame = AudioPcmFrame::i16_interleaved(48_000, 1, 1_000_000, samples).unwrap();
     let mut received = None;
     let mut receiver_sources = Vec::new();
     let mut alice_connected = false;
@@ -371,7 +374,13 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
             );
         }
         if let Some(frame) = sink.try_next_frame() {
-            received = Some(frame);
+            if frame
+                .samples
+                .iter()
+                .any(|sample| sample.unsigned_abs() > 2000)
+            {
+                received = Some(frame);
+            }
         }
         // A playout pull may produce concealment before the first RTP packet.
         // Wait for an actual native source observation, not merely any PCM frame.
