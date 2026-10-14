@@ -1789,10 +1789,15 @@ mod ffi {
 
     struct FfiRateControl {
         bitrate_bps: u32,
+        target_bitrate_bps: u32,
         framerate_fps: f64,
         bandwidth_bps: u64,
+        bandwidth_limited: bool,
+        target_bandwidth_limited: bool,
         layer_bitrates_bps: [[u32; 4]; 5],
         has_layer_bitrate: [[bool; 4]; 5],
+        target_layer_bitrates_bps: [[u32; 4]; 5],
+        has_target_layer_bitrate: [[bool; 4]; 5],
     }
 
     struct FfiTemporalFrameRates {

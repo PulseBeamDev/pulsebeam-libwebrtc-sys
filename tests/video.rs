@@ -33,6 +33,7 @@ struct Counters {
     encoder_rotation: AtomicU32,
     encoder_settings: Mutex<Vec<VideoEncoderSettings>>,
     encoder_rates: Mutex<Vec<VideoRateControl>>,
+    encoder_fps_allocation: Option<[Vec<u8>; 5]>,
     decoder_factory: AtomicUsize,
     decoder_create: AtomicUsize,
     decode: AtomicUsize,
@@ -131,7 +132,12 @@ impl VideoEncoder for TestEncoder {
             hardware_accelerated: false,
             supports_native_handle: false,
             supports_simulcast: false,
-            fps_allocation: Some([vec![255], vec![], vec![], vec![], vec![]]),
+            fps_allocation: Some(
+                self.0
+                    .encoder_fps_allocation
+                    .clone()
+                    .unwrap_or_else(|| [vec![255], vec![], vec![], vec![], vec![]]),
+            ),
         }
     }
 }
@@ -591,7 +597,6 @@ fn factory_with_call_factories(
     }
     builder.build().unwrap()
 }
-
 fn synthetic_i420(width: u32, height: u32) -> Vec<u8> {
     let len = (width * height + 2 * width.div_ceil(2) * height.div_ceil(2)) as usize;
     (0..len).map(|index| index as u8).collect()
@@ -1715,7 +1720,12 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
     use pulsebeam_webrtc_sys::{
         DataRate, PeerConnectionDependencies, VideoBitrateAllocatorFactory, VideoCodecType,
     };
-    let counters = Arc::new(Counters::default());
+    // Exercise a sparse allocation in a temporal domain the product actually
+    // advertises, rather than requiring L1T1 to retain an unsupported TL1 cell.
+    let counters = Arc::new(Counters {
+        encoder_fps_allocation: Some([vec![128, 255], vec![], vec![], vec![], vec![]]),
+        ..Default::default()
+    });
     let observations = Arc::new(AllocationObservations::default());
     let registration = VideoBitrateAllocatorFactory::from_provider(AllocationFactory(
         observations.clone(),
@@ -1756,9 +1766,17 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
         pair.progress();
         counters.encode.load(Ordering::SeqCst) > 0
             && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
-                rates.bitrate_bps == 102_880
-                    && rates.bandwidth_bps >= 123_456
-                    && rates.layer_bitrates_bps[0][0] == Some(102_880)
+                rates.target_bitrate_bps == 123_456
+                    && rates.target_layer_bitrates_bps[0][0] == Some(123_456)
+                    && rates.target_layer_bitrates_bps[0][1] == Some(0)
+                    && rates.target_layer_bitrates_bps[0][2].is_none()
+                    && rates.target_bandwidth_limited
+                    // This default native configuration enables bitrate
+                    // adjustment. Observe the effective allocation separately;
+                    // do not replace it with the caller allocator's target.
+                    && rates.bitrate_bps > 0
+                    && rates.bitrate_bps < rates.target_bitrate_bps
+                    && rates.layer_bitrates_bps[0][0] == Some(rates.bitrate_bps)
                     && rates.layer_bitrates_bps[0][1] == Some(0)
                     && rates.layer_bitrates_bps[0][2].is_none()
             })

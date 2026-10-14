@@ -461,25 +461,43 @@ pub struct VideoDecoderSettings {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VideoRateControl {
+    /// Effective encoder allocation, after any native bitrate adjustment.
     pub bitrate_bps: u32,
+    /// Native target allocation before encoder bitrate adjustment. This is
+    /// observed from SetRates, not copied from the caller allocator's request.
+    pub target_bitrate_bps: u32,
     pub framerate_fps: f64,
     pub bandwidth_bps: u64,
+    pub bandwidth_limited: bool,
+    pub target_bandwidth_limited: bool,
     /// Native bitrate allocation by spatial/simulcast slot then temporal layer.
     /// Cells are per-layer, not cumulative. `None` preserves an unset cell;
     /// `Some(0)` preserves an explicitly zero allocation. No VLA is inferred.
     pub layer_bitrates_bps: [[Option<u32>; 4]; 5],
+    /// Exact native target cells, independently preserving absence and zero.
+    /// Native simulcast adapters may slice these before product delivery.
+    pub target_layer_bitrates_bps: [[Option<u32>; 4]; 5],
 }
 
 impl VideoRateControl {
     fn from_ffi(r: ffi::FfiRateControl) -> Self {
         Self {
             bitrate_bps: r.bitrate_bps,
+            target_bitrate_bps: r.target_bitrate_bps,
             framerate_fps: r.framerate_fps,
             bandwidth_bps: r.bandwidth_bps,
+            bandwidth_limited: r.bandwidth_limited,
+            target_bandwidth_limited: r.target_bandwidth_limited,
             layer_bitrates_bps: std::array::from_fn(|spatial| {
                 std::array::from_fn(|temporal| {
                     r.has_layer_bitrate[spatial][temporal]
                         .then_some(r.layer_bitrates_bps[spatial][temporal])
+                })
+            }),
+            target_layer_bitrates_bps: std::array::from_fn(|spatial| {
+                std::array::from_fn(|temporal| {
+                    r.has_target_layer_bitrate[spatial][temporal]
+                        .then_some(r.target_layer_bitrates_bps[spatial][temporal])
                 })
             }),
         }
@@ -2120,10 +2138,15 @@ mod tests {
     fn native_rate_allocation_preserves_unset_and_explicit_zero_cells() {
         let mut r = ffi::FfiRateControl {
             bitrate_bps: 100_007,
+            target_bitrate_bps: 123_456,
             framerate_fps: 30.0,
             bandwidth_bps: 200_000,
+            bandwidth_limited: false,
+            target_bandwidth_limited: true,
             layer_bitrates_bps: [[0; 4]; 5],
             has_layer_bitrate: [[false; 4]; 5],
+            target_layer_bitrates_bps: [[0; 4]; 5],
+            has_target_layer_bitrate: [[false; 4]; 5],
         };
         r.layer_bitrates_bps[0][0] = 100_000;
         r.has_layer_bitrate[0][0] = true;
@@ -2131,6 +2154,9 @@ mod tests {
         r.layer_bitrates_bps[4][3] = 7;
         r.has_layer_bitrate[4][3] = true;
         r.layer_bitrates_bps[1][0] = 999;
+        r.target_layer_bitrates_bps[0][0] = 123_456;
+        r.has_target_layer_bitrate[0][0] = true;
+        r.has_target_layer_bitrate[0][1] = true;
         let rates = VideoRateControl::from_ffi(r);
         assert_eq!(rates.bitrate_bps, 100_007);
         assert_eq!(rates.framerate_fps, 30.0);
@@ -2140,6 +2166,13 @@ mod tests {
         assert_eq!(rates.layer_bitrates_bps[0][2], Some(0));
         assert_eq!(rates.layer_bitrates_bps[4][3], Some(7));
         assert_eq!(rates.layer_bitrates_bps[1][0], None);
+        assert_eq!(rates.target_bitrate_bps, 123_456);
+        assert_eq!(rates.target_layer_bitrates_bps[0][0], Some(123_456));
+        assert_eq!(rates.target_layer_bitrates_bps[0][1], Some(0));
+        assert_eq!(rates.target_layer_bitrates_bps[0][2], None);
+        assert_eq!(rates.target_layer_bitrates_bps[4][3], None);
+        assert!(!rates.bandwidth_limited);
+        assert!(rates.target_bandwidth_limited);
     }
 
     struct PanicDropEncoder {

@@ -1032,9 +1032,13 @@ mod tests {
         };
         let rate = VideoRateControl {
             bitrate_bps: 100_000,
+            target_bitrate_bps: 120_000,
             framerate_fps: 30.0,
             bandwidth_bps: 200_000,
+            bandwidth_limited: false,
+            target_bandwidth_limited: false,
             layer_bitrates_bps: [[None; 4]; 5],
+            target_layer_bitrates_bps: [[None; 4]; 5],
         };
         encoder.set_rates(rate).unwrap();
         assert_eq!(*first.rates.lock().unwrap(), Some(rate));
@@ -1074,9 +1078,13 @@ mod tests {
         assert!(readiness.poll(&mut cx).is_pending());
         let rates = VideoRateControl {
             bitrate_bps: 1,
+            target_bitrate_bps: 1,
             framerate_fps: 30.0,
             bandwidth_bps: 2,
+            bandwidth_limited: false,
+            target_bandwidth_limited: false,
             layer_bitrates_bps: [[None; 4]; 5],
+            target_layer_bitrates_bps: [[None; 4]; 5],
         };
         feedback.set_rates(rates);
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);

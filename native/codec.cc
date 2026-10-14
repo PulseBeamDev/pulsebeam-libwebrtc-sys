@@ -990,12 +990,17 @@ public:
                     "update the rate-control bridge for native allocation dimensions");
       FfiRateControl rates{};
       rates.bitrate_bps = parameters.bitrate.get_sum_bps();
+      rates.target_bitrate_bps = parameters.target_bitrate.get_sum_bps();
       rates.framerate_fps = parameters.framerate_fps;
       rates.bandwidth_bps = static_cast<std::uint64_t>(parameters.bandwidth_allocation.bps());
+      rates.bandwidth_limited = parameters.bitrate.is_bw_limited();
+      rates.target_bandwidth_limited = parameters.target_bitrate.is_bw_limited();
       for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
         for (std::size_t temporal = 0; temporal < webrtc::kMaxTemporalStreams; ++temporal) {
           rates.has_layer_bitrate[spatial][temporal] = parameters.bitrate.HasBitrate(spatial, temporal);
           rates.layer_bitrates_bps[spatial][temporal] = parameters.bitrate.GetBitrate(spatial, temporal);
+          rates.has_target_layer_bitrate[spatial][temporal] = parameters.target_bitrate.HasBitrate(spatial, temporal);
+          rates.target_layer_bitrates_bps[spatial][temporal] = parameters.target_bitrate.GetBitrate(spatial, temporal);
         }
       }
       encoder_set_rates(*encoder_, rates);
