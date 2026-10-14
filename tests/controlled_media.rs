@@ -275,6 +275,12 @@ impl Observations {
                     PeerConnectionEvent::ConnectionStateChanged(state) => {
                         format!("connection:{state:?}")
                     }
+                    PeerConnectionEvent::IceConnectionStateChanged(state) => {
+                        format!("ice-legacy:{state:?}")
+                    }
+                    PeerConnectionEvent::StandardizedIceConnectionStateChanged(state) => {
+                        format!("ice-standardized:{state:?}")
+                    }
                     PeerConnectionEvent::SignalingStateChanged(state) => {
                         format!("signaling:{state:?}")
                     }
@@ -1834,7 +1840,7 @@ fn run_h264_profile_with_wire(
                 .iter()
                 .filter_map(|record| match record {
                     PeerStatsRecord::OutboundRtp(stats)
-                        if stats.kind.as_deref() == Some("video")
+                        if stats.kind.as_deref() == Some(b"video".as_slice())
                             && stats.packets_sent.unwrap_or(0) > 0 =>
                     {
                         Some((stats.rid.clone().unwrap(), stats.ssrc.unwrap()))
@@ -1845,13 +1851,18 @@ fn run_h264_profile_with_wire(
             if capture.is_some() {
                 observations.wire.streams = outgoing
                     .iter()
-                    .map(|(rid, ssrc)| (rid.clone(), u32::try_from(*ssrc).unwrap()))
+                    .map(|(rid, ssrc)| {
+                        (
+                            String::from_utf8(rid.clone()).unwrap(),
+                            u32::try_from(*ssrc).unwrap(),
+                        )
+                    })
                     .collect();
             }
             assert_eq!(
                 outgoing
                     .iter()
-                    .map(|(rid, _)| rid.as_str())
+                    .map(|(rid, _)| std::str::from_utf8(rid).unwrap())
                     .collect::<std::collections::HashSet<_>>(),
                 if simulcast_mode == 3 {
                     std::collections::HashSet::from(["h"])

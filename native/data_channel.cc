@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "pulsebeam-webrtc-sys/native/execution.h"
@@ -39,6 +40,13 @@ struct NotifyOnExit {
   ~NotifyOnExit() { SignalReadiness(readiness); }
 };
 
+rust::Vec<std::uint8_t> TextBytes(std::string_view value) {
+  rust::Vec<std::uint8_t> out;
+  out.reserve(value.size());
+  for (unsigned char byte : value) out.push_back(byte);
+  return out;
+}
+
 FfiDataChannelError CopyError(const webrtc::RTCError& error) {
   FfiDataChannelError result{};
   result.has_error = !error.ok();
@@ -46,7 +54,7 @@ FfiDataChannelError CopyError(const webrtc::RTCError& error) {
   result.error_detail = static_cast<std::uint8_t>(error.error_detail());
   result.sctp_cause_code = error.sctp_cause_code().has_value()
       ? static_cast<std::int32_t>(*error.sctp_cause_code()) : -1;
-  result.message = error.message();
+  result.message = TextBytes(error.message());
   return result;
 }
 
@@ -298,43 +306,42 @@ std::unique_ptr<NativeDataChannel> wrap_data_channel(
 
 std::unique_ptr<NativeDataChannel> create_data_channel(
     const NativePeerConnection& peer,
-    rust::Str label,
-    bool ordered,
-    std::int32_t max_retransmit_time_ms,
-    std::int32_t max_retransmits,
-    rust::Str protocol,
-    bool negotiated,
-    std::int32_t id,
-    std::int32_t priority,
+    rust::Slice<const std::uint8_t> label,
+    const FfiDataChannelInit& fields,
     std::uint8_t& error_type,
-    rust::String& error) noexcept {
+    rust::Vec<std::uint8_t>& error) noexcept {
   webrtc::DataChannelInit configuration;
-  configuration.ordered = ordered;
-  if (max_retransmit_time_ms >= 0) {
-    configuration.maxRetransmitTime = max_retransmit_time_ms;
+  configuration.reliable = fields.reliable;
+  configuration.ordered = fields.ordered;
+  // The pinned SDK normalizes signed reliability inputs before its mutual-
+  // exclusion validation. Do not pre-filter or clamp them in the adapter.
+  if (fields.has_max_retransmit_time_ms) {
+    configuration.maxRetransmitTime = fields.max_retransmit_time_ms;
   }
-  if (max_retransmits >= 0) {
-    configuration.maxRetransmits = max_retransmits;
+  if (fields.has_max_retransmits) {
+    configuration.maxRetransmits = fields.max_retransmits;
   }
-  configuration.protocol.assign(protocol.data(), protocol.size());
-  configuration.negotiated = negotiated;
-  configuration.id = id;
-  if (auto parsed_priority = Priority(priority)) {
+  configuration.protocol.assign(
+      reinterpret_cast<const char*>(fields.protocol.data()), fields.protocol.size());
+  configuration.negotiated = fields.negotiated;
+  configuration.id = fields.id;
+  if (auto parsed_priority = Priority(fields.priority)) {
     configuration.priority = webrtc::PriorityValue(*parsed_priority);
   }
   auto result = peer.peer()->CreateDataChannelOrError(
-      std::string(label.data(), label.size()), &configuration);
+      std::string(reinterpret_cast<const char*>(label.data()), label.size()),
+      fields.has_configuration ? &configuration : nullptr);
   if (!result.ok()) {
     error_type = static_cast<std::uint8_t>(result.error().type());
-    error = result.error().message();
+    error = TextBytes(result.error().message());
     return nullptr;
   }
   return wrap_data_channel(result.MoveValue(), peer.peer(),
                            peer.signaling_thread(), peer.readiness());
 }
 
-rust::String data_channel_label(const NativeDataChannel& channel) noexcept {
-  return channel.state()->channel->label();
+rust::Vec<std::uint8_t> data_channel_label(const NativeDataChannel& channel) noexcept {
+  return TextBytes(channel.state()->channel->label());
 }
 bool data_channel_reliable(const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->reliable();
@@ -359,8 +366,8 @@ std::int32_t data_channel_max_retransmits(
     const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->maxRetransmitsOpt().value_or(-1);
 }
-rust::String data_channel_protocol(const NativeDataChannel& channel) noexcept {
-  return channel.state()->channel->protocol();
+rust::Vec<std::uint8_t> data_channel_protocol(const NativeDataChannel& channel) noexcept {
+  return TextBytes(channel.state()->channel->protocol());
 }
 bool data_channel_negotiated(const NativeDataChannel& channel) noexcept {
   return channel.state()->channel->negotiated();

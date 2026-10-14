@@ -319,6 +319,14 @@ impl fmt::Display for PeerError {
 }
 
 impl std::error::Error for PeerError {}
+impl From<PeerError> for PeerErrorBytes {
+    fn from(value: PeerError) -> Self {
+        Self {
+            kind: value.kind,
+            message: value.message.into_bytes(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationCompletion {
@@ -328,6 +336,7 @@ pub struct OperationCompletion {
 
 /// A bounded snapshot of upstream stats. Timestamps are microseconds since
 /// the Unix epoch; a missing metric is `None`, never an implicit zero.
+/// Native string fields retain their bytes, including non-UTF-8 and NUL.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeerStatsSnapshot {
     pub operation_id: OperationId,
@@ -346,12 +355,12 @@ pub enum PeerStatsRecord {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CandidatePairStats {
-    pub id: String,
+    pub id: Vec<u8>,
     pub timestamp_us: i64,
-    pub transport_id: Option<String>,
-    pub local_candidate_id: Option<String>,
-    pub remote_candidate_id: Option<String>,
-    pub state: Option<String>,
+    pub transport_id: Option<Vec<u8>>,
+    pub local_candidate_id: Option<Vec<u8>>,
+    pub remote_candidate_id: Option<Vec<u8>>,
+    pub state: Option<Vec<u8>>,
     pub nominated: Option<bool>,
     pub packets_sent: Option<u64>,
     pub packets_received: Option<u64>,
@@ -364,11 +373,11 @@ pub struct CandidatePairStats {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransportStats {
-    pub id: String,
+    pub id: Vec<u8>,
     pub timestamp_us: i64,
-    pub selected_candidate_pair_id: Option<String>,
-    pub ice_state: Option<String>,
-    pub dtls_state: Option<String>,
+    pub selected_candidate_pair_id: Option<Vec<u8>>,
+    pub ice_state: Option<Vec<u8>>,
+    pub dtls_state: Option<Vec<u8>>,
     pub packets_sent: Option<u64>,
     pub packets_received: Option<u64>,
     pub bytes_sent: Option<u64>,
@@ -377,12 +386,12 @@ pub struct TransportStats {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InboundRtpStats {
-    pub id: String,
+    pub id: Vec<u8>,
     pub timestamp_us: i64,
-    pub kind: Option<String>,
+    pub kind: Option<Vec<u8>>,
     pub ssrc: Option<u64>,
-    pub transport_id: Option<String>,
-    pub mid: Option<String>,
+    pub transport_id: Option<Vec<u8>>,
+    pub mid: Option<Vec<u8>>,
     pub packets_received: Option<u64>,
     pub packets_lost: Option<i64>,
     pub bytes_received: Option<u64>,
@@ -393,13 +402,13 @@ pub struct InboundRtpStats {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutboundRtpStats {
-    pub id: String,
+    pub id: Vec<u8>,
     pub timestamp_us: i64,
-    pub kind: Option<String>,
+    pub kind: Option<Vec<u8>>,
     pub ssrc: Option<u64>,
-    pub transport_id: Option<String>,
-    pub mid: Option<String>,
-    pub rid: Option<String>,
+    pub transport_id: Option<Vec<u8>>,
+    pub mid: Option<Vec<u8>>,
+    pub rid: Option<Vec<u8>>,
     pub packets_sent: Option<u64>,
     pub bytes_sent: Option<u64>,
     pub target_bitrate: Option<f64>,
@@ -409,11 +418,11 @@ pub struct OutboundRtpStats {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DataChannelStats {
-    pub id: String,
+    pub id: Vec<u8>,
     pub timestamp_us: i64,
-    pub label: Option<String>,
-    pub protocol: Option<String>,
-    pub state: Option<String>,
+    pub label: Option<Vec<u8>>,
+    pub protocol: Option<Vec<u8>>,
+    pub state: Option<Vec<u8>>,
     pub data_channel_identifier: Option<i64>,
     pub messages_sent: Option<u64>,
     pub messages_received: Option<u64>,
@@ -2541,7 +2550,7 @@ impl StatFields<'_> {
             .find(|field| field.name == name && field.kind == kind)
     }
 
-    fn text(&self, name: &str) -> Option<String> {
+    fn text(&self, name: &str) -> Option<Vec<u8>> {
         self.field(name, 1).map(|field| field.text.clone())
     }
 

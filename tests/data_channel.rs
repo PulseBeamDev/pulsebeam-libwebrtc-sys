@@ -257,7 +257,7 @@ fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
         );
         let (_alice_events, bob_events) = pair.negotiate();
         let mut bob = wait_for_remote_channel(&pair, bob_events);
-        assert_eq!(bob.label(), "announced");
+        assert_eq!(bob.label(), b"announced");
         let remote_configuration = bob.configuration();
         assert!(remote_configuration.ordered);
         assert!(!remote_configuration.negotiated);
@@ -398,7 +398,7 @@ fn native_stream_ids_can_be_reused_after_reset() {
     wait_for_open(&pair, &next, &next_remote);
     assert_eq!(next.configuration().id, sid);
     assert_eq!(next_remote.configuration().id, sid);
-    assert_eq!(next.label(), "next");
+    assert_eq!(next.label(), b"next");
     exchange_messages(&pair, &next, &next_remote);
 }
 
@@ -791,6 +791,124 @@ fn owning_transport_aliases_observers_and_revocable_ice_internal() {
 }
 
 #[test]
+fn native_defaults_signed_reliability_and_byte_metadata_are_not_normalized_in_rust() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let mut peer = factory.create_peer_connection(Default::default()).unwrap();
+    let implicit = peer.create_data_channel_bytes(b"implicit", None).unwrap();
+    let explicit = peer
+        .create_data_channel("explicit", Default::default())
+        .unwrap();
+    assert_eq!(implicit.configuration(), explicit.configuration());
+    assert!(implicit.reliable());
+    for (index, (time, retries, expected_time, expected_retries)) in [
+        (Some(-5), Some(i32::MAX), None, Some(65535)),
+        (Some(i32::MAX), Some(-5), Some(65535), None),
+        (Some(-5), Some(-7), None, None),
+        (None, Some(0), None, Some(0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let value = peer
+            .create_data_channel_bytes(
+                b"signed\xff\0",
+                Some(DataChannelConfiguration {
+                    reliable: true,
+                    negotiated: true,
+                    id: Some(100 + index as i32),
+                    max_retransmit_time_ms: time,
+                    max_retransmits: retries,
+                    protocol: b"opaque\x80\0".to_vec(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let snapshot = value.configuration();
+        assert_eq!(snapshot.max_retransmit_time_ms, expected_time);
+        assert_eq!(snapshot.max_retransmits, expected_retries);
+        assert_eq!(
+            snapshot.reliable,
+            expected_time.is_none() && expected_retries.is_none()
+        );
+        assert_eq!(snapshot.reliable, value.reliable());
+        assert_eq!(snapshot.protocol, b"opaque\x80\0");
+        assert_eq!(value.label(), b"signed\xff\0");
+    }
+    let ignored = peer
+        .create_data_channel_bytes(
+            b"ignored",
+            Some(DataChannelConfiguration {
+                id: Some(i32::MIN),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    assert_eq!(ignored.configuration().id, None);
+    let rejected = peer
+        .create_data_channel_bytes(
+            b"rejected",
+            Some(DataChannelConfiguration {
+                max_retransmit_time_ms: Some(1),
+                max_retransmits: Some(1),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(rejected.kind, PeerErrorKind::InvalidParameter);
+    assert!(!rejected.message.is_empty());
+    peer.close().unwrap();
+    let rejected = peer.create_data_channel_bytes(b"closed", None).unwrap_err();
+    assert_eq!(rejected.kind, PeerErrorKind::InvalidState);
+    assert!(!rejected.message.is_empty());
+}
+
+#[test]
+fn native_channel_metadata_and_stats_retain_bytes_across_actual_exchange() {
+    let pair = Pair::new(25);
+    let label = b"wire\xff\0\x80";
+    let protocol = b"application\xfe\0";
+    let alice = pair
+        .alice
+        .create_data_channel_bytes(
+            label,
+            Some(DataChannelConfiguration {
+                reliable: true,
+                max_retransmit_time_ms: Some(-1),
+                max_retransmits: Some(i32::MAX),
+                protocol: protocol.to_vec(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let (_, events) = pair.negotiate();
+    let bob = wait_for_remote_channel(&pair, events);
+    wait_for_open(&pair, &alice, &bob);
+    for value in [&alice, &bob] {
+        assert_eq!(value.label(), label);
+        let snapshot = value.configuration();
+        assert_eq!(snapshot.protocol, protocol);
+        assert_eq!(snapshot.max_retransmit_time_ms, None);
+        assert_eq!(snapshot.max_retransmits, Some(65535));
+        assert!(!snapshot.reliable);
+    }
+    exchange_messages(&pair, &alice, &bob);
+    let operation = pair.bob.request_stats().unwrap();
+    let mut snapshot = None;
+    for _ in 0..1_000_000 {
+        if let Some(PeerConnectionEvent::Stats(value)) = pair.bob.try_next_event() {
+            if value.operation_id == operation {
+                snapshot = Some(value);
+                break;
+            }
+        }
+        thread::yield_now();
+    }
+    assert!(snapshot.expect("native stats result").records.iter().any(|record| matches!(record,
+        pulsebeam_webrtc_sys::PeerStatsRecord::DataChannel(value)
+        if value.label.as_deref() == Some(label.as_slice()) && value.protocol.as_deref() == Some(protocol.as_slice()))));
+}
+
+#[test]
 fn invalid_data_channel_configuration_is_explicit() {
     let factory = PeerConnectionFactory::builder().build().unwrap();
     let peer = factory
@@ -808,13 +926,13 @@ fn invalid_data_channel_configuration_is_explicit() {
         .is_err()
     );
     // SCTP reserves 65535. Keep the owned native validation outcome rather
-    // than treating the entire Rust u16 representation as an admitted range.
+    // than treating arbitrary integer inputs as an admitted stream-id range.
     assert_eq!(
         peer.create_data_channel(
             "reserved-id",
             DataChannelConfiguration {
                 negotiated: true,
-                id: Some(u16::MAX),
+                id: Some(i32::from(u16::MAX)),
                 ..Default::default()
             },
         )

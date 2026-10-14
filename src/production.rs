@@ -156,7 +156,7 @@ pub enum SessionEvent {
     },
     DataChannel {
         channel: SessionChannelId,
-        label: String,
+        label: Vec<u8>,
     },
     Track {
         transceiver: SessionTransceiverId,
@@ -1174,7 +1174,16 @@ impl ProductionSession {
         peer: SessionPeerId,
         label: &str,
         config: DataChannelConfiguration,
-    ) -> Result<SessionChannelId, PeerError> {
+    ) -> Result<SessionChannelId, crate::PeerErrorBytes> {
+        self.create_channel_bytes(peer, label.as_bytes(), Some(config))
+    }
+
+    pub fn create_channel_bytes(
+        &mut self,
+        peer: SessionPeerId,
+        label: &[u8],
+        config: Option<DataChannelConfiguration>,
+    ) -> Result<SessionChannelId, crate::PeerErrorBytes> {
         self.check_open()?;
         let id = SessionChannelId(next_id()?);
         let value = self
@@ -1182,7 +1191,7 @@ impl ProductionSession {
             .get(&peer)
             .ok_or_else(missing)?
             .value
-            .create_data_channel(label, config)?;
+            .create_data_channel_bytes(label, config)?;
         self.channels.insert(id, Resource { peer, value });
         Ok(id)
     }
@@ -1239,7 +1248,7 @@ impl ProductionSession {
             .configuration())
     }
 
-    pub fn channel_label(&mut self, channel: SessionChannelId) -> Result<String, PeerError> {
+    pub fn channel_label(&mut self, channel: SessionChannelId) -> Result<Vec<u8>, PeerError> {
         Ok(self
             .channels
             .get(&channel)

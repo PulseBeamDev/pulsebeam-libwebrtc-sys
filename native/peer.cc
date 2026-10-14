@@ -638,7 +638,7 @@ void AddStatsField(rust::Vec<FfiStatsField>& fields, const char* name,
   field.name = name;
   if constexpr (std::is_same_v<T, std::string>) {
     field.kind = 1;
-    field.text = *value;
+    field.text = PeerTextBytes(*value);
   } else if constexpr (std::is_floating_point_v<T>) {
     field.kind = 4;
     field.decimal = *value;
@@ -658,7 +658,7 @@ void AddStatsField(rust::Vec<FfiStatsField>& fields, const char* name,
 FfiStatsRecord NewStatsRecord(const webrtc::RTCStats& stats,
                               std::uint8_t kind) {
   FfiStatsRecord record;
-  record.id = std::string(stats.id());
+  record.id = PeerTextBytes(stats.id());
   record.kind = kind;
   record.timestamp_us = stats.timestamp().us();
   return record;

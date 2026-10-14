@@ -1974,7 +1974,7 @@ mod ffi {
     struct FfiStatsField {
         name: String,
         kind: u8,
-        text: String,
+        text: Vec<u8>,
         unsigned_value: u64,
         signed_value: i64,
         decimal: f64,
@@ -1982,7 +1982,7 @@ mod ffi {
     }
 
     struct FfiStatsRecord {
-        id: String,
+        id: Vec<u8>,
         kind: u8,
         timestamp_us: i64,
         fields: Vec<FfiStatsField>,
@@ -2018,12 +2018,26 @@ mod ffi {
         message: Vec<u8>,
     }
 
+    struct FfiDataChannelInit {
+        has_configuration: bool,
+        reliable: bool,
+        ordered: bool,
+        has_max_retransmit_time_ms: bool,
+        max_retransmit_time_ms: i32,
+        has_max_retransmits: bool,
+        max_retransmits: i32,
+        protocol: Vec<u8>,
+        negotiated: bool,
+        id: i32,
+        priority: i32,
+    }
+
     struct FfiDataChannelError {
         has_error: bool,
         error_type: u8,
         error_detail: u8,
         sctp_cause_code: i32,
-        message: String,
+        message: Vec<u8>,
     }
 
     struct FfiDataChannelCounters {
@@ -5457,24 +5471,18 @@ mod ffi {
 
         fn create_data_channel(
             peer: &NativePeerConnection,
-            label: &str,
-            ordered: bool,
-            max_retransmit_time_ms: i32,
-            max_retransmits: i32,
-            protocol: &str,
-            negotiated: bool,
-            id: i32,
-            priority: i32,
+            label: &[u8],
+            configuration: &FfiDataChannelInit,
             error_type: &mut u8,
-            error: &mut String,
+            error: &mut Vec<u8>,
         ) -> UniquePtr<NativeDataChannel>;
-        fn data_channel_label(channel: &NativeDataChannel) -> String;
+        fn data_channel_label(channel: &NativeDataChannel) -> Vec<u8>;
         fn data_channel_ordered(channel: &NativeDataChannel) -> bool;
         fn data_channel_reliable(channel: &NativeDataChannel) -> bool;
         fn data_channel_counters(channel: &NativeDataChannel) -> FfiDataChannelCounters;
         fn data_channel_max_retransmit_time_ms(channel: &NativeDataChannel) -> i32;
         fn data_channel_max_retransmits(channel: &NativeDataChannel) -> i32;
-        fn data_channel_protocol(channel: &NativeDataChannel) -> String;
+        fn data_channel_protocol(channel: &NativeDataChannel) -> Vec<u8>;
         fn data_channel_negotiated(channel: &NativeDataChannel) -> bool;
         fn data_channel_id(channel: &NativeDataChannel) -> i32;
         fn data_channel_priority(channel: &NativeDataChannel) -> u16;

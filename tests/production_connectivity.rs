@@ -40,6 +40,7 @@ fn wait(session: &mut ProductionSession) {
 struct Events {
     complete: HashMap<(SessionPeerId, OperationId), Option<SessionDescription>>,
     gathered: HashSet<SessionPeerId>,
+    channels: Vec<(SessionPeerId, SessionChannelId, Vec<u8>)>,
 }
 impl Events {
     fn drain(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
@@ -52,6 +53,9 @@ impl Events {
                                 .insert((peer, done.operation_id), done.result.unwrap())
                                 .is_none()
                         );
+                    }
+                    SessionEvent::DataChannel { channel, label } => {
+                        self.channels.push((peer, channel, label));
                     }
                     SessionEvent::IceGatheringStateChanged(IceGatheringState::Complete) => {
                         self.gathered.insert(peer);
@@ -93,6 +97,100 @@ impl Events {
         }
         session.descriptions(peer).unwrap().local().unwrap().clone()
     }
+}
+
+#[test]
+fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes() {
+    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let peers = [
+        session.create_peer(Default::default()).unwrap(),
+        session.create_peer(Default::default()).unwrap(),
+    ];
+    let label = b"actor\xff\0".to_vec();
+    let protocol = b"protocol\x80\0".to_vec();
+    let outgoing = session
+        .create_channel_bytes(
+            peers[0],
+            &label,
+            Some(DataChannelConfiguration {
+                reliable: true,
+                max_retransmit_time_ms: Some(-99),
+                max_retransmits: Some(i32::MAX),
+                protocol: protocol.clone(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let expected_label = label.clone();
+    drop(label);
+    let rejected = session
+        .create_channel_bytes(
+            peers[0],
+            b"invalid",
+            Some(DataChannelConfiguration {
+                max_retransmit_time_ms: Some(1),
+                max_retransmits: Some(1),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(rejected.kind, PeerErrorKind::InvalidParameter);
+    assert!(!rejected.message.is_empty());
+    let mut events = Events::default();
+    let id = session.create_offer(peers[0], false).unwrap();
+    let offer = events.finish(&mut session, peers, peers[0], id).unwrap();
+    let offer = events.gather(&mut session, peers, peers[0], offer);
+    thread::spawn(move || {
+        let mut session = session;
+        let id = session.set_remote_description(peers[1], offer).unwrap();
+        events.finish(&mut session, peers, peers[1], id);
+        let id = session.create_answer(peers[1]).unwrap();
+        let answer = events.finish(&mut session, peers, peers[1], id).unwrap();
+        let answer = events.gather(&mut session, peers, peers[1], answer);
+        let id = session.set_remote_description(peers[0], answer).unwrap();
+        events.finish(&mut session, peers, peers[0], id);
+        let incoming = loop {
+            events.drain(&mut session, peers);
+            if let Some((_, incoming, _)) = events.channels.iter().find(|(peer, _, label)| *peer == peers[1] && label == &expected_label) {
+                if session.channel_state(outgoing).unwrap() == DataChannelState::Open && session.channel_state(*incoming).unwrap() == DataChannelState::Open { break *incoming; }
+            }
+            wait(&mut session);
+        };
+        for channel in [outgoing, incoming] {
+            assert_eq!(session.channel_label(channel).unwrap(), expected_label);
+            let config = session.channel_configuration(channel).unwrap();
+            assert_eq!(config.protocol, protocol);
+            assert_eq!(config.max_retransmit_time_ms, None);
+            assert_eq!(config.max_retransmits, Some(65535));
+            assert!(!config.reliable);
+        }
+        let message = DataChannelMessage { kind: DataChannelMessageKind::Text, bytes: vec![0xff, 0, 0x80] };
+        let send_id = session.send_async(outgoing, message.clone()).unwrap();
+        let (mut completed, mut received) = (false, false);
+        while !completed || !received {
+            while let Some(event) = session.try_channel_event(outgoing).unwrap() {
+                if let DataChannelEvent::SendComplete(value) = event {
+                    assert_eq!(value.send_id, send_id); value.result.unwrap(); completed = true;
+                }
+            }
+            while let Some(event) = session.try_channel_event(incoming).unwrap() {
+                if let DataChannelEvent::Message(value) = event { assert_eq!(value, message); assert!(!received); received = true; }
+            }
+            if !completed || !received { wait(&mut session); }
+        }
+        let operation = session.request_stats(peers[1]).unwrap();
+        let snapshot = loop {
+            if let Some(SessionEvent::Stats(value)) = session.try_peer_event(peers[1]).unwrap() {
+                if value.operation_id == operation { break value; }
+            } else { wait(&mut session); }
+        };
+        assert!(snapshot.records.iter().any(|record| matches!(record, PeerStatsRecord::DataChannel(value)
+            if value.label.as_deref() == Some(expected_label.as_slice()) && value.protocol.as_deref() == Some(protocol.as_slice()))));
+        session.close_peer(peers[0]).unwrap();
+        session.close_peer(peers[1]).unwrap();
+        assert_eq!(session.channel_label(outgoing).unwrap(), expected_label);
+        session.shutdown().unwrap();
+    }).join().unwrap();
 }
 
 #[test]

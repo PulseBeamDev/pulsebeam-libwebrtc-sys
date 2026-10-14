@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "8803d68811af984f60d85ccfb6b2ee3ec68c83624a735acc399f8680efcbd4fe";
+    "28987f78b92960e0a37be91d35fffbfed9d43df76bd30bdd13e28f55cf7ba46b";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "631b11bc33f55c5fd0b9ab9cd8aaf051a391b2040dc0b75235a860b5e5af45e9";
+    "04b9fbb812a4d75ba77e67277b9650649a93b15d76b3682830f07a50f70435f5";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "3c7f82bc8eec90cd965427a134202d60f971ad70fbee4d9bddc3de9842a01f70";
+    "3f3f5ba3d41085244e6efa6ce62cfd714c413b7c4ab23e207eb77de15652cb2a";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -589,12 +589,12 @@ impl ArtifactManifest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactManifest, BRIDGE_SOURCE_SHA256, CXX_PACKAGE_SHA256, CXXBRIDGE_CMD_PACKAGE_SHA256,
-        NATIVE_ADAPTER_INPUTS, SUPPORTED_CARGO_TARGETS, artifact_target, native_adapter_digest,
+        ArtifactManifest, BRIDGE_SOURCE_SHA256, NATIVE_ADAPTER_INPUTS, SUPPORTED_CARGO_TARGETS,
+        artifact_target, native_adapter_digest,
     };
     use sha2::{Digest, Sha256};
 
-    const FIXTURE: &[u8] = include_bytes!("../native/manifest.core-linux-x86_64.json");
+    const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/artifact-support-manifest.json");
 
     fn validate(bytes: &[u8]) -> Result<ArtifactManifest, String> {
         ArtifactManifest::parse_and_validate(
@@ -692,37 +692,43 @@ mod tests {
 
     #[test]
     fn rejects_substitution_by_bridge_target_flavor_or_cargo_target() {
-        let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
-        for (expected, wrong) in [
-            ("pulsebeam-webrtc-sys-bridge-v2", "wrong-bridge"),
-            ("linux-x86_64", "linux-arm64"),
-            (r#""flavor": "core""#, r#""flavor": "native""#),
-            ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
+        for (pointer, wrong) in [
+            ("/bridge/identity", "wrong-bridge"),
+            ("/artifact/target", "linux-arm64"),
+            ("/artifact/flavor", "native"),
+            ("/artifact/cargo_target", "aarch64-unknown-linux-gnu"),
         ] {
-            let invalid = fixture.replacen(expected, wrong, 1);
-            assert!(validate(invalid.as_bytes()).is_err());
+            let mut invalid: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            *invalid.pointer_mut(pointer).expect("fixture field") = wrong.into();
+            assert!(
+                validate(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+                "{pointer}"
+            );
         }
     }
 
     #[test]
     fn rejects_missing_malformed_or_inconsistent_cxx_provenance() {
-        let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
-        let missing = fixture.replacen(
-            r#"      "generated_source_sha256": "#,
-            r#"      "removed_generated_source_sha256": "#,
-            1,
-        );
-        assert!(validate(missing.as_bytes()).is_err());
-
-        let malformed = fixture.replacen(CXX_PACKAGE_SHA256, "not-a-sha256", 1);
-        assert!(validate(malformed.as_bytes()).is_err());
-
-        let inconsistent = fixture.replacen(
-            CXXBRIDGE_CMD_PACKAGE_SHA256,
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            1,
-        );
-        assert!(validate(inconsistent.as_bytes()).is_err());
+        for (key, replacement) in [
+            ("generated_source_sha256", None),
+            ("runtime_package_sha256", Some("not-a-sha256")),
+            (
+                "generator_package_sha256",
+                Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            ),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let cxx = invalid["bridge"]["cxx"].as_object_mut().unwrap();
+            if let Some(value) = replacement {
+                *cxx.get_mut(key).expect("fixture CXX field") = value.into();
+            } else {
+                assert!(cxx.remove(key).is_some());
+            }
+            assert!(
+                validate(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+                "{key}"
+            );
+        }
     }
 
     #[test]

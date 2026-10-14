@@ -65,6 +65,28 @@ fn main() {
         let channel = peer
             .create_data_channel("consumer", Default::default())
             .unwrap();
+        assert_eq!(channel.label(), b"consumer");
+        let bytes_channel = peer
+            .create_data_channel_bytes(
+                b"consumer\xff\0",
+                Some(pulsebeam_webrtc_sys::DataChannelConfiguration {
+                    reliable: true,
+                    max_retransmit_time_ms: Some(-1),
+                    max_retransmits: Some(i32::MAX),
+                    protocol: b"protocol\x80\0".to_vec(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(bytes_channel.label(), b"consumer\xff\0");
+        assert_eq!(bytes_channel.configuration().protocol, b"protocol\x80\0");
+        assert_eq!(bytes_channel.configuration().max_retransmits, Some(65535));
+        assert!(!bytes_channel.reliable());
+        assert!(
+            peer.create_data_channel_bytes(b"native-default", None)
+                .unwrap()
+                .reliable()
+        );
         let alias = channel.clone();
         assert!(channel.same_resource(&alias));
         let limits = pulsebeam_webrtc_sys::DataChannel::receive_queue_limits();

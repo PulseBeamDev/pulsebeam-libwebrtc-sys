@@ -669,6 +669,17 @@ candidate previously existed. All these operations also have owned-ID
 `ProductionSession` counterparts and retain native sequencing after actor
 migration.
 
+Channel labels, protocols and stats string values retain native bytes, including
+non-UTF-8 and embedded NUL. Creation and channel errors retain the message bytes
+exposed by the SDK. Use explicit UTF-8 decoding when text is required. `PeerConnection::create_data_channel_bytes()`
+and `ProductionSession::create_channel_bytes()` accept an optional typed
+configuration; `None` passes the native null/default configuration. The existing
+UTF-8 label conveniences pass an explicit configuration. Signed optional
+retransmission inputs reach native normalization and validation: negative values
+disable that setting and values above 65535 are clamped before mutual-exclusion
+validation. The deprecated initialization `reliable` flag is ignored upstream;
+configuration snapshots expose the actual native reliability property.
+
 Data-channel advisory events have bounded retention: each channel retains at
 most one callback-time state snapshot, one buffered-amount notification and one
 negotiated maximum-message-size snapshot. Intermediate states may coalesce.

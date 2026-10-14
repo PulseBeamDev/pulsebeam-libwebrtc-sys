@@ -15,6 +15,7 @@ class Thread;
 namespace pulsebeam::webrtc_sys {
 
 struct FfiDataChannelEvent;
+struct FfiDataChannelInit;
 struct FfiDataChannelError;
 struct FfiDataChannelCounters;
 struct FfiDataChannelReceiveQueueLimits;
@@ -44,17 +45,11 @@ std::unique_ptr<NativeDataChannel> wrap_data_channel(
 
 std::unique_ptr<NativeDataChannel> create_data_channel(
     const NativePeerConnection& peer,
-    rust::Str label,
-    bool ordered,
-    std::int32_t max_retransmit_time_ms,
-    std::int32_t max_retransmits,
-    rust::Str protocol,
-    bool negotiated,
-    std::int32_t id,
-    std::int32_t priority,
+    rust::Slice<const std::uint8_t> label,
+    const FfiDataChannelInit& fields,
     std::uint8_t& error_type,
-    rust::String& error) noexcept;
-rust::String data_channel_label(const NativeDataChannel& channel) noexcept;
+    rust::Vec<std::uint8_t>& error) noexcept;
+rust::Vec<std::uint8_t> data_channel_label(const NativeDataChannel& channel) noexcept;
 bool data_channel_ordered(const NativeDataChannel& channel) noexcept;
 bool data_channel_reliable(const NativeDataChannel& channel) noexcept;
 FfiDataChannelCounters data_channel_counters(const NativeDataChannel& channel) noexcept;
@@ -62,7 +57,7 @@ std::int32_t data_channel_max_retransmit_time_ms(
     const NativeDataChannel& channel) noexcept;
 std::int32_t data_channel_max_retransmits(
     const NativeDataChannel& channel) noexcept;
-rust::String data_channel_protocol(const NativeDataChannel& channel) noexcept;
+rust::Vec<std::uint8_t> data_channel_protocol(const NativeDataChannel& channel) noexcept;
 bool data_channel_negotiated(const NativeDataChannel& channel) noexcept;
 std::int32_t data_channel_id(const NativeDataChannel& channel) noexcept;
 std::uint16_t data_channel_priority(const NativeDataChannel& channel) noexcept;

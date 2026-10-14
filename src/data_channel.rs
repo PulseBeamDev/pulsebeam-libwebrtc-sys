@@ -26,25 +26,31 @@ impl DataChannelPriority {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataChannelConfiguration {
+    /// Deprecated native initialization flag, ignored by the pinned engine.
+    /// Configuration snapshots instead expose the actual `reliable()` property.
+    pub reliable: bool,
     pub ordered: bool,
-    pub max_retransmit_time_ms: Option<u16>,
-    pub max_retransmits: Option<u16>,
-    pub protocol: String,
+    /// Native signed input: negative values disable the setting, and values
+    /// above 65535 are clamped by the engine before mutual-exclusion validation.
+    pub max_retransmit_time_ms: Option<i32>,
+    pub max_retransmits: Option<i32>,
+    pub protocol: Vec<u8>,
     pub negotiated: bool,
     /// Explicit SCTP stream identity for external negotiation. `None` lets
     /// native negotiation assign it. The pinned engine rejects the reserved
     /// value 65535 with `InvalidRange`; an in-band id is ignored natively.
-    pub id: Option<u16>,
+    pub id: Option<i32>,
     pub priority: Option<DataChannelPriority>,
 }
 
 impl Default for DataChannelConfiguration {
     fn default() -> Self {
         Self {
+            reliable: false,
             ordered: true,
             max_retransmit_time_ms: None,
             max_retransmits: None,
-            protocol: String::new(),
+            protocol: Vec::new(),
             negotiated: false,
             id: None,
             priority: None,
@@ -98,11 +104,12 @@ pub enum DataChannelSendResult {
 
 /// An owned snapshot of the native data-channel error. `None` from
 /// [`DataChannel::error`] means the engine reports no error, including an
-/// ordinary explicit close. Diagnostic message text is not a stable API.
+/// ordinary explicit close. Message bytes are retained exactly; their diagnostic
+/// wording is not a stable API. `Display` is a lossy UTF-8 convenience only.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataChannelError {
     pub kind: PeerErrorKind,
-    pub message: String,
+    pub message: Vec<u8>,
     pub detail: Option<DataChannelErrorDetail>,
     pub sctp_cause_code: Option<u16>,
 }
@@ -121,7 +128,7 @@ pub enum DataChannelErrorDetail {
 
 impl fmt::Display for DataChannelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        formatter.write_str(&String::from_utf8_lossy(&self.message))
     }
 }
 impl std::error::Error for DataChannelError {}
@@ -244,33 +251,45 @@ impl PeerConnection {
         &self,
         label: &str,
         configuration: DataChannelConfiguration,
-    ) -> Result<DataChannel, PeerError> {
-        if configuration.max_retransmit_time_ms.is_some() && configuration.max_retransmits.is_some()
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::InvalidParameter,
-                message: "max retransmit time and max retransmits are mutually exclusive".into(),
-            });
-        }
+    ) -> Result<DataChannel, crate::PeerErrorBytes> {
+        self.create_data_channel_bytes(label.as_bytes(), Some(configuration))
+    }
+
+    /// `None` passes a null configuration to the native creation operation.
+    /// Labels, protocols and native error diagnostics retain their actual bytes.
+    pub fn create_data_channel_bytes(
+        &self,
+        label: &[u8],
+        configuration: Option<DataChannelConfiguration>,
+    ) -> Result<DataChannel, crate::PeerErrorBytes> {
+        let has_configuration = configuration.is_some();
+        let configuration = configuration.unwrap_or_default();
+        let fields = ffi::FfiDataChannelInit {
+            has_configuration,
+            reliable: configuration.reliable,
+            ordered: configuration.ordered,
+            has_max_retransmit_time_ms: configuration.max_retransmit_time_ms.is_some(),
+            max_retransmit_time_ms: configuration.max_retransmit_time_ms.unwrap_or(0),
+            has_max_retransmits: configuration.max_retransmits.is_some(),
+            max_retransmits: configuration.max_retransmits.unwrap_or(0),
+            protocol: configuration.protocol,
+            negotiated: configuration.negotiated,
+            id: configuration.id.unwrap_or(-1),
+            priority: configuration
+                .priority
+                .map_or(-1, |value| i32::from(value.value())),
+        };
         let mut error_type = 0;
-        let mut message = String::new();
+        let mut message = Vec::new();
         let native = ffi::create_data_channel(
             self.inner.native(),
             label,
-            configuration.ordered,
-            configuration.max_retransmit_time_ms.map_or(-1, i32::from),
-            configuration.max_retransmits.map_or(-1, i32::from),
-            &configuration.protocol,
-            configuration.negotiated,
-            configuration.id.map_or(-1, i32::from),
-            configuration
-                .priority
-                .map_or(-1, |value| i32::from(value.value())),
+            &fields,
             &mut error_type,
             &mut message,
         );
         if native.is_null() {
-            Err(PeerError {
+            Err(crate::PeerErrorBytes {
                 kind: super::peer::error_kind(error_type),
                 message,
             })
@@ -305,20 +324,25 @@ impl DataChannel {
         }
     }
 
-    pub fn label(&self) -> String {
+    /// Owned native bytes, without assuming UTF-8 or a C-string terminator.
+    pub fn label(&self) -> Vec<u8> {
         ffi::data_channel_label(self.native())
     }
 
+    /// Actual native getter values, not an echo of the initialization request.
+    /// In particular, reliability is effective, and an in-band id is assigned
+    /// by the engine rather than copied from the request.
     pub fn configuration(&self) -> DataChannelConfiguration {
         DataChannelConfiguration {
+            reliable: self.reliable(),
             ordered: ffi::data_channel_ordered(self.native()),
-            max_retransmit_time_ms: optional_u16(ffi::data_channel_max_retransmit_time_ms(
+            max_retransmit_time_ms: optional_i32(ffi::data_channel_max_retransmit_time_ms(
                 self.native(),
             )),
-            max_retransmits: optional_u16(ffi::data_channel_max_retransmits(self.native())),
+            max_retransmits: optional_i32(ffi::data_channel_max_retransmits(self.native())),
             protocol: ffi::data_channel_protocol(self.native()),
             negotiated: ffi::data_channel_negotiated(self.native()),
-            id: optional_u16(ffi::data_channel_id(self.native())),
+            id: optional_i32(ffi::data_channel_id(self.native())),
             priority: Some(priority(ffi::data_channel_priority(self.native()))),
         }
     }
@@ -493,8 +517,8 @@ fn native_error(error: ffi::FfiDataChannelError) -> Option<DataChannelError> {
     })
 }
 
-fn optional_u16(value: i32) -> Option<u16> {
-    (value >= 0).then(|| value as u16)
+fn optional_i32(value: i32) -> Option<i32> {
+    (value >= 0).then_some(value)
 }
 
 fn state(value: u8) -> DataChannelState {

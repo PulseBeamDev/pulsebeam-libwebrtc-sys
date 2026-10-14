@@ -190,7 +190,7 @@ fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
         .iter()
         .filter_map(|record| {
             if let PeerStatsRecord::CandidatePair(pair) = record {
-                Some(pair.id.as_str())
+                Some(pair.id.as_slice())
             } else {
                 None
             }
@@ -198,7 +198,7 @@ fn two_peers_negotiate_gathered_sdp_without_trickled_candidates() {
         .collect();
     assert!(snapshot.records.iter().any(|record| {
         matches!(record, PeerStatsRecord::Transport(transport)
-            if transport.selected_candidate_pair_id.as_ref().is_some_and(|id| pairs.contains(&id.as_str())))
+            if transport.selected_candidate_pair_id.as_ref().is_some_and(|id| pairs.contains(&id.as_slice())))
     }));
     assert!(
         alice.request_stats().is_ok(),

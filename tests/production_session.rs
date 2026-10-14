@@ -1122,7 +1122,7 @@ fn migrated_actor_is_woken_for_real_reliable_channel_delivery() {
                 wait(&mut session);
             }
         }
-        assert_eq!(session.channel_label(outgoing).unwrap(), "actor");
+        assert_eq!(session.channel_label(outgoing).unwrap(), b"actor");
         assert_eq!(session.channel_configuration(outgoing).unwrap().id, Some(0));
         assert_eq!(
             session.channel_state(outgoing).unwrap(),

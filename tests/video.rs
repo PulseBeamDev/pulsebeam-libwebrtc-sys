@@ -2761,7 +2761,9 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
         .records
         .iter()
         .filter_map(|record| match record {
-            PeerStatsRecord::OutboundRtp(stats) if stats.kind.as_deref() == Some("video") => {
+            PeerStatsRecord::OutboundRtp(stats)
+                if stats.kind.as_deref() == Some(b"video".as_slice()) =>
+            {
                 Some((stats.rid.as_deref(), stats.ssrc, stats.packets_sent))
             }
             _ => None,
@@ -2772,7 +2774,7 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
             .iter()
             .filter_map(|(rid, _, _)| *rid)
             .collect::<std::collections::HashSet<_>>(),
-        std::collections::HashSet::from(["f", "h"]),
+        std::collections::HashSet::from([b"f".as_slice(), b"h".as_slice()]),
         "each simulcast RID needs an outbound stream: {outgoing:?}"
     );
     assert_eq!(
