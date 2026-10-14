@@ -46,6 +46,8 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/audio_frame_values.h",
         include_bytes!("../native/audio_frame_values.h"),
     ),
+    ("native/audio_processor.cc", include_bytes!("../native/audio_processor.cc")),
+    ("native/audio_processor.h", include_bytes!("../native/audio_processor.h")),
     (
         "native/certificate_generator.cc",
         include_bytes!("../native/certificate_generator.cc"),
