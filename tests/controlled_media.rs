@@ -276,10 +276,10 @@ impl Observations {
                         format!("connection:{state:?}")
                     }
                     PeerConnectionEvent::IceConnectionStateChanged(state) => {
-                        format!("ice-legacy:{state:?}")
+                        format!("ice-connection:{state:?}")
                     }
                     PeerConnectionEvent::StandardizedIceConnectionStateChanged(state) => {
-                        format!("ice-standardized:{state:?}")
+                        format!("standardized-ice-connection:{state:?}")
                     }
                     PeerConnectionEvent::SignalingStateChanged(state) => {
                         format!("signaling:{state:?}")
