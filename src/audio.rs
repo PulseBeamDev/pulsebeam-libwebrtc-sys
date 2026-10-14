@@ -420,6 +420,22 @@ impl AudioSource {
         }
     }
 
+    /// Actual native source state, including after the producer is closed.
+    pub fn state(&self) -> crate::AudioSourceState {
+        crate::AudioSourceState::from_native(ffi::audio_source_state(self.native()))
+    }
+    pub fn is_remote(&self) -> bool {
+        ffi::audio_source_remote(self.native())
+    }
+    /// Current native source options, not the effective shared engine config.
+    pub fn options(&self) -> crate::AudioSourceOptions {
+        crate::AudioSourceOptions::from_native(ffi::audio_source_options(self.native()))
+    }
+    /// Native source volume. The caller-fed source uses the SDK default 1.0.
+    pub fn volume(&self) -> f64 {
+        ffi::audio_source_volume(self.native())
+    }
+
     /// Read the native capture timeline without advancing time or pumping work.
     /// Custom non-controlled clocks have no established TimeMillis mapping.
     pub fn capture_time_now(&self) -> Result<std::time::Duration, AudioFrameError> {
@@ -896,6 +912,23 @@ impl AudioTrack {
         })
     }
 
+    pub fn kind(&self) -> String {
+        ffi::audio_track_kind(self.native())
+    }
+    pub fn state(&self) -> crate::AudioTrackState {
+        crate::AudioTrackState::from_native(ffi::audio_track_state(self.native()))
+    }
+    pub fn signal_level(&self) -> Option<i32> {
+        let value = ffi::audio_track_signal_level(self.native());
+        value.present.then_some(value.value)
+    }
+    pub fn volume(&self) -> f64 {
+        ffi::audio_track_volume(self.native())
+    }
+    pub fn status(&self) -> crate::AudioTrackStatus {
+        crate::AudioTrackStatus::from_native(ffi::audio_track_status(self.native()))
+            .expect("an owning audio track is present")
+    }
     pub fn id(&self) -> String {
         ffi::audio_track_id(self.native())
     }

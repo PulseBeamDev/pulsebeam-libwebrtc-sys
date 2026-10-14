@@ -2,6 +2,8 @@
 
 mod async_dns;
 mod audio;
+mod audio_source_options;
+pub use audio_source_options::{AudioProcessingMode, AudioSourceOptions, AudioSourceState, AudioTrackState, AudioTrackStatus};
 mod audio_processing;
 mod audio_processor_config;
 pub use audio_processor_config::{
@@ -3703,6 +3705,35 @@ mod ffi {
         decode_target_indications: Vec<u8>,
     }
 
+    struct FfiAudioTrackStatus {
+        present: bool,
+        id: String,
+        kind: String,
+        enabled: bool,
+        state: u8,
+        volume: f64,
+        signal_level: FfiOptionalI32,
+    }
+
+    struct FfiAudioSourceOptions {
+        echo_cancellation: i8,
+        echo_cancellation_mode: FfiOptionalI32,
+        auto_gain_control: i8,
+        auto_gain_control_mode: FfiOptionalI32,
+        noise_suppression: i8,
+        noise_suppression_mode: FfiOptionalI32,
+        highpass_filter: i8,
+        highpass_filter_mode: FfiOptionalI32,
+        stereo_swapping: i8,
+        audio_jitter_buffer_max_packets: FfiOptionalI32,
+        audio_jitter_buffer_fast_accelerate: i8,
+        audio_jitter_buffer_min_delay_ms: FfiOptionalI32,
+        audio_network_adaptor: i8,
+        has_adaptor_config: bool,
+        adaptor_config: Vec<u8>,
+        init_recording_on_send: i8,
+    }
+
     struct FfiReceivedAudioFrame {
         valid: bool,
         sample_rate_hz: u32,
@@ -7350,6 +7381,20 @@ mod ffi {
             source: &NativeAudioSource,
             id: &str,
         ) -> UniquePtr<NativeAudioTrack>;
+        fn audio_options_default() -> FfiAudioSourceOptions;
+        fn audio_options_equal(a: &FfiAudioSourceOptions, b: &FfiAudioSourceOptions) -> bool;
+        fn audio_options_set_all(value: &FfiAudioSourceOptions, changes: &FfiAudioSourceOptions) -> FfiAudioSourceOptions;
+        fn audio_options_description(value: &FfiAudioSourceOptions) -> String;
+        fn audio_source_options(source: &NativeAudioSource) -> FfiAudioSourceOptions;
+        fn audio_source_state(source: &NativeAudioSource) -> u8;
+        fn audio_source_remote(source: &NativeAudioSource) -> bool;
+        fn audio_source_volume(source: &NativeAudioSource) -> f64;
+        fn audio_track_status(track: &NativeAudioTrack) -> FfiAudioTrackStatus;
+        fn rtp_sender_audio_track_status(peer: &NativePeerConnection, sender: &NativeRtpSender) -> FfiAudioTrackStatus;
+        fn audio_track_state(track: &NativeAudioTrack) -> u8;
+        fn audio_track_signal_level(track: &NativeAudioTrack) -> FfiOptionalI32;
+        fn audio_track_volume(track: &NativeAudioTrack) -> f64;
+        fn audio_track_kind(track: &NativeAudioTrack) -> String;
         fn audio_track_id(track: &NativeAudioTrack) -> String;
         fn audio_track_enabled(track: &NativeAudioTrack) -> bool;
         fn audio_track_set_enabled(track: &NativeAudioTrack, enabled: bool) -> bool;

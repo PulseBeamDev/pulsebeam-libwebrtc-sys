@@ -51,6 +51,87 @@ class PcmCaptureScope {
   bool admitted_ = false;
 };
 thread_local std::vector<const void*> PcmCaptureScope::active_;
+std::optional<bool> ReadOptionBool(std::int8_t value) {
+  return value < 0 ? std::nullopt : std::optional<bool>(value != 0);
+}
+std::optional<int> ReadOptionInt(const FfiOptionalI32& value) {
+  return value.present ? std::optional<int>(value.value) : std::nullopt;
+}
+std::optional<webrtc::AudioProcessingMode> ReadOptionMode(const FfiOptionalI32& value) {
+  return value.present ? std::optional(static_cast<webrtc::AudioProcessingMode>(value.value))
+                       : std::nullopt;
+}
+template <typename T>
+FfiOptionalI32 WriteOptionInt(const std::optional<T>& value) {
+  FfiOptionalI32 out;
+  out.present = value.has_value();
+  out.value = value ? static_cast<std::int32_t>(*value) : 0;
+  return out;
+}
+webrtc::AudioOptions ReadAudioOptions(const FfiAudioSourceOptions& value) {
+  webrtc::AudioOptions out;
+  out.echo_cancellation = ReadOptionBool(value.echo_cancellation);
+  out.echo_cancellation_mode = ReadOptionMode(value.echo_cancellation_mode);
+  out.auto_gain_control = ReadOptionBool(value.auto_gain_control);
+  out.auto_gain_control_mode = ReadOptionMode(value.auto_gain_control_mode);
+  out.noise_suppression = ReadOptionBool(value.noise_suppression);
+  out.noise_suppression_mode = ReadOptionMode(value.noise_suppression_mode);
+  out.highpass_filter = ReadOptionBool(value.highpass_filter);
+  out.highpass_filter_mode = ReadOptionMode(value.highpass_filter_mode);
+  out.stereo_swapping = ReadOptionBool(value.stereo_swapping);
+  out.audio_jitter_buffer_max_packets = ReadOptionInt(value.audio_jitter_buffer_max_packets);
+  out.audio_jitter_buffer_fast_accelerate = ReadOptionBool(value.audio_jitter_buffer_fast_accelerate);
+  out.audio_jitter_buffer_min_delay_ms = ReadOptionInt(value.audio_jitter_buffer_min_delay_ms);
+  out.audio_network_adaptor = ReadOptionBool(value.audio_network_adaptor);
+  if (value.has_adaptor_config) {
+    out.audio_network_adaptor_config = std::string{};
+    if (!value.adaptor_config.empty()) {
+      out.audio_network_adaptor_config->assign(
+          reinterpret_cast<const char*>(value.adaptor_config.data()), value.adaptor_config.size());
+    }
+  }
+  out.init_recording_on_send = ReadOptionBool(value.init_recording_on_send);
+  return out;
+}
+FfiAudioSourceOptions WriteAudioOptions(const webrtc::AudioOptions& value) {
+  const auto boolean = [](std::optional<bool> v) -> std::int8_t {
+    return v ? static_cast<std::int8_t>(*v) : -1;
+  };
+  FfiAudioSourceOptions out;
+  out.echo_cancellation = boolean(value.echo_cancellation);
+  out.echo_cancellation_mode = WriteOptionInt(value.echo_cancellation_mode);
+  out.auto_gain_control = boolean(value.auto_gain_control);
+  out.auto_gain_control_mode = WriteOptionInt(value.auto_gain_control_mode);
+  out.noise_suppression = boolean(value.noise_suppression);
+  out.noise_suppression_mode = WriteOptionInt(value.noise_suppression_mode);
+  out.highpass_filter = boolean(value.highpass_filter);
+  out.highpass_filter_mode = WriteOptionInt(value.highpass_filter_mode);
+  out.stereo_swapping = boolean(value.stereo_swapping);
+  out.audio_jitter_buffer_max_packets = WriteOptionInt(value.audio_jitter_buffer_max_packets);
+  out.audio_jitter_buffer_fast_accelerate = boolean(value.audio_jitter_buffer_fast_accelerate);
+  out.audio_jitter_buffer_min_delay_ms = WriteOptionInt(value.audio_jitter_buffer_min_delay_ms);
+  out.audio_network_adaptor = boolean(value.audio_network_adaptor);
+  out.has_adaptor_config = value.audio_network_adaptor_config.has_value();
+  if (value.audio_network_adaptor_config) {
+    for (unsigned char byte : *value.audio_network_adaptor_config) out.adaptor_config.push_back(byte);
+  }
+  out.init_recording_on_send = boolean(value.init_recording_on_send);
+  return out;
+}
+
+FfiAudioTrackStatus ReadAudioTrackStatus(webrtc::AudioTrackInterface& track) {
+  FfiAudioTrackStatus out;
+  out.present = true;
+  out.id = rust::String(track.id());
+  out.kind = rust::String(track.kind());
+  out.enabled = track.enabled();
+  out.state = static_cast<std::uint8_t>(track.state());
+  out.volume = track.GetVolume();
+  int level = 0;
+  out.signal_level.present = track.GetSignalLevel(&level);
+  out.signal_level.value = level;
+  return out;
+}
 
 // Keep the sink list synchronized with synchronous source delivery. RemoveSink
 // cannot return until any in-flight OnData has finished using that sink.
@@ -706,6 +787,69 @@ std::unique_ptr<NativeAudioSink> audio_track_attach_sink(const NativeAudioTrack&
 }
 bool rtp_sender_set_audio_track(const NativeRtpSender& sender, const NativeAudioTrack& track) noexcept {
   return sender.sender()->SetTrack(track.state()->track.get());
+}
+FfiAudioSourceOptions audio_options_default() noexcept {
+  return WriteAudioOptions(webrtc::AudioOptions{});
+}
+bool audio_options_equal(const FfiAudioSourceOptions& a, const FfiAudioSourceOptions& b) noexcept {
+  return ReadAudioOptions(a) == ReadAudioOptions(b);
+}
+FfiAudioSourceOptions audio_options_set_all(const FfiAudioSourceOptions& value,
+                                          const FfiAudioSourceOptions& changes) noexcept {
+  auto options = ReadAudioOptions(value);
+  options.SetAll(ReadAudioOptions(changes));
+  return WriteAudioOptions(options);
+}
+rust::String audio_options_description(const FfiAudioSourceOptions& value) noexcept {
+  return rust::String(ReadAudioOptions(value).ToString());
+}
+FfiAudioSourceOptions audio_source_options(const NativeAudioSource& source) noexcept {
+  return source.state()->signaling_thread->BlockingCall([&] {
+    return WriteAudioOptions(source.state()->source->options());
+  });
+}
+std::uint8_t audio_source_state(const NativeAudioSource& source) noexcept {
+  return source.state()->signaling_thread->BlockingCall([&] {
+    return static_cast<std::uint8_t>(source.state()->source->state());
+  });
+}
+bool audio_source_remote(const NativeAudioSource& source) noexcept {
+  return source.state()->signaling_thread->BlockingCall([&] { return source.state()->source->remote(); });
+}
+double audio_source_volume(const NativeAudioSource& source) noexcept {
+  return source.state()->signaling_thread->BlockingCall([&] { return source.state()->source->GetVolume(); });
+}
+FfiAudioTrackStatus audio_track_status(const NativeAudioTrack& track) noexcept {
+  return track.state()->signaling_thread->BlockingCall([&] {
+    return ReadAudioTrackStatus(*track.state()->track);
+  });
+}
+FfiAudioTrackStatus rtp_sender_audio_track_status(const NativePeerConnection& peer,
+                                                const NativeRtpSender& sender) noexcept {
+  return peer.signaling_thread()->BlockingCall([&] {
+    auto track = sender.sender()->track();
+    if (!track || track->kind() != webrtc::MediaStreamTrackInterface::kAudioKind)
+      return FfiAudioTrackStatus{};
+    return ReadAudioTrackStatus(*static_cast<webrtc::AudioTrackInterface*>(track.get()));
+  });
+}
+std::uint8_t audio_track_state(const NativeAudioTrack& track) noexcept {
+  return static_cast<std::uint8_t>(track.state()->track->state());
+}
+FfiOptionalI32 audio_track_signal_level(const NativeAudioTrack& track) noexcept {
+  return track.state()->signaling_thread->BlockingCall([&] {
+    FfiOptionalI32 out;
+    int level = 0;
+    out.present = track.state()->track->GetSignalLevel(&level);
+    out.value = level;
+    return out;
+  });
+}
+double audio_track_volume(const NativeAudioTrack& track) noexcept {
+  return track.state()->signaling_thread->BlockingCall([&] { return track.state()->track->GetVolume(); });
+}
+rust::String audio_track_kind(const NativeAudioTrack& track) noexcept {
+  return track.state()->track->kind();
 }
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept {
   return track.state()->track->id();

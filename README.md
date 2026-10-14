@@ -298,6 +298,18 @@ source without rebuilding the sender; native renegotiation semantics remain
 unchanged. The production actor provides `pcm_capture_time_now`, `push_pcm_at`
 and `replace_audio_source` with the same contracts.
 
+`AudioSource::options` returns owning native `AudioSourceOptions`, including
+optional processing modes and binary ANA configuration bytes. `set_all` uses
+native merge semantics: absent changes leave fields unchanged, while explicit
+false, zero and empty configuration remain present. Editing this value does not
+apply it to an engine. The existing track processing request is narrower;
+source options and the factory's effective processing state are distinct.
+Source state/remoteness/volume and track state/kind/volume/signal-level queries
+read the native objects. Missing signal-level support remains `None`, not zero.
+`AudioTrack::status` and `RtpSender::audio_track_status` return owning snapshots;
+a detached sender has no audio-track snapshot. `ProductionSession` exposes the
+same source queries and installed-track snapshots by its owning identifiers.
+
 A receiver can select one decoded PCM sink or one encoded Opus sink
 before packets arrive. Audio sink close releases its reservation for reattachment
 or a mode change. Encoded close restores native decoding for future packets;

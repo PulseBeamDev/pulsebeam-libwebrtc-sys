@@ -172,6 +172,23 @@ fn replacing_one_opus_source_preserves_native_sender_and_unrelated_payloads() {
         for receiver in &call.audio_arrivals {
             session.attach_encoded_audio(*receiver).unwrap();
         }
+        for source in sources {
+            assert_eq!(
+                session.audio_source_state(source).unwrap(),
+                AudioSourceState::Live
+            );
+            assert!(!session.audio_source_is_remote(source).unwrap());
+            assert_eq!(session.audio_source_volume(source).unwrap(), 1.0);
+            assert_eq!(
+                session.audio_source_options(source).unwrap(),
+                AudioSourceOptions::default()
+            );
+        }
+        for sender in senders {
+            let status = session.audio_track_status(sender).unwrap().unwrap();
+            assert_eq!(status.kind, "audio");
+            assert_eq!(status.state, AudioTrackState::Live);
+        }
         let ssrcs = senders.map(|sender| session.sender_ssrc(sender).unwrap());
         assert_ne!(ssrcs[0], ssrcs[1]);
         for ((source, data), level) in sources
@@ -240,6 +257,10 @@ fn replacing_one_opus_source_preserves_native_sender_and_unrelated_payloads() {
         session
             .replace_audio_source(senders[0], Some(new_source), "new-opus")
             .unwrap();
+        assert_eq!(
+            session.audio_track_status(senders[0]).unwrap().unwrap().id,
+            "new-opus"
+        );
         session.close_source(sources[0]).unwrap();
         assert!(
             session
@@ -314,6 +335,7 @@ fn replacing_one_opus_source_preserves_native_sender_and_unrelated_payloads() {
         session
             .replace_audio_source(senders[0], None, "unused")
             .unwrap();
+        assert_eq!(session.audio_track_status(senders[0]).unwrap(), None);
         session
             .replace_audio_source(senders[0], Some(new_source), "reattached-opus")
             .unwrap();
@@ -474,6 +496,14 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session
             .replace_audio_source(audio_sender, Some(replacement_pcm), "replacement-pcm")
             .unwrap();
+        assert_eq!(
+            session
+                .audio_track_status(audio_sender)
+                .unwrap()
+                .unwrap()
+                .id,
+            "replacement-pcm"
+        );
         let replacement_samples = (0..441)
             .map(|index| {
                 if index * 3000 / 44100 % 2 == 0 {

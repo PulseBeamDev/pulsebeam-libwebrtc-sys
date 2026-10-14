@@ -125,6 +125,13 @@ enum Source {
     Video(EncodedVideoSource),
 }
 impl Source {
+    fn audio_source(&self) -> Result<&crate::AudioSource, PeerError> {
+        match self {
+            Self::Pcm(source) => Ok(source),
+            Self::Opus(source) => Ok(source.source()),
+            _ => Err(missing()),
+        }
+    }
     fn close(&mut self) -> Result<(), PeerError> {
         match self {
             Self::Pcm(source) => source
@@ -1811,6 +1818,63 @@ impl ProductionSession {
         let source = self.factory.create_video_source()?;
         self.sources.insert(id, Source::RawVideo(source));
         Ok(id)
+    }
+
+    /// Actual native options on an owned PCM or encoded-Opus source.
+    pub fn audio_source_options(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<crate::AudioSourceOptions, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .options())
+    }
+    pub fn audio_source_state(
+        &mut self,
+        source: SessionSourceId,
+    ) -> Result<crate::AudioSourceState, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .state())
+    }
+    pub fn audio_source_is_remote(&mut self, source: SessionSourceId) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .is_remote())
+    }
+    pub fn audio_source_volume(&mut self, source: SessionSourceId) -> Result<f64, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?
+            .volume())
+    }
+    /// Inspect the actual native sender track, not the retained source map.
+    pub fn audio_track_status(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<Option<crate::AudioTrackStatus>, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .audio_track_status())
     }
 
     /// Read the native PCM capture timeline without pumping engine work.
