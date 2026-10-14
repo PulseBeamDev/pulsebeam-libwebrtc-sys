@@ -4,11 +4,23 @@ Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_inter
 
 ## Selection and actor access
 
-`PeerConnectionFactory::builder().event_logging(true)` selects the bundled native event-log factory for new peers. Logging is opt-in and does not create a file or start an output by itself. `event_log_factory(provider)` instead selects a caller-defined `RtcEventLogFactory`; it takes precedence over the built-in boolean. The factory is retained independently of the builder and can be invoked for multiple peers. Its `create` receives an owned native environment view and returns an owned logger. Native factory creation requires a non-null logger. A panicking Rust factory is contained and replaced with the native no-op logger, which rejects output start.
+`PeerConnectionFactory::builder().event_logging(true)` selects the bundled native event-log factory for new peers. Logging is opt-in and does not create a file or start an output by itself. `event_log_factory(provider)` instead selects a caller-defined `RtcEventLogFactory`; it takes precedence over the built-in boolean. The factory is retained independently of the builder and can be invoked for multiple peers. Its `create` receives an owned native environment view and returns an owned logger. Native factory creation requires a non-null logger. A panicking Rust factory is contained and leaves a rejecting native adapter, never a stock replacement.
 
 `Environment::builder().event_log(logger)` installs a caller-defined logger in the native owning environment leaf. Native environment copies retain that leaf. A peer-specific factory can supersede this logger through the pinned native environment composition semantics. Without a peer-specific factory, the environment logger can be shared by multiple peers; output coordination belongs to the supplied logger, not a fabricated binding-level per-peer logger.
 
 `ProductionSession::builder(config)` accepts `environment_event_log`, `event_log_factory`, and the built-in `event_logging` selection without importing local handles. `start_peer_event_log` consumes an owned output and accepts either the native default period or an explicit period. `stop_peer_event_log` waits for native output shutdown. The corresponding local peer operations are `start_event_log` and `stop_event_log`. These operations marshal through the peer's native roles and can be used after moving the production actor.
+
+## Standalone factories and products
+
+`RtcEventLogFactoryHandle::builtin()` explicitly selects the pinned stock factory; `from_provider` owns a custom registration. `create(&environment)` invokes the selected native factory with that exact environment and returns a sequence-bound `RtcEventLogHandle`. The product does not borrow the factory, and retains native dependencies and Rust-only leases through final retirement. Custom factory panics latch `has_failed` and return `ProviderFailed` rather than a successful substitute product.
+
+Local and production builders accept `event_log_factory_handle`. Explicit builtin selection replaces a prior custom selection and vice versa. A handle registration may outlive its builder and may be used by multiple peers, including after production actor migration.
+
+Standalone `start`, `log`, `stop`, `stop_async` and `close` require exclusive owner access. `log` consumes the original native event; success forwards the native void operation and is not an output-delivery receipt. `start` consumes output even on rejection. Native output rejection remains `NativeRejected`; custom callback panic is `ProviderFailed`. The stock factory's kill switch can produce its actual no-op logger, whose start rejects.
+
+`stop_async` returns a runtime-neutral, move-only Send completion supporting `try_take` and `Future`. Calls reject with `StopPending` until native completion. Dropping the observer does not cancel admitted output shutdown. A callback completed during provider unwinding is reported only after the failure is latched, never as fabricated successful output release. Completion success follows the native output-release callback. After completion, the same owner can start another output. Close is idempotent and rejects subsequent operations.
+
+Stock products reserve production before native queue creation and reject cooperative execution or coexistence with an active controlled world. Production final release may join pending output shutdown, as the SDK destructor does; it never destroys a stock logger on its own output queue. Custom controlled products with a pending async stop retain the logger and environment until caller completion rather than waiting, driving a clock, or creating an executor. Providers must eventually release output and complete or drop their stop token.
 
 ## Outputs and values
 
@@ -52,4 +64,4 @@ Linux packages default to protobuf enabled. Build with `PULSEBEAM_WEBRTC_PROTOBU
 
 ## API boundary
 
-Native logger factory creation is currently available through peer installation, not a standalone owning factory/product handle. Use the selected peer's start/stop operations and owned output. Provider environment views expose bound environment observations; standalone native clock, queue-factory and event-log utility products are not exposed by these views.
+Standalone factory creation requires known task-queue execution semantics. An SDK environment view lacking identity-matched queue metadata returns `UnqualifiedEnvironment`, not a claim that unknown queues are threaded. Provider environment views expose bound environment observations; native clock, queue-factory and event-log utility products are not yet exposed by these views.

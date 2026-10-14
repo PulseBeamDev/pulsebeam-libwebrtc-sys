@@ -717,10 +717,15 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    pub(crate) fn shared_event_log_factory(
-        mut self,
-        factory: std::sync::Arc<dyn crate::RtcEventLogFactory>,
-    ) -> Self {
+    /// Select the same owning factory registration used for standalone logs.
+    /// An explicit builtin replaces a prior custom registration, and vice versa.
+    pub fn event_log_factory_handle(mut self, factory: &crate::RtcEventLogFactoryHandle) -> Self {
+        self.event_log_factory = factory.registration();
+        self.event_logging = self.event_log_factory.is_none();
+        self
+    }
+
+    pub(crate) fn shared_event_log_factory(mut self, factory: std::sync::Arc<dyn crate::RtcEventLogFactory>) -> Self {
         self.event_log_factory = Some(factory);
         self
     }

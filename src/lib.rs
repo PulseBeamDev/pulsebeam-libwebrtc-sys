@@ -633,12 +633,15 @@ pub use event_log::{
     RtcEventLogger,
 };
 pub use event_log::{EventLogError, EventLogOutput, EventLogOutputPeriod, EventLogOutputSink};
+mod event_log_product;
+pub use event_log_product::{RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation};
+pub(crate) use event_log_product::{RustEventLogRetention, RustEventLogProductStop, event_log_product_stopped};
 pub(crate) use event_log::{
     RustEventLogOutput, event_log_output_active, event_log_output_flush, event_log_output_write,
 };
 pub(crate) use event_log::{
     RustRtcEventLog, RustRtcEventLogFactory, rust_event_log_create, rust_event_log_log,
-    rust_event_log_present, rust_event_log_start, rust_event_log_stop, rust_event_log_stop_async,
+    rust_event_log_failed, rust_event_log_present, rust_event_log_start, rust_event_log_stop, rust_event_log_stop_async,
 };
 pub(crate) use execution::{RustTask, run_task};
 pub use field_trials::{FieldTrials, FieldTrialsError, FieldTrialsSnapshot, FieldTrialsView};
@@ -3597,6 +3600,9 @@ mod ffi {
             address: &[u8],
             name: &[u8],
         ) -> i32;
+        type RustEventLogRetention;
+        type RustEventLogProductStop;
+        fn event_log_product_stopped(completion: &RustEventLogProductStop, failed: bool);
         type RustRtcEventLogFactory;
         type RustRtcEventLog;
         fn rust_event_log_create(
@@ -3604,6 +3610,7 @@ mod ffi {
             environment: UniquePtr<NativeEnvironment>,
         ) -> Box<RustRtcEventLog>;
         fn rust_event_log_present(logger: &RustRtcEventLog) -> bool;
+        fn rust_event_log_failed(logger: &RustRtcEventLog) -> bool;
         fn rust_event_log_start(
             logger: &RustRtcEventLog,
             output: UniquePtr<NativeEventLogOutput>,
@@ -5158,6 +5165,19 @@ mod ffi {
         fn new_rtc_event_log_factory(
             factory: Box<RustRtcEventLogFactory>,
         ) -> UniquePtr<NativeRtcEventLogFactory>;
+        type NativeRtcEventLogProduct;
+        fn event_log_product_create(
+            factory: UniquePtr<NativeRtcEventLogFactory>, environment: &NativeEnvironment,
+            retention: Box<RustEventLogRetention>, controlled: bool, error: &mut u8,
+        ) -> UniquePtr<NativeRtcEventLogProduct>;
+        fn event_log_product_start(log: Pin<&mut NativeRtcEventLogProduct>,
+            output: UniquePtr<NativeEventLogOutput>, period_ms: i64) -> u8;
+        fn event_log_product_log(log: Pin<&mut NativeRtcEventLogProduct>,
+            event: UniquePtr<NativeRtcEvent>) -> u8;
+        fn event_log_product_stop(log: Pin<&mut NativeRtcEventLogProduct>) -> u8;
+        fn event_log_product_stop_async(log: Pin<&mut NativeRtcEventLogProduct>,
+            completion: Box<RustEventLogProductStop>) -> u8;
+        fn event_log_product_close(log: Pin<&mut NativeRtcEventLogProduct>);
         type NativeEventLogOutput;
         fn event_log_output_native_active(output: &NativeEventLogOutput) -> bool;
         fn event_log_output_native_write(

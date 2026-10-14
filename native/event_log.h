@@ -27,6 +27,7 @@ class NativeRtcEvent final {
   explicit NativeRtcEvent(std::unique_ptr<webrtc::RtcEvent> event) noexcept;
   ~NativeRtcEvent();
   const webrtc::RtcEvent& event() const noexcept;
+  std::unique_ptr<webrtc::RtcEvent> Take() noexcept;
  private:
   std::unique_ptr<webrtc::RtcEvent> event_;
 };
@@ -63,8 +64,33 @@ class NativeRtcEventLogFactory final {
 };
 std::unique_ptr<NativeRtcEventLogFactory> new_rtc_event_log_factory(rust::Box<RustRtcEventLogFactory> factory) noexcept;
 
+struct RustEventLogRetention;
+struct RustEventLogProductStop;
+class NativeRtcEventLogProduct final {
+ public:
+  struct State;
+  explicit NativeRtcEventLogProduct(std::shared_ptr<State> state) noexcept;
+  ~NativeRtcEventLogProduct();
+  const std::shared_ptr<State>& state() const noexcept;
+ private:
+  std::shared_ptr<State> state_;
+};
+std::unique_ptr<NativeRtcEventLogProduct> event_log_product_create(
+    std::unique_ptr<NativeRtcEventLogFactory> factory, const NativeEnvironment& environment,
+    rust::Box<RustEventLogRetention> retention, bool controlled, std::uint8_t& error) noexcept;
+std::uint8_t event_log_product_start(NativeRtcEventLogProduct& log,
+    std::unique_ptr<NativeEventLogOutput> output, std::int64_t period_ms) noexcept;
+std::uint8_t event_log_product_log(NativeRtcEventLogProduct& log,
+    std::unique_ptr<NativeRtcEvent> event) noexcept;
+std::uint8_t event_log_product_stop(NativeRtcEventLogProduct& log) noexcept;
+std::uint8_t event_log_product_stop_async(NativeRtcEventLogProduct& log,
+    rust::Box<RustEventLogProductStop> completion) noexcept;
+void event_log_product_close(NativeRtcEventLogProduct& log) noexcept;
+
 // Environment's leaf takes ownership of the custom logger; it does not borrow
 // Rust registration storage or require access to the application actor.
 std::unique_ptr<webrtc::RtcEventLog> rtc_event_log_adapter(rust::Box<RustRtcEventLog> logger) noexcept;
+// Only products of this bridge's custom factory/adapter may be queried here.
+bool rtc_event_log_adapter_failed(const webrtc::RtcEventLog& logger) noexcept;
 std::unique_ptr<NativeEnvironment> rtc_event_log_factory_environment(const webrtc::Environment& environment) noexcept;
 }  // namespace pulsebeam::webrtc_sys

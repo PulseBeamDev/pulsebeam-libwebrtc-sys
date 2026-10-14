@@ -66,6 +66,11 @@ pub enum EventLogError {
     InactiveOutput,
     NativeRejected,
     Closed,
+    StopPending,
+    WrongSequence,
+    UnsupportedControlledLogger,
+    UnqualifiedEnvironment,
+    ProviderFailed,
 }
 
 impl fmt::Display for EventLogError {
@@ -83,7 +88,12 @@ impl fmt::Display for EventLogError {
             Self::IncompleteEventData => "this event snapshot requires additional constructor inputs",
             Self::InactiveOutput => "event-log output is inactive or could not be opened",
             Self::NativeRejected => "native event logger rejected the output",
-            Self::Closed => "peer or session is closed",
+            Self::Closed => "peer, session or logger is closed",
+            Self::StopPending => "native event-log stop has not completed",
+            Self::WrongSequence => "event-log operation requires its creator sequence",
+            Self::UnsupportedControlledLogger => "the stock event logger cannot stop on cooperative queues",
+            Self::UnqualifiedEnvironment => "event-log creation requires known task-queue execution semantics",
+            Self::ProviderFailed => "the selected event-log factory failed",
         })
     }
 }
@@ -219,12 +229,9 @@ unsafe impl Send for RtcEvent {}
 unsafe impl Sync for RtcEvent {}
 
 impl RtcEvent {
-    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self {
-        Self { native }
-    }
-    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent {
-        self.native.as_ref().expect("owned native event")
-    }
+    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self { Self { native } }
+    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent { self.native.as_ref().expect("owned native event") }
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeRtcEvent> { self.native }
 
     /// Use the pinned concrete class's public `Copy` or copy constructor,
     /// preserving native ownership. Begin/end and unknown event classes have
@@ -368,8 +375,8 @@ pub trait RtcEventLogger: Send + Sync + 'static {
 /// Factory called on the native worker sequence for each new peer. Concurrent
 /// factories/peers may invoke it concurrently; registration and logger ownership
 /// are independent of the Rust builder's lifetime. Native creation requires a
-/// non-null result. A factory panic is contained and supplies the native no-op
-/// logger, whose start operation rejects logging. An owned environment view may
+/// non-null result. A factory panic is contained and supplies a rejecting
+/// native adapter, never a stock replacement. An owned environment view may
 /// be retained; construction must not reenter the actor or require owner work.
 pub trait RtcEventLogFactory: Send + Sync + 'static {
     fn create(&self, environment: EventLogEnvironment) -> Box<dyn RtcEventLogger>;
@@ -412,7 +419,7 @@ impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
 // A panic payload may itself have an untrusted destructor. Do not drop such
 // a payload after catching it at an ABI boundary. Standard string payloads
 // have known non-panicking destructors and can be released normally.
-fn catch_provider<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
+pub(crate) fn catch_provider<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
     match std::panic::catch_unwind(AssertUnwindSafe(call)) {
         Ok(value) => Ok(value),
         Err(payload) => {
@@ -453,9 +460,11 @@ impl Drop for RustRtcEventLog {
 pub(crate) fn rust_event_log_create(factory: &RustRtcEventLogFactory, environment: cxx::UniquePtr<ffi::NativeEnvironment>) -> Box<RustRtcEventLog> {
     let environment = EventLogEnvironment::from_native(environment, Some(&factory.1));
     let logger = catch_provider(|| factory.0.as_ref().map(|factory| factory.create(environment.clone()))).ok().flatten();
-    Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(false), _environment: Some(environment) })
+    let failed = logger.is_none();
+    Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(failed), _environment: Some(environment) })
 }
 pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool { logger.logger.is_some() }
+pub(crate) fn rust_event_log_failed(logger: &RustRtcEventLog) -> bool { logger.failed.load(Ordering::Acquire) }
 pub(crate) fn rust_event_log_start(logger: &RustRtcEventLog, output: cxx::UniquePtr<ffi::NativeEventLogOutput>, period_ms: i64) -> bool {
     if logger.failed.load(Ordering::Acquire) || period_ms < 0 { return false; }
     let period = if period_ms == 0 { EventLogOutputPeriod::Immediate } else { EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64)) };

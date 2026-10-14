@@ -1,7 +1,12 @@
 #include "pulsebeam-webrtc-sys/native/event_log.h"
 
+#include <condition_variable>
+#include <mutex>
 #include <span>
+#include <thread>
 #include <utility>
+
+#include "api/rtc_event_log/rtc_event_log_factory.h"
 
 #include "api/units/timestamp.h"
 #include "logging/rtc_event_log/events/rtc_event_begin_log.h"
@@ -48,6 +53,7 @@ class RustRtcEventLogAdapter final : public webrtc::RtcEventLog {
  public:
   explicit RustRtcEventLogAdapter(rust::Box<RustRtcEventLog> logger)
       : logger_(std::make_shared<rust::Box<RustRtcEventLog>>(std::move(logger))) {}
+  bool Failed() const { return rust_event_log_failed(**logger_); }
   bool StartLogging(std::unique_ptr<webrtc::RtcEventLogOutput> output,
                     std::int64_t period_ms) override {
     auto logger = logger_;
@@ -79,7 +85,8 @@ class RustRtcEventLogFactoryAdapter final : public webrtc::RtcEventLogFactoryInt
       : factory_(std::move(factory)) {}
   std::unique_ptr<webrtc::RtcEventLog> Create(const webrtc::Environment& environment) const override {
     auto logger = rust_event_log_create(**factory_, rtc_event_log_factory_environment(environment));
-    if (!rust_event_log_present(*logger)) return std::make_unique<webrtc::RtcEventLogNull>();
+    // Keep a rejecting adapter after factory failure, never a stock product.
+    // This also preserves the custom product's failure diagnostic.
     return rtc_event_log_adapter(std::move(logger));
   }
  private:
@@ -91,6 +98,7 @@ NativeRtcEvent::NativeRtcEvent(std::unique_ptr<webrtc::RtcEvent> event) noexcept
     : event_(std::move(event)) {}
 NativeRtcEvent::~NativeRtcEvent() = default;
 const webrtc::RtcEvent& NativeRtcEvent::event() const noexcept { return *event_; }
+std::unique_ptr<webrtc::RtcEvent> NativeRtcEvent::Take() noexcept { return std::move(event_); }
 namespace {
 rust::Vec<std::uint8_t> EventBytes(std::span<const std::uint8_t> bytes) {
   rust::Vec<std::uint8_t> result;
@@ -699,5 +707,142 @@ std::unique_ptr<NativeRtcEventLogFactory> new_rtc_event_log_factory(rust::Box<Ru
 }
 std::unique_ptr<webrtc::RtcEventLog> rtc_event_log_adapter(rust::Box<RustRtcEventLog> logger) noexcept {
   return std::make_unique<RustRtcEventLogAdapter>(std::move(logger));
+}
+bool rtc_event_log_adapter_failed(const webrtc::RtcEventLog& logger) noexcept {
+  return static_cast<const RustRtcEventLogAdapter&>(logger).Failed();
+}
+// The Rust owner is sequence-bound and exposes exclusive operations. Only
+// async-stop completion races with it. No bridge lock spans provider work.
+struct NativeRtcEventLogProduct::State {
+  State(std::unique_ptr<NativeProductionLease> production,
+        rust::Box<RustEventLogRetention> retained,
+        std::unique_ptr<webrtc::RtcEventLog> product, bool stock)
+      : production_lease(std::move(production)), retention(std::move(retained)),
+        logger(std::move(product)), builtin(stock) {}
+  // Released last, after native logging queues and Rust provider dependencies.
+  std::unique_ptr<NativeProductionLease> production_lease;
+  rust::Box<RustEventLogRetention> retention;
+  std::unique_ptr<webrtc::RtcEventLog> logger;
+  const bool builtin;
+  const std::thread::id creator = std::this_thread::get_id();
+  std::mutex mutex;
+  std::condition_variable stopped;
+  bool closed = false;
+  bool pending = false;
+  bool started = false;
+
+  std::uint8_t Check() {
+    std::lock_guard lock(mutex);
+    if (closed) return 1;
+    if (creator != std::this_thread::get_id()) return 3;
+    return pending ? 2 : 0;
+  }
+};
+NativeRtcEventLogProduct::NativeRtcEventLogProduct(std::shared_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeRtcEventLogProduct::~NativeRtcEventLogProduct() { event_log_product_close(*this); }
+const std::shared_ptr<NativeRtcEventLogProduct::State>& NativeRtcEventLogProduct::state() const noexcept {
+  return state_;
+}
+std::unique_ptr<NativeRtcEventLogProduct> event_log_product_create(
+    std::unique_ptr<NativeRtcEventLogFactory> factory, const NativeEnvironment& environment,
+    rust::Box<RustEventLogRetention> retention, bool controlled, std::uint8_t& error) noexcept {
+  error = 4;
+  const bool builtin = !factory;
+  std::unique_ptr<NativeProductionLease> production;
+  if (builtin) {
+    if (controlled) { error = 6; return nullptr; }
+    production = new_production_lease();
+    if (!production) { error = 6; return nullptr; }
+  }
+  auto adapter = factory ? factory->CreateAdapter() : std::make_unique<webrtc::RtcEventLogFactory>();
+  auto logger = adapter->Create(environment.environment());
+  if (!logger) return nullptr;
+  if (!builtin && rtc_event_log_adapter_failed(*logger)) { error = 7; return nullptr; }
+  error = 0;
+  return std::make_unique<NativeRtcEventLogProduct>(
+      std::make_shared<NativeRtcEventLogProduct::State>(std::move(production),
+          std::move(retention), std::move(logger), builtin));
+}
+std::uint8_t event_log_product_start(NativeRtcEventLogProduct& log,
+    std::unique_ptr<NativeEventLogOutput> output, std::int64_t period_ms) noexcept {
+  const auto state = log.state();
+  if (const auto error = state->Check()) return error;
+  if (!output || period_ms < 0) return 4;
+  const bool started = state->logger->StartLogging(output->Take(), period_ms);
+  if (started) { std::lock_guard lock(state->mutex); state->started = true; }
+  if (!state->builtin && rtc_event_log_adapter_failed(*state->logger)) return 7;
+  return started ? 0 : 4;
+}
+std::uint8_t event_log_product_log(NativeRtcEventLogProduct& log,
+    std::unique_ptr<NativeRtcEvent> event) noexcept {
+  const auto state = log.state();
+  if (const auto error = state->Check()) return error;
+  if (!event) return 4;
+  state->logger->Log(event->Take());
+  return !state->builtin && rtc_event_log_adapter_failed(*state->logger) ? 7 : 0;
+}
+std::uint8_t event_log_product_stop(NativeRtcEventLogProduct& log) noexcept {
+  const auto state = log.state();
+  if (const auto error = state->Check()) return error;
+  state->logger->StopLogging();
+  { std::lock_guard lock(state->mutex); state->started = false; }
+  return !state->builtin && rtc_event_log_adapter_failed(*state->logger) ? 7 : 0;
+}
+std::uint8_t event_log_product_stop_async(NativeRtcEventLogProduct& log,
+    rust::Box<RustEventLogProductStop> completion) noexcept {
+  const auto state = log.state();
+  if (const auto error = state->Check()) return error;
+  { std::lock_guard lock(state->mutex); state->pending = true; }
+  auto notify = std::make_shared<rust::Box<RustEventLogProductStop>>(std::move(completion));
+  auto finish = [state, notify] {
+    const bool failed = !state->builtin && rtc_event_log_adapter_failed(*state->logger);
+    std::unique_ptr<webrtc::RtcEventLog> retired;
+    {
+      std::lock_guard lock(state->mutex);
+      state->pending = false;
+      state->started = false;
+      // Rust custom adapters have no native destruction affinity. Their own
+      // callback frame retains the Rust registration through callback return.
+      if (state->closed && !state->builtin) retired = std::move(state->logger);
+    }
+    retired.reset();
+    state->stopped.notify_all();
+    event_log_product_stopped(**notify, failed);
+  };
+  struct Gate { std::mutex mutex; bool returned = false; bool completed = false; };
+  auto gate = std::make_shared<Gate>();
+  state->logger->StopLogging([gate, finish] {
+    bool run;
+    { std::lock_guard lock(gate->mutex); gate->completed = true; run = gate->returned; }
+    if (run) finish();
+  });
+  // A completion token can be dropped during a Rust provider panic. Defer
+  // synchronous notification until the ABI callback has latched that failure.
+  bool run;
+  { std::lock_guard lock(gate->mutex); gate->returned = true; run = gate->completed; }
+  if (run) finish();
+  return 0;
+}
+void event_log_product_close(NativeRtcEventLogProduct& log) noexcept {
+  const auto state = log.state();
+  bool started;
+  {
+    std::unique_lock lock(state->mutex);
+    if (state->closed) return;
+    state->closed = true;
+    if (state->pending && !state->builtin) {
+      // Completion owns state and the logger until output retirement. Do not
+      // wait for caller-controlled work or manufacture an executor here.
+      return;
+    }
+    // Stock products are never admitted on cooperative execution. Their native
+    // destructor already joins the output queue. Keep it on the owner sequence,
+    // never on that output queue's own completion callback.
+    state->stopped.wait(lock, [&] { return !state->pending; });
+    started = state->started;
+  }
+  if (started) state->logger->StopLogging();
+  state->logger.reset();
 }
 }  // namespace pulsebeam::webrtc_sys

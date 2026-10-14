@@ -645,6 +645,12 @@ impl ProductionSessionBuilder {
         self
     }
 
+    pub fn event_log_factory_handle(mut self, factory: &crate::RtcEventLogFactoryHandle) -> Self {
+        self.event_log_factory = factory.registration();
+        self.event_logging = self.event_log_factory.is_none();
+        self
+    }
+
     pub fn field_trials(mut self, view: impl crate::FieldTrialsView) -> Self {
         self.field_trials = Some(Arc::new(view));
         self

@@ -450,6 +450,10 @@ impl Environment {
         self.clock_bounds
     }
 
+    pub(crate) fn cooperative_queues(&self) -> Option<bool> {
+        self._task_queue_factory.as_ref().map(TaskQueueFactory::is_cooperative)
+    }
+
     pub(crate) fn uses_system_clock(&self) -> bool {
         self._clock.is_none() && !self._custom_clock
     }
