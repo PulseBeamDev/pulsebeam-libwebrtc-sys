@@ -1738,18 +1738,41 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
     source
         .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
         .unwrap();
+    // The pinned SDK's startup utilization factor is 1.2 for this one-frame
+    // encoder. SetRates receives the adjusted allocation, not the allocator's
+    // input echo: 123456 / 1.2 = 102880. Sparse zero/unset cells stay distinct.
     let observed = (0..2_000_000).any(|_| {
         pair.progress();
         counters.encode.load(Ordering::SeqCst) > 0
             && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
-                rates.layer_bitrates_bps[0][0] == Some(123_456)
+                rates.bitrate_bps == 102_880
+                    && rates.bandwidth_bps >= 123_456
+                    && rates.layer_bitrates_bps[0][0] == Some(102_880)
                     && rates.layer_bitrates_bps[0][1] == Some(0)
                     && rates.layer_bitrates_bps[0][2].is_none()
             })
     });
     assert!(
         observed,
-        "native encoder did not consume the custom sparse allocation"
+        "native encoder did not consume the custom sparse allocation: encodes={}, creates={}, recent_rates={:?}, allocator_parameters={:?}",
+        counters.encode.load(Ordering::SeqCst),
+        counters.encoder_create.load(Ordering::SeqCst),
+        counters
+            .encoder_rates
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>(),
+        observations
+            .parameters
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
     );
     assert!(!registration.failed());
     let codecs = observations.codecs.lock().unwrap();
