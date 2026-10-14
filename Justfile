@@ -710,7 +710,7 @@ _cpp-smoke flavor target kit:
     library="$kit_native/lib/libwebrtc.a"; program=smoke
     # Only the Rust-linked companion may consume adapter/CXX-owned values.
     if test -n "${PULSEBEAM_WEBRTC_CONSUMER_STATICLIB:-}"; then
-      sources=("$root_native/consumer/bridge_smoke.cc" "$root_native/consumer/transformable_frame.cc")
+      sources=("$root_native/consumer/bridge_smoke.cc" "$root_native/consumer/transformable_frame.cc" "$root_native/consumer/audio_sink_queue.cc")
       library=$(just --justfile "{{ root }}/Justfile" _native-path "$PULSEBEAM_WEBRTC_CONSUMER_STATICLIB"); program=bridge-smoke
       case "{{ target }}" in linux-*) link+=(-lutil);; macos-*|ios-*) link+=(-liconv);; windows-*) link+=(userenv.lib ntdll.lib);; esac
     fi

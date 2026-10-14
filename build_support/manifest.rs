@@ -35,6 +35,10 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("native/audio.cc", include_bytes!("../native/audio.cc")),
     ("native/audio.h", include_bytes!("../native/audio.h")),
     (
+        "native/audio_sink_queue.h",
+        include_bytes!("../native/audio_sink_queue.h"),
+    ),
+    (
         "native/frame_callback_slot.h",
         include_bytes!("../native/frame_callback_slot.h"),
     ),
@@ -293,7 +297,6 @@ fn native_adapter_digest() -> String {
         Sha256::digest(serde_json::to_vec(&inventory).unwrap())
     )
 }
-
 pub(crate) const SUPPORTED_CARGO_TARGETS: [&str; 9] = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",

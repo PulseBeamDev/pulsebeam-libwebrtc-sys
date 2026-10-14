@@ -289,7 +289,9 @@ admission also protects the reached signed capture-difference arithmetic on
 native sender resume. Native packetization and playout keep their own timing
 semantics; successful source delivery is not an encode or wire acknowledgement.
 `AudioTrack::attach_sink` exposes an owning local PCM queue with exact samples,
-rate, channel geometry and optional capture milliseconds. It does not expose the
+rate, channel geometry and optional capture milliseconds. Its collector implements
+both native callback overloads: legacy callbacks have no capture timestamp;
+timestamped callbacks preserve the full optional signed millisecond value. It does not expose the
 encoded adapter's private carrier as PCM. `DecodedAudioFrame::capture_time_ms`
 preserves the full native optional signed value; `capture_time_us` is a checked
 projection and can be absent when that unit cannot represent it. Zero remains
