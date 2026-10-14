@@ -1617,13 +1617,28 @@ pub struct PeerConnection {
     next_operation_id: Cell<u64>,
 }
 
+pub(crate) struct SenderTrackLease<T> {
+    // Keep the actual SDK sender alive so its address cannot be reused as a
+    // key while this lease remains cached. No Rust peer edge creates a cycle.
+    _sender: cxx::UniquePtr<ffi::NativeRtpSender>,
+    pub(crate) track: T,
+}
+impl<T> SenderTrackLease<T> {
+    pub(crate) fn new(sender: &RtpSender, track: T) -> Self {
+        Self {
+            _sender: ffi::rtp_sender_copy(sender.native()),
+            track,
+        }
+    }
+}
+
 pub(crate) struct PeerInner {
     native: cxx::UniquePtr<ffi::NativePeerConnection>,
     pub(crate) _factory: Rc<FactoryInner>,
     pub(crate) controlled_id: Option<u64>,
     pub(crate) closed: Cell<bool>,
-    pub(crate) sender_tracks: RefCell<HashMap<String, VideoTrack>>,
-    pub(crate) audio_sender_tracks: RefCell<HashMap<String, AudioTrack>>,
+    pub(crate) sender_tracks: RefCell<HashMap<usize, SenderTrackLease<VideoTrack>>>,
+    pub(crate) audio_sender_tracks: RefCell<HashMap<usize, SenderTrackLease<AudioTrack>>>,
     pub(crate) sender_observers:
         RefCell<HashMap<usize, std::rc::Weak<crate::rtp_observers::SenderObserverInner>>>,
     pub(crate) receiver_observers:
@@ -1917,10 +1932,11 @@ impl PeerConnection {
             })
         } else {
             let transceiver = RtpTransceiver::from_native(native, self.inner.clone());
-            self.inner
-                .sender_tracks
-                .borrow_mut()
-                .insert(transceiver.sender().id(), track.clone());
+            let sender = transceiver.sender();
+            self.inner.sender_tracks.borrow_mut().insert(
+                sender.resource_key(),
+                SenderTrackLease::new(&sender, track.clone()),
+            );
             Ok(transceiver)
         }
     }
@@ -1967,10 +1983,11 @@ impl PeerConnection {
             })
         } else {
             let transceiver = RtpTransceiver::from_native(native, self.inner.clone());
-            self.inner
-                .audio_sender_tracks
-                .borrow_mut()
-                .insert(transceiver.sender().id(), track.clone());
+            let sender = transceiver.sender();
+            self.inner.audio_sender_tracks.borrow_mut().insert(
+                sender.resource_key(),
+                SenderTrackLease::new(&sender, track.clone()),
+            );
             Ok(transceiver)
         }
     }
@@ -1990,11 +2007,14 @@ impl PeerConnection {
             &mut error_type,
             &mut message,
         ) {
-            self.inner.sender_tracks.borrow_mut().remove(&sender.id());
+            self.inner
+                .sender_tracks
+                .borrow_mut()
+                .remove(&sender.resource_key());
             self.inner
                 .audio_sender_tracks
                 .borrow_mut()
-                .remove(&sender.id());
+                .remove(&sender.resource_key());
             Ok(())
         } else {
             Err(PeerError {

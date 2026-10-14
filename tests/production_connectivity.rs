@@ -243,6 +243,92 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
 }
 
 #[test]
+fn migrated_actor_keeps_reused_native_sender_ids_as_distinct_resources() {
+    fn negotiate(session: &mut ProductionSession, peers: [SessionPeerId; 2], events: &mut Events) {
+        let id = session.create_offer(peers[0], false).unwrap();
+        let offer = events.finish(session, peers, peers[0], id).unwrap();
+        let id = session
+            .set_local_description(peers[0], offer.clone())
+            .unwrap();
+        events.finish(session, peers, peers[0], id);
+        let id = session.set_remote_description(peers[1], offer).unwrap();
+        events.finish(session, peers, peers[1], id);
+        let id = session.create_answer(peers[1]).unwrap();
+        let answer = events.finish(session, peers, peers[1], id).unwrap();
+        let id = session
+            .set_local_description(peers[1], answer.clone())
+            .unwrap();
+        events.finish(session, peers, peers[1], id);
+        let id = session.set_remote_description(peers[0], answer).unwrap();
+        events.finish(session, peers, peers[0], id);
+    }
+    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let peers = [
+        session.create_peer(Default::default()).unwrap(),
+        session.create_peer(Default::default()).unwrap(),
+    ];
+    let source = session.create_opus_source(1).unwrap();
+    let retired = session
+        .publish_opus(
+            peers[0],
+            source,
+            "actor-reused-id",
+            RtpTransceiverDirection::SendOnly,
+        )
+        .unwrap();
+    let old_sender = session.sender(retired).unwrap();
+    let old_receiver = session.receiver(retired).unwrap();
+    session
+        .register_sender_packet_observer(old_sender, 2)
+        .unwrap();
+    let native_id = session.sender_native_id(old_sender).unwrap();
+    let session = thread::spawn(move || {
+        let mut session = session;
+        let mut events = Events::default();
+        negotiate(&mut session, peers, &mut events);
+        session.stop_standard(retired).unwrap();
+        negotiate(&mut session, peers, &mut events);
+        assert!(session.transceiver_stopped(retired).unwrap());
+        let source = session.create_opus_source(1).unwrap();
+        let replacement = session
+            .publish_opus(
+                peers[0],
+                source,
+                "actor-reused-id",
+                RtpTransceiverDirection::SendOnly,
+            )
+            .unwrap();
+        let new_sender = session.sender(replacement).unwrap();
+        let new_receiver = session.receiver(replacement).unwrap();
+        assert_eq!(session.sender_native_id(new_sender).unwrap(), native_id);
+        assert_ne!(retired, replacement);
+        assert_ne!(old_sender, new_sender);
+        assert_ne!(old_receiver, new_receiver);
+        assert_eq!(session.sender(replacement).unwrap(), new_sender);
+        session
+            .register_sender_packet_observer(new_sender, 2)
+            .unwrap();
+        session
+            .unregister_sender_packet_observer(old_sender)
+            .unwrap();
+        assert!(
+            session
+                .register_sender_packet_observer(new_sender, 2)
+                .is_err(),
+            "old observer retirement must not unregister the new endpoint"
+        );
+        session.close_peer(peers[0]).unwrap();
+        session.close_peer(peers[1]).unwrap();
+        assert_eq!(session.sender_native_id(old_sender).unwrap(), native_id);
+        session
+    })
+    .join()
+    .unwrap();
+    let mut session = session;
+    session.shutdown().unwrap();
+}
+
+#[test]
 fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
     fn assert_send<T: Send>() {}
     assert_send::<DtlsTransportInformation>();

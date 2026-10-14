@@ -5929,6 +5929,8 @@ mod ffi {
             error_type: &mut u8,
             error: &mut String,
         ) -> bool;
+        fn rtp_sender_identity(sender: &NativeRtpSender) -> usize;
+        fn rtp_sender_copy(sender: &NativeRtpSender) -> UniquePtr<NativeRtpSender>;
         fn rtp_sender_same_resource(first: &NativeRtpSender, second: &NativeRtpSender) -> bool;
         fn rtp_receiver_same_resource(
             first: &NativeRtpReceiver,

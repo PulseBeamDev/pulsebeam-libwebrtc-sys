@@ -1827,6 +1827,15 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
   return true;
 }
 
+std::size_t rtp_sender_identity(const NativeRtpSender& sender) noexcept {
+  return reinterpret_cast<std::uintptr_t>(sender.state()->sender.get());
+}
+std::unique_ptr<NativeRtpSender> rtp_sender_copy(const NativeRtpSender& sender) noexcept {
+  auto state = std::make_unique<NativeRtpSender::State>();
+  state->sender = sender.state()->sender;
+  state->owner = sender.state()->owner;
+  return std::make_unique<NativeRtpSender>(std::move(state));
+}
 bool rtp_sender_same_resource(const NativeRtpSender& first, const NativeRtpSender& second) noexcept {
   return first.sender().get() == second.sender().get();
 }

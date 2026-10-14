@@ -206,3 +206,71 @@ fn automatic_local_sdp_sync_candidates_and_direct_restart_preserve_native_state(
     assert_eq!(alice.signaling_state(), SignalingState::Closed);
     assert_eq!(bob.peer_connection_state(), ConnectionState::Closed);
 }
+
+#[test]
+fn retired_and_replacement_endpoints_with_same_native_id_remain_distinct() {
+    fn negotiate(alice: &PeerConnection, bob: &PeerConnection) {
+        let offer = complete(alice, alice.create_offer().unwrap())
+            .unwrap()
+            .unwrap();
+        complete(alice, alice.set_local_description(offer.clone()).unwrap()).unwrap();
+        complete(bob, bob.set_remote_description(offer).unwrap()).unwrap();
+        let answer = complete(bob, bob.create_answer().unwrap())
+            .unwrap()
+            .unwrap();
+        complete(bob, bob.set_local_description(answer.clone()).unwrap()).unwrap();
+        complete(alice, alice.set_remote_description(answer).unwrap()).unwrap();
+    }
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let mut alice = factory.create_peer_connection(Default::default()).unwrap();
+    let mut bob = factory.create_peer_connection(Default::default()).unwrap();
+    let source = factory.create_video_source().unwrap();
+    let track = factory
+        .create_video_track("reused-endpoint-id", &source)
+        .unwrap();
+    assert!(track.set_enabled(false));
+    let retired = alice
+        .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let old_sender = retired.sender();
+    let old_receiver = retired.receiver();
+    let old_observer = old_sender.packet_observer();
+    old_observer.register_observer(2).unwrap();
+    assert!(old_observer.same_resource(&retired.sender().packet_observer()));
+    negotiate(&alice, &bob);
+    retired.stop_standard().unwrap();
+    negotiate(&alice, &bob);
+    assert!(retired.stopped());
+    assert!(
+        !alice
+            .video_transceivers()
+            .unwrap()
+            .iter()
+            .any(|value| value.same_resource(&retired))
+    );
+    let fresh_source = factory.create_video_source().unwrap();
+    let fresh_track = factory
+        .create_video_track("reused-endpoint-id", &fresh_source)
+        .unwrap();
+    let replacement = alice
+        .add_video_transceiver(&fresh_track, RtpTransceiverDirection::SendOnly)
+        .unwrap();
+    let new_sender = replacement.sender();
+    assert_eq!(
+        old_sender.id(),
+        new_sender.id(),
+        "require an actual protocol-ID collision, not merely two distinct endpoints"
+    );
+    assert!(!retired.same_resource(&replacement));
+    assert!(!old_sender.same_resource(&new_sender));
+    assert!(!old_receiver.same_resource(&replacement.receiver()));
+    let new_observer = new_sender.packet_observer();
+    assert!(!old_observer.same_resource(&new_observer));
+    new_observer.register_observer(2).unwrap();
+    assert!(!old_sender.track().unwrap().enabled());
+    assert!(new_sender.track().unwrap().enabled());
+    alice.close().unwrap();
+    bob.close().unwrap();
+    old_observer.unregister_observer();
+    new_observer.unregister_observer();
+}

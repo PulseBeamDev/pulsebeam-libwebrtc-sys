@@ -389,6 +389,8 @@ bool rtp_transceiver_set_direction(const NativeRtpTransceiver& transceiver,
                                    std::uint8_t& error_type,
                                    rust::String& error) noexcept;
 struct FfiDtmfToneChange;
+std::size_t rtp_sender_identity(const NativeRtpSender& sender) noexcept;
+std::unique_ptr<NativeRtpSender> rtp_sender_copy(const NativeRtpSender& sender) noexcept;
 bool rtp_sender_same_resource(const NativeRtpSender& first, const NativeRtpSender& second) noexcept;
 bool rtp_receiver_same_resource(const NativeRtpReceiver& first, const NativeRtpReceiver& second) noexcept;
 bool rtp_transceiver_same_resource(const NativeRtpTransceiver& first, const NativeRtpTransceiver& second) noexcept;

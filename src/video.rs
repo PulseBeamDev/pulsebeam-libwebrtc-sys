@@ -906,6 +906,10 @@ impl RtpSender {
         (!native.is_null()).then(|| crate::DtmfSender::from_native(native, self.peer.clone()))
     }
 
+    pub(crate) fn resource_key(&self) -> usize {
+        ffi::rtp_sender_identity(self.native())
+    }
+
     /// Actual SDK interface identity, independent of a track/protocol ID.
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::rtp_sender_same_resource(self.native(), other.native())
@@ -923,8 +927,8 @@ impl RtpSender {
         self.peer
             .sender_tracks
             .borrow()
-            .get(&self.id())
-            .cloned()
+            .get(&self.resource_key())
+            .map(|lease| lease.track.clone())
             .or_else(|| Some(VideoTrack::remote(native, self.peer.clone())))
     }
 
@@ -981,10 +985,13 @@ impl RtpSender {
         let mut retained = self.peer.sender_tracks.borrow_mut();
         match track {
             Some(track) => {
-                retained.insert(self.id(), track.clone());
+                retained.insert(
+                    self.resource_key(),
+                    crate::peer::SenderTrackLease::new(self, track.clone()),
+                );
             }
             None => {
-                retained.remove(&self.id());
+                retained.remove(&self.resource_key());
             }
         }
         Ok(())

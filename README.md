@@ -803,7 +803,10 @@ the same peer factory without replacing the sender; `set_track(None)` detaches
 it. The peer retains local tracks and their sources until replacement, removal,
 close, or drop, even if caller-owned track and source handles are dropped.
 Renegotiate if the remote track identity must change. A sender's `track()`
-returns the retained local track when present.
+returns the retained local track when present. Endpoint aliases and local-track
+leases use actual native sender identity, not textual track/sender IDs. A stopped
+sender retained across completed renegotiation remains distinct from a new
+sender even when the SDK reuses its textual ID.
 
 `RtpSender::dtmf_sender()` is source-wired for the native audio sender's owning
 DTMF proxy (native video senders return `None`). It preserves native default
