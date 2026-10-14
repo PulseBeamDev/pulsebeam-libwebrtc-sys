@@ -1088,7 +1088,7 @@ impl PeerConnectionFactoryBuilder {
         // other non-null pointer is retained in FactoryInner and its
         // native factory is destroyed before those dependencies are dropped.
         let event_log_factory = self.event_log_factory.map(|factory| {
-            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory, environment.clone())))
+            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(Some(factory), environment.clone())))
         });
         let audio_processor = match (self.audio_processor, self.audio_processor_builder) {
             (Some(processor), _) => Some(processor),

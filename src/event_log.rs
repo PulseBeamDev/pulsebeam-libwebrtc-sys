@@ -109,10 +109,7 @@ impl EventLogOutput {
     pub fn from_sink(sink: impl EventLogOutputSink) -> Self {
         Self {
             native: ffi::event_log_output_from_sink(Box::new(RustEventLogOutput {
-                state: Mutex::new(OutputState {
-                    sink: Box::new(sink),
-                    failed: false,
-                }),
+                state: Mutex::new(OutputState { sink: Some(Box::new(sink)), failed: false }),
             })),
             _exclusive: PhantomData,
         }
@@ -412,7 +409,30 @@ impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
     }
 }
 
-pub(crate) struct RustRtcEventLogFactory(pub Arc<dyn RtcEventLogFactory>, pub crate::Environment);
+// A panic payload may itself have an untrusted destructor. Do not drop such
+// a payload after catching it at an ABI boundary. Standard string payloads
+// have known non-panicking destructors and can be released normally.
+fn catch_provider<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
+    match std::panic::catch_unwind(AssertUnwindSafe(call)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            if payload.is::<String>() || payload.is::<&'static str>() {
+                drop(payload);
+            } else {
+                std::mem::forget(payload);
+            }
+            Err(())
+        }
+    }
+}
+
+pub(crate) struct RustRtcEventLogFactory(pub Option<Arc<dyn RtcEventLogFactory>>, pub crate::Environment);
+impl Drop for RustRtcEventLogFactory {
+    fn drop(&mut self) {
+        let provider = self.0.take();
+        let _ = catch_provider(|| drop(provider));
+    }
+}
 pub(crate) struct RustRtcEventLog {
     logger: Option<Box<dyn RtcEventLogger>>,
     failed: AtomicBool,
@@ -424,88 +444,51 @@ impl RustRtcEventLog {
         Box::new(Self { logger, failed: AtomicBool::new(false), _environment: None })
     }
 }
+impl Drop for RustRtcEventLog {
+    fn drop(&mut self) {
+        let logger = self.logger.take();
+        let _ = catch_provider(|| drop(logger));
+    }
+}
 pub(crate) fn rust_event_log_create(factory: &RustRtcEventLogFactory, environment: cxx::UniquePtr<ffi::NativeEnvironment>) -> Box<RustRtcEventLog> {
     let environment = EventLogEnvironment::from_native(environment, Some(&factory.1));
-    let logger = std::panic::catch_unwind(AssertUnwindSafe(|| factory.0.create(environment.clone()))).ok();
+    let logger = catch_provider(|| factory.0.as_ref().map(|factory| factory.create(environment.clone()))).ok().flatten();
     Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(false), _environment: Some(environment) })
 }
-pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool {
-    logger.logger.is_some()
-}
-pub(crate) fn rust_event_log_start(
-    logger: &RustRtcEventLog,
-    output: cxx::UniquePtr<ffi::NativeEventLogOutput>,
-    period_ms: i64,
-) -> bool {
-    if logger.failed.load(Ordering::Acquire) || period_ms < 0 {
-        return false;
-    }
-    let period = if period_ms == 0 {
-        EventLogOutputPeriod::Immediate
-    } else {
-        EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64))
-    };
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        logger
-            .logger
-            .as_ref()
-            .is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period))
-    }));
-    match result {
-        Ok(result) => result,
-        Err(_) => {
-            logger.failed.store(true, Ordering::Release);
-            false
-        }
-    }
+pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool { logger.logger.is_some() }
+pub(crate) fn rust_event_log_start(logger: &RustRtcEventLog, output: cxx::UniquePtr<ffi::NativeEventLogOutput>, period_ms: i64) -> bool {
+    if logger.failed.load(Ordering::Acquire) || period_ms < 0 { return false; }
+    let period = if period_ms == 0 { EventLogOutputPeriod::Immediate } else { EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64)) };
+    let result = catch_provider(|| logger.logger.as_ref().is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period)));
+    match result { Ok(result) => result, Err(_) => { logger.failed.store(true, Ordering::Release); false } }
 }
 pub(crate) fn rust_event_log_stop(logger: &RustRtcEventLog) {
-    if std::panic::catch_unwind(AssertUnwindSafe(|| {
-        if let Some(logger) = &logger.logger {
-            logger.stop();
-        }
-    }))
-    .is_err()
-    {
+    if catch_provider(|| { if let Some(logger) = &logger.logger { logger.stop(); } }).is_err() {
         logger.failed.store(true, Ordering::Release);
     }
 }
-pub(crate) fn rust_event_log_stop_async(
-    logger: &RustRtcEventLog,
-    completion: cxx::UniquePtr<ffi::NativeEventLogStop>,
-) {
-    if std::panic::catch_unwind(AssertUnwindSafe(|| {
+pub(crate) fn rust_event_log_stop_async(logger: &RustRtcEventLog, completion: cxx::UniquePtr<ffi::NativeEventLogStop>) {
+    if catch_provider(|| {
         let completion = EventLogStopCompletion { native: completion };
-        if let Some(logger) = &logger.logger {
-            logger.stop_async(completion);
-        }
-    }))
-    .is_err()
-    {
-        logger.failed.store(true, Ordering::Release);
-    }
+        if let Some(logger) = &logger.logger { logger.stop_async(completion); }
+    }).is_err() { logger.failed.store(true, Ordering::Release); }
 }
-pub(crate) fn rust_event_log_log(
-    logger: &RustRtcEventLog,
-    event: cxx::UniquePtr<ffi::NativeRtcEvent>,
-) {
-    if logger.failed.load(Ordering::Acquire) {
-        return;
-    }
-    if std::panic::catch_unwind(AssertUnwindSafe(|| {
-        if let Some(logger) = &logger.logger {
-            logger.log(RtcEvent { native: event });
-        }
-    }))
-    .is_err()
-    {
-        logger.failed.store(true, Ordering::Release);
-    }
+pub(crate) fn rust_event_log_log(logger: &RustRtcEventLog, event: cxx::UniquePtr<ffi::NativeRtcEvent>) {
+    if logger.failed.load(Ordering::Acquire) { return; }
+    if catch_provider(|| {
+        if let Some(logger) = &logger.logger { logger.log(RtcEvent { native: event }); }
+    }).is_err() { logger.failed.store(true, Ordering::Release); }
 }
 
 struct OutputState {
-    sink: Box<dyn EventLogOutputSink>,
+    sink: Option<Box<dyn EventLogOutputSink>>,
     failed: bool,
+}
+impl Drop for OutputState {
+    fn drop(&mut self) {
+        let sink = self.sink.take();
+        let _ = catch_provider(|| drop(sink));
+    }
 }
 
 pub(crate) struct RustEventLogOutput {
@@ -520,7 +503,7 @@ pub(crate) fn event_log_output_active(output: &RustEventLogOutput) -> bool {
     if state.failed {
         return false;
     }
-    match std::panic::catch_unwind(AssertUnwindSafe(|| state.sink.is_active())) {
+    match catch_provider(|| state.sink.as_ref().is_some_and(|sink| sink.is_active())) {
         Ok(true) => true,
         _ => {
             state.failed = true;
@@ -537,20 +520,16 @@ pub(crate) fn event_log_output_write(output: &RustEventLogOutput, bytes: &[u8]) 
     if state.failed {
         return false;
     }
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        state.sink.is_active() && state.sink.write(bytes)
-    }))
-    .unwrap_or(false);
+    let result = catch_provider(|| {
+        state.sink.as_mut().is_some_and(|sink| sink.is_active() && sink.write(bytes))
+    }).unwrap_or(false);
     state.failed = !result;
     result
 }
 
 pub(crate) fn event_log_output_flush(output: &RustEventLogOutput) {
-    let mut state = output
-        .state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if !state.failed && std::panic::catch_unwind(AssertUnwindSafe(|| state.sink.flush())).is_err() {
+    let mut state = output.state.lock().unwrap_or_else(|error| error.into_inner());
+    if !state.failed && catch_provider(|| { if let Some(sink) = &mut state.sink { sink.flush(); } }).is_err() {
         state.failed = true;
     }
 }
