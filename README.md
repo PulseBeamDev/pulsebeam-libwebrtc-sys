@@ -536,6 +536,10 @@ re-encode these packets to match a changing bitrate; the caller controls
 source bitrate and pacing. Controlled peers continue to reject audio transceivers because their cooperative codec queues
 can deadlock; this input adapter does not change that limitation.
 
+Camera and desktop capture methods, including discovery, reject controlled
+execution before contacting devices, display servers or portals. Enabling the
+`native` feature does not permit physical capture in a controlled world.
+
 Native camera devices expose names, IDs, and capture capabilities through
 `camera_devices()` and `camera_formats(id)`. `open_camera(id, width, height,
 fps)` starts the closest upstream matching capability and owns a source for

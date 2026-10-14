@@ -1766,6 +1766,7 @@ impl PeerConnectionFactory {
 
     #[cfg(feature = "native")]
     fn desktop_sources(&self, window: bool) -> Result<Vec<crate::ScreenSource>, PeerError> {
+        self.require_native_capture()?;
         let mut screens = Vec::new();
         let mut error = String::new();
         if !ffi::screen_sources(window, &mut screens, &mut error) {
@@ -1798,6 +1799,7 @@ impl PeerConnectionFactory {
 
     #[cfg(feature = "native")]
     fn open_desktop(&self, id: i64, window: bool) -> Result<crate::ScreenCapture, PeerError> {
+        self.require_native_capture()?;
         let source = self.create_video_source()?;
         let mut error = String::new();
         let native = ffi::open_screen(source.native(), id, window, &mut error);
@@ -1814,6 +1816,7 @@ impl PeerConnectionFactory {
     /// and does not indicate an error on a headless host.
     #[cfg(feature = "native")]
     pub fn camera_devices(&self) -> Result<Vec<crate::CameraDevice>, PeerError> {
+        self.require_native_capture()?;
         let mut devices = Vec::new();
         let mut error = String::new();
         if !ffi::camera_devices(&mut devices, &mut error) {
@@ -1834,6 +1837,7 @@ impl PeerConnectionFactory {
     /// Enumerate formats advertised by a camera. Refresh after device changes.
     #[cfg(feature = "native")]
     pub fn camera_formats(&self, device_id: &str) -> Result<Vec<crate::CameraFormat>, PeerError> {
+        self.require_native_capture()?;
         if device_id.is_empty() || device_id.contains('\0') {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -1869,6 +1873,7 @@ impl PeerConnectionFactory {
         height: u32,
         fps: u32,
     ) -> Result<crate::CameraCapture, PeerError> {
+        self.require_native_capture()?;
         if device_id.is_empty()
             || device_id.as_bytes().contains(&0)
             || width == 0
@@ -1893,6 +1898,19 @@ impl PeerConnectionFactory {
             });
         }
         Ok(crate::CameraCapture::new(native, source))
+    }
+
+    // Even enumeration can open devices, contact a display server or prompt a
+    // portal. Reject before validation, source creation or any platform call.
+    #[cfg(feature = "native")]
+    fn require_native_capture(&self) -> Result<(), PeerError> {
+        if self.0._controlled_driver.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "physical video capture is unavailable in controlled execution".into(),
+            });
+        }
+        Ok(())
     }
 
     pub fn create_video_source(&self) -> Result<VideoSource, PeerError> {
