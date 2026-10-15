@@ -118,6 +118,8 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/event_log.h",
         include_bytes!("../native/event_log.h"),
     ),
+    ("native/event_log_codec.cc", include_bytes!("../native/event_log_codec.cc")),
+    ("native/event_log_codec.h", include_bytes!("../native/event_log_codec.h")),
     (
         "native/execution.cc",
         include_bytes!("../native/execution.cc"),

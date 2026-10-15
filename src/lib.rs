@@ -509,6 +509,8 @@ pub use transport::{
 mod encoded_video;
 mod event_log;
 mod event_log_creation;
+mod event_log_codec;
+pub use event_log_codec::{RtcEventCodecError, RtcEventLogParseStatus, RtcEventParsedRecords, LoggedAlrStateEvent, LoggedAudioPlayoutEvent, LoggedBweDelayBasedUpdate, LoggedStartEvent, LoggedStopEvent};
 mod event_log_dependency;
 mod event_log_rtp;
 mod event_log_values;
@@ -1147,6 +1149,24 @@ mod ffi {
         sample_values: Vec<f64>,
         frame_number: i32,
         template_id: i32,
+    }
+    struct FfiEventParseStatus {
+        ok: bool,
+        message: String,
+    }
+    #[derive(Default)]
+    struct FfiLoggedEvent {
+        timestamp: i64,
+        utc_time: i64,
+        in_alr: bool,
+        ssrc: u32,
+        bitrate_bps: i32,
+        detector_state: i32,
+    }
+    struct FfiEventParseResult {
+        guard: u8,
+        status: FfiEventParseStatus,
+        rows: Vec<FfiLoggedEvent>,
     }
     #[derive(Default)]
     struct FfiRtcEventPayload {
@@ -4358,6 +4378,7 @@ mod ffi {
         fn clock_q32x32_to_us(value: i64) -> i64;
         fn clock_uq32x32_to_us(value: u64) -> i64;
         include!("pulsebeam-webrtc-sys/native/event_log.h");
+        include!("pulsebeam-webrtc-sys/native/event_log_codec.h");
         include!("pulsebeam-webrtc-sys/native/network.h");
         type NativeNetworkChange;
         fn network_change_notify(changes: &NativeNetworkChange) -> bool;
@@ -5155,6 +5176,12 @@ mod ffi {
             rtx_sequence: u16,
         ) -> UniquePtr<NativeRtcEvent>;
         fn rtc_event_copy(event: &NativeRtcEvent) -> UniquePtr<NativeRtcEvent>;
+        type NativeEventEncoding;
+        fn event_codec_encoder(kind: u32) -> UniquePtr<NativeEventEncoding>;
+        fn event_codec_add(batch: Pin<&mut NativeEventEncoding>, event: &NativeRtcEvent) -> bool;
+        fn event_codec_encode(batch: &NativeEventEncoding) -> Vec<u8>;
+        fn event_codec_parse(kind: u32, bytes: &[u8], batched: bool) -> FfiEventParseResult;
+        fn event_codec_status(success: bool, error: &str, file: &str, line: i32) -> FfiEventParseStatus;
         fn rtc_event_rtp_dependency_descriptor(
             event: &NativeRtcEvent,
             has_structure: bool,

@@ -16,6 +16,34 @@ Adapter-owned provider destruction and task cancellation use the shared
 [provider panic containment policy](provider-panic-contracts.md), including safe
 handling of unknown panic payloads. Ordinary string panics are recommended.
 
+## Native event subtype codecs
+
+`RtcEvent::encode_batch` calls the concrete SDK subtype encoder and returns its
+binary outer event tag, byte length and payload. It borrows input events only
+for that synchronous call. Type mismatches are rejected where the native field
+extractors would abort. End-log encoding only reads common timestamps, and the
+SDK's stub encoders retain their empty-output behavior.
+
+`RtcEventParsedRecords::parse_payload` takes the payload without the outer tag
+or byte length, plus the native batched flag. Its owning vectors or SSRC-keyed
+map append native records, including partial records when the returned
+`RtcEventLogParseStatus` is false. Existing output prefixes remain intact.
+Timestamp infinities in partial records are preserved by `Timestamp`; finite
+queries on those values return a time-value error instead of entering a native
+finite-only accessor. Parsed timestamps retain native millisecond precision.
+The begin-log UTC value is available on `LoggedStartEvent`, not on the unencoded
+`RtcEventBeginLog` payload, whose UTC field has no public getter.
+
+The pinned SDK implements begin/end log, ALR state, audio playout and delay-based
+BWE subtype codecs. The other declared subtype codecs return empty encoded bytes
+and native `Not Implemented` parse statuses; they do not produce parsed records.
+NetEq minimum-delay events have no public subtype codec. These limitations do
+not affect installed native event logging or the owning unencoded event APIs.
+Decoded milliseconds that would overflow the SDK's microsecond conversion are
+rejected before subtype parsing, without changing output or fabricating a native
+parse status. Other safe parse failures retain the actual SDK status and partial
+output.
+
 ## Reusable native factory composition
 
 `EnvironmentFactory::new()` owns an initially empty native factory. Each
