@@ -4,11 +4,13 @@ void TransformableFrameOwnershipRegression();
 void AudioSinkQueueRegression();
 void VideoSinkQueueRegression();
 void VideoSourceControlsRegression();
+void VideoSinkAdmissionRegression();
 
 int main() {
   TransformableFrameOwnershipRegression();
   AudioSinkQueueRegression();
   VideoSinkQueueRegression();
   VideoSourceControlsRegression();
+  VideoSinkAdmissionRegression();
   return 0;
 }

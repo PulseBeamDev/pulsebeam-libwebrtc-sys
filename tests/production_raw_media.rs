@@ -892,6 +892,8 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         let remote_status = session.video_source_status(remote).unwrap();
         assert!(!local_status.remote && !local_status.supports_encoded_output);
         assert!(remote_status.remote && remote_status.supports_encoded_output);
+        assert_eq!(session.video_source_rejected_sink_requests(local).unwrap(), Some(0));
+        assert_eq!(session.video_source_rejected_sink_requests(remote).unwrap(), None);
         for status in [local_status, remote_status] {
             assert!(!status.is_screencast);
             assert_eq!(status.needs_denoising, None);

@@ -14,6 +14,9 @@ fn native_video_views_preserve_defaults_change_notifications_and_exact_origin_li
     let installed = track.source().unwrap();
     let installed_alias = track.source().unwrap();
     assert!(installed.same_interface(&installed_alias));
+    assert_eq!(source.rejected_sink_requests(), 0);
+    assert_eq!(producer.rejected_sink_requests(), Some(0));
+    assert_eq!(installed.rejected_sink_requests(), Some(0));
     // Source identity is the actual interface. Do not unwrap SDK proxies or
     // guess a join between the producer and the track's source interface.
     for view in [&producer, &installed] {
@@ -111,6 +114,7 @@ fn native_video_views_preserve_defaults_change_notifications_and_exact_origin_li
     // every original producer, track and factory wrapper.
     assert_eq!(installed_alias.state(), VideoSourceState::Ended);
     assert_eq!(installed_alias.stats(), None);
+    assert_eq!(installed_alias.rejected_sink_requests(), Some(0));
     for _ in 0..2 {
         assert_eq!(
             track_events.try_next_event(),
@@ -153,6 +157,7 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
         session
             .set_video_track_content_hint(track, VideoContentHint::Text)
             .unwrap();
+        assert_eq!(session.video_source_rejected_sink_requests(view).unwrap(), Some(0));
         session.request_video_source_refresh(view).unwrap();
         session.generate_video_source_key_frame(view).unwrap();
         session.process_video_source_constraints(view, VideoSourceConstraints {
@@ -179,6 +184,7 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
             VideoSourceState::Ended
         );
         assert_eq!(session.video_source_status(alias).unwrap().stats, None);
+        assert_eq!(session.video_source_rejected_sink_requests(alias).unwrap(), Some(0));
         session.request_video_source_refresh(alias).unwrap();
         session.generate_video_source_key_frame(alias).unwrap();
         session.process_video_source_constraints(alias, VideoSourceConstraints::default()).unwrap();

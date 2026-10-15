@@ -379,6 +379,22 @@ the exact producer/track/peer origin through final native release. Production
 sessions provide opaque view/observer IDs and use the existing track IDs for
 controls, preserving their captive single-owner migration contract.
 
+The owned push source checks every incoming sink alignment against the real SDK
+broadcaster pairs, including later encoder registrations. Its nonzero LCM must
+fit the SDK's signed int for every independently retired subset; inactive sinks
+and zero alignments cannot mask an unsafe future aggregate. Requests are not
+normalized. Unsafe SDK void updates retire that source registration through
+native RemoveSink: preserving a prior pair could retain stale black-frame or
+geometry expectations after SDK track-local bookkeeping changed. The internal
+worker-scoped preflight helper instead preserves prior registrations on refusal;
+it is not yet wired to a public custom-wants API. The source's saturating
+`rejected_sink_requests` count makes those adapter refusals explicit, separate
+from native source statistics and discarded-frame callbacks. Owning local source
+views retain this diagnostic through producer retirement; remote SDK sources
+return `None`. The production actor exposes
+`video_source_rejected_sink_requests`. This guard does not qualify unrelated
+encoder-side alignment arithmetic or expose custom sink wants yet.
+
 `PeerConnectionFactory::create_media_stream` creates an owning native track
 container, not SDP routing or receive synchronization. Get/Find return the exact
 accepted track owners in native insertion order. Native Add rejects duplicate

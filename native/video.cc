@@ -2,6 +2,7 @@
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "pulsebeam-webrtc-sys/native/video_sink_queue.h"
 #include "pulsebeam-webrtc-sys/native/video_source_controls.h"
+#include "pulsebeam-webrtc-sys/native/raw_video_source.h"
 #include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
@@ -274,21 +275,6 @@ std::unique_ptr<NativeRtcError> sframe_remove_decryption_key(const NativeSframeD
   });
 }
 namespace {
-
-class PushVideoSource : public webrtc::VideoTrackSource {
- public:
-  PushVideoSource() : VideoTrackSource(false) {}
-
-  void Push(const webrtc::VideoFrame& frame) { broadcaster_.OnFrame(frame); }
-
- protected:
-  webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override {
-    return &broadcaster_;
-  }
-
- private:
-  webrtc::VideoBroadcaster broadcaster_;
-};
 
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
 class ScreenFrameSink final : public webrtc::DesktopCapturer::Callback {
@@ -678,6 +664,9 @@ NativeVideoSourceView::~NativeVideoSourceView() {
   state_->signaling->BlockingCall([&] { state_->source = nullptr; });
 }
 const std::unique_ptr<NativeVideoSourceView::State>& NativeVideoSourceView::state() const noexcept { return state_; }
+std::uint64_t video_source_rejected_sink_requests(const NativeVideoSource& source) noexcept {
+  return source.state()->source->broadcaster().RejectedRequests();
+}
 std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept {
   auto state = std::make_unique<NativeVideoSourceView::State>();
   state->signaling = source.state()->signaling_thread;

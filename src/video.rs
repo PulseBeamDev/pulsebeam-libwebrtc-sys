@@ -480,6 +480,14 @@ impl VideoSource {
         VideoSourceState::from_native(ffi::video_source_state(self.native()))
     }
 
+    /// Source-adapter sink requests refused before an unsafe SDK update.
+    /// The saturating count includes internal SDK requests, not frame loss or
+    /// native source statistics. An unsafe opaque SDK update retires its source
+    /// registration, rather than retaining stale track-local expectations.
+    pub fn rejected_sink_requests(&self) -> u64 {
+        ffi::video_source_rejected_sink_requests(self.native())
+    }
+
     pub fn push_frame(&self, frame: &VideoFrame) -> Result<(), CodecError> {
         if self.state() == VideoSourceState::Ended {
             return Err(CodecError::Released);
@@ -582,6 +590,18 @@ impl VideoSourceView {
             constraints.max_fps.is_some(),
             constraints.max_fps.unwrap_or(0.0),
         );
+    }
+
+    /// Admission diagnostics for the exact caller-owned producer retained by
+    /// this view. SDK-owned remote sources have no such adapter and return None.
+    /// This follows a construction-time ownership edge, not a source-ID lookup.
+    pub fn rejected_sink_requests(&self) -> Option<u64> {
+        let source = self.inner._producer.as_ref().or_else(|| {
+            self.inner._track.as_ref().and_then(|track| track.inner._source.as_ref())
+        })?;
+        Some(ffi::video_source_rejected_sink_requests(
+            source.native.as_ref().expect("validated video source"),
+        ))
     }
 
     pub fn stats(&self) -> Option<VideoSourceStats> {

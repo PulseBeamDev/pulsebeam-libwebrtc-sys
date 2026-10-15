@@ -7629,6 +7629,7 @@ mod ffi {
         ) -> UniquePtr<NativeVideoSource>;
         fn close_video_source(source: &NativeVideoSource) -> bool;
         fn video_source_state(source: &NativeVideoSource) -> u8;
+        fn video_source_rejected_sink_requests(source: &NativeVideoSource) -> u64;
         fn video_source_as_view(source: &NativeVideoSource) -> UniquePtr<NativeVideoSourceView>;
         fn video_track_source(
             track: &NativeVideoTrack,

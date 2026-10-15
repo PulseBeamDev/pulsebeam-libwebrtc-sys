@@ -47,6 +47,10 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         include_bytes!("../native/video_source_controls.h"),
     ),
     (
+        "native/raw_video_source.h",
+        include_bytes!("../native/raw_video_source.h"),
+    ),
+    (
         "native/frame_callback_slot.h",
         include_bytes!("../native/frame_callback_slot.h"),
     ),

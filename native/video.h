@@ -347,6 +347,7 @@ std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept;
 bool close_video_source(const NativeVideoSource& source) noexcept;
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept;
+std::uint64_t video_source_rejected_sink_requests(const NativeVideoSource& source) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept;
 void video_source_view_request_refresh(const NativeVideoSourceView&) noexcept;

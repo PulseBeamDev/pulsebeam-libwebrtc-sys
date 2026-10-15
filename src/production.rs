@@ -2141,6 +2141,10 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .status())
     }
+    /// Adapter admission refusals, distinct from native source statistics.
+    pub fn video_source_rejected_sink_requests(&mut self, view: SessionVideoSourceViewId) -> Result<Option<u64>, PeerError> {
+        Ok(self.video_source_views.get(&view).ok_or_else(missing)?.rejected_sink_requests())
+    }
     /// Actual SDK interface equality; distinct proxies may share a producer.
     pub fn video_source_views_same_interface(
         &mut self,
