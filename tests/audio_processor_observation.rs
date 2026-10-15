@@ -91,7 +91,7 @@ fn linear_output_uses_native_rows_and_preserves_caller_tails() {
         retained,
         Ok(true) | Err(AudioProcessorError::UnqualifiedLinearOutputQuery)
     ));
-    assert_eq!(p.initialize(), AudioProcessingStatus::OK);
+    assert_eq!(p.initialize().unwrap(), AudioProcessingStatus::OK);
     let missing = p.linear_aec_output(&mut out);
     assert!(matches!(
         missing,

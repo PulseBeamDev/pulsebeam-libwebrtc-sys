@@ -6,6 +6,8 @@ mod audio_processing;
 mod audio_processor_config;
 pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplifier, ApmCaptureLevelAdjustment, ApmAnalogMicGainEmulation, ApmHighPassFilter, ApmEchoCanceller, ApmNoiseSuppression, ApmTransientSuppression, ApmGainController1, ApmAnalogGainController, ApmClippingPredictor, ApmGainController2, ApmInputVolumeController, ApmAdaptiveDigital, ApmFixedDigital, ApmDownmixMethod, ApmNoiseSuppressionLevel, ApmGainController1Mode, ApmClippingPredictorMode};
 mod audio_processor;
+mod audio_processor_runtime;
+pub use audio_processor_runtime::{AudioPlayoutDeviceInfo, AudioProcessingRuntimeSetting};
 pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingStatistics};
 mod audio_mixer;
 use audio_mixer::{RustMixerSource, mixer_source_frame, mixer_source_ssrc, mixer_source_rate, mixer_source_invalid};
@@ -1773,6 +1775,15 @@ mod ffi {
         id: String,
     }
 
+    struct FfiApmRuntimeSetting {
+        kind: u8,
+        float_value: f32,
+        int_value: i32,
+        device_id: i32,
+        device_max_volume: i32,
+        bool_value: bool,
+    }
+
     struct FfiApmStatistics {
         present: u16,
         voice_detected: bool,
@@ -3259,6 +3270,7 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/audio_processor.h");
         type NativeAudioProcessor;
+        fn audio_processor_runtime_setting(processor: Pin<&mut NativeAudioProcessor>, setting: &FfiApmRuntimeSetting, post: bool, error: &mut u8) -> bool;
         fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
         fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, linear_echo: bool, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;
         fn audio_processor_config_apply(processor: Pin<&mut NativeAudioProcessor>, config: &FfiApmConfig) -> u8;
@@ -3270,9 +3282,9 @@ mod ffi {
         fn audio_processor_config_get(processor: &NativeAudioProcessor) -> FfiApmConfig;
         fn audio_processor_new(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> UniquePtr<NativeAudioProcessor>;
         fn audio_processor_effects_admitted(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> bool;
-        fn audio_processor_initialize(processor: Pin<&mut NativeAudioProcessor>) -> i32;
+        fn audio_processor_initialize(processor: Pin<&mut NativeAudioProcessor>, error: &mut u8) -> i32;
         fn audio_processor_formats_default() -> FfiApmFormats;
-        fn audio_processor_initialize_formats(processor: Pin<&mut NativeAudioProcessor>, formats: &FfiApmFormats, admitted: &mut bool) -> i32;
+        fn audio_processor_initialize_formats(processor: Pin<&mut NativeAudioProcessor>, formats: &FfiApmFormats, admitted: &mut bool, error: &mut u8) -> i32;
         fn audio_processor_configure(processor: Pin<&mut NativeAudioProcessor>, config: &FfiAudioProcessingConfig) -> u8;
         fn audio_processor_format(processor: &NativeAudioProcessor) -> FfiAudioProcessingFormatState;
         fn audio_processor_set_muted(processor: Pin<&mut NativeAudioProcessor>, muted: bool);
@@ -3282,9 +3294,9 @@ mod ffi {
         fn audio_processor_set_analog_level(processor: Pin<&mut NativeAudioProcessor>, level: i32);
         fn audio_processor_analog_level(processor: &NativeAudioProcessor) -> i32;
         fn audio_processor_set_key(processor: Pin<&mut NativeAudioProcessor>, pressed: bool);
-        fn audio_processor_i16(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &mut [i16], reverse: bool) -> i32;
-        fn audio_processor_float(processor: Pin<&mut NativeAudioProcessor>, input_rate: i32, input_channels: usize, samples: &[f32], output_rate: i32, output_channels: usize, destination: &mut [f32], reverse: bool) -> i32;
-        fn audio_processor_analyze(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &[f32]) -> i32;
+        fn audio_processor_i16(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &mut [i16], reverse: bool, error: &mut u8) -> i32;
+        fn audio_processor_float(processor: Pin<&mut NativeAudioProcessor>, input_rate: i32, input_channels: usize, samples: &[f32], output_rate: i32, output_channels: usize, destination: &mut [f32], reverse: bool, error: &mut u8) -> i32;
+        fn audio_processor_analyze(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &[f32], error: &mut u8) -> i32;
         include!("pulsebeam-webrtc-sys/native/audio_frame_values.h");
         type NativeMixerSource;
         type NativeAudioMixer;

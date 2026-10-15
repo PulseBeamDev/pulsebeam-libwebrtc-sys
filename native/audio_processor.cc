@@ -25,12 +25,54 @@ namespace webrtc {
 EchoCanceller3Config AdjustConfig(const EchoCanceller3Config&, const FieldTrialsView&);
 }
 namespace pulsebeam::webrtc_sys {
+namespace {
+// A bounded safety envelope, not an acknowledgment cache or replacement queue.
+// The SDK retains the original payloads. Max magnitude suffices for finite
+// linear gain/product admission; NaN/Inf must be remembered independently.
+struct PendingGainRange {
+  bool any = false;
+  bool nonfinite = false;
+  float max_absolute = 0;
+  void Include(float value) {
+    any = true;
+    if (!std::isfinite(value)) nonfinite = true;
+    else max_absolute = std::max(max_absolute, std::abs(value));
+  }
+  void Merge(const PendingGainRange& other) {
+    any |= other.any;
+    nonfinite |= other.nonfinite;
+    max_absolute = std::max(max_absolute, other.max_absolute);
+  }
+};
+struct PendingGains {
+  PendingGainRange pre, post;
+  void Include(const FfiApmRuntimeSetting& f) {
+    if (f.kind == 1) pre.Include(f.float_value);
+    if (f.kind == 2) post.Include(f.float_value);
+  }
+  void Merge(const PendingGains& other) { pre.Merge(other.pre); post.Merge(other.post); }
+  bool Safe(const webrtc::AudioProcessing::Config& c) const {
+    if (pre.any && (c.pre_amplifier.enabled || c.capture_level_adjustment.enabled)) {
+      if (pre.nonfinite) return false;
+      if (c.pre_amplifier.enabled && c.capture_level_adjustment.enabled &&
+          !std::isfinite(pre.max_absolute * std::abs(c.capture_level_adjustment.pre_gain_factor))) return false;
+    }
+    return !(post.any && c.capture_level_adjustment.enabled && post.nonfinite);
+  }
+};
+}
 struct NativeAudioProcessor::State {
   // Destroy the module before its original environment dependencies.
   webrtc::Environment environment;
   webrtc::scoped_refptr<webrtc::AudioProcessing> module;
   bool linear_echo_configured = false;
   bool linear_output_guaranteed = false;
+  PendingGains queued_gains;
+  PendingGains possibly_queued_gains;
+  webrtc::ProcessingConfig format_hint = webrtc::ProcessingConfig({{{16000, 1}, {16000, 1}, {16000, 1}, {16000, 1}}});
+  bool capture_format_known = true;
+  bool render_format_known = true;
+  bool capture_graph_dirty = false;
 };
 NativeAudioProcessor::NativeAudioProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeAudioProcessor::~NativeAudioProcessor() = default;
@@ -312,6 +354,78 @@ bool ValidGc2(const webrtc::AudioProcessing::Config::GainController2& g) {
       a.headroom_db >= 0 && a.max_gain_db > 0 && a.initial_gain_db >= 0 &&
       a.max_gain_change_db_per_second > 0 && a.max_output_noise_level_dbfs <= 0;
 }
+bool RuntimeReinitializationUnsafe(const NativeAudioProcessor& p) {
+#if RTC_DCHECK_IS_ON
+  const auto c = p.state().module->GetConfig();
+  return c.gain_controller2.enabled && !ValidGc2(c.gain_controller2);
+#else
+  return false;
+#endif
+}
+bool FormatsReachInitialization(const webrtc::StreamConfig& input, const webrtc::StreamConfig& output) {
+  const auto valid = [](const webrtc::StreamConfig& s) {
+    return s.sample_rate_hz() >= 8000 && s.sample_rate_hz() <= 384000 && s.num_channels() > 0;
+  };
+  return valid(input) && valid(output) && (output.num_channels() == 1 || output.num_channels() == input.num_channels());
+}
+bool ImplicitInitializationUnsafe(const NativeAudioProcessor& p, const webrtc::StreamConfig& input, const webrtc::StreamConfig& output, bool reverse) {
+  if (!RuntimeReinitializationUnsafe(p) || !FormatsReachInitialization(input, output)) return false;
+  const auto& s = p.state();
+  if (reverse) return !s.render_format_known || input != s.format_hint.reverse_input_stream() || output != s.format_hint.reverse_output_stream();
+  return !s.capture_format_known || s.capture_graph_dirty || input != s.format_hint.input_stream() || output != s.format_hint.output_stream();
+}
+void NoteProcessingFormats(NativeAudioProcessor& p, const webrtc::StreamConfig& input, const webrtc::StreamConfig& output, bool reverse, int status) {
+  if (reverse) {
+    p.state().render_format_known = status == 0;
+    if (status == 0) { p.state().format_hint.reverse_input_stream() = input; p.state().format_hint.reverse_output_stream() = output; }
+  } else {
+    p.state().capture_format_known = status == 0;
+    if (status == 0) { p.state().format_hint.input_stream() = input; p.state().format_hint.output_stream() = output; }
+  }
+}
+std::uint8_t AdmitPending(const NativeAudioProcessor& p, const webrtc::AudioProcessing::Config& c) {
+  if (!p.state().queued_gains.Safe(c)) return 9;
+  if (!p.state().possibly_queued_gains.Safe(c)) return 10;
+  return 0;
+}
+void NoteCaptureResult(NativeAudioProcessor& p, int status) {
+  if (status == webrtc::AudioProcessing::kNoError) {
+    // Both pinned capture overloads finish the entire capture queue drain.
+    p.state().queued_gains = {};
+    p.state().possibly_queued_gains = {};
+    p.state().capture_graph_dirty = false;
+  } else {
+    // A native error may precede or follow the drain. Do not invent an ack.
+    p.state().possibly_queued_gains.Merge(p.state().queued_gains);
+    p.state().queued_gains = {};
+  }
+}
+std::uint8_t AdmitRuntime(const webrtc::AudioProcessing::Config& c, const FfiApmRuntimeSetting& f) {
+  if (f.kind > 8) return 11;
+#if RTC_DCHECK_IS_ON
+  if (f.kind == 0) return 11;
+#endif
+  // These factories declare their domain before any deferred consumption.
+  if (f.kind == 3 && (f.int_value < 0 || f.int_value > 90)) return 11;
+  if (f.kind == 4 && !(f.float_value >= 0 && f.float_value <= 90)) return 11;
+  PendingGains proposed;
+  proposed.Include(f);
+  return proposed.Safe(c) ? 0 : 11;
+}
+webrtc::AudioProcessing::RuntimeSetting RuntimeFromFfi(const FfiApmRuntimeSetting& f) {
+  using Setting = webrtc::AudioProcessing::RuntimeSetting;
+  switch (f.kind) {
+    case 1: return Setting::CreateCapturePreGain(f.float_value);
+    case 2: return Setting::CreateCapturePostGain(f.float_value);
+    case 3: return Setting::CreateCompressionGainDb(f.int_value);
+    case 4: return Setting::CreateCaptureFixedPostGain(f.float_value);
+    case 5: return Setting::CreatePlayoutVolumeChange(f.int_value);
+    case 6: return Setting::CreateCustomRenderSetting(f.float_value);
+    case 7: return Setting::CreatePlayoutAudioDeviceChange({f.device_id, f.device_max_volume});
+    case 8: return Setting::CreateCaptureOutputUsedSetting(f.bool_value);
+    default: return Setting();
+  }
+}
 std::uint8_t AdmitConfig(const webrtc::Environment& env, const webrtc::AudioProcessing::Config& c, bool build, bool linear_echo_configured = false) {
   if (c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output && !linear_echo_configured) return 7;
 #if RTC_DCHECK_IS_ON
@@ -399,14 +513,40 @@ std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnv
 std::uint8_t audio_processor_config_apply(NativeAudioProcessor& p, const FfiApmConfig& f) noexcept {
   const auto config = ConfigFromFfi(f);
   if (config.echo_canceller.enabled && p.state().module->num_reverse_channels() == 0) return 2;
+  if (const auto error = AdmitPending(p, config)) return error;
   if (const auto error = AdmitConfig(p.state().environment, config, false, p.state().linear_echo_configured)) return error;
   const auto previous = p.state().module->GetConfig();
   p.state().module->ApplyConfig(config);
+  p.state().capture_graph_dirty = true;
   if (!config.echo_canceller.enabled || !config.echo_canceller.export_linear_aec_output)
     p.state().linear_output_guaranteed = false;
   else if (!previous.echo_canceller.enabled)
     p.state().linear_output_guaranteed = true;
   return 0;
+}
+bool audio_processor_runtime_setting(NativeAudioProcessor& p, const FfiApmRuntimeSetting& f, bool post, std::uint8_t& error) noexcept {
+  error = AdmitRuntime(p.state().module->GetConfig(), f);
+  if (error) return false;
+  const auto setting = RuntimeFromFfi(f);
+  if (post) {
+    const bool accepted = p.state().module->PostRuntimeSetting(setting);
+    if (accepted && f.kind == 1) {
+      p.state().queued_gains.pre = {};
+      p.state().queued_gains.pre.Include(f.float_value);
+      p.state().possibly_queued_gains.pre = {};
+    }
+    if (accepted && f.kind == 2) {
+      p.state().queued_gains.post = {};
+      p.state().queued_gains.post.Include(f.float_value);
+      p.state().possibly_queued_gains.post = {};
+    }
+    return accepted;
+  }
+  p.state().module->SetRuntimeSetting(setting);
+  // Void Set discards the native queue acknowledgment, including full-queue
+  // failure. Preserve possible payloads without claiming enqueue success.
+  p.state().possibly_queued_gains.Include(f);
+  return false;  // No acknowledgment; the Rust void-set path ignores this.
 }
 bool audio_processor_config_equal(const FfiApmConfig& left, const FfiApmConfig& right, std::uint8_t group) noexcept {
   const auto a = ConfigFromFfi(left), b = ConfigFromFfi(right);
@@ -458,7 +598,9 @@ FfiApmStatistics audio_processor_statistics(NativeAudioProcessor& p, bool has_ar
 FfiApmConfig audio_processor_config_default() noexcept { return ConfigToFfi(webrtc::AudioProcessing::Config{}); }
 rust::String audio_processor_config_string(const FfiApmConfig& v) noexcept { return ConfigFromFfi(v).ToString(); }
 FfiApmConfig audio_processor_config_get(const NativeAudioProcessor& p) noexcept { return ConfigToFfi(p.state().module->GetConfig()); }
-std::int32_t audio_processor_initialize(NativeAudioProcessor& p) noexcept {
+std::int32_t audio_processor_initialize(NativeAudioProcessor& p, std::uint8_t& error) noexcept {
+  error = RuntimeReinitializationUnsafe(p) ? 12 : 0;
+  if (error) return 0;
   const auto status = p.state().module->Initialize();
   if (status == 0) { const auto c = p.state().module->GetConfig(); p.state().linear_output_guaranteed = c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output; }
   return status;
@@ -467,8 +609,9 @@ FfiApmFormats audio_processor_formats_default() noexcept {
   const webrtc::ProcessingConfig config;
   return {config.input_stream().sample_rate_hz(), config.input_stream().num_channels(), config.output_stream().sample_rate_hz(), config.output_stream().num_channels(), config.reverse_input_stream().sample_rate_hz(), config.reverse_input_stream().num_channels(), config.reverse_output_stream().sample_rate_hz(), config.reverse_output_stream().num_channels()};
 }
-std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const FfiApmFormats& f, bool& admitted) noexcept {
+std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const FfiApmFormats& f, bool& admitted, std::uint8_t& error) noexcept {
   admitted = false;
+  error = 0;
   const auto valid = [](std::int32_t rate, std::size_t channels) {
     return rate >= 8000 && rate <= 384000 && channels > 0 && channels <= std::numeric_limits<std::int32_t>::max();
   };
@@ -488,8 +631,15 @@ std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const F
   config.output_stream() = webrtc::StreamConfig(f.output_rate, f.output_channels);
   config.reverse_input_stream() = webrtc::StreamConfig(f.reverse_input_rate, f.reverse_input_channels);
   config.reverse_output_stream() = webrtc::StreamConfig(f.reverse_output_rate, f.reverse_output_channels);
+  error = RuntimeReinitializationUnsafe(p) ? 12 : 0;
+  if (error) return 0;
   admitted = true;
   const auto status = p.state().module->Initialize(config);
+  if (status == 0) {
+    p.state().format_hint = config;
+    p.state().capture_format_known = p.state().render_format_known = true;
+    p.state().capture_graph_dirty = false;
+  }
   if (status == 0) { const auto c = p.state().module->GetConfig(); p.state().linear_output_guaranteed = c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output; }
   return status;
 }
@@ -497,9 +647,11 @@ std::uint8_t audio_processor_configure(NativeAudioProcessor& p, const FfiAudioPr
   if (selected.echo_cancellation && p.state().module->num_reverse_channels() == 0) return 2;
   auto config = p.state().module->GetConfig();
   SelectEffects(config, selected);
+  if (const auto error = AdmitPending(p, config)) return error;
   if (const auto error = AdmitConfig(p.state().environment, config, false, p.state().linear_echo_configured)) return error;
   const auto previous = p.state().module->GetConfig();
   p.state().module->ApplyConfig(config);
+  p.state().capture_graph_dirty = true;
   if (!config.echo_canceller.enabled || !config.echo_canceller.export_linear_aec_output)
     p.state().linear_output_guaranteed = false;
   else if (!previous.echo_canceller.enabled)
@@ -517,26 +669,40 @@ std::int32_t audio_processor_delay(const NativeAudioProcessor& p) noexcept { ret
 void audio_processor_set_analog_level(NativeAudioProcessor& p, std::int32_t v) noexcept { p.state().module->set_stream_analog_level(v); }
 std::int32_t audio_processor_analog_level(const NativeAudioProcessor& p) noexcept { return p.state().module->recommended_stream_analog_level(); }
 void audio_processor_set_key(NativeAudioProcessor& p, bool v) noexcept { p.state().module->set_stream_key_pressed(v); }
-std::int32_t audio_processor_i16(NativeAudioProcessor& p, std::int32_t rate, std::size_t channels, rust::Slice<std::int16_t> samples, bool reverse) noexcept {
+std::int32_t audio_processor_i16(NativeAudioProcessor& p, std::int32_t rate, std::size_t channels, rust::Slice<std::int16_t> samples, bool reverse, std::uint8_t& error) noexcept {
   const webrtc::StreamConfig config(rate, channels);
+  error = ImplicitInitializationUnsafe(p, config, config, reverse) ? 12 : 0;
+  if (error) return 0;
   // Separate input also avoids memcpy overlap in native error-copy branches.
   std::vector<std::int16_t> input(samples.begin(), samples.begin() + config.num_samples());
   std::int16_t empty_input = 0, empty_output = 0;
   const auto* src = input.empty() ? &empty_input : input.data();
   auto* dest = samples.empty() ? &empty_output : samples.data();
-  return reverse ? p.state().module->ProcessReverseStream(src, config, config, dest) : p.state().module->ProcessStream(src, config, config, dest);
+  const auto status = reverse ? p.state().module->ProcessReverseStream(src, config, config, dest) : p.state().module->ProcessStream(src, config, config, dest);
+  NoteProcessingFormats(p, config, config, reverse, status);
+  if (!reverse) NoteCaptureResult(p, status);
+  return status;
 }
-std::int32_t audio_processor_float(NativeAudioProcessor& p, std::int32_t input_rate, std::size_t input_channels, rust::Slice<const float> samples, std::int32_t output_rate, std::size_t output_channels, rust::Slice<float> destination, bool reverse) noexcept {
+std::int32_t audio_processor_float(NativeAudioProcessor& p, std::int32_t input_rate, std::size_t input_channels, rust::Slice<const float> samples, std::int32_t output_rate, std::size_t output_channels, rust::Slice<float> destination, bool reverse, std::uint8_t& error) noexcept {
   const webrtc::StreamConfig input(input_rate, input_channels), output(output_rate, output_channels);
+  error = ImplicitInitializationUnsafe(p, input, output, reverse) ? 12 : 0;
+  if (error) return 0;
   float empty_input = 0, empty_output = 0;
   auto src = InputPointers(samples, input, &empty_input);
   auto dest = OutputPointers(destination, output, &empty_output);
-  return reverse ? p.state().module->ProcessReverseStream(src.data(), input, output, dest.data()) : p.state().module->ProcessStream(src.data(), input, output, dest.data());
+  const auto status = reverse ? p.state().module->ProcessReverseStream(src.data(), input, output, dest.data()) : p.state().module->ProcessStream(src.data(), input, output, dest.data());
+  NoteProcessingFormats(p, input, output, reverse, status);
+  if (!reverse) NoteCaptureResult(p, status);
+  return status;
 }
-std::int32_t audio_processor_analyze(NativeAudioProcessor& p, std::int32_t rate, std::size_t channels, rust::Slice<const float> samples) noexcept {
+std::int32_t audio_processor_analyze(NativeAudioProcessor& p, std::int32_t rate, std::size_t channels, rust::Slice<const float> samples, std::uint8_t& error) noexcept {
   const webrtc::StreamConfig input(rate, channels);
+  error = ImplicitInitializationUnsafe(p, input, input, true) ? 12 : 0;
+  if (error) return 0;
   float empty = 0;
   auto src = InputPointers(samples, input, &empty);
-  return p.state().module->AnalyzeReverseStream(src.data(), input);
+  const auto status = p.state().module->AnalyzeReverseStream(src.data(), input);
+  NoteProcessingFormats(p, input, input, true, status);
+  return status;
 }
 }

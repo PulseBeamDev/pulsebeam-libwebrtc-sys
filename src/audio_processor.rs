@@ -27,6 +27,10 @@ pub enum AudioProcessorError {
     LinearOutputUnavailable,
     LinearEchoNotConfigured,
     UnqualifiedLinearOutputQuery,
+    UnsafeQueuedRuntimeSetting,
+    UnqualifiedQueuedRuntimeSetting,
+    UnsafeRuntimeSetting,
+    UnqualifiedRuntimeReinitialization,
 }
 impl std::fmt::Display for AudioProcessorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -171,8 +175,42 @@ impl AudioProcessor {
             6 => Err(AudioProcessorError::BufferTooShort),
             7 => Err(AudioProcessorError::LinearEchoNotConfigured),
             8 => Err(AudioProcessorError::UnqualifiedLinearOutputQuery),
+            9 => Err(AudioProcessorError::UnsafeQueuedRuntimeSetting),
+            10 => Err(AudioProcessorError::UnqualifiedQueuedRuntimeSetting),
+            11 => Err(AudioProcessorError::UnsafeRuntimeSetting),
+            12 => Err(AudioProcessorError::UnqualifiedRuntimeReinitialization),
             _ => Err(AudioProcessorError::InvalidConfiguration),
         }
+    }
+    /// Call the actual void native setter. Ok means the call was admitted,
+    /// not that enqueueing succeeded. Its native acknowledgment is unavailable.
+    pub fn set_runtime_setting(
+        &mut self,
+        setting: crate::AudioProcessingRuntimeSetting,
+    ) -> Result<(), AudioProcessorError> {
+        let mut error = 0;
+        ffi::audio_processor_runtime_setting(
+            self.native.pin_mut(),
+            &setting.ffi(),
+            false,
+            &mut error,
+        );
+        Self::admission(error)
+    }
+    /// Return the actual native queue acknowledgment, not a cached disposition.
+    pub fn post_runtime_setting(
+        &mut self,
+        setting: crate::AudioProcessingRuntimeSetting,
+    ) -> Result<bool, AudioProcessorError> {
+        let mut error = 0;
+        let accepted = ffi::audio_processor_runtime_setting(
+            self.native.pin_mut(),
+            &setting.ffi(),
+            true,
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(accepted)
     }
     /// Copy the native 16-kHz linear echo output into the required channel
     /// prefix. Extra caller rows stay untouched. Native absence is false unless
@@ -278,8 +316,11 @@ impl AudioProcessor {
             _sequence: PhantomData,
         })
     }
-    pub fn initialize(&mut self) -> AudioProcessingStatus {
-        AudioProcessingStatus(ffi::audio_processor_initialize(self.native.pin_mut()))
+    pub fn initialize(&mut self) -> Result<AudioProcessingStatus, AudioProcessorError> {
+        let mut error = 0;
+        let status = ffi::audio_processor_initialize(self.native.pin_mut(), &mut error);
+        Self::admission(error)?;
+        Ok(AudioProcessingStatus(status))
     }
     /// Initialize the actual four-stream graph. This native overload always
     /// returns OK, even for unsafe dimensions, so inadmissible layouts are
@@ -297,11 +338,14 @@ impl AudioProcessor {
             s.sample_count()?;
         }
         let mut admitted = false;
+        let mut error = 0;
         let status = ffi::audio_processor_initialize_formats(
             self.native.pin_mut(),
             &formats.ffi(),
             &mut admitted,
+            &mut error,
         );
+        Self::admission(error)?;
         if !admitted {
             return Err(AudioProcessorError::InvalidDimensions);
         }
@@ -393,13 +437,17 @@ impl AudioProcessor {
         if samples.len() < stream.sample_count()? {
             return Err(AudioProcessorError::BufferTooShort);
         }
-        Ok(AudioProcessingStatus(ffi::audio_processor_i16(
+        let mut error = 0;
+        let status = ffi::audio_processor_i16(
             self.native.pin_mut(),
             stream.sample_rate_hz,
             stream.channels,
             samples,
             reverse,
-        )))
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(AudioProcessingStatus(status))
     }
     /// Deinterleaved normalized float channels in contiguous channel-major
     /// storage. Input/output layouts may differ exactly as allowed by the SDK.
@@ -450,7 +498,8 @@ impl AudioProcessor {
         if destination.len() < output.sample_count()? {
             return Err(AudioProcessorError::BufferTooShort);
         }
-        Ok(AudioProcessingStatus(ffi::audio_processor_float(
+        let mut error = 0;
+        let status = ffi::audio_processor_float(
             self.native.pin_mut(),
             input.sample_rate_hz,
             input.channels,
@@ -459,7 +508,10 @@ impl AudioProcessor {
             output.channels,
             destination,
             reverse,
-        )))
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(AudioProcessingStatus(status))
     }
     pub fn analyze_reverse_planar(
         &mut self,
@@ -467,11 +519,15 @@ impl AudioProcessor {
         samples: &[f32],
     ) -> Result<AudioProcessingStatus, AudioProcessorError> {
         Self::float_input(stream, samples)?;
-        Ok(AudioProcessingStatus(ffi::audio_processor_analyze(
+        let mut error = 0;
+        let status = ffi::audio_processor_analyze(
             self.native.pin_mut(),
             stream.sample_rate_hz,
             stream.channels,
             samples,
-        )))
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(AudioProcessingStatus(status))
     }
 }

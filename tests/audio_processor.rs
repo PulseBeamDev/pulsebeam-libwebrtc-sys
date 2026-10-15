@@ -14,7 +14,7 @@ fn processor(config: AudioProcessingConfig) -> AudioProcessor {
 #[test]
 fn native_controls_and_processing_outlive_outer_environment() {
     let mut p = processor(AudioProcessingConfig::default());
-    assert_eq!(p.initialize(), AudioProcessingStatus::OK);
+    assert_eq!(p.initialize().unwrap(), AudioProcessingStatus::OK);
     p.set_output_will_be_muted(true);
     assert!(p.output_will_be_muted());
     p.set_output_will_be_muted(false);

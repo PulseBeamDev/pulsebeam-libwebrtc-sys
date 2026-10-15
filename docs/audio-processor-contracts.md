@@ -130,7 +130,53 @@ changing that flag on an already enabled echo controller. An asserting build's
 positive-proof tracking can conservatively refuse a valid read after a config
 transition; the release getter retains the actual native available/absent result.
 
-Runtime settings and AEC dump, processing providers and
-builders, and installation of standalone selected products remain outside this
+## Typed runtime settings and queue safety
+
+AudioProcessingRuntimeSetting preserves all nine SDK variants, including the
+unspecified default and typed playout device defaults. Linear pre/post gains and
+custom-render payloads are floats; compression gain is an integer; playout
+volume and device integers retain their open native domains. Compression and
+fixed-post-gain factories retain their declared 0..90 dB domains. Unspecified
+is a real native no-op with true Post result in nonasserting builds; asserting
+builds refuse its reached DCHECK before entry. Inactive pre/post NaN and infinity
+payloads are representable and passed verbatim when no scaler consumes them.
+Active linear factors must be finite, and enabled preamp/adjustment products
+must stay finite before the native float-to-int path.
+
+set_runtime_setting calls the actual void SDK setter. Ok is admission and call
+completion, never enqueue acknowledgment. post_runtime_setting returns the real
+native boolean. Playout-volume posting attempts both capture and render queues:
+false can coexist with a successful enqueue on one side and is not rollback.
+No wrapper acknowledgment cache substitutes for these calls.
+
+Prospective full-config and selector operations check owned evidence of queued
+pre/post payloads. Acknowledged Post retains the latest same-kind target, since
+the native FIFO handler overwrites earlier targets before processing samples.
+Void Set retains a bounded range of possible targets because any enqueue can
+have failed. A later acknowledged same-kind Post supersedes both kinds of prior
+evidence. UnsafeQueuedRuntimeSetting identifies an unsafe acknowledged envelope;
+UnqualifiedQueuedRuntimeSetting identifies unsafe possible-pending evidence,
+not a native capability failure. Neither initialization, ApplyConfig nor render
+processing proves a capture-queue drain. Successful capture through either
+sample overload clears the evidence, including when capture output is unused.
+A negative capture result can precede or follow the drain, so acknowledged
+evidence becomes possible rather than being discarded. Caller admission errors
+do not enter the SDK and do not change that evidence.
+
+Runtime fixed post gain through 90 dB remains supported by the live GC2 setter.
+The pin stores that value in Config, but GC2 reconstruction DCHECKs a stricter
+fixed-gain limit below 50 dB. In asserting builds, affected explicit Initialize
+and format-triggered processing return UnqualifiedRuntimeReinitialization
+before entry; same-format proven-live processing remains available. Unknown
+format state after a native failure is conservatively refused at that boundary.
+Nonasserting builds retain actual native reconstruction behavior. initialize
+therefore returns Result, just like format initialization and processing, rather
+than fabricating a native status or silently resetting the gain. The wrapper does
+not repair this SDK mismatch. A caller may explicitly apply a valid replacement
+configuration if reconstruction is desired. This asserting-profile guard has
+source evidence; matching asserting-artifact runtime qualification remains open.
+
+AEC dump, processing providers and builders, and installation of standalone
+selected products remain outside this
 API surface. Existing peer processing selection is not standalone-product
 installation or proof of complete pinned AudioProcessing parity.
