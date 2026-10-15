@@ -2097,7 +2097,6 @@ impl ProductionSession {
     pub fn release_media_stream(&mut self, id: SessionMediaStreamId) {
         self.streams.remove(&id);
     }
-
     fn video_track_handle(&self, id: SessionTrackId) -> Result<&crate::VideoTrack, PeerError> {
         match self.stream_tracks.get(&id).ok_or_else(missing)? {
             StreamTrack::Video(track) => Ok(track),
@@ -2153,6 +2152,46 @@ impl ProductionSession {
             .get(&a)
             .ok_or_else(missing)?
             .same_interface(self.video_source_views.get(&b).ok_or_else(missing)?))
+    }
+    /// Forward a native request, not a promise of a generated frame.
+    pub fn request_video_source_refresh(
+        &mut self,
+        view: SessionVideoSourceViewId,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .request_refresh_frame();
+        Ok(())
+    }
+    pub fn generate_video_source_key_frame(
+        &mut self,
+        view: SessionVideoSourceViewId,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .generate_key_frame();
+        Ok(())
+    }
+    pub fn process_video_source_constraints(
+        &mut self,
+        view: SessionVideoSourceViewId,
+        constraints: crate::VideoSourceConstraints,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .process_constraints(constraints);
+        Ok(())
+    }
+    pub fn request_video_track_refresh(&mut self, track: SessionTrackId) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_track_handle(track)?.request_refresh_frame();
+        Ok(())
     }
     pub fn video_track_status(
         &mut self,

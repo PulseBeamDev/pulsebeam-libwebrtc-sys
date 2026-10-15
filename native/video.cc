@@ -1,6 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "pulsebeam-webrtc-sys/native/video_sink_queue.h"
+#include "pulsebeam-webrtc-sys/native/video_source_controls.h"
 #include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
@@ -640,6 +641,7 @@ struct NativeCamera::State {
 struct NativeVideoSource::State {
   webrtc::scoped_refptr<PushVideoSource> source;
   webrtc::Thread* signaling_thread = nullptr;
+  webrtc::Thread* worker_thread = nullptr;
   std::atomic<bool> closed{false};
 };
 
@@ -650,6 +652,7 @@ struct NativeVideoTrack::State {
 struct NativeVideoSourceView::State {
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
   webrtc::Thread* signaling = nullptr;
+  webrtc::Thread* worker = nullptr;
 };
 struct NativeVideoObserver::State final : webrtc::ObserverInterface {
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
@@ -678,15 +681,33 @@ const std::unique_ptr<NativeVideoSourceView::State>& NativeVideoSourceView::stat
 std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept {
   auto state = std::make_unique<NativeVideoSourceView::State>();
   state->signaling = source.state()->signaling_thread;
+  state->worker = source.state()->worker_thread;
   state->signaling->BlockingCall([&] { state->source = source.state()->source; });
   return std::make_unique<NativeVideoSourceView>(std::move(state));
 }
 std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept {
   auto state = std::make_unique<NativeVideoSourceView::State>();
   state->signaling = factory.signaling_thread();
+  state->worker = factory.worker_thread();
   state->signaling->BlockingCall([&] { state->source = track.state()->track->GetSource(); });
   if (!state->source) return nullptr;
   return std::make_unique<NativeVideoSourceView>(std::move(state));
+}
+void video_source_view_request_refresh(const NativeVideoSourceView& view) noexcept {
+  RequestVideoSourceRefresh(*view.state()->source, *view.state()->worker);
+}
+void video_source_view_generate_key_frame(const NativeVideoSourceView& view) noexcept {
+  GenerateVideoSourceKeyFrame(*view.state()->source, *view.state()->worker);
+}
+void video_source_view_process_constraints(const NativeVideoSourceView& view,
+    bool has_min, double min, bool has_max, double max) noexcept {
+  webrtc::VideoTrackSourceConstraints constraints;
+  if (has_min) constraints.min_fps = min;
+  if (has_max) constraints.max_fps = max;
+  ProcessVideoSourceConstraints(*view.state()->source, *view.state()->worker, constraints);
+}
+void video_track_request_refresh(const NativeVideoTrack& track) noexcept {
+  track.state()->track->RequestRefreshFrame();
 }
 bool video_source_views_same_interface(const NativeVideoSourceView& a, const NativeVideoSourceView& b) noexcept {
   return a.state()->source.get() == b.state()->source.get();
@@ -1382,6 +1403,7 @@ std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept {
   auto state = std::make_unique<NativeVideoSource::State>();
   state->signaling_thread = factory.signaling_thread();
+  state->worker_thread = factory.worker_thread();
   if (!state->signaling_thread) {
     return nullptr;
   }

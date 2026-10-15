@@ -35,6 +35,19 @@ fn native_video_views_preserve_defaults_change_notifications_and_exact_origin_li
     let cap = NonZeroUsize::new(2).unwrap();
     let source_events = installed.observe_changes(cap).unwrap();
     let track_events = track.observe_changes(cap).unwrap();
+    for view in [&producer, &installed] {
+        view.request_refresh_frame();
+        view.generate_key_frame(); // Native no-op, not fabricated Unsupported.
+        view.process_constraints(VideoSourceConstraints {
+            min_fps: Some(-0.0),
+            max_fps: Some(f64::from_bits(0x7ff8000000000123)),
+        });
+        view.process_constraints(VideoSourceConstraints::default());
+        assert_eq!(view.state(), VideoSourceState::Live);
+    }
+    track.request_refresh_frame();
+    assert_eq!(source_events.try_next_event(), None);
+    assert_eq!(track_events.try_next_event(), None);
     track.set_should_receive(false);
     track.set_should_receive(false);
     assert!(!track.should_receive());
@@ -140,6 +153,12 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
         session
             .set_video_track_content_hint(track, VideoContentHint::Text)
             .unwrap();
+        session.request_video_source_refresh(view).unwrap();
+        session.generate_video_source_key_frame(view).unwrap();
+        session.process_video_source_constraints(view, VideoSourceConstraints {
+            min_fps: None, max_fps: Some(0.0),
+        }).unwrap();
+        session.request_video_track_refresh(track).unwrap();
         let status = session.video_track_status(track).unwrap();
         assert_eq!(status.kind, "video");
         assert!(!status.should_receive);
@@ -160,6 +179,9 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
             VideoSourceState::Ended
         );
         assert_eq!(session.video_source_status(alias).unwrap().stats, None);
+        session.request_video_source_refresh(alias).unwrap();
+        session.generate_video_source_key_frame(alias).unwrap();
+        session.process_video_source_constraints(alias, VideoSourceConstraints::default()).unwrap();
         for _ in 0..2 {
             assert_eq!(
                 session.try_video_observer_event(track_events).unwrap(),

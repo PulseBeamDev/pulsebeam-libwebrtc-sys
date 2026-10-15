@@ -557,6 +557,33 @@ impl VideoSourceView {
         match ffi::video_source_view_denoising(self.native()) { -1 => None, 0 => Some(false), 1 => Some(true), value => unreachable!("invalid native denoising value {value}") }
     }
     pub fn supports_encoded_output(&self) -> bool { ffi::video_source_view_encoded_output(self.native()) }
+    /// Dispatch the native refresh request on the existing owner worker.
+    /// A source may implement this as a no-op; this does not promise a frame.
+    pub fn request_refresh_frame(&self) {
+        ffi::video_source_view_request_refresh(self.native());
+    }
+
+    /// Dispatch the native encoded-output keyframe request. The pinned local
+    /// push source implements this as a no-op, including when encoded output
+    /// is unavailable. No synthetic frame or success indication is produced.
+    pub fn generate_key_frame(&self) {
+        ffi::video_source_view_generate_key_frame(self.native());
+    }
+
+    /// Forward constraints unchanged through the native source interface.
+    /// The SDK source proxy dispatches this operation on its worker. Current
+    /// push/RTP sources inherit the SDK no-op; no applied limits or sink
+    /// callbacks are inferred from this request.
+    pub fn process_constraints(&self, constraints: VideoSourceConstraints) {
+        ffi::video_source_view_process_constraints(
+            self.native(),
+            constraints.min_fps.is_some(),
+            constraints.min_fps.unwrap_or(0.0),
+            constraints.max_fps.is_some(),
+            constraints.max_fps.unwrap_or(0.0),
+        );
+    }
+
     pub fn stats(&self) -> Option<VideoSourceStats> {
         let value = ffi::video_source_view_stats(self.native());
         value.available.then_some(VideoSourceStats { input_width: value.input_width, input_height: value.input_height })
@@ -739,6 +766,12 @@ impl VideoTrack {
             1 => VideoTrackState::Ended,
             value => unreachable!("native adapter returned invalid video track state {value}"),
         }
+    }
+
+    /// Dispatch the track's native refresh request. Frame generation is up to
+    /// the source; dispatch does not promise delivery or advance a clock.
+    pub fn request_refresh_frame(&self) {
+        ffi::video_track_request_refresh(self.native());
     }
 
     pub fn attach_sink(&self) -> Result<VideoSink, PeerError> {

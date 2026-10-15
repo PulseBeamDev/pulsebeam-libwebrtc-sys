@@ -2732,6 +2732,29 @@ fn controlled_peer_admission_and_pending_close_preserve_exact_outcomes() {
             before.pending_operations > 0,
             "no real pending native work exercised"
         );
+        #[cfg(target_os = "linux")]
+        let threads_before: std::collections::BTreeSet<_> = std::fs::read_dir("/proc/self/task")
+            .unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        let source = factory.create_video_source().unwrap();
+        let track = factory.create_video_track("controlled-source-controls", &source).unwrap();
+        for view in [source.as_view(), track.source().unwrap()] {
+            view.request_refresh_frame();
+            view.generate_key_frame();
+            view.process_constraints(VideoSourceConstraints {
+                min_fps: Some(0.0), max_fps: None,
+            });
+        }
+        track.request_refresh_frame();
+        #[cfg(target_os = "linux")]
+        {
+            let threads_after: std::collections::BTreeSet<_> = std::fs::read_dir("/proc/self/task")
+                .unwrap().map(|entry| entry.unwrap().file_name()).collect();
+            assert_eq!(threads_before, threads_after);
+        }
+        // Real callbacks were pending before these source operations. They
+        // must not pump that work, advance time or create worker threads.
+        assert_eq!(peer.event_observation(), before);
+        assert_eq!(world.now(), Duration::from_secs(10));
         for _ in 0..128 {
             assert_eq!(
                 peer.create_offer().unwrap_err().kind,

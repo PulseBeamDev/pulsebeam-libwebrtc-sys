@@ -349,6 +349,11 @@ bool close_video_source(const NativeVideoSource& source) noexcept;
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept;
+void video_source_view_request_refresh(const NativeVideoSourceView&) noexcept;
+void video_source_view_generate_key_frame(const NativeVideoSourceView&) noexcept;
+void video_source_view_process_constraints(const NativeVideoSourceView&,
+    bool, double, bool, double) noexcept;
+void video_track_request_refresh(const NativeVideoTrack&) noexcept;
 bool video_source_views_same_interface(const NativeVideoSourceView& a, const NativeVideoSourceView& b) noexcept;
 std::uint8_t video_source_view_state(const NativeVideoSourceView& source) noexcept;
 bool video_source_view_remote(const NativeVideoSourceView& source) noexcept;

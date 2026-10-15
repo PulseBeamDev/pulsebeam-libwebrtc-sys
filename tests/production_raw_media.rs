@@ -974,6 +974,13 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         assert_eq!(session.dropped_raw_video_sink_events(call.video.unwrap()).unwrap(), 0);
         let (local, installed_view, remote, source_events, track_events, _, _) = retained_video;
         for view in [local, installed_view, remote] {
+            // Exercise actual local/no-op and remote worker-proxied requests
+            // during the same live call, without claiming dispatch is delivery.
+            session.request_video_source_refresh(view).unwrap();
+            session.generate_video_source_key_frame(view).unwrap();
+            session.process_video_source_constraints(view, VideoSourceConstraints {
+                min_fps: Some(0.0), max_fps: None,
+            }).unwrap();
             let status = session.video_source_status(view).unwrap();
             assert_eq!(status.state, VideoSourceState::Live);
             assert_eq!(status.stats, None); // Actual frames do not invent GetStats.

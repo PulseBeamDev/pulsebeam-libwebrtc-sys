@@ -231,8 +231,15 @@ notifications, with saturating overflow counts from `dropped_events` or
 `dropped_raw_video_sink_events`. Constraint optionals and floating values are
 copied unchanged. Local accepted notifications remain readable after sink close.
 These are native callbacks, not inferred frame loss or source-state changes;
-frame polling and frame-retention loss counters remain separate. Sink wants and
-source constraint operations are still incomplete binding work.
+frame polling and frame-retention loss counters remain separate. `VideoSourceView`
+forwards refresh, encoded-output keyframe and constraint requests on the existing
+native worker; `VideoTrack` also forwards refresh requests. Actor equivalents are
+`request_video_source_refresh`, `generate_video_source_key_frame`,
+`process_video_source_constraints` and `request_video_track_refresh`. These are
+native void requests, not promises of a frame or applied limits. The pinned push
+source inherits SDK no-ops; the RTP source forwards keyframe requests while its
+native callback remains installed. Constraints are not cached or normalized. Full sink
+wants and remaining source encoded-output operations are still incomplete.
 
 Drain `try_peer_event`, `try_channel_event`, registered DTMF/DTLS/SCTP observer
 queues and any attached encoded sinks, then await `ready()` (or call `poll_ready` from an executor). Readiness coalesces

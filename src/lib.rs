@@ -7634,6 +7634,16 @@ mod ffi {
             track: &NativeVideoTrack,
             factory: &NativePeerConnectionFactory,
         ) -> UniquePtr<NativeVideoSourceView>;
+        fn video_source_view_request_refresh(source: &NativeVideoSourceView);
+        fn video_source_view_generate_key_frame(source: &NativeVideoSourceView);
+        fn video_source_view_process_constraints(
+            source: &NativeVideoSourceView,
+            has_min: bool,
+            min: f64,
+            has_max: bool,
+            max: f64,
+        );
+        fn video_track_request_refresh(track: &NativeVideoTrack);
         fn video_source_views_same_interface(
             a: &NativeVideoSourceView,
             b: &NativeVideoSourceView,
