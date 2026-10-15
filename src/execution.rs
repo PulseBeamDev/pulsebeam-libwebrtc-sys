@@ -399,6 +399,11 @@ impl TaskQueue {
     }
 }
 
+#[path = "environment_factory.rs"]
+mod environment_factory;
+pub use environment_factory::EnvironmentFactory;
+pub(crate) use environment_factory::{RustEnvironmentFactoryRetention, RustEnvironmentFactoryRandomness, environment_factory_has_randomness, environment_factory_randomness};
+
 /// A thread-safe, copyable WebRTC environment.
 pub struct Environment {
     native: cxx::UniquePtr<ffi::NativeEnvironment>,
@@ -624,11 +629,6 @@ impl EnvironmentBuilder {
     /// Controlled loggers and outputs must use only caller-controlled work.
     pub fn event_log(mut self, logger: impl crate::RtcEventLogger) -> Self {
         self.event_log = Some(Box::new(logger));
-        self
-    }
-
-    pub(crate) fn owned_event_log(mut self, logger: Box<dyn crate::RtcEventLogger>) -> Self {
-        self.event_log = Some(logger);
         self
     }
 

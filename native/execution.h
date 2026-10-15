@@ -175,6 +175,28 @@ class NativeEnvironment final {
   std::unique_ptr<State> state_;
 };
 
+struct RustEnvironmentFactoryRetention;
+struct FfiClockTimeBounds;
+class NativeEnvironmentFactory final {
+ public:
+  struct State;
+  explicit NativeEnvironmentFactory(std::unique_ptr<State> state) noexcept;
+  ~NativeEnvironmentFactory();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeEnvironmentFactory> new_environment_factory(FfiClockTimeBounds bounds) noexcept;
+std::unique_ptr<NativeEnvironmentFactory> environment_factory_from_environment(const NativeEnvironment& environment) noexcept;
+std::unique_ptr<NativeEnvironmentFactory> clone_environment_factory(const NativeEnvironmentFactory& factory) noexcept;
+void environment_factory_set_trials(NativeEnvironmentFactory& factory, rust::Box<RustFieldTrials> trials) noexcept;
+void environment_factory_set_manual_clock(NativeEnvironmentFactory& factory, const NativeManualClock& clock, FfiClockTimeBounds bounds) noexcept;
+void environment_factory_set_clock(NativeEnvironmentFactory& factory, const NativeClock& clock, FfiClockTimeBounds bounds) noexcept;
+void environment_factory_set_queues(NativeEnvironmentFactory& factory, const NativeTaskQueueFactory& queues) noexcept;
+void environment_factory_set_log(NativeEnvironmentFactory& factory, rust::Box<RustRtcEventLog> log) noexcept;
+std::unique_ptr<NativeEnvironment> environment_factory_create(const NativeEnvironmentFactory& factory, rust::Box<RustEnvironmentFactoryRetention> retention) noexcept;
+std::unique_ptr<NativeTaskQueueFactory> environment_default_queue_metadata(const NativeEnvironment& environment) noexcept;
+
 class NativeRandomnessLease final {
  public:
   NativeRandomnessLease() noexcept = default;
@@ -283,7 +305,6 @@ std::unique_ptr<NativeEnvironment> create_environment(
 // identity comparison; absent/unmatched selection evidence stays unknown.
 std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
     const webrtc::Environment& environment, const NativeEnvironment* selected = nullptr) noexcept;
-struct FfiClockTimeBounds;
 FfiClockTimeBounds environment_clock_time_bounds(const NativeEnvironment& environment) noexcept;
 bool environment_clock_identity_matches(const NativeEnvironment& environment,
     const NativeEnvironment& other) noexcept;

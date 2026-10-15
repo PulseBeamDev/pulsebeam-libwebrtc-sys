@@ -16,6 +16,39 @@ Adapter-owned provider destruction and task cancellation use the shared
 [provider panic containment policy](provider-panic-contracts.md), including safe
 handling of unknown panic payloads. Ordinary string panics are recommended.
 
+## Reusable native factory composition
+
+`EnvironmentFactory::new()` owns an initially empty native factory. Each
+`create()` resolves absent utilities through the SDK, including a fresh default
+task-queue factory, rather than copying a cached default environment.
+`from_environment(&environment)` uses the SDK's environment-derived constructor
+and preserves the selected clock, queue factory and logger. Factory clones share
+installed utilities, while later setters affect only that factory's branch.
+
+`set_field_trials`, `set_clock`, `set_clock_handle`, `set_task_queue_factory` and
+`set_event_log` install owning typed inputs. Replacing a selection does not
+prematurely release dependencies of earlier utilities still owned by SDK storage.
+`set_randomness` retains the explicit Rust installation without reseeding it.
+Created environments and copied trial snapshots retain the SDK storage and Rust
+input branch through native destruction, independently of factory close. A
+selected randomness lease also follows the shared logger through off-queue stock
+retirement, even if that logger was created before the lease was selected. This
+lease guard contains no environment back-reference. The lifetime root delegates trial lookup and `CreateCopy` to the actual native view;
+it does not synthesize trial values or replace the selected clock, queues or log.
+
+Factory `create` validates cooperative creator affinity and requires an explicitly
+selected matching clock. It does not infer a clock from queues. The convenience
+`Environment::builder()` retains its existing cooperative-clock inference.
+Creating an environment adds no queue, executor or clock advancement. Queue
+products still require explicit creation. `close` releases only that factory;
+subsequent create/set calls report `Closed`.
+
+`ProductionSession::builder(config).environment_factory(&factory)` snapshots
+these owning selections before native actor construction. Individual actor
+clock, queue, trial, logger and randomness selections override the snapshot.
+Cooperative or unqualified queues cannot enter the production actor. Factory
+selection and its native creation contexts remain valid after actor migration.
+
 ## Environment access and lifetime
 
 Without an override, native environment defaults are retained. The default deprecated process-global trial source is not replaced with an empty map. Its native copies continue to use the pinned process-global lookup semantics and registration checks. The binding does not add a process-global setter.

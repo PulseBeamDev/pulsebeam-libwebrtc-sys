@@ -644,7 +644,7 @@ pub(crate) use event_log::{
     RustRtcEventLog, RustRtcEventLogFactory, rust_event_log_create, rust_event_log_log,
     rust_event_log_failed, rust_event_log_present, rust_event_log_start, rust_event_log_stop, rust_event_log_stop_async,
 };
-pub(crate) use execution::{RustTask, run_task};
+pub(crate) use execution::{RustTask, RustEnvironmentFactoryRetention, RustEnvironmentFactoryRandomness, environment_factory_has_randomness, environment_factory_randomness, run_task};
 pub use field_trials::{FieldTrials, FieldTrialsError, FieldTrialsSnapshot, FieldTrialsView};
 pub(crate) use field_trials::{
     RustFieldTrials, field_trials_present, rust_field_trials_copy, rust_field_trials_lookup,
@@ -692,7 +692,7 @@ pub use encoded_video::{
     EncodedVideoSource, H264AccessUnit, H264SourceProfile,
 };
 pub use execution::{
-    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder,
+    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder, EnvironmentFactory,
     EnvironmentClockError,
     MAX_CONTROLLED_TIME, ManualClock, NetworkThread, PumpResult, QueuePriority, RandomnessLease,
     RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue, TaskQueueFactory,
@@ -3603,6 +3603,10 @@ mod ffi {
             name: &[u8],
         ) -> i32;
         type RustEventLogRetention;
+        type RustEnvironmentFactoryRetention;
+        type RustEnvironmentFactoryRandomness;
+        fn environment_factory_has_randomness(retention: &RustEnvironmentFactoryRetention) -> bool;
+        fn environment_factory_randomness(retention: &RustEnvironmentFactoryRetention) -> Box<RustEnvironmentFactoryRandomness>;
         type RustEventLogProductStop;
         fn event_log_product_stopped(completion: &RustEventLogProductStop, failed: bool);
         type RustRtcEventLogFactory;
@@ -7473,6 +7477,17 @@ mod ffi {
             clock_minimum_us: i64,
             clock_maximum_us: i64,
         ) -> UniquePtr<NativeEnvironment>;
+        type NativeEnvironmentFactory;
+        fn new_environment_factory(bounds: FfiClockTimeBounds) -> UniquePtr<NativeEnvironmentFactory>;
+        fn environment_factory_from_environment(environment: &NativeEnvironment) -> UniquePtr<NativeEnvironmentFactory>;
+        fn clone_environment_factory(factory: &NativeEnvironmentFactory) -> UniquePtr<NativeEnvironmentFactory>;
+        fn environment_factory_set_trials(factory: Pin<&mut NativeEnvironmentFactory>, trials: Box<RustFieldTrials>);
+        fn environment_factory_set_manual_clock(factory: Pin<&mut NativeEnvironmentFactory>, clock: &NativeManualClock, bounds: FfiClockTimeBounds);
+        fn environment_factory_set_clock(factory: Pin<&mut NativeEnvironmentFactory>, clock: &NativeClock, bounds: FfiClockTimeBounds);
+        fn environment_factory_set_queues(factory: Pin<&mut NativeEnvironmentFactory>, queues: &NativeTaskQueueFactory);
+        fn environment_factory_set_log(factory: Pin<&mut NativeEnvironmentFactory>, log: Box<RustRtcEventLog>);
+        fn environment_factory_create(factory: &NativeEnvironmentFactory, retention: Box<RustEnvironmentFactoryRetention>) -> UniquePtr<NativeEnvironment>;
+        fn environment_default_queue_metadata(environment: &NativeEnvironment) -> UniquePtr<NativeTaskQueueFactory>;
         type NativeFieldTrials;
         fn field_trials_validate(configuration: &str) -> bool;
         fn environment_field_trials(

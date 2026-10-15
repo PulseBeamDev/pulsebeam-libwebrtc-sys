@@ -65,6 +65,8 @@ class NativeRtcEventLogFactory final {
 std::unique_ptr<NativeRtcEventLogFactory> new_rtc_event_log_factory(rust::Box<RustRtcEventLogFactory> factory) noexcept;
 
 struct RustEventLogRetention;
+struct RustEnvironmentFactoryRandomness;
+void retain_event_log_randomness(webrtc::RtcEventLog& logger, rust::Box<RustEnvironmentFactoryRandomness> retention) noexcept;
 struct RustEventLogProductStop;
 
 // Scoped result propagation through SDK void/bool peer logger entry points.

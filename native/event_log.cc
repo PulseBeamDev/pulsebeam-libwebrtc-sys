@@ -93,6 +93,7 @@ struct SharedLogStorage {
   // Released after the logger and every creation dependency, including on the
   // production-only retirement thread used for own-output-queue destruction.
   std::shared_ptr<NativeProductionLease> production;
+  std::shared_ptr<rust::Box<RustEnvironmentFactoryRandomness>> randomness;
   std::shared_ptr<rust::Box<RustEventLogRetention>> retained;
   std::optional<webrtc::Environment> context;
   std::unique_ptr<webrtc::RtcEventLog> owned;
@@ -108,6 +109,16 @@ class SharedLogState : public std::enable_shared_from_this<SharedLogState> {
       // logger takes this path. Keep both SDK and Rust dependencies and the
       // production reservation until the native join finishes off-queue.
       std::thread([storage = std::move(storage_)]() mutable { storage.reset(); }).detach();
+    }
+  }
+  void RetainRandomness(rust::Box<RustEnvironmentFactoryRandomness> retention) {
+    auto incoming = std::make_shared<rust::Box<RustEnvironmentFactoryRandomness>>(std::move(retention));
+    {
+      std::lock_guard lock(mutex_);
+      // A live installation is process-exclusive, so an existing guard
+      // necessarily retains the same installation. Never capture an SDK
+      // Environment here: it could own this very logger and form a cycle.
+      if (!storage_->randomness) storage_->randomness.swap(incoming);
     }
   }
   bool Stock() const { return kind_ == SharedLogKind::Stock; }
@@ -296,7 +307,7 @@ std::unique_ptr<webrtc::RtcEventLog> MakeSharedLog(std::unique_ptr<webrtc::RtcEv
     std::shared_ptr<NativeProductionLease> production = nullptr) {
   auto* pointer = logger ? logger.get() : &context->event_log();
   auto storage = std::make_unique<SharedLogStorage>(SharedLogStorage{
-      std::move(production), std::move(retained), std::move(context), std::move(logger), pointer});
+      std::move(production), nullptr, std::move(retained), std::move(context), std::move(logger), pointer});
   return std::make_unique<SharedEventLog>(std::make_shared<SharedLogState>(std::move(storage), kind));
 }
 class SharedBuiltinLogFactory final : public webrtc::RtcEventLogFactoryInterface {
@@ -942,6 +953,9 @@ std::unique_ptr<NativeRtcEventLogFactory> new_rtc_event_log_factory(rust::Box<Ru
 }
 std::unique_ptr<webrtc::RtcEventLog> rtc_event_log_adapter(rust::Box<RustRtcEventLog> logger) noexcept {
   return std::make_unique<RustRtcEventLogAdapter>(std::move(logger));
+}
+void retain_event_log_randomness(webrtc::RtcEventLog& logger, rust::Box<RustEnvironmentFactoryRandomness> retention) noexcept {
+  static_cast<SharedEventLog&>(logger).state()->RetainRandomness(std::move(retention));
 }
 std::unique_ptr<webrtc::RtcEventLog> shared_custom_event_log(rust::Box<RustRtcEventLog> logger) noexcept {
   return MakeSharedLog(rtc_event_log_adapter(std::move(logger)), SharedLogKind::Custom);

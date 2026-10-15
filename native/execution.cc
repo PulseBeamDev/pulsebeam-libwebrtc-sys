@@ -244,6 +244,8 @@ struct NativeTaskQueueFactory::State {
       : default_factory(task_queue_provider_adapter(std::move(provider))), provider_backed(true) {}
   explicit State(std::shared_ptr<NativeManualClock::State> clock_state) noexcept
       : clock(std::move(clock_state)) {}
+  // Metadata for an exact SDK-owned default delegate, never a bare factory.
+  explicit State(std::nullptr_t) noexcept {}
 
   bool cooperative() const noexcept { return clock != nullptr; }
 
@@ -1070,6 +1072,89 @@ std::unique_ptr<NativeEnvironment> create_environment(
       std::make_unique<NativeEnvironment::State>(custom_log ? environment_factory.Create() : shared_default_event_log(environment_factory.Create()),
           FfiClockTimeBounds{true, clock_minimum_us, clock_maximum_us,
               custom_clock ? custom_clock->monotonic() : clock != nullptr}));
+}
+
+struct NativeEnvironmentFactory::State {
+  webrtc::EnvironmentFactory factory;
+  FfiClockTimeBounds bounds;
+  bool log_selected = false;
+};
+NativeEnvironmentFactory::NativeEnvironmentFactory(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeEnvironmentFactory::~NativeEnvironmentFactory() = default;
+const std::unique_ptr<NativeEnvironmentFactory::State>& NativeEnvironmentFactory::state() const noexcept { return state_; }
+std::unique_ptr<NativeEnvironmentFactory> new_environment_factory(FfiClockTimeBounds bounds) noexcept {
+  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory{}, bounds, false));
+}
+std::unique_ptr<NativeEnvironmentFactory> environment_factory_from_environment(const NativeEnvironment& environment) noexcept {
+  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory(environment.environment()), environment.state()->clock_bounds, true));
+}
+std::unique_ptr<NativeEnvironmentFactory> clone_environment_factory(const NativeEnvironmentFactory& factory) noexcept {
+  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(*factory.state()));
+}
+void environment_factory_set_trials(NativeEnvironmentFactory& factory, rust::Box<RustFieldTrials> trials) noexcept {
+  factory.state()->factory.Set(field_trials_adapter(std::move(trials)));
+}
+void environment_factory_set_manual_clock(NativeEnvironmentFactory& factory, const NativeManualClock& clock, FfiClockTimeBounds bounds) noexcept {
+  factory.state()->factory.Set(std::make_unique<SharedClock>(clock.state()));
+  factory.state()->bounds = bounds;
+}
+void environment_factory_set_clock(NativeEnvironmentFactory& factory, const NativeClock& clock, FfiClockTimeBounds bounds) noexcept {
+  factory.state()->factory.Set(clock_reference(clock));
+  factory.state()->bounds = bounds;
+}
+void environment_factory_set_queues(NativeEnvironmentFactory& factory, const NativeTaskQueueFactory& queues) noexcept {
+  if (queues.environment()) {
+    factory.state()->factory.Set(std::make_unique<EnvironmentTaskQueueFactory>(*queues.environment(), queues.production_lease()));
+  } else if (queues.state()->cooperative()) {
+    factory.state()->factory.Set(std::make_unique<CooperativeTaskQueueFactory>(queues.state()));
+  } else {
+    factory.state()->factory.Set(std::make_unique<SharedTaskQueueFactory>(queues.state()));
+  }
+}
+void environment_factory_set_log(NativeEnvironmentFactory& factory, rust::Box<RustRtcEventLog> log) noexcept {
+  factory.state()->factory.Set(shared_custom_event_log(std::move(log)));
+  factory.state()->log_selected = true;
+}
+namespace {
+// An owning field-trial delegate is the storage root for the complete SDK
+// environment and its Rust input branch. Clock, queue and logger pointers stay
+// exact. The SDK is destroyed before Rust leases, including on final SDK aliases.
+struct FactoryDependencies {
+  rust::Box<RustEnvironmentFactoryRetention> rust;
+  webrtc::Environment environment;
+};
+class RetainedFactoryTrials final : public webrtc::FieldTrialsView {
+ public:
+  explicit RetainedFactoryTrials(std::shared_ptr<FactoryDependencies> dependencies,
+      std::unique_ptr<webrtc::FieldTrialsView> copy = nullptr)
+      : dependencies_(std::move(dependencies)), copy_(std::move(copy)) {}
+  std::string Lookup(absl::string_view key) const override { return view().Lookup(key); }
+  std::unique_ptr<webrtc::FieldTrialsView> CreateCopy() const override {
+    return std::make_unique<RetainedFactoryTrials>(dependencies_, view().CreateCopy());
+  }
+ private:
+  const webrtc::FieldTrialsView& view() const { return copy_ ? *copy_ : dependencies_->environment.field_trials(); }
+  std::shared_ptr<FactoryDependencies> dependencies_;
+  std::unique_ptr<webrtc::FieldTrialsView> copy_;
+};
+}
+std::unique_ptr<NativeEnvironment> environment_factory_create(const NativeEnvironmentFactory& factory,
+    rust::Box<RustEnvironmentFactoryRetention> retention) noexcept {
+  auto environment = factory.state()->factory.Create();
+  if (!factory.state()->log_selected) environment = shared_default_event_log(std::move(environment));
+  if (environment_factory_has_randomness(*retention)) {
+    retain_event_log_randomness(environment.event_log(), environment_factory_randomness(*retention));
+  }
+  auto dependencies = std::make_shared<FactoryDependencies>(std::move(retention), std::move(environment));
+  webrtc::EnvironmentFactory retained;
+  retained.Set(std::make_unique<RetainedFactoryTrials>(dependencies));
+  retained.Set(&dependencies->environment.clock());
+  retained.Set(&dependencies->environment.task_queue_factory());
+  retained.Set(&dependencies->environment.event_log());
+  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(retained.Create(), factory.state()->bounds));
+}
+std::unique_ptr<NativeTaskQueueFactory> environment_default_queue_metadata(const NativeEnvironment& environment) noexcept {
+  return std::make_unique<NativeTaskQueueFactory>(std::make_shared<NativeTaskQueueFactory::State>(nullptr), environment.environment());
 }
 
 std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(

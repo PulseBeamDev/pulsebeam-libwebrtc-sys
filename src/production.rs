@@ -472,6 +472,7 @@ pub struct ProductionSessionBuilder {
     clock: Option<crate::Clock>,
     task_queue_factory: Option<crate::TaskQueueFactory>,
     randomness: Option<crate::RandomnessLease>,
+    environment_factory: Option<crate::EnvironmentFactory>,
 }
 
 impl ProductionSessionBuilder {
@@ -638,6 +639,13 @@ impl ProductionSessionBuilder {
         self
     }
 
+    /// Snapshot a reusable owning environment factory. No local peer/thread
+    /// handles are imported. Individual environment selections override it.
+    pub fn environment_factory(mut self, factory: &crate::EnvironmentFactory) -> Self {
+        self.environment_factory = Some(factory.clone());
+        self
+    }
+
     /// Register an owned monitor factory with native network-thread callbacks.
     pub fn network_monitor_factory(mut self, factory: impl crate::NetworkMonitorFactory) -> Self {
         self.network_monitor_factory = Some(Arc::new(factory));
@@ -709,6 +717,7 @@ impl ProductionSession {
         ProductionSessionBuilder {
             config,
             randomness: None,
+            environment_factory: None,
             audio_encoder_factory: None,
             audio_decoder_factory: None,
             pcm_audio: false,
@@ -851,6 +860,7 @@ impl ProductionSession {
         // Keep the lease until error-path provider cleanup has finished.
         let ProductionSessionBuilder {
             randomness,
+            environment_factory,
             config,
             audio_encoder_factory,
             audio_decoder_factory,
@@ -971,31 +981,21 @@ impl ProductionSession {
                 "controlled task queue factories cannot enter the production actor",
             ));
         }
-        if field_trials.is_some()
-            || environment_event_log.is_some()
-            || clock.is_some()
-            || task_queue_factory.is_some()
-            || randomness.is_some()
-        {
-            let mut environment = crate::Environment::builder();
-            if let Some(factory) = task_queue_factory {
-                environment = environment.task_queue_factory(&factory);
-            }
-            if let Some(clock) = clock {
-                environment = environment.clock_handle(&clock);
-            }
-            if let Some(view) = field_trials {
-                environment = environment.field_trials(view);
-            }
-            if let Some(logger) = environment_event_log {
-                environment = environment.owned_event_log(logger);
-            }
-            if let Some(lease) = randomness {
-                environment = environment.randomness(&lease);
-            }
-            let environment = environment
-                .build()
+        if environment_factory.is_some() || field_trials.is_some() || environment_event_log.is_some() || clock.is_some() || task_queue_factory.is_some() || randomness.is_some() {
+            let mut environment = environment_factory.unwrap_or_default();
+            let configure = || -> Result<crate::Environment, crate::BuildEnvironmentError> {
+                if let Some(factory) = task_queue_factory { environment.set_task_queue_factory(&factory)?; }
+                if let Some(clock) = clock { environment.set_clock_handle(&clock)?; }
+                if let Some(view) = field_trials { environment.set_field_trials(view)?; }
+                if let Some(logger) = environment_event_log { environment.set_event_log(logger)?; }
+                if let Some(lease) = randomness { environment.set_randomness(&lease)?; }
+                environment.create()
+            };
+            let environment = configure()
                 .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
+            if environment.cooperative_queues() != Some(false) {
+                return Err(error(PeerErrorKind::UnsupportedParameter, "production environment requires qualified non-cooperative task queues"));
+            }
             builder = builder.environment(environment);
         }
         let input = config

@@ -144,14 +144,25 @@ impl EventLogOutputSink for DropLastSdkOwner {
 }
 impl Drop for DropLastSdkOwner {
     fn drop(&mut self) {
+        assert!(
+            RandomnessLease::acquire(0xe105).is_err(),
+            "output destruction outlived the composed environment lease"
+        );
         let _ = self.retired.send(());
     }
 }
 #[test]
 fn final_stock_sdk_owner_on_output_queue_retires_off_queue_with_leases() {
     let lease = RandomnessLease::acquire(0xe104).unwrap();
-    let mut source = Environment::builder().randomness(&lease).build().unwrap();
-    let mut environment = stock_environment(&source);
+    // The logger was created without this lease. Composition must attach only
+    // the independent lease guard, never an Environment that owns the logger.
+    let mut source = Environment::builder().build().unwrap();
+    let mut stock = stock_environment(&source);
+    let mut factory = EnvironmentFactory::from_environment(&stock).unwrap();
+    factory.set_randomness(&lease).unwrap();
+    let mut environment = factory.create().unwrap();
+    factory.close();
+    stock.close();
     let owner = Arc::new(Mutex::new(Some(environment.clone())));
     let (entered, entry) = std::sync::mpsc::channel();
     let (resume, continuation) = std::sync::mpsc::channel();
