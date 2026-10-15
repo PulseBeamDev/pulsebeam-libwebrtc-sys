@@ -283,6 +283,8 @@ std::uint8_t peer_add_ice_candidate(const NativePeerConnection &peer,
 std::uint8_t peer_request_sender_stats(const NativePeerConnection&, const NativeRtpSender&, std::uint64_t) noexcept;
 std::uint8_t peer_request_receiver_stats(const NativePeerConnection&, const NativeRtpReceiver&, std::uint64_t) noexcept;
 std::uint8_t peer_request_stats_with_empty_selector(const NativePeerConnection&, bool, std::uint64_t) noexcept;
+bool peer_reconfigure_bandwidth_estimation(const NativePeerConnection&, bool allow_probe) noexcept;
+std::uint8_t peer_observe_channel_messages(const NativePeerConnection&, bool enabled) noexcept;
 class NativeMediaTrack;
 class NativeMediaStream;
 class NativeMediaStreams;

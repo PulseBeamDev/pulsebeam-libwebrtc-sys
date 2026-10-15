@@ -1556,6 +1556,9 @@ bool peer_remove_track(const NativePeerConnection& peer,
   return true;
 }
 
+bool rtp_sender_set_media_track(const NativeRtpSender& sender, const NativeMediaTrack& track) noexcept {
+  return sender.sender()->SetTrack(track.track().get());
+}
 NativeRtpEndpoints::NativeRtpEndpoints() = default;
 NativeRtpEndpoints::~NativeRtpEndpoints() = default;
 std::unique_ptr<NativeRtpEndpoints> peer_endpoints(const NativePeerConnection& peer) noexcept {

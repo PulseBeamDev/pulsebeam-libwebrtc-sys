@@ -1,5 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/peer.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
+#include "api/data_channel_event_observer_interface.h"
+#include "api/transport/bandwidth_estimation_settings.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/metronome.h"
 #include "pulsebeam-webrtc-sys/native/certificate_generator.h"
@@ -98,6 +100,7 @@ enum EventKind : std::uint8_t {
   kLegacyStatsReport = 16,
   kIceSelectedCandidatePairChanged = 17,
   kStreamAdded = 18, kStreamRemoved = 19, kTrackAdded = 20,
+  kRenegotiationNeeded = 21, kIceReceiving = 22, kInterestingUsage = 23, kChannelMessage = 24,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -249,10 +252,12 @@ struct EventState {
   }
 
   static bool Advisory(std::uint8_t kind) {
-    return kind >= kConnectionState && kind <= kNegotiationNeeded;
+    return (kind >= kConnectionState && kind <= kNegotiationNeeded) ||
+        (kind >= kRenegotiationNeeded && kind <= kIceReceiving);
   }
   static std::size_t ControlBytes(const FfiPeerEvent& event) {
-    return event.pair_change.retained_bytes + event.sdp.size() + event.sdp_mid.size() + event.candidate.size() +
+    return event.channel_message.label.size() + event.channel_message.data.size() +
+           event.pair_change.retained_bytes + event.sdp.size() + event.sdp_mid.size() + event.candidate.size() +
            event.address.size() + event.url.size() + event.message.size();
   }
   bool PushControlLocked(FfiPeerEvent event) {
@@ -547,6 +552,15 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     state_->RemoveReceiver(std::move(receiver), std::move(owner));
   }
 
+  void OnRenegotiationNeeded() override {
+    FfiPeerEvent event{}; event.kind = kRenegotiationNeeded; state_->Push(std::move(event));
+  }
+  void OnIceConnectionReceivingChange(bool receiving) override {
+    FfiPeerEvent event{}; event.kind = kIceReceiving; event.state = receiving; state_->Push(std::move(event));
+  }
+  void OnInterestingUsage(int usage_pattern) override {
+    FfiPeerEvent event{}; event.kind = kInterestingUsage; event.ice_state = usage_pattern; state_->Push(std::move(event));
+  }
   void OnNegotiationNeededEvent(std::uint32_t event_id) override {
     FfiPeerEvent event;
     event.kind = kNegotiationNeeded;
@@ -640,6 +654,25 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
  private:
   std::shared_ptr<EventState> state_;
   webrtc::PeerConnectionInterface* peer_ = nullptr;  // signaling only
+};
+
+class PeerChannelMessageObserver : public webrtc::DataChannelEventObserverInterface {
+ public:
+  explicit PeerChannelMessageObserver(std::shared_ptr<EventState> state) : state_(std::move(state)) {}
+  void OnMessage(const Message& message) override {
+    FfiPeerEvent event{}; event.kind = kChannelMessage;
+    auto& value = event.channel_message;
+    value.unix_timestamp_ms = message.unix_timestamp_ms();
+    value.datachannel_id = message.datachannel_id();
+    value.label = PeerTextBytes(message.label());
+    value.direction = static_cast<std::uint8_t>(message.direction());
+    value.data_type = static_cast<std::uint8_t>(message.data_type());
+    value.data.reserve(message.data().size());
+    for (auto byte : message.data()) value.data.push_back(byte);
+    state_->Push(std::move(event));
+  }
+ private:
+  std::shared_ptr<EventState> state_;
 };
 
 class CreateDescriptionObserver
@@ -2333,6 +2366,39 @@ bool peer_should_fire_negotiation_needed(const NativePeerConnection& peer,
   return peer.state()->peer->ShouldFireNegotiationNeededEvent(event_id);
 }
 
+bool peer_reconfigure_bandwidth_estimation(const NativePeerConnection& peer, bool allow_probe) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&] {
+    if (state->closed) return false;
+    webrtc::BandwidthEstimationSettings settings;
+    settings.allow_probe_without_media = allow_probe;
+    // All admitted factories call EnableMedia; the SDK owns and cancels the
+    // posted worker task. Its void result is invocation, not probe evidence.
+    state->peer->ReconfigureBandwidthEstimation(settings);
+    return true;
+  });
+}
+
+std::uint8_t peer_observe_channel_messages(const NativePeerConnection& peer, bool enabled) noexcept {
+  const auto& state = peer.state();
+  // A network callback may be entered while signaling is synchronously
+  // waiting for network. Do not reverse that invoke edge or pump SDK work.
+  if (state->network_thread->IsCurrent() && !state->signaling_thread->IsCurrent())
+    return 2;
+  const bool invoked = state->signaling_thread->BlockingCall([&] {
+    if (state->closed) return false;
+    std::unique_ptr<webrtc::DataChannelEventObserverInterface> observer;
+    if (enabled) observer = std::make_unique<PeerChannelMessageObserver>(state->events);
+    state->peer->SetDataChannelEventObserver(std::move(observer));
+    return true;
+  });
+  // SDK installation is posted to network. Fence ordinary caller replacement.
+  // Caller-owned controlled roles must execute their own posted SDK task;
+  // entering a nested pump here would introduce hidden progress.
+  if (invoked && !state->network_thread->IsCurrent())
+    state->network_thread->BlockingCall([] {});
+  return invoked ? 0 : 1;
+}
 std::unique_ptr<NativeMediaStream> peer_factory_create_stream(
     const NativePeerConnectionFactory& factory, rust::Slice<const std::uint8_t> id) noexcept {
   auto stream = factory.factory()->CreateLocalMediaStream(

@@ -432,9 +432,33 @@ pub struct DataChannelStats {
     pub bytes_received: Option<u64>,
 }
 
+/// Native application-configurable bandwidth estimation settings. Enabling
+/// probes permits padding on a sending RTX-capable transceiver before media;
+/// it does not allocate a sender or guarantee that a probe will be emitted.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BandwidthEstimationSettings {
+    pub allow_probe_without_media: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataChannelMessageDirection {
+    Send,
+    Receive,
+}
+/// Actual peer-wide SDK message-log callback. Native channel IDs are not
+/// session resource IDs, and labels do not establish resource identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerDataChannelMessage {
+    pub unix_timestamp_ms: i64,
+    pub datachannel_id: i32,
+    pub label: Vec<u8>,
+    pub direction: DataChannelMessageDirection,
+    pub message: crate::DataChannelMessage,
+}
+
 /// Binding-owned observation backlog, not native transport buffering.
-/// Non-advisory control events retain at most 128 records/256 KiB of strings;
-/// four callback-time advisory snapshots can additionally be retained.
+/// Non-advisory control events retain at most 128 records/256 KiB of copied bytes;
+/// callback-time advisory snapshots can additionally be retained once per kind.
 /// Arrival-handle maps independently share a 128-handle cap. Overflow discards
 /// only a new observation, never an accepted operation outcome or native SCTP
 /// state; callers must account for missing arrivals/candidates when nonzero.
@@ -449,6 +473,12 @@ pub struct PeerEventObservation {
 
 #[derive(Debug)]
 pub enum PeerConnectionEvent {
+    RenegotiationNeeded,
+    IceConnectionReceivingChanged(bool),
+    InterestingUsage {
+        usage_pattern: i32,
+    },
+    DataChannelMessage(PeerDataChannelMessage),
     IceSelectedCandidatePairChanged(crate::IceCandidatePairChange),
     Stats(PeerStatsSnapshot),
     LegacyStats(crate::PeerLegacyStatsSnapshot),
@@ -1677,6 +1707,43 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    /// Invoke native reconfiguration. The SDK posts application to its worker
+    /// role and may restart estimation. Success is not proof of emitted probes.
+    pub fn reconfigure_bandwidth_estimation(
+        &self,
+        settings: BandwidthEstimationSettings,
+    ) -> Result<(), PeerError> {
+        if ffi::peer_reconfigure_bandwidth_estimation(
+            self.native(),
+            settings.allow_probe_without_media,
+        ) {
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            })
+        }
+    }
+    /// Install/replace the owning SDK peer-wide message observer. This does
+    /// not replace channel observers or provide message-consumption credit.
+    /// Disable fences network replacement from ordinary callers. Caller-owned
+    /// controlled roles must run their own posted SDK task. Calls from a native
+    /// network callback are rejected to avoid reversing a blocking invoke edge.
+    pub fn set_data_channel_message_observation(&self, enabled: bool) -> Result<(), PeerError> {
+        match ffi::peer_observe_channel_messages(self.native(), enabled) {
+            0 => Ok(()),
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }),
+            2 => Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "observer replacement cannot block its own SDK network callback".into(),
+            }),
+            _ => unreachable!("native channel observer admission"),
+        }
+    }
     fn stream_mutation(
         &self,
         stream: &crate::MediaStream,
@@ -3093,6 +3160,36 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
                 receiver: RtpReceiver::from_native(value.receiver, peer.clone()),
                 streams,
             })
+        }
+        21 => Some(PeerConnectionEvent::RenegotiationNeeded),
+        22 => Some(PeerConnectionEvent::IceConnectionReceivingChanged(
+            event.state != 0,
+        )),
+        23 => Some(PeerConnectionEvent::InterestingUsage {
+            usage_pattern: event.ice_state,
+        }),
+        24 => {
+            let value = event.channel_message;
+            Some(PeerConnectionEvent::DataChannelMessage(
+                PeerDataChannelMessage {
+                    unix_timestamp_ms: value.unix_timestamp_ms,
+                    datachannel_id: value.datachannel_id,
+                    label: value.label,
+                    direction: match value.direction {
+                        0 => DataChannelMessageDirection::Send,
+                        1 => DataChannelMessageDirection::Receive,
+                        _ => unreachable!("pinned message direction"),
+                    },
+                    message: crate::DataChannelMessage {
+                        kind: match value.data_type {
+                            0 => crate::DataChannelMessageKind::Text,
+                            1 => crate::DataChannelMessageKind::Binary,
+                            _ => unreachable!("pinned message type"),
+                        },
+                        bytes: value.data,
+                    },
+                },
+            ))
         }
         _ => unreachable!("native adapter returned an invalid peer event"),
     }

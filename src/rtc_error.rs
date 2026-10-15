@@ -192,6 +192,7 @@ impl RtcError {
         RtcErrorType::from_native(self.fields().kind)
     }
     /// Lossless native const-char* accessor bytes, including termination at NUL.
+    /// Use [`Self::string_builder`] for full native storage across embedded NULs.
     pub fn message_bytes(&self) -> Vec<u8> {
         self.fields().message_bytes
     }

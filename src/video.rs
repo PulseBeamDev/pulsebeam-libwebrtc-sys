@@ -519,9 +519,25 @@ impl VideoTrack {
     }
     pub(crate) fn media_track_owner(&self) -> crate::media_track::MediaTrackOwner {
         match &self.inner._peer {
-            Some(peer) => crate::media_track::MediaTrackOwner::Factory {
-                _factory: peer._factory.clone(),
-            },
+            Some(peer) => {
+                let actual = ffi::video_track_reference(self.native());
+                for lease in peer.stream_inputs.borrow().values() {
+                    if ffi::media_track_same_resource(&actual, lease.track.native()) {
+                        return lease.track.source_owner();
+                    }
+                }
+                for lease in peer.sender_tracks.borrow().values() {
+                    let candidate = ffi::video_track_reference(lease.track.native());
+                    if ffi::media_track_same_resource(&actual, &candidate) {
+                        return crate::media_track::MediaTrackOwner::Video {
+                            _track: lease.track.clone(),
+                        };
+                    }
+                }
+                crate::media_track::MediaTrackOwner::Factory {
+                    _factory: peer._factory.clone(),
+                }
+            }
             None => crate::media_track::MediaTrackOwner::Video {
                 _track: self.clone(),
             },
@@ -1035,6 +1051,91 @@ impl RtpSender {
             .or_else(|| Some(VideoTrack::remote(native, self.peer.clone())))
     }
 
+    /// SDK SetTrack for an existing audio or video sender. A false return is
+    /// the SDK rejection (for example a kind mismatch or stopped sender).
+    /// Accepted tracks retain their original Rust source and factory owners.
+    pub fn set_media_track(&self, track: Option<&crate::MediaTrack>) -> Result<bool, PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if let Some(track) = track {
+            if !Rc::ptr_eq(track.factory(), &self.peer._factory) {
+                return Err(PeerError {
+                    kind: PeerErrorKind::InvalidParameter,
+                    message: "track must belong to this peer factory".into(),
+                });
+            }
+            if let Some(video) = track.local_video() {
+                self.validate_video_replacement(video)?;
+            }
+            if self.peer._factory.controlled_media
+                && track.local_video().is_none()
+                && track.local_audio().is_none()
+            {
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedOperation,
+                    message: "controlled replacement requires an admitted local media source"
+                        .into(),
+                });
+            }
+        }
+        let accepted = match track {
+            Some(track) => ffi::rtp_sender_set_media_track(self.native(), track.native()),
+            None => ffi::rtp_sender_clear_track(self.native()),
+        };
+        if !accepted {
+            return Ok(false);
+        }
+        let key = self.resource_key();
+        self.peer.sender_tracks.borrow_mut().remove(&key);
+        self.peer.audio_sender_tracks.borrow_mut().remove(&key);
+        match track {
+            Some(track) => {
+                self.peer
+                    .stream_inputs
+                    .borrow_mut()
+                    .insert(key, crate::peer::SenderTrackLease::new(self, track.clone()));
+            }
+            None => {
+                self.peer.stream_inputs.borrow_mut().remove(&key);
+            }
+        }
+        self.peer.refresh_stream_inputs();
+        Ok(true)
+    }
+    fn validate_video_replacement(&self, track: &VideoTrack) -> Result<(), PeerError> {
+        if self.peer._factory.controlled_media && !track.is_admitted_controlled_video() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "controlled sender replacement requires admitted direct VP8/H264 input"
+                    .into(),
+            });
+        }
+        let encodings = self.parameters()?.encodings.len();
+        if track.is_direct_encoded()
+            && if track.is_direct_simulcast() {
+                encodings != 3
+            } else {
+                encodings > 1
+            }
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedParameter,
+                message: "encoded input does not match the sender's encoding layout".into(),
+            });
+        }
+        if !track.is_local_to(&self.peer._factory) || track.state() != VideoTrackState::Live {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "sender replacement requires a live track from the same factory".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Replace or detach this sender's local video track without replacing the
     /// sender or its negotiated transceiver. Only tracks from the same factory
     /// are accepted. Renegotiate if the remote track identity must change.
@@ -1046,34 +1147,7 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
-            if self.peer._factory.controlled_media && !track.is_admitted_controlled_video() {
-                return Err(PeerError {
-                    kind: PeerErrorKind::UnsupportedOperation,
-                    message:
-                        "controlled sender replacement requires admitted direct VP8/H264 input"
-                            .into(),
-                });
-            }
-            let encodings = self.parameters()?.encodings.len();
-            if track.is_direct_encoded()
-                && if track.is_direct_simulcast() {
-                    encodings != 3
-                } else {
-                    encodings > 1
-                }
-            {
-                return Err(PeerError {
-                    kind: PeerErrorKind::UnsupportedParameter,
-                    message: "encoded H264 input cannot replace a simulcast sender".into(),
-                });
-            }
-            if !track.is_local_to(&self.peer._factory) || track.state() != VideoTrackState::Live {
-                return Err(PeerError {
-                    kind: PeerErrorKind::InvalidParameter,
-                    message: "sender replacement requires a live track from the same factory"
-                        .into(),
-                });
-            }
+            self.validate_video_replacement(track)?;
         }
         let accepted = match track {
             Some(track) => ffi::rtp_sender_set_video_track(self.native(), track.native()),

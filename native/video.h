@@ -355,6 +355,7 @@ bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept;
 std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
     webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner = nullptr) noexcept;
+bool rtp_sender_set_media_track(const NativeRtpSender&, const NativeMediaTrack&) noexcept;
 class NativeRtpEndpoints final {
  public:
   NativeRtpEndpoints();

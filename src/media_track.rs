@@ -47,6 +47,29 @@ impl MediaTrack {
             MediaTrackOwner::Factory { _factory } => _factory,
         }
     }
+    pub(crate) fn source_owner(&self) -> MediaTrackOwner {
+        match &self.0._owner {
+            MediaTrackOwner::Video { _track } => _track.media_track_owner(),
+            MediaTrackOwner::Audio { _track } => MediaTrackOwner::Audio {
+                _track: _track.clone(),
+            },
+            MediaTrackOwner::Factory { _factory } => MediaTrackOwner::Factory {
+                _factory: _factory.clone(),
+            },
+        }
+    }
+    pub(crate) fn local_video(&self) -> Option<&VideoTrack> {
+        match &self.0._owner {
+            MediaTrackOwner::Video { _track } => Some(_track),
+            _ => None,
+        }
+    }
+    pub(crate) fn local_audio(&self) -> Option<&AudioTrack> {
+        match &self.0._owner {
+            MediaTrackOwner::Audio { _track } => Some(_track),
+            _ => None,
+        }
+    }
     pub(crate) fn native(&self) -> &ffi::NativeMediaTrack {
         self.0.native.as_ref().unwrap()
     }

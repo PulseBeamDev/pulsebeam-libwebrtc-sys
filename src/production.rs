@@ -126,6 +126,12 @@ enum Source {
 /// Owned peer notifications. Resource arrivals contain IDs, not local handles.
 #[derive(Debug)]
 pub enum SessionEvent {
+    RenegotiationNeeded,
+    IceConnectionReceivingChanged(bool),
+    InterestingUsage {
+        usage_pattern: i32,
+    },
+    DataChannelMessage(crate::PeerDataChannelMessage),
     IceSelectedCandidatePairChanged(crate::IceCandidatePairChange),
     Stats(PeerStatsSnapshot),
     LegacyStats(crate::PeerLegacyStatsSnapshot),
@@ -892,6 +898,49 @@ impl ProductionSession {
     ) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::set_local_description_auto)
     }
+    pub fn reconfigure_bandwidth_estimation(
+        &mut self,
+        peer: SessionPeerId,
+        settings: crate::BandwidthEstimationSettings,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .reconfigure_bandwidth_estimation(settings)
+    }
+    /// Generic SDK SetTrack for existing audio/video senders. None detaches.
+    /// The boolean is the native acceptance result, not a fabricated RTCError.
+    pub fn set_sender_track(
+        &mut self,
+        sender: SessionSenderId,
+        track: Option<SessionMediaTrackId>,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        let sender = &self.senders.get(&sender).ok_or_else(missing)?.value;
+        let track = track
+            .map(|id| {
+                self.media_tracks
+                    .get(&id)
+                    .map(|r| &r.value)
+                    .ok_or_else(missing)
+            })
+            .transpose()?;
+        sender.set_media_track(track)
+    }
+    pub fn set_data_channel_message_observation(
+        &mut self,
+        peer: SessionPeerId,
+        enabled: bool,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .set_data_channel_message_observation(enabled)
+    }
     pub fn set_local_description_auto_legacy(
         &mut self,
         peer: SessionPeerId,
@@ -1333,6 +1382,16 @@ impl ProductionSession {
                     .map(|s| self.insert_media_stream(peer, s))
                     .collect::<Result<_, _>>()?;
                 SessionEvent::TrackAdded { receiver, streams }
+            }
+            PeerConnectionEvent::RenegotiationNeeded => SessionEvent::RenegotiationNeeded,
+            PeerConnectionEvent::IceConnectionReceivingChanged(value) => {
+                SessionEvent::IceConnectionReceivingChanged(value)
+            }
+            PeerConnectionEvent::InterestingUsage { usage_pattern } => {
+                SessionEvent::InterestingUsage { usage_pattern }
+            }
+            PeerConnectionEvent::DataChannelMessage(value) => {
+                SessionEvent::DataChannelMessage(value)
             }
             PeerConnectionEvent::Closed => SessionEvent::Closed,
         };

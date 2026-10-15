@@ -425,6 +425,50 @@ impl MediaTrack {
 mod stream_lease_tests {
     use super::*;
     #[test]
+    fn generic_sender_video_alias_retains_original_source_without_a_peer_cycle() {
+        let factory = crate::PeerConnectionFactory::builder().build().unwrap();
+        let mut peer = factory.create_peer_connection(Default::default()).unwrap();
+        let old_source = factory.create_video_source().unwrap();
+        let old = factory.create_video_track("original", &old_source).unwrap();
+        let tx = peer
+            .add_video_transceiver(&old, crate::RtpTransceiverDirection::SendOnly)
+            .unwrap();
+        let sender = tx.sender();
+        let source = factory.create_video_source().unwrap();
+        let track = factory.create_video_track("replacement", &source).unwrap();
+        assert!(
+            sender
+                .set_media_track(Some(&track.as_media_track()))
+                .unwrap()
+        );
+        let alias = sender.track().unwrap().as_media_track();
+        assert!(alias.same_resource(&track.as_media_track()));
+        let stream = factory
+            .create_local_media_stream(b"alias-source-owner")
+            .unwrap();
+        assert!(stream.add_track(&alias).unwrap());
+        let source_observation = alias.source().unwrap();
+        // Keep a pure SDK source facade for the retirement assertion. The
+        // public source observation intentionally also owns its input track.
+        let native_source = ffi::media_track_source(alias.native(), alias.factory().native(), true);
+        drop(alias);
+        drop(track);
+        drop(source);
+        peer.close().unwrap();
+        drop(sender);
+        drop(tx);
+        drop(peer);
+        drop(old);
+        drop(old_source);
+        assert_eq!(source_observation.state(), MediaSourceState::Live);
+        drop(source_observation);
+        assert_eq!(ffi::track_source_state(native_source.as_ref().unwrap()), 1);
+        let retained = stream.video_tracks().pop().unwrap();
+        assert!(stream.remove_track(&retained));
+        drop(retained);
+        assert_eq!(ffi::track_source_state(native_source.as_ref().unwrap()), 2);
+    }
+    #[test]
     fn retired_consumers_and_id_removed_track_leases_do_not_accumulate() {
         let factory = crate::PeerConnectionFactory::builder().build().unwrap();
         let stream = factory.create_local_media_stream(b"reused-stream").unwrap();

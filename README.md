@@ -673,6 +673,41 @@ candidate previously existed. All these operations also have owned-ID
 `ProductionSession` counterparts and retain native sequencing after actor
 migration.
 
+Existing senders also support generic `set_media_track()`, including audio
+replacement and `None` detachment. `ProductionSession::set_sender_track()` uses
+owned track IDs. Native boolean rejection remains distinct from binding errors;
+accepted replacement retains the original source dependencies across aliases.
+The existing video convenience shares its admitted-source/layout checks rather
+than providing a bypass for controlled-media profiles.
+
+`reconfigure_bandwidth_estimation()` accepts typed
+`BandwidthEstimationSettings`, including `allow_probe_without_media`. It invokes
+the SDK's asynchronous worker reconfiguration, which can restart estimation.
+Success is not proof of a probe or a bandwidth allocation. Padding probes still
+require an appropriate sending RTX-capable native transceiver.
+
+`set_data_channel_message_observation()` installs or replaces the SDK's
+peer-wide message observer independently of individual channel observers.
+`DataChannelMessage` peer events retain native Unix-millisecond timestamps,
+native SCTP channel IDs, label bytes, send/receive direction, text/binary kind
+and payload bytes. A native channel ID is not a `SessionChannelId`; no identity
+join is guessed from IDs or labels. Copied observations use the existing bounded
+peer queue and its loss counters, not transport buffering or consumption credit.
+Disabling from an ordinary caller fences SDK network-thread replacement while
+retaining queued copies. Caller-owned controlled roles must execute their own
+posted SDK task; the binding does not pump for them. Replacement from an SDK
+network callback is rejected to avoid a signaling/network blocking-invoke cycle.
+SDK-owned callback state remains valid until native replacement or teardown.
+
+Peer events also expose actual legacy `RenegotiationNeeded` callbacks and native
+`InterestingUsage` integers. The latter uses the SDK's configured reporting delay
+and heuristics, not a binding-generated report. The
+`IceConnectionReceivingChanged` hook is wired, but this SDK pin has no source
+invoker for it; use live ICE receiving-state reads rather than expecting a
+synthetic callback. Renegotiation/receiving advisories are bounded and coalesced
+with observable accounting. Interesting-usage log occurrences instead retain
+distinct records subject to the bounded control queue and its drop counters.
+
 The deprecated description observer overloads are available as
 `set_local_description_legacy()`, `set_remote_description_legacy()` and
 `set_local_description_auto_legacy()`. They invoke the SDK's delayed observer

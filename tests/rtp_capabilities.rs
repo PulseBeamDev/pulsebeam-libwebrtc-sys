@@ -13,7 +13,10 @@ fn codec_capability_preserves_complete_base_fields_modes_and_derived_formatter()
     assert_eq!(value.base_codec(), RtpCodec::default());
     assert_eq!(value.preferred_payload_type(), None);
     assert!(value.scalability_modes().is_empty());
-    assert_eq!(value.native_string_bytes(), b"[video/]");
+    // Pinned RtpCodec initializes kind=AUDIO; its formatter uses native
+    // absent-rate/channel defaults without filling the optional fields.
+    assert_eq!(value.base_codec().kind(), MediaType::Audio);
+    assert_eq!(value.native_string_bytes(), b"[audio//0/1]");
     let mut base = RtpCodec::default();
     base.set_name(b"opus\xff\0");
     base.set_kind(MediaType::Audio);

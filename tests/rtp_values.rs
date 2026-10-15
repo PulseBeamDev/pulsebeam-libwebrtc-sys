@@ -781,11 +781,15 @@ fn native_header_extension_typed_streams_match_sdk_stringify() {
         stream.append_rtp_extension(&extension);
         stream.append_rtp_extension_ref(&loan);
     }
-    assert_eq!(error.message_bytes(), expected);
-    let error = RtcError::new(RtcErrorType::InvalidState)
+    // SDK message() is a const-char* view; the mutable SDK builder retains
+    // the full length-aware storage. Do not confuse the two public contracts.
+    assert_eq!(error.message_bytes(), b"-9[-9 x");
+    assert_eq!(error.string_builder().as_bytes(), expected);
+    let mut error = RtcError::new(RtcErrorType::InvalidState)
         .with_appended_header_extension_id(&id)
         .with_appended_rtp_extension(&extension)
         .with_appended_rtp_extension_ref(&loan);
-    assert_eq!(error.message_bytes(), expected);
+    assert_eq!(error.message_bytes(), b"-9[-9 x");
+    assert_eq!(error.string_builder().as_bytes(), expected);
     assert_eq!(error.kind(), RtcErrorType::InvalidState);
 }

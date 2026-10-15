@@ -497,10 +497,11 @@ pub use network::{
     ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
-    CandidatePairStats, ConnectionState, DataChannelStats, IceCandidate, IceCandidateBytes,
-    IceCandidateDisposition, IceGatheringState, IceServer, IceTransportPolicy, InboundRtpStats,
-    OfferAnswerOptions, OperationCompletion, OperationId, OutboundRtpStats, PeerConfiguration,
-    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder,
+    BandwidthEstimationSettings, CandidatePairStats, ConnectionState, DataChannelMessageDirection,
+    DataChannelStats, IceCandidate, IceCandidateBytes, IceCandidateDisposition, IceGatheringState,
+    IceServer, IceTransportPolicy, InboundRtpStats, OfferAnswerOptions, OperationCompletion,
+    OperationId, OutboundRtpStats, PeerConfiguration, PeerConnection, PeerConnectionEvent,
+    PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDataChannelMessage,
     PeerDescriptionBytes, PeerDescriptions, PeerError, PeerErrorBytes, PeerErrorKind,
     PeerEventObservation, PeerIceConnectionState, PeerIceSnapshot, PeerStatsRecord,
     PeerStatsSnapshot, SessionDescription, SessionDescriptionBytes, SessionDescriptionType,
@@ -2336,7 +2337,16 @@ mod ffi {
         receiver: UniquePtr<NativeRtpReceiver>,
         streams: UniquePtr<NativeMediaStreams>,
     }
+    struct FfiPeerChannelMessage {
+        unix_timestamp_ms: i64,
+        datachannel_id: i32,
+        label: Vec<u8>,
+        direction: u8,
+        data_type: u8,
+        data: Vec<u8>,
+    }
     struct FfiPeerEvent {
+        channel_message: FfiPeerChannelMessage,
         pair_change: FfiIcePairChange,
         ice_state: i32,
         legacy_stats_reports: Vec<FfiLegacyStatsReport>,
@@ -3701,6 +3711,11 @@ mod ffi {
             id: u64,
         ) -> UniquePtr<NativeMediaStream>;
         fn peer_take_track_event(peer: &NativePeerConnection, id: u64) -> FfiTrackArrival;
+        fn peer_reconfigure_bandwidth_estimation(
+            peer: &NativePeerConnection,
+            allow_probe: bool,
+        ) -> bool;
+        fn peer_observe_channel_messages(peer: &NativePeerConnection, enabled: bool) -> u8;
         fn peer_factory_create_stream(
             factory: &NativePeerConnectionFactory,
             id: &[u8],
@@ -5278,6 +5293,7 @@ mod ffi {
             transport: &NativeIceTransport,
             field: u8,
         ) -> FfiIceInternalValue;
+        fn rtp_sender_set_media_track(sender: &NativeRtpSender, track: &NativeMediaTrack) -> bool;
         type NativeRtpEndpoints;
         fn peer_endpoints(peer: &NativePeerConnection) -> UniquePtr<NativeRtpEndpoints>;
         fn endpoint_list_len(list: &NativeRtpEndpoints, kind: u8) -> usize;

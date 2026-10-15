@@ -2,6 +2,7 @@ use pulsebeam_webrtc_sys::*;
 use std::{
     collections::{HashMap, HashSet},
     num::NonZeroUsize,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Condvar, Mutex},
     task::{Context, Wake, Waker},
     thread,
@@ -43,12 +44,24 @@ struct Events {
     channels: Vec<(SessionPeerId, SessionChannelId, Vec<u8>)>,
     stats: HashMap<(SessionPeerId, OperationId), PeerStatsSnapshot>,
     pairs: Vec<(SessionPeerId, IceCandidatePairChange)>,
+    messages: Vec<(SessionPeerId, PeerDataChannelMessage)>,
+    usage: Vec<(SessionPeerId, i32)>,
+    renegotiation: HashSet<SessionPeerId>,
+    receivers: Vec<(SessionPeerId, SessionReceiverId)>,
 }
 impl Events {
     fn drain(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
         for peer in peers {
             while let Some(event) = session.try_peer_event(peer).unwrap() {
                 match event {
+                    SessionEvent::DataChannelMessage(value) => self.messages.push((peer, value)),
+                    SessionEvent::InterestingUsage { usage_pattern } => {
+                        self.usage.push((peer, usage_pattern))
+                    }
+                    SessionEvent::RenegotiationNeeded => {
+                        self.renegotiation.insert(peer);
+                    }
+                    SessionEvent::Track { receiver, .. } => self.receivers.push((peer, receiver)),
                     SessionEvent::OperationComplete(done) => {
                         assert!(
                             self.complete
@@ -126,13 +139,44 @@ impl Events {
     }
 }
 
+struct NetworkDrop {
+    owner: Arc<Mutex<Option<ProductionSession>>>,
+    finished: Arc<AtomicBool>,
+    rejected: Arc<Mutex<Option<PeerErrorKind>>>,
+    peer: SessionPeerId,
+}
+impl Wake for NetworkDrop {
+    fn wake(self: Arc<Self>) {
+        if let Some(mut session) = self.owner.lock().unwrap().take() {
+            *self.rejected.lock().unwrap() = session
+                .set_data_channel_message_observation(self.peer, false)
+                .err()
+                .map(|e| e.kind);
+            drop(session);
+            self.finished.store(true, Ordering::SeqCst);
+        }
+    }
+}
 #[test]
 fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes() {
     let mut session = ProductionSession::new(Default::default()).unwrap();
+    let mut config = RtcConfiguration::default();
+    config.options.report_usage_pattern_delay_ms = Some(20);
     let peers = [
-        session.create_peer(Default::default()).unwrap(),
-        session.create_peer(Default::default()).unwrap(),
+        session
+            .create_peer_with_configuration(config.clone())
+            .unwrap(),
+        session.create_peer_with_configuration(config).unwrap(),
     ];
+    for peer in peers {
+        session
+            .set_data_channel_message_observation(peer, true)
+            .unwrap();
+    }
+    let start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     let label = b"actor\xff\0".to_vec();
     let protocol = b"protocol\x80\0".to_vec();
     let outgoing = session
@@ -205,6 +249,23 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
             }
             if !completed || !received { wait(&mut session); }
         }
+        events.drain(&mut session, peers);
+        assert_eq!(events.messages.len(), 2);
+        for (peer, logged) in &events.messages {
+            assert_eq!(logged.label, expected_label);
+            assert_eq!(logged.message, message);
+            assert_eq!(logged.datachannel_id, session.channel_configuration(if *peer == peers[0] { outgoing } else { incoming }).unwrap().id.unwrap());
+            assert_eq!(logged.direction, if *peer == peers[0] { DataChannelMessageDirection::Send } else { DataChannelMessageDirection::Receive });
+            assert!(logged.unix_timestamp_ms >= start);
+            assert!(logged.unix_timestamp_ms <= std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while events.usage.len() < 2 {
+            events.drain(&mut session, peers);
+            assert!(Instant::now() < deadline, "no actual scheduled SDK usage reports");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(events.renegotiation.contains(&peers[0]));
         let operation = session.request_stats(peers[1]).unwrap();
         let snapshot = loop {
             if let Some(SessionEvent::Stats(value)) = session.try_peer_event(peers[1]).unwrap() {
@@ -230,10 +291,67 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
         let channel = legacy.reports.iter().find(|r| r.id.kind() == LegacyStatsType::DataChannel).unwrap();
         assert_eq!(channel.find(LegacyStatsName::Label).unwrap().value, LegacyStatsValueData::String(expected_label.clone()));
         assert!(legacy.reports.iter().flat_map(|r| &r.values).any(|v| matches!(&v.value, LegacyStatsValueData::Id(_))), "negotiated native transport links use retained SDK IDs");
-        session.close_peer(peers[0]).unwrap();
-        session.close_peer(peers[1]).unwrap();
-        assert_eq!(session.channel_label(outgoing).unwrap(), expected_label);
-        session.shutdown().unwrap();
+        // Both directions/kinds, independent channel delivery and bounded log
+        // overflow. Disable fences callbacks but retains already-copied values.
+        let reverse = DataChannelMessage::binary([0x80, 0, 0xff, 4]);
+        assert_eq!(session.send(incoming, reverse.clone()).unwrap(), DataChannelSendResult::Sent);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            events.drain(&mut session, peers);
+            if events.messages.iter().filter(|(_, m)| m.message == reverse).count() == 2 { break; }
+            assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(1));
+        }
+        let mut reverse_delivered = false;
+        while let Some(event) = session.try_channel_event(outgoing).unwrap() { if let DataChannelEvent::Message(m) = event { assert_eq!(m, reverse); reverse_delivered = true; } }
+        assert!(reverse_delivered);
+        for peer in peers { events.drain(&mut session, peers); assert_eq!(session.peer_event_observation(peer).unwrap().dropped_control_events, 0); }
+        let before = session.channel_counters(incoming).unwrap().messages_received;
+        for i in 0..200_u16 {
+            assert_eq!(session.send(outgoing, DataChannelMessage::binary(i.to_le_bytes())).unwrap(), DataChannelSendResult::Sent);
+        }
+        while session.channel_counters(incoming).unwrap().messages_received < before + 200 {
+            assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(1));
+        }
+        for peer in peers { session.set_data_channel_message_observation(peer, false).unwrap(); }
+        let copied = events.messages.len();
+        events.drain(&mut session, peers);
+        assert!(events.messages.len() > copied, "disable discarded queued copies");
+        for peer in peers { assert!(session.peer_event_observation(peer).unwrap().dropped_control_events > 0); }
+        while session.try_channel_event(incoming).unwrap().is_some() {}
+        let before = session.channel_counters(incoming).unwrap().messages_received;
+        let disabled = DataChannelMessage::binary(b"disabled observer still delivers".to_vec());
+        assert_eq!(session.send(outgoing, disabled.clone()).unwrap(), DataChannelSendResult::Sent);
+        while session.channel_counters(incoming).unwrap().messages_received == before {
+            assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(1));
+        }
+        events.drain(&mut session, peers);
+        assert!(!events.messages.iter().any(|(_, m)| m.message == disabled));
+        let mut disabled_delivered = false;
+        while let Some(event) = session.try_channel_event(incoming).unwrap() { if let DataChannelEvent::Message(m) = event { assert_eq!(m, disabled); disabled_delivered = true; } }
+        assert!(disabled_delivered);
+        for channel in [outgoing, incoming] { while session.try_channel_event(channel).unwrap().is_some() {} }
+        session.set_data_channel_message_observation(peers[0], true).unwrap();
+        let owner = Arc::new(Mutex::new(Some(session)));
+        let finished = Arc::new(AtomicBool::new(false));
+        let rejected = Arc::new(Mutex::new(None));
+        let waker = Waker::from(Arc::new(NetworkDrop { owner: owner.clone(), finished: finished.clone(), rejected: rejected.clone(), peer: peers[0] }));
+        {
+            let mut guard = owner.lock().unwrap();
+            let session = guard.as_mut().unwrap();
+            while session.poll_ready(&mut Context::from_waker(&waker)).is_ready() {}
+            session.send_async(outgoing, DataChannelMessage::binary(b"native-network-final-owner".to_vec())).unwrap();
+        }
+        while !finished.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "network callback did not retire final actor"); thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(*rejected.lock().unwrap(), Some(PeerErrorKind::UnsupportedOperation), "did not enter the actual SDK network role");
+        assert!(owner.lock().unwrap().is_none());
+        loop {
+            match ControlledWorld::acquire(1337, Duration::from_secs(2)) {
+                Ok(world) => { drop(world); break; }
+                Err(_) => { assert!(Instant::now() < deadline, "network-role deferred graph did not retire"); thread::sleep(Duration::from_millis(1)); }
+            }
+        }
         (snapshot.report, legacy)
     }).join().unwrap();
     assert!(
@@ -1009,4 +1127,228 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
     assert!(info.remote_ssl_certificates().unwrap().len() > 0);
     assert_eq!(connected_sctp.state, SctpTransportState::Connected);
     assert!(!connected_sctp.native_string().is_empty());
+}
+
+fn received_rtx(
+    session: &mut ProductionSession,
+    ice: SessionIceTransportId,
+    types: &HashSet<u8>,
+) -> usize {
+    let mut count = 0;
+    while let Some(event) = session.take_ice_packet_event(ice).unwrap() {
+        if let IcePacketEvent::Received(packet) = event {
+            if packet.payload.len() > 12
+                && packet.payload[0] >> 6 == 2
+                && types.contains(&(packet.payload[1] & 0x7f))
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn migrated_actor_reconfigures_real_padding_probes_and_replaces_audio_tracks() {
+    let mut session = ProductionSession::new(ProductionSessionConfig {
+        video_format: Some(VideoCodecFormat::new("VP8")),
+    })
+    .unwrap();
+    let peers = [
+        session.create_peer(Default::default()).unwrap(),
+        session.create_peer(Default::default()).unwrap(),
+    ];
+    let video = session.create_video_source().unwrap();
+    session
+        .publish_video(
+            peers[0],
+            video,
+            "probe-without-media",
+            RtpTransceiverDirection::SendOnly,
+            &[],
+        )
+        .unwrap();
+    let old = session.create_opus_source(1).unwrap();
+    let tx = session
+        .publish_opus(
+            peers[0],
+            old,
+            "before-audio",
+            RtpTransceiverDirection::SendOnly,
+        )
+        .unwrap();
+    let sender = session.sender(tx).unwrap();
+    assert_eq!(session.sender(tx).unwrap(), sender);
+    session
+        .reconfigure_bandwidth_estimation(peers[0], Default::default())
+        .unwrap();
+    let mut events = Events::default();
+    let id = session.create_offer(peers[0], false).unwrap();
+    let offer = events.finish(&mut session, peers, peers[0], id).unwrap();
+    let rtx: HashSet<u8> = offer
+        .sdp
+        .lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("a=rtpmap:")?;
+            let (payload, codec) = line.split_once(' ')?;
+            codec.starts_with("rtx/").then(|| payload.parse().unwrap())
+        })
+        .collect();
+    assert!(!rtx.is_empty(), "fixture requires actual negotiated RTX");
+    let offer = events.gather(&mut session, peers, peers[0], offer);
+    thread::spawn(move || {
+        let id = session.set_remote_description(peers[1], offer).unwrap();
+        events.finish(&mut session, peers, peers[1], id);
+        let id = session.create_answer(peers[1]).unwrap();
+        let answer = events.finish(&mut session, peers, peers[1], id).unwrap();
+        let answer = events.gather(&mut session, peers, peers[1], answer);
+        let id = session.set_remote_description(peers[0], answer).unwrap();
+        events.finish(&mut session, peers, peers[0], id);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while peers
+            .iter()
+            .any(|p| session.peer_connection_state(*p).unwrap() != ConnectionState::Connected)
+        {
+            events.drain(&mut session, peers);
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        events.drain(&mut session, peers);
+        let audio = events
+            .receivers
+            .iter()
+            .find(|(p, r)| {
+                *p == peers[1] && session.receiver_media_type(*r).unwrap() == MediaType::Audio
+            })
+            .unwrap()
+            .1;
+        let video_receiver = events
+            .receivers
+            .iter()
+            .find(|(p, r)| {
+                *p == peers[1] && session.receiver_media_type(*r).unwrap() == MediaType::Video
+            })
+            .unwrap()
+            .1;
+        let dtls = session
+            .receiver_dtls_transport(video_receiver)
+            .unwrap()
+            .unwrap();
+        let ice = session.dtls_ice_transport(dtls).unwrap().unwrap();
+        session.register_ice_packet_observer(ice, 2048).unwrap();
+        session
+            .reconfigure_bandwidth_estimation(peers[0], Default::default())
+            .unwrap();
+        let quiet = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < quiet {
+            assert_eq!(
+                received_rtx(&mut session, ice, &rtx),
+                0,
+                "default unexpectedly probed without any media"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        session
+            .reconfigure_bandwidth_estimation(
+                peers[0],
+                BandwidthEstimationSettings {
+                    allow_probe_without_media: true,
+                },
+            )
+            .unwrap();
+        loop {
+            if received_rtx(&mut session, ice, &rtx) > 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native reconfiguration did not emit RTX padding before media"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(session.take_dropped_ice_packet_events(ice).unwrap(), 0);
+        session.attach_encoded_audio(audio).unwrap();
+        let first = OpusInputFrame {
+            data: include_bytes!("fixtures/simulation-tone-440.opus").to_vec(),
+            rtp_timestamp: 0,
+            samples_per_channel: 960,
+        };
+        session.push_opus(old, &first).unwrap();
+        loop {
+            if let Some(frame) = session.try_audio_frame(audio).unwrap() {
+                assert_eq!(frame.data, first.data);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let replacement = session.create_opus_source(1).unwrap();
+        let track = session
+            .create_opus_track(peers[0], replacement, "after-audio")
+            .unwrap();
+        assert!(session.set_sender_track(sender, Some(track)).unwrap());
+        assert_eq!(session.sender_track_reference(sender).unwrap(), Some(track));
+        let wrong = session
+            .create_video_track(peers[0], video, "wrong-kind")
+            .unwrap();
+        assert!(
+            !session.set_sender_track(sender, Some(wrong)).unwrap(),
+            "SDK kind mismatch must remain a false result"
+        );
+        assert_eq!(session.sender_track_reference(sender).unwrap(), Some(track));
+        session.release_media_track_reference(track).unwrap();
+        session.close_source(old).unwrap();
+        let next = OpusInputFrame {
+            data: include_bytes!("fixtures/simulation-tone-880.opus").to_vec(),
+            rtp_timestamp: 960,
+            ..first.clone()
+        };
+        assert_ne!(first.data, next.data);
+        session.push_opus(replacement, &next).unwrap();
+        loop {
+            if let Some(frame) = session.try_audio_frame(audio).unwrap() {
+                assert_eq!(frame.data, next.data);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replacement source never reached native transport"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(session.set_sender_track(sender, None).unwrap());
+        assert!(session.sender_track_reference(sender).unwrap().is_none());
+        let detached = OpusInputFrame {
+            rtp_timestamp: 1920,
+            ..first
+        };
+        // The existing producer boundary rejects input once SDK SetTrack
+        // detaches its sink. This is native backpressure, not accepted media.
+        let rejected = session.push_opus(replacement, &detached).unwrap_err();
+        assert_eq!(rejected.message, "Backpressure");
+        let quiet = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < quiet {
+            assert!(
+                session.try_audio_frame(audio).unwrap().is_none(),
+                "detached native source still delivered media"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        session.unregister_ice_packet_observer(ice).unwrap();
+        session.close_peer(peers[0]).unwrap();
+        assert_eq!(
+            session.set_sender_track(sender, None).unwrap_err().kind,
+            PeerErrorKind::Closed
+        );
+        assert_eq!(
+            session
+                .reconfigure_bandwidth_estimation(peers[0], Default::default())
+                .unwrap_err()
+                .kind,
+            PeerErrorKind::Closed
+        );
+        session.shutdown().unwrap();
+    })
+    .join()
+    .unwrap();
 }
