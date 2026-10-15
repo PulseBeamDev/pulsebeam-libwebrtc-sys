@@ -1080,6 +1080,9 @@ pub(crate) struct FactoryInner {
 }
 
 impl FactoryInner {
+    pub(crate) fn native(&self) -> &ffi::NativePeerConnectionFactory {
+        self.native.as_ref().unwrap()
+    }
     pub(crate) fn encoded_video_receive_only(&self) -> bool {
         self._video_decoder
             .as_ref()

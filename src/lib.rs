@@ -353,6 +353,13 @@ mod stats;
 pub use stats::*;
 mod media_track;
 pub use media_track::{MediaTrack, MediaTrackKind, MediaTrackState};
+mod media_stream;
+pub use media_stream::{
+    AudioProcessingMode, AudioProcessor, AudioProcessorStats, AudioSourceOptions, AudioTrackSource,
+    MediaChange, MediaObserver, MediaSourceState, MediaStream, MediaTrackSource,
+    TrackAudioOptionsCode, TrackAudioOptionsResult, VideoContentHint, VideoSourceInfo,
+    VideoSourceStats, VideoTrackSource,
+};
 mod legacy_stats;
 pub use legacy_stats::*;
 mod timestamp;
@@ -498,12 +505,13 @@ pub use peer_configuration::{
     SdpSemantics, TcpCandidatePolicy, TlsCertificatePolicy, TurnPortPrunePolicy, VpnPreference,
 };
 pub use production::{
-    ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionChannelId,
-    SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEvent,
-    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionMediaTrackId,
-    SessionPeerId, SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation,
-    SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId,
-    SessionTransceiverId, SessionTransportError,
+    ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioProcessorId,
+    SessionChannelId, SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEvent,
+    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId,
+    SessionMediaTrackId, SessionPeerId, SessionReceiverId, SessionSctpTransportId,
+    SessionSctpTransportInformation, SessionSenderId, SessionSframeDecrypterId,
+    SessionSframeEncrypterId, SessionSourceId, SessionTrackSourceId, SessionTransceiverId,
+    SessionTransportError,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -1886,6 +1894,53 @@ mod ffi {
         tls_elliptic_curves: Vec<String>,
     }
 
+    struct FfiOptionalF64 {
+        present: bool,
+        value: f64,
+    }
+    struct FfiAudioSourceOptions {
+        echo_cancellation: i8,
+        auto_gain_control: i8,
+        noise_suppression: i8,
+        highpass_filter: i8,
+        stereo_swapping: i8,
+        audio_jitter_buffer_fast_accelerate: i8,
+        audio_network_adaptor: i8,
+        init_recording_on_send: i8,
+        echo_cancellation_mode: i8,
+        auto_gain_control_mode: i8,
+        noise_suppression_mode: i8,
+        highpass_filter_mode: i8,
+        audio_jitter_buffer_max_packets: FfiOptionalI32,
+        audio_jitter_buffer_min_delay_ms: FfiOptionalI32,
+        has_audio_network_adaptor_config: bool,
+        audio_network_adaptor_config: Vec<u8>,
+    }
+    struct FfiTrackAudioOptionsResult {
+        code: i32,
+        message: Vec<u8>,
+    }
+    struct FfiAudioProcessorStats {
+        typing_noise_detected: bool,
+        voice_detected: i8,
+        echo_return_loss: FfiOptionalF64,
+        echo_return_loss_enhancement: FfiOptionalF64,
+        divergent_filter_fraction: FfiOptionalF64,
+        residual_echo_likelihood: FfiOptionalF64,
+        residual_echo_likelihood_recent_max: FfiOptionalF64,
+        delay_median_ms: FfiOptionalI32,
+        delay_standard_deviation_ms: FfiOptionalI32,
+        delay_ms: FfiOptionalI32,
+    }
+    struct FfiVideoSourceInfo {
+        is_screencast: bool,
+        needs_denoising: i8,
+        supports_encoded_output: bool,
+        has_stats: bool,
+        input_width: i32,
+        input_height: i32,
+    }
+
     struct FfiOptionalI32 {
         present: bool,
         value: i32,
@@ -3097,6 +3152,7 @@ mod ffi {
         fn tls_chain_stats(chain: &NativeTlsCertificateChain) -> Vec<FfiTlsCertificateStats>;
         include!("pulsebeam-webrtc-sys/native/data_channel.h");
         include!("pulsebeam-webrtc-sys/native/video.h");
+        include!("pulsebeam-webrtc-sys/native/media_stream.h");
         include!("pulsebeam-webrtc-sys/native/audio.h");
 
         type NativeRtcEvent;
@@ -3375,6 +3431,79 @@ mod ffi {
         type NativeCamera;
         type NativeVideoSource;
         type NativeMediaTrack;
+        type NativeTrackSource;
+        type NativeAudioProcessor;
+        type NativeMediaObserver;
+        type NativeMediaStream;
+        type NativeMediaStreams;
+        type NativeMediaTracks;
+        fn media_track_source(
+            track: &NativeMediaTrack,
+            factory: &NativePeerConnectionFactory,
+            video: bool,
+        ) -> UniquePtr<NativeTrackSource>;
+        fn track_source_state(source: &NativeTrackSource) -> i32;
+        fn track_source_remote(source: &NativeTrackSource) -> bool;
+        fn track_source_same_resource(a: &NativeTrackSource, b: &NativeTrackSource) -> bool;
+        fn track_source_audio_options(source: &NativeTrackSource) -> FfiAudioSourceOptions;
+        fn track_source_video_info(source: &NativeTrackSource) -> FfiVideoSourceInfo;
+        fn media_track_audio_volume(track: &NativeMediaTrack) -> FfiOptionalF64;
+        fn media_track_set_volume(track: &NativeMediaTrack, volume: f64);
+        fn media_track_set_should_receive(track: &NativeMediaTrack, receive: bool);
+        fn media_track_set_content_hint(track: &NativeMediaTrack, hint: i32);
+        fn media_track_set_audio_options(
+            track: &NativeMediaTrack,
+            options: &FfiAudioSourceOptions,
+        ) -> FfiTrackAudioOptionsResult;
+        fn media_track_signal_level(track: &NativeMediaTrack) -> FfiOptionalI32;
+        fn media_track_should_receive(track: &NativeMediaTrack) -> i32;
+        fn media_track_content_hint(track: &NativeMediaTrack) -> i32;
+        fn media_track_audio_processor(
+            track: &NativeMediaTrack,
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeAudioProcessor>;
+        fn audio_processor_stats(
+            processor: &NativeAudioProcessor,
+            has_remote_tracks: bool,
+        ) -> FfiAudioProcessorStats;
+        fn audio_processor_same_resource(
+            a: &NativeAudioProcessor,
+            b: &NativeAudioProcessor,
+        ) -> bool;
+        fn rtp_receiver_streams(receiver: &NativeRtpReceiver) -> UniquePtr<NativeMediaStreams>;
+        fn media_streams_len(streams: &NativeMediaStreams) -> usize;
+        fn media_streams_get(
+            streams: &NativeMediaStreams,
+            index: usize,
+        ) -> UniquePtr<NativeMediaStream>;
+        fn media_stream_id(stream: &NativeMediaStream) -> Vec<u8>;
+        fn media_stream_same_resource(a: &NativeMediaStream, b: &NativeMediaStream) -> bool;
+        fn media_stream_tracks(
+            stream: &NativeMediaStream,
+            video: bool,
+        ) -> UniquePtr<NativeMediaTracks>;
+        fn media_tracks_len(tracks: &NativeMediaTracks) -> usize;
+        fn media_tracks_get(
+            tracks: &NativeMediaTracks,
+            index: usize,
+        ) -> UniquePtr<NativeMediaTrack>;
+        fn media_stream_find(
+            stream: &NativeMediaStream,
+            video: bool,
+            id: &[u8],
+        ) -> UniquePtr<NativeMediaTrack>;
+        fn media_track_observe(
+            track: &NativeMediaTrack,
+            factory: &NativePeerConnectionFactory,
+            capacity: usize,
+        ) -> UniquePtr<NativeMediaObserver>;
+        fn media_stream_observe(
+            stream: &NativeMediaStream,
+            factory: &NativePeerConnectionFactory,
+            capacity: usize,
+        ) -> UniquePtr<NativeMediaObserver>;
+        fn media_observer_take(observer: &NativeMediaObserver) -> bool;
+        fn media_observer_take_dropped(observer: &NativeMediaObserver) -> u64;
         fn media_track_id(track: &NativeMediaTrack) -> Vec<u8>;
         fn media_track_kind(track: &NativeMediaTrack) -> Vec<u8>;
         fn media_track_state(track: &NativeMediaTrack) -> i32;
@@ -6003,6 +6132,7 @@ mod ffi {
             rids: &[FfiRtpByteString],
         ) -> UniquePtr<NativeRtcError>;
         fn rtp_sender_set_streams(sender: &NativeRtpSender, ids: &[String]);
+        fn rtp_sender_set_stream_id_bytes(sender: &NativeRtpSender, ids: &[FfiRtpByteString]);
         fn rtp_sender_id(sender: &NativeRtpSender) -> String;
         fn rtp_sender_request_keyframe(
             sender: &NativeRtpSender,
@@ -6142,6 +6272,9 @@ mod ffi {
         fn rtp_sender_clear_track(sender: &NativeRtpSender) -> bool;
         fn rtp_receiver_media_type(receiver: &NativeRtpReceiver) -> i32;
         fn rtp_receiver_stream_ids(receiver: &NativeRtpReceiver) -> Vec<String>;
+        fn rtp_receiver_stream_id_bytes(receiver: &NativeRtpReceiver) -> Vec<FfiRtpByteString>;
+        fn rtp_receiver_id_bytes(receiver: &NativeRtpReceiver) -> Vec<u8>;
+        fn rtp_sender_id_bytes(sender: &NativeRtpSender) -> Vec<u8>;
         fn rtp_receiver_id(receiver: &NativeRtpReceiver) -> String;
         fn rtp_receiver_track(receiver: &NativeRtpReceiver) -> UniquePtr<NativeVideoTrack>;
         fn rtp_receiver_request_keyframe(

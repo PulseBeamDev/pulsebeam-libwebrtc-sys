@@ -1,4 +1,5 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
+#include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/rtc_error.h"
@@ -1992,6 +1993,11 @@ rust::Vec<FfiRtpByteString> rtp_sender_stream_id_bytes(const NativeRtpSender& se
   }
   return result;
 }
+void rtp_sender_set_stream_id_bytes(const NativeRtpSender& sender, rust::Slice<const FfiRtpByteString> ids) noexcept {
+  std::vector<std::string> native;
+  for (const auto& id : ids) native.emplace_back(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+  sender.state()->sender->SetStreams(native);
+}
 void rtp_sender_set_streams(const NativeRtpSender& sender,
     rust::Slice<const rust::String> ids) noexcept {
   std::vector<std::string> native;
@@ -2169,6 +2175,22 @@ bool rtp_receiver_set_jitter_buffer_minimum_delay(
 }
 std::int32_t rtp_receiver_media_type(const NativeRtpReceiver& receiver) noexcept {
   return static_cast<std::int32_t>(receiver.state()->receiver->media_type());
+}
+std::unique_ptr<NativeMediaStreams> rtp_receiver_streams(const NativeRtpReceiver& receiver) noexcept {
+  return std::make_unique<NativeMediaStreams>(receiver.state()->receiver->streams());
+}
+rust::Vec<FfiRtpByteString> rtp_receiver_stream_id_bytes(const NativeRtpReceiver& receiver) noexcept {
+  rust::Vec<FfiRtpByteString> out;
+  for (const auto& id : receiver.state()->receiver->stream_ids()) {
+    FfiRtpByteString item; for (unsigned char c : id) item.bytes.push_back(c); out.push_back(std::move(item));
+  }
+  return out;
+}
+rust::Vec<std::uint8_t> rtp_receiver_id_bytes(const NativeRtpReceiver& receiver) noexcept {
+  rust::Vec<std::uint8_t> out; for (unsigned char c : receiver.state()->receiver->id()) out.push_back(c); return out;
+}
+rust::Vec<std::uint8_t> rtp_sender_id_bytes(const NativeRtpSender& sender) noexcept {
+  rust::Vec<std::uint8_t> out; for (unsigned char c : sender.state()->sender->id()) out.push_back(c); return out;
 }
 rust::Vec<rust::String> rtp_receiver_stream_ids(const NativeRtpReceiver& receiver) noexcept {
   rust::Vec<rust::String> result;

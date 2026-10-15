@@ -26,6 +26,8 @@ use crate::{
 
 #[path = "production_connectivity.rs"]
 mod connectivity;
+#[path = "production_media.rs"]
+mod media;
 pub use connectivity::{SessionDtmfError, SessionSctpTransportInformation, SessionTransportError};
 
 macro_rules! resource_id {
@@ -52,7 +54,10 @@ resource_id!(
     SessionDtlsTransportId,
     SessionSctpTransportId,
     SessionIceTransportId,
-    SessionMediaTrackId
+    SessionMediaTrackId,
+    SessionMediaStreamId,
+    SessionTrackSourceId,
+    SessionAudioProcessorId
 );
 
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
@@ -196,6 +201,11 @@ pub struct ProductionSession {
     channels: HashMap<SessionChannelId, Resource<DataChannel>>,
     video_sinks: HashMap<SessionReceiverId, EncodedVideoSink>,
     audio_sinks: HashMap<SessionReceiverId, EncodedAudioSink>,
+    track_observers: HashMap<SessionMediaTrackId, Resource<crate::MediaObserver>>,
+    stream_observers: HashMap<SessionMediaStreamId, Resource<crate::MediaObserver>>,
+    media_streams: HashMap<SessionMediaStreamId, Resource<crate::MediaStream>>,
+    track_sources: HashMap<SessionTrackSourceId, Resource<crate::MediaTrackSource>>,
+    audio_processors: HashMap<SessionAudioProcessorId, Resource<crate::AudioProcessor>>,
     media_tracks: HashMap<SessionMediaTrackId, Resource<crate::MediaTrack>>,
     transceivers: HashMap<SessionTransceiverId, Resource<Transceiver>>,
     senders: HashMap<SessionSenderId, Resource<RtpSender>>,
@@ -689,6 +699,11 @@ impl ProductionSession {
             transceivers: HashMap::new(),
             senders: HashMap::new(),
             receivers: HashMap::new(),
+            track_observers: HashMap::new(),
+            stream_observers: HashMap::new(),
+            media_streams: HashMap::new(),
+            track_sources: HashMap::new(),
+            audio_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
             peers: HashMap::new(),
@@ -1842,6 +1857,7 @@ impl ProductionSession {
         &mut self,
         track: SessionMediaTrackId,
     ) -> Result<(), PeerError> {
+        self.track_observers.remove(&track);
         self.media_tracks.remove(&track).ok_or_else(missing)?;
         Ok(())
     }

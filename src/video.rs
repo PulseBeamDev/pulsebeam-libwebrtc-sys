@@ -511,6 +511,12 @@ struct TrackInner {
 }
 
 impl VideoTrack {
+    pub(crate) fn factory_context(&self) -> &Rc<FactoryInner> {
+        self.inner
+            ._factory
+            .as_ref()
+            .unwrap_or_else(|| &self.inner._peer.as_ref().unwrap()._factory)
+    }
     pub fn as_media_track(&self) -> crate::MediaTrack {
         let owner = match &self.inner._peer {
             Some(peer) => crate::media_track::MediaTrackOwner::Factory {
@@ -898,6 +904,16 @@ impl RtpSender {
     /// Native de-duplicates by first occurrence, including empty IDs. Read back
     /// native state through `stream_ids`; this void call is not an SDP or
     /// renegotiation acknowledgement.
+    /// The native void identity update, preserving opaque bytes without UTF-8 conversion.
+    pub fn set_stream_id_bytes(&self, ids: &[Vec<u8>]) {
+        let ids: Vec<_> = ids
+            .iter()
+            .map(|bytes| ffi::FfiRtpByteString {
+                bytes: bytes.clone(),
+            })
+            .collect();
+        ffi::rtp_sender_set_stream_id_bytes(self.native(), &ids);
+    }
     pub fn set_streams(&self, ids: &[String]) {
         ffi::rtp_sender_set_streams(self.native(), ids);
     }
@@ -949,6 +965,9 @@ impl RtpSender {
 
     pub fn id(&self) -> String {
         ffi::rtp_sender_id(self.native())
+    }
+    pub fn id_bytes(&self) -> Vec<u8> {
+        ffi::rtp_sender_id_bytes(self.native())
     }
 
     pub fn track(&self) -> Option<VideoTrack> {
@@ -1486,6 +1505,9 @@ impl RtpReceiver {
     pub fn id(&self) -> String {
         ffi::rtp_receiver_id(self.native())
     }
+    pub fn id_bytes(&self) -> Vec<u8> {
+        ffi::rtp_receiver_id_bytes(self.native())
+    }
 
     pub fn media_type(&self) -> MediaType {
         MediaType::from_native(ffi::rtp_receiver_media_type(self.native()))
@@ -1493,6 +1515,23 @@ impl RtpReceiver {
 
     pub fn stream_ids(&self) -> Vec<String> {
         ffi::rtp_receiver_stream_ids(self.native())
+    }
+    pub fn stream_id_bytes(&self) -> Vec<Vec<u8>> {
+        ffi::rtp_receiver_stream_id_bytes(self.native())
+            .into_iter()
+            .map(|id| id.bytes)
+            .collect()
+    }
+    pub fn streams(&self) -> Vec<crate::MediaStream> {
+        let list = ffi::rtp_receiver_streams(self.native());
+        (0..ffi::media_streams_len(&list))
+            .map(|i| {
+                crate::MediaStream::from_native(
+                    ffi::media_streams_get(&list, i),
+                    self.peer._factory.clone(),
+                )
+            })
+            .collect()
     }
 
     pub fn track(&self) -> Option<VideoTrack> {

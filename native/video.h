@@ -457,7 +457,11 @@ bool media_type_to_string(std::int32_t kind, rust::String& name) noexcept;
 std::uint32_t rtp_sender_ssrc(const NativeRtpSender& sender) noexcept;
 std::int32_t rtp_sender_media_type(const NativeRtpSender& sender) noexcept;
 rust::Vec<rust::String> rtp_sender_stream_ids(const NativeRtpSender& sender) noexcept;
+rust::Vec<std::uint8_t> rtp_receiver_id_bytes(const NativeRtpReceiver&) noexcept;
+rust::Vec<std::uint8_t> rtp_sender_id_bytes(const NativeRtpSender&) noexcept;
+rust::Vec<FfiRtpByteString> rtp_receiver_stream_id_bytes(const NativeRtpReceiver&) noexcept;
 rust::Vec<FfiRtpByteString> rtp_sender_stream_id_bytes(const NativeRtpSender& sender) noexcept;
+void rtp_sender_set_stream_id_bytes(const NativeRtpSender& sender, rust::Slice<const FfiRtpByteString> ids) noexcept;
 void rtp_sender_set_streams(const NativeRtpSender& sender,
     rust::Slice<const rust::String> ids) noexcept;
 rust::String rtp_sender_id(const NativeRtpSender& sender) noexcept;

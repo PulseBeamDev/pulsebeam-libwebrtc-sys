@@ -669,6 +669,9 @@ struct TrackInner {
 }
 
 impl AudioTrack {
+    pub(crate) fn factory_context(&self) -> &Rc<FactoryInner> {
+        &self.inner._factory
+    }
     pub fn as_media_track(&self) -> crate::MediaTrack {
         crate::MediaTrack::from_native(
             ffi::audio_track_reference(self.native()),

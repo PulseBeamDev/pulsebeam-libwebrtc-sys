@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "e3c859c2ab8ca995808018930231ca7e63a5472eacc2b6913072acc456f54082";
+    "b00e5c9d03f6cdc5aa2947430e85eece4631bd0f8a0796f82330a597ab6d5788";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "4d6866b84eccf616506d4661edc5a1100fd42b0c14833b554535d4b6d6dbdeca";
+    "916f13fb108abba2224af861d9f92781f48aaabe304687c72ef7047ed90dfbe0";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "0959e4dc39c4f3553ff4a08a0ba906d57e3c578642dfae42dfac18030ab6aa49";
+    "b9451f72e9a8cc7dd26a8107b9f368c5f71f58c7f524b99c79ecf0d20078f559";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -184,6 +184,14 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("native/tls.h", include_bytes!("../native/tls.h")),
     ("native/video.cc", include_bytes!("../native/video.cc")),
     ("native/video.h", include_bytes!("../native/video.h")),
+    (
+        "native/media_stream.cc",
+        include_bytes!("../native/media_stream.cc"),
+    ),
+    (
+        "native/media_stream.h",
+        include_bytes!("../native/media_stream.h"),
+    ),
     (
         "native/frame_transformer.cc",
         include_bytes!("../native/frame_transformer.cc"),

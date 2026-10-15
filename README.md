@@ -793,6 +793,18 @@ the SDK can accept a foreign object whose ID matches a remembered report.
 Accepted selections retain the track's own source and role context through
 SDK task-capture retirement. Controlled close/drop cancels only the known
 observer continuation without advancing time or dispatching queued work.
+Owning endpoint `MediaTrack` references also expose typed source and capability
+reads. Receiver `streams()` returns owning native `MediaStream` references with
+byte-exact identity, audio/video traversal and native find operations. Track and
+stream `observe(NonZeroUsize)` calls explicitly create independent SDK notifier
+subscriptions, with bounded pending changes and observable overflow; aliases do
+not subscribe as a side effect. ProductionSession canonicalizes the corresponding
+reference IDs by native object identity and exposes the same reads and polling.
+Remote source reads and notifier retirement run on their retained native role.
+Source state is read from the SDK, including explicit receiver-stop transitions;
+channel-survival policy is not a promise that peer close leaves a source live.
+Absent processor/signal/stat values are not replaced with defaults.
+
 Reports preserve native timestamps in milliseconds, report/metric names,
 all seven typed value variants, byte strings and native formatting. SDK Value
 references stay on signaling; copied payloads and retained immutable SDK IDs

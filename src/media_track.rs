@@ -40,6 +40,13 @@ impl MediaTrack {
             _owner: owner,
         }))
     }
+    pub(crate) fn factory(&self) -> &Rc<FactoryInner> {
+        match &self.0._owner {
+            MediaTrackOwner::Audio { _track } => _track.factory_context(),
+            MediaTrackOwner::Video { _track } => _track.factory_context(),
+            MediaTrackOwner::Factory { _factory } => _factory,
+        }
+    }
     pub(crate) fn native(&self) -> &ffi::NativeMediaTrack {
         self.0.native.as_ref().unwrap()
     }
