@@ -290,20 +290,17 @@ fn product(audio: AudioBehavior, panic_drop: bool) -> (NetEq, Arc<Mutex<Calls>>)
 #[test]
 fn all_packet_overloads_preserve_distinct_inputs_without_stock_policy() {
     let (mut engine, calls) = product(AudioBehavior::NativeFailure, false);
-    let header = RtpHeaderValues {
-        payload_type: 255,
-        sequence_number: 65,
-        timestamp: 67,
-        ssrc: 71,
-        ..Default::default()
-    };
-    let info = RtpReceivedPacketInfo {
-        ssrc: 79,
-        csrcs: vec![83; 20],
-        sequence_number: 89,
-        rtp_timestamp: 97,
-        receive_time: Timestamp::plus_infinity(),
-        audio_level: Some(255),
+    let header = RtpHeaderValues { payload_type: 255, sequence_number: 65,
+        timestamp: 67, ssrc: 71, extension: RtpHeaderExtensionValues {
+            has_video_timing: false,
+            video_timing: VideoSendTiming { encode_start_delta_ms: 1,
+                encode_finish_delta_ms: 2, packetization_finish_delta_ms: 3,
+                pacer_exit_delta_ms: 4, network_timestamp_delta_ms: 5,
+                network2_timestamp_delta_ms: 6, flags: 0x81 },
+            ..Default::default()
+        }, ..Default::default() };
+    let info = RtpReceivedPacketInfo { ssrc: 79, csrcs: vec![83; 20], sequence_number: 89,
+        rtp_timestamp: 97, receive_time: Timestamp::plus_infinity(), audio_level: Some(255),
         local_capture_clock_offset: Some(TimeDelta::minus_infinity()),
         absolute_capture_time: Some(AbsoluteCaptureTime {
             absolute_capture_timestamp: u64::MAX,

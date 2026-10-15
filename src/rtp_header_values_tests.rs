@@ -9,15 +9,16 @@ fn round_trip(value: &RtpHeaderValues) -> RtpHeaderValues {
 }
 
 #[test]
-fn native_header_default_matches_owned_default() {
-    assert_eq!(
-        RtpHeaderValues::from_native(ffi::media_rtp_header_default()),
-        RtpHeaderValues::default()
-    );
-    assert_eq!(
-        round_trip(&RtpHeaderValues::default()),
-        RtpHeaderValues::default()
-    );
+fn initialized_owned_header_default_round_trips() {
+    // Rust's owned input initializes every raw field. A bare SDK RTPHeader
+    // constructor leaves timing deltas uninitialized, so it is not an
+    // observable complete default and must never be serialized into Rust.
+    let header = RtpHeaderValues::default();
+    assert!(!header.extension.has_video_timing);
+    assert_eq!(header.extension.video_timing, VideoSendTiming::default());
+    for _ in 0..256 {
+        assert_eq!(round_trip(&header), header);
+    }
 }
 
 #[test]

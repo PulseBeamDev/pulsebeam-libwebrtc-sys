@@ -46,6 +46,23 @@ fails closed without inventing initialized audio or output-slot writes. Differen
 registrations remain independently callable, and concurrent factory callbacks
 are serialized.
 
+### Initialized RTP-header inputs
+
+RtpHeaderValues owns fully initialized input fields, including raw inactive
+video-timing values. Its Default is an initialized caller input, not a snapshot
+of a bare SDK RTPHeader constructor: that constructor leaves six inactive timing
+deltas uninitialized. The unsafe private constructor-observation probe is removed,
+not replaced by zero-valued native metadata. Valid caller timing fields remain
+verbatim even when has_video_timing is false.
+
+All four standalone caller-NetEq insertion callbacks receive headers reconstructed
+from these initialized owned inputs. The private native-to-Rust conversion requires
+that provenance; the factory is not installed into an SDK receive channel and no
+arbitrary external header is assumed initialized. A future SDK-owned ingress route
+would need its own initialization proof or explicit unavailable-state model.
+Malformed private round-trip inputs return before serializing the uninitialized
+native local, with a failed admission flag rather than a successful observation.
+
 ## Actor-owned PCM and processing
 
 The production actor's absent encoder choice remains the encoded Opus carrier.

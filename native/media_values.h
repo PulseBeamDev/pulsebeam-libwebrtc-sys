@@ -28,6 +28,9 @@ MediaPlayoutToFfi(const webrtc::VideoPlayoutDelay &) noexcept;
 // False means an input would trigger a native CHECK or an unsafe enum cast.
 bool MediaRtpHeaderFromFfi(const FfiMediaRtpHeader &,
                            webrtc::RTPHeader &) noexcept;
+// Requires every raw field, including inactive video timing, to be initialized.
+// Standalone NetEq insertion obtains that proof through MediaRtpHeaderFromFfi.
+// A bare SDK RTPHeader constructor does not initialize its timing deltas.
 FfiMediaRtpHeader MediaRtpHeaderToFfi(const webrtc::RTPHeader &) noexcept;
 webrtc::RtpPacketInfo
 MediaPacketInfoFromFfi(const FfiRtpReceivedPacketInfo &) noexcept;
@@ -50,7 +53,6 @@ std::int64_t media_absolute_send_timestamp(std::uint32_t) noexcept;
 std::uint16_t media_video_timing_difference(std::int64_t,
                                             std::int64_t) noexcept;
 std::uint16_t media_video_timing_duration(std::int64_t) noexcept;
-FfiMediaRtpHeader media_rtp_header_default() noexcept;
 FfiMediaRtpHeader media_rtp_header_round_trip(const FfiMediaRtpHeader &,
                                               bool &) noexcept;
 FfiRtpReceivedPacketInfo

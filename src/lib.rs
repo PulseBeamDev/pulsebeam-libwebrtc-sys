@@ -3391,7 +3391,6 @@ mod ffi {
         fn media_absolute_send_timestamp(value: u32) -> i64;
         fn media_video_timing_difference(base_ms: i64, time_ms: i64) -> u16;
         fn media_video_timing_duration(delta_us: i64) -> u16;
-        fn media_rtp_header_default() -> FfiMediaRtpHeader;
         fn media_rtp_header_round_trip(
             value: &FfiMediaRtpHeader,
             valid: &mut bool,

@@ -232,10 +232,12 @@ FfiMediaRtpHeader MediaRtpHeaderToFfi(const webrtc::RTPHeader& value) noexcept {
   if (n.color_space) v.color_space = Color(*n.color_space);
   return result;
 }
-FfiMediaRtpHeader media_rtp_header_default() noexcept { return MediaRtpHeaderToFfi(webrtc::RTPHeader()); }
 FfiMediaRtpHeader media_rtp_header_round_trip(const FfiMediaRtpHeader& value, bool& valid) noexcept {
   webrtc::RTPHeader native;
   valid = MediaRtpHeaderFromFfi(value, native);
+  // Failed conversion has not initialized the native header's timing scalars.
+  // The carrier is not an observation: callers must check valid before use.
+  if (!valid) return FfiMediaRtpHeader{};
   return MediaRtpHeaderToFfi(native);
 }
 webrtc::RtpPacketInfo MediaPacketInfoFromFfi(const FfiRtpReceivedPacketInfo& value) noexcept {

@@ -446,6 +446,9 @@ impl RtpHeaderExtensionValues {
         }
     }
 }
+/// Fully initialized owned input values, including inactive timing deltas.
+/// Default is this initialized input, not an observation of a bare SDK header:
+/// the SDK constructor leaves inactive timing deltas uninitialized.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RtpHeaderValues {
     pub marker: bool,
