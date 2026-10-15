@@ -784,8 +784,16 @@ are seconds; available/target bitrates are bits per second.
 
 `request_legacy_stats(Standard | Debug)` on peers and `ProductionSession`
 uses the deprecated native collector and emits a separate `LegacyStats` result.
-It selects all tracks; the SDK's optional track-selector overload is not yet
-bound. Reports preserve native timestamps in milliseconds, report/metric names,
+It selects all tracks. `request_legacy_stats_with_track` also forwards an
+optional owning `MediaTrack`, obtained from local audio/video tracks or actual
+sender/receiver `track_reference()` getters. The actor uses opaque
+`SessionMediaTrackId` resources canonicalized by actual SDK object identity,
+not textual track IDs. Native false rejects synchronously without a callback;
+the SDK can accept a foreign object whose ID matches a remembered report.
+Accepted selections retain the track's own source and role context through
+SDK task-capture retirement. Controlled close/drop cancels only the known
+observer continuation without advancing time or dispatching queued work.
+Reports preserve native timestamps in milliseconds, report/metric names,
 all seven typed value variants, byte strings and native formatting. SDK Value
 references stay on signaling; copied payloads and retained immutable SDK IDs
 remain usable after peer teardown and caller-thread migration. ID equality uses

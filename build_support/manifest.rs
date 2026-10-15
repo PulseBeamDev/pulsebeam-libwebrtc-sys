@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "f7c875472b84e7c27614de6bc1678e2d021bb7b9a8f9d12ddc0cb1be724ee958";
+    "e3c859c2ab8ca995808018930231ca7e63a5472eacc2b6913072acc456f54082";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "45e58dff41bc220088941c4c293760438c2135fa63fd2ae4094ce364ec8fa89b";
+    "4d6866b84eccf616506d4661edc5a1100fd42b0c14833b554535d4b6d6dbdeca";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "c0c196cfcae47e4af0c71d19f000eefaa48db9b987ec90865b8f7be99a2420e3";
+    "0959e4dc39c4f3553ff4a08a0ba906d57e3c578642dfae42dfac18030ab6aa49";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.

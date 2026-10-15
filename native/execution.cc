@@ -62,6 +62,7 @@ class SharedClock final : public webrtc::Clock {
 class CooperativeTaskQueue;
 thread_local CooperativeTaskQueue* current_cooperative_queue = nullptr;
 thread_local webrtc::TaskQueueBase* controlled_driver_identity = nullptr;
+thread_local CapturedDriverTasks::State* captured_driver_posts = nullptr;
 class CooperativeScope final {
  public:
   explicit CooperativeScope(CooperativeTaskQueue* queue) : previous_(current_cooperative_queue) { current_cooperative_queue = queue; }
@@ -119,6 +120,7 @@ class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
   absl::string_view queue_name() const override { return name_; }
   void Delete() override;
   void Run(absl::AnyInvocable<void() &&> task) noexcept;
+  void PostCaptured(absl::AnyInvocable<void() &&> task, CapturedDriverTasks::State& capture);
 
  protected:
   void PostTaskImpl(absl::AnyInvocable<void() &&> task,
@@ -258,6 +260,65 @@ struct NativeEnvironment::State {
   FfiClockTimeBounds clock_bounds;
 };
 
+struct CapturedDriverTasks::State {
+  struct Task {
+    explicit Task(absl::AnyInvocable<void() &&> body) : body(std::move(body)) {}
+    void Run() {
+      auto active = std::move(body);
+      if (!active) return;
+      running = true;
+      std::move(active)();
+      active = nullptr;  // Retire SDK captures before declaring completion.
+      running = false;
+    }
+    absl::AnyInvocable<void() &&> body;
+    std::weak_ptr<NativeTaskQueueFactory::State> queue;
+    TaskKey key;
+    bool running = false;
+  };
+  webrtc::Thread* thread = nullptr;
+  std::vector<std::shared_ptr<Task>> tasks;
+};
+CapturedDriverTasks::CapturedDriverTasks() noexcept : state_(std::make_unique<State>()) {}
+CapturedDriverTasks::~CapturedDriverTasks() { Cancel(); }
+bool CapturedDriverTasks::Capture(webrtc::Thread* thread, absl::AnyInvocable<bool()> request) noexcept {
+  Cancel();
+  if (thread != controlled_driver_identity) return request();
+  state_->thread = thread;
+  struct Scope {
+    State* previous;
+    ~Scope() { captured_driver_posts = previous; }
+  } scope{captured_driver_posts};
+  captured_driver_posts = state_.get();
+  const bool accepted = request();
+  if (accepted && !state_->tasks.empty()) {
+    auto continuation = state_->tasks.back();
+    state_->tasks.clear();  // Earlier posts retain their queued task bodies.
+    state_->tasks.push_back(std::move(continuation));
+  } else {
+    state_->tasks.clear();  // Rejection must not cancel unrelated SDK work.
+  }
+  return accepted;
+}
+void CapturedDriverTasks::Cancel() noexcept {
+  for (const auto& task : state_->tasks) {
+    // This primitive is caller-sequence-only. Running work cannot be retired
+    // by clearing its already-moved function; never assert otherwise.
+    RTC_CHECK(!task->running);
+    task->body = nullptr;  // Destroy SDK captures outside the queue lock.
+    if (auto queue = task->queue.lock()) {
+      std::lock_guard lock(queue->mutex);
+      queue->tasks.erase(task->key);  // No abandoned no-op queue entries.
+    }
+  }
+  state_->tasks.clear();
+}
+bool CapturedDriverTasks::retired() const noexcept {
+  return std::all_of(state_->tasks.begin(), state_->tasks.end(), [](const auto& task) {
+    return !task->body && !task->running;
+  });
+}
+
 namespace {
 std::shared_ptr<NativeTaskQueueFactory::State> MakeCooperativeState(
     const std::shared_ptr<NativeManualClock::State>& clock) {
@@ -300,7 +361,12 @@ class ControlledThread final : public webrtc::Thread {
   void PostTaskImpl(absl::AnyInvocable<void() &&> task,
                     const PostTaskTraits& traits,
                     const webrtc::Location& location) override {
-    if (queue_ && !IsQuitting()) queue_->PostTask(std::move(task), location);
+    if (!queue_ || IsQuitting()) return;
+    if (captured_driver_posts && captured_driver_posts->thread == this) {
+      queue_->PostCaptured(std::move(task), *captured_driver_posts);
+    } else {
+      queue_->PostTask(std::move(task), location);
+    }
   }
   void PostDelayedTaskImpl(absl::AnyInvocable<void() &&> task,
                            webrtc::TimeDelta delay,
@@ -383,6 +449,16 @@ webrtc::Timestamp SharedClock::CurrentTime() {
 webrtc::NtpTime SharedClock::ConvertTimestampToNtpTime(
     webrtc::Timestamp timestamp) {
   return state_->clock.ConvertTimestampToNtpTime(timestamp);
+}
+
+void CooperativeTaskQueue::PostCaptured(absl::AnyInvocable<void() &&> task, CapturedDriverTasks::State& group) {
+  std::lock_guard lock(state_->mutex);
+  if (state_->deleted[this]) return;
+  auto capture = std::make_shared<CapturedDriverTasks::State::Task>(std::move(task));
+  capture->queue = state_;
+  capture->key = TaskKey{state_->clock->clock.TimeInMicroseconds(), state_->clock->next_sequence++};
+  group.tasks.push_back(capture);
+  state_->tasks.emplace(capture->key, ScheduledTask{this, false, [capture] { capture->Run(); }});
 }
 
 void CooperativeTaskQueue::PostTaskImpl(absl::AnyInvocable<void() &&> task,
@@ -1084,6 +1160,23 @@ bool test_driver_lifecycle_yield(
   queue->PostTask([&event] { event.Set(); });
   return event.Wait(webrtc::TimeDelta::PlusInfinity()) &&
          driver.state()->clock.state->clock.TimeInMicroseconds() == before;
+}
+
+// Binding primitive qualification: unlike a peer's SDK Close, a fresh driver
+// has no unrelated teardown tasks. Count dispatches as well as body execution
+// so leaving an empty continuation envelope queued is also a failure.
+bool test_driver_capture_cancellation(const NativeDriverThread& driver) noexcept {
+  if (!driver_is_current(driver)) return false;
+  auto ran = std::make_shared<std::size_t>(0);
+  const auto before = driver.state()->clock.state->clock.TimeInMicroseconds();
+  CapturedDriverTasks capture;
+  capture.Capture(driver.thread(), [&] {
+    driver.thread()->PostTask([ran] { ++*ran; });
+    return true;
+  });
+  capture.Cancel();
+  return PumpClock(driver.state()->clock.state, 1) == 0 && *ran == 0 &&
+      driver.state()->clock.state->clock.TimeInMicroseconds() == before;
 }
 
 std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept {

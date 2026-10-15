@@ -351,6 +351,8 @@ pub use task_queue_provider::{
 };
 mod stats;
 pub use stats::*;
+mod media_track;
+pub use media_track::{MediaTrack, MediaTrackKind, MediaTrackState};
 mod legacy_stats;
 pub use legacy_stats::*;
 mod timestamp;
@@ -498,10 +500,10 @@ pub use peer_configuration::{
 pub use production::{
     ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionChannelId,
     SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEvent,
-    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionPeerId,
-    SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
-    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTransceiverId,
-    SessionTransportError,
+    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionIceTransportId, SessionMediaTrackId,
+    SessionPeerId, SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation,
+    SessionSenderId, SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId,
+    SessionTransceiverId, SessionTransportError,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -3372,6 +3374,19 @@ mod ffi {
         type NativeScreenCapture;
         type NativeCamera;
         type NativeVideoSource;
+        type NativeMediaTrack;
+        fn media_track_id(track: &NativeMediaTrack) -> Vec<u8>;
+        fn media_track_kind(track: &NativeMediaTrack) -> Vec<u8>;
+        fn media_track_state(track: &NativeMediaTrack) -> i32;
+        fn media_track_enabled(track: &NativeMediaTrack) -> bool;
+        fn media_track_set_enabled(track: &NativeMediaTrack, enabled: bool) -> bool;
+        fn media_track_same_resource(a: &NativeMediaTrack, b: &NativeMediaTrack) -> bool;
+        fn video_track_reference(track: &NativeVideoTrack) -> UniquePtr<NativeMediaTrack>;
+        fn audio_track_reference(track: &NativeAudioTrack) -> UniquePtr<NativeMediaTrack>;
+        fn rtp_sender_track_reference(sender: &NativeRtpSender) -> UniquePtr<NativeMediaTrack>;
+        fn rtp_receiver_track_reference(
+            receiver: &NativeRtpReceiver,
+        ) -> UniquePtr<NativeMediaTrack>;
         type NativeVideoTrack;
         type NativeAudioSource;
         type NativeAudioTrack;
@@ -4925,6 +4940,7 @@ mod ffi {
             driver: &NativeDriverThread,
             factory: &NativeTaskQueueFactory,
         ) -> bool;
+        fn test_driver_capture_cancellation(driver: &NativeDriverThread) -> bool;
         fn driver_next_deadline_us(driver: &NativeDriverThread) -> i64;
         fn driver_is_current(driver: &NativeDriverThread) -> bool;
         fn thread_post_task(thread: &NativeThread, task: Box<RustTask>) -> bool;
@@ -5565,6 +5581,12 @@ mod ffi {
         ) -> u8;
         fn peer_request_legacy_stats(
             peer: &NativePeerConnection,
+            level: u8,
+            operation_id: u64,
+        ) -> u8;
+        fn peer_request_legacy_stats_with_track(
+            peer: &NativePeerConnection,
+            selector: &NativeMediaTrack,
             level: u8,
             operation_id: u64,
         ) -> u8;

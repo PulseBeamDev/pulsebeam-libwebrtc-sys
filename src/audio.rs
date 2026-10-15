@@ -669,6 +669,14 @@ struct TrackInner {
 }
 
 impl AudioTrack {
+    pub fn as_media_track(&self) -> crate::MediaTrack {
+        crate::MediaTrack::from_native(
+            ffi::audio_track_reference(self.native()),
+            crate::media_track::MediaTrackOwner::Audio {
+                _track: self.clone(),
+            },
+        )
+    }
     pub(crate) fn local(
         native: cxx::UniquePtr<ffi::NativeAudioTrack>,
         factory: Rc<FactoryInner>,

@@ -51,7 +51,8 @@ resource_id!(
     SessionDtmfSenderId,
     SessionDtlsTransportId,
     SessionSctpTransportId,
-    SessionIceTransportId
+    SessionIceTransportId,
+    SessionMediaTrackId
 );
 
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
@@ -195,6 +196,7 @@ pub struct ProductionSession {
     channels: HashMap<SessionChannelId, Resource<DataChannel>>,
     video_sinks: HashMap<SessionReceiverId, EncodedVideoSink>,
     audio_sinks: HashMap<SessionReceiverId, EncodedAudioSink>,
+    media_tracks: HashMap<SessionMediaTrackId, Resource<crate::MediaTrack>>,
     transceivers: HashMap<SessionTransceiverId, Resource<Transceiver>>,
     senders: HashMap<SessionSenderId, Resource<RtpSender>>,
     receivers: HashMap<SessionReceiverId, Resource<RtpReceiver>>,
@@ -687,6 +689,7 @@ impl ProductionSession {
             transceivers: HashMap::new(),
             senders: HashMap::new(),
             receivers: HashMap::new(),
+            media_tracks: HashMap::new(),
             sources: HashMap::new(),
             peers: HashMap::new(),
             input,
@@ -973,6 +976,26 @@ impl ProductionSession {
         self.check_open()?;
         let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
         Self::submit_operation(peer, |p| p.request_legacy_stats(level))
+    }
+    pub fn request_legacy_stats_with_track(
+        &mut self,
+        peer: SessionPeerId,
+        selector: Option<SessionMediaTrackId>,
+        level: crate::LegacyStatsOutputLevel,
+    ) -> Result<OperationId, crate::LegacyStatsRequestError> {
+        self.check_open()?;
+        let selector = selector
+            .map(|id| {
+                self.media_tracks
+                    .get(&id)
+                    .map(|r| r.value.clone())
+                    .ok_or_else(missing)
+            })
+            .transpose()?;
+        let peer = self.peers.get_mut(&peer).ok_or_else(missing)?;
+        Self::submit_operation(peer, |p| {
+            p.request_legacy_stats_with_track(selector.as_ref(), level)
+        })
     }
     pub fn request_sender_stats(
         &mut self,
@@ -1773,6 +1796,104 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .value
             .receiver)
+    }
+    fn insert_media_track(
+        &mut self,
+        peer: SessionPeerId,
+        value: crate::MediaTrack,
+    ) -> Result<SessionMediaTrackId, PeerError> {
+        if let Some((&id, _)) = self
+            .media_tracks
+            .iter()
+            .find(|(_, r)| r.value.same_resource(&value))
+        {
+            return Ok(id);
+        }
+        let id = SessionMediaTrackId(next_id()?);
+        self.media_tracks.insert(id, Resource { peer, value });
+        Ok(id)
+    }
+    pub fn sender_track_reference(
+        &mut self,
+        sender: SessionSenderId,
+    ) -> Result<Option<SessionMediaTrackId>, PeerError> {
+        let sender = self.senders.get(&sender).ok_or_else(missing)?;
+        let peer = sender.peer;
+        sender
+            .value
+            .track_reference()
+            .map(|track| self.insert_media_track(peer, track))
+            .transpose()
+    }
+    pub fn receiver_track_reference(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<SessionMediaTrackId>, PeerError> {
+        let receiver = self.receivers.get(&receiver).ok_or_else(missing)?;
+        let peer = receiver.peer;
+        receiver
+            .value
+            .track_reference()
+            .map(|track| self.insert_media_track(peer, track))
+            .transpose()
+    }
+    /// Release this actor reference. Accepted native work retains its own lease.
+    pub fn release_media_track_reference(
+        &mut self,
+        track: SessionMediaTrackId,
+    ) -> Result<(), PeerError> {
+        self.media_tracks.remove(&track).ok_or_else(missing)?;
+        Ok(())
+    }
+    pub fn media_track_id(&mut self, track: SessionMediaTrackId) -> Result<Vec<u8>, PeerError> {
+        Ok(self
+            .media_tracks
+            .get(&track)
+            .ok_or_else(missing)?
+            .value
+            .id())
+    }
+    pub fn media_track_kind(
+        &mut self,
+        track: SessionMediaTrackId,
+    ) -> Result<crate::MediaTrackKind, PeerError> {
+        Ok(self
+            .media_tracks
+            .get(&track)
+            .ok_or_else(missing)?
+            .value
+            .kind())
+    }
+    pub fn media_track_state(
+        &mut self,
+        track: SessionMediaTrackId,
+    ) -> Result<crate::MediaTrackState, PeerError> {
+        Ok(self
+            .media_tracks
+            .get(&track)
+            .ok_or_else(missing)?
+            .value
+            .state())
+    }
+    pub fn media_track_enabled(&mut self, track: SessionMediaTrackId) -> Result<bool, PeerError> {
+        Ok(self
+            .media_tracks
+            .get(&track)
+            .ok_or_else(missing)?
+            .value
+            .enabled())
+    }
+    pub fn set_media_track_enabled(
+        &mut self,
+        track: SessionMediaTrackId,
+        enabled: bool,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .media_tracks
+            .get(&track)
+            .ok_or_else(missing)?
+            .value
+            .set_enabled(enabled))
     }
     /// Register the actual SDK sender slot with explicit bounded polling.
     pub fn register_sender_packet_observer(

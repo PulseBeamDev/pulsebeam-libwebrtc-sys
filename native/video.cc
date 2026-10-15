@@ -1320,6 +1320,26 @@ std::unique_ptr<NativeVideoTrack> create_video_track(
   return std::make_unique<NativeVideoTrack>(std::move(state));
 }
 
+NativeMediaTrack::NativeMediaTrack(webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track) noexcept : track_(std::move(track)) {}
+NativeMediaTrack::~NativeMediaTrack() = default;
+const webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>& NativeMediaTrack::track() const noexcept { return track_; }
+rust::Vec<std::uint8_t> media_track_id(const NativeMediaTrack& track) noexcept {
+  rust::Vec<std::uint8_t> out; for (unsigned char c : track.track()->id()) out.push_back(c); return out;
+}
+rust::Vec<std::uint8_t> media_track_kind(const NativeMediaTrack& track) noexcept {
+  rust::Vec<std::uint8_t> out; for (unsigned char c : track.track()->kind()) out.push_back(c); return out;
+}
+std::int32_t media_track_state(const NativeMediaTrack& track) noexcept { return static_cast<std::int32_t>(track.track()->state()); }
+bool media_track_enabled(const NativeMediaTrack& track) noexcept { return track.track()->enabled(); }
+bool media_track_set_enabled(const NativeMediaTrack& track, bool enabled) noexcept { return track.track()->set_enabled(enabled); }
+bool media_track_same_resource(const NativeMediaTrack& a, const NativeMediaTrack& b) noexcept { return a.track().get() == b.track().get(); }
+std::unique_ptr<NativeMediaTrack> video_track_reference(const NativeVideoTrack& track) noexcept { return std::make_unique<NativeMediaTrack>(track.state()->track); }
+std::unique_ptr<NativeMediaTrack> rtp_sender_track_reference(const NativeRtpSender& sender) noexcept {
+  auto track = sender.state()->sender->track(); return track ? std::make_unique<NativeMediaTrack>(std::move(track)) : nullptr;
+}
+std::unique_ptr<NativeMediaTrack> rtp_receiver_track_reference(const NativeRtpReceiver& receiver) noexcept {
+  auto track = receiver.state()->receiver->track(); return track ? std::make_unique<NativeMediaTrack>(std::move(track)) : nullptr;
+}
 rust::String video_track_id(const NativeVideoTrack& track) noexcept {
   return track.state()->track->id();
 }

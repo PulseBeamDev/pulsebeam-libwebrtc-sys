@@ -1139,6 +1139,14 @@ mod tests {
     }
 
     #[test]
+    fn captured_driver_cancellation_removes_the_queued_envelope() {
+        let world = ControlledWorld::acquire(922, Duration::from_secs(3)).unwrap();
+        assert!(ffi::test_driver_capture_cancellation(world.driver.native()));
+        assert_eq!(world.pump(1).dispatched, 0);
+        assert_eq!(world.now(), Duration::from_secs(3));
+    }
+
+    #[test]
     fn rejects_out_of_range_time_without_native_linking() {
         assert_eq!(duration_micros(Duration::from_secs(u64::MAX)), None);
     }

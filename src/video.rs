@@ -511,6 +511,17 @@ struct TrackInner {
 }
 
 impl VideoTrack {
+    pub fn as_media_track(&self) -> crate::MediaTrack {
+        let owner = match &self.inner._peer {
+            Some(peer) => crate::media_track::MediaTrackOwner::Factory {
+                _factory: peer._factory.clone(),
+            },
+            None => crate::media_track::MediaTrackOwner::Video {
+                _track: self.clone(),
+            },
+        };
+        crate::MediaTrack::from_native(ffi::video_track_reference(self.native()), owner)
+    }
     pub(crate) fn local(
         native: cxx::UniquePtr<ffi::NativeVideoTrack>,
         factory: Rc<FactoryInner>,
@@ -906,6 +917,27 @@ impl RtpSender {
         (!native.is_null()).then(|| crate::DtmfSender::from_native(native, self.peer.clone()))
     }
 
+    pub fn track_reference(&self) -> Option<crate::MediaTrack> {
+        let native = ffi::rtp_sender_track_reference(self.native());
+        if native.is_null() {
+            return None;
+        }
+        let key = self.resource_key();
+        let owner = if let Some(lease) = self.peer.sender_tracks.borrow().get(&key) {
+            crate::media_track::MediaTrackOwner::Video {
+                _track: lease.track.clone(),
+            }
+        } else if let Some(lease) = self.peer.audio_sender_tracks.borrow().get(&key) {
+            crate::media_track::MediaTrackOwner::Audio {
+                _track: lease.track.clone(),
+            }
+        } else {
+            crate::media_track::MediaTrackOwner::Factory {
+                _factory: self.peer._factory.clone(),
+            }
+        };
+        Some(crate::MediaTrack::from_native(native, owner))
+    }
     pub(crate) fn resource_key(&self) -> usize {
         ffi::rtp_sender_identity(self.native())
     }
@@ -1331,6 +1363,17 @@ impl From<PeerError> for RtpReceiverOperationError {
 }
 
 impl RtpReceiver {
+    pub fn track_reference(&self) -> Option<crate::MediaTrack> {
+        let native = ffi::rtp_receiver_track_reference(self.native());
+        (!native.is_null()).then(|| {
+            crate::MediaTrack::from_native(
+                native,
+                crate::media_track::MediaTrackOwner::Factory {
+                    _factory: self.peer._factory.clone(),
+                },
+            )
+        })
+    }
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::rtp_receiver_same_resource(self.native(), other.native())
     }

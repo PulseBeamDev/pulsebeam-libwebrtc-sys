@@ -16,6 +16,9 @@ struct FfiEncodedAudioFrame;
 struct FfiAudioCodecCapability;
 struct FfiCodecFormat;
 
+class NativeAudioTrack;
+class NativeMediaTrack;
+std::unique_ptr<NativeMediaTrack> audio_track_reference(const NativeAudioTrack&) noexcept;
 class NativeAudioSource final {
  public:
   struct State;

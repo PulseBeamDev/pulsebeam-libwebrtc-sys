@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "absl/functional/any_invocable.h"
 #include "api/environment/environment.h"
 #include "api/field_trials_view.h"
 #include "api/rtc_event_log_output.h"
@@ -14,6 +15,22 @@ class Thread;
 }
 
 namespace pulsebeam::webrtc_sys {
+
+// Binding-owned cancellation for an admitted SDK request known to post its
+// observer continuation last. Other posts made during the call remain intact.
+// Only the current controlled role is intercepted. Cancel destroys captures
+// without dispatching task bodies, pumping queues, or advancing time.
+class CapturedDriverTasks final {
+ public:
+  struct State;
+  CapturedDriverTasks() noexcept;
+  ~CapturedDriverTasks();
+  bool Capture(webrtc::Thread* thread, absl::AnyInvocable<bool()> request) noexcept;
+  void Cancel() noexcept;
+  bool retired() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
 
 struct RustTask;
 struct RustTaskQueueFactory;
@@ -285,6 +302,7 @@ bool driver_run_ready(const NativeDriverThread& driver) noexcept;
 bool test_driver_lifecycle_yield(
     const NativeDriverThread& driver,
     const NativeTaskQueueFactory& factory) noexcept;
+bool test_driver_capture_cancellation(const NativeDriverThread& driver) noexcept;
 std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept;
 bool driver_is_current(const NativeDriverThread& driver) noexcept;
 bool thread_post_task(const NativeThread& thread,

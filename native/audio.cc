@@ -577,6 +577,9 @@ std::unique_ptr<NativeAudioTrack> create_audio_track(
   state->opus_frames = source.state()->encoded_channels != 0;
   return std::make_unique<NativeAudioTrack>(std::move(state));
 }
+std::unique_ptr<NativeMediaTrack> audio_track_reference(const NativeAudioTrack& track) noexcept {
+  return std::make_unique<NativeMediaTrack>(track.state()->track);
+}
 rust::String audio_track_id(const NativeAudioTrack& track) noexcept {
   return track.state()->track->id();
 }

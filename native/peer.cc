@@ -227,6 +227,18 @@ struct EventState {
     }
   }
 
+  void StageLegacy(FfiPeerEvent event) {
+    std::lock_guard lock(mutex);
+    if (pending.contains(event.operation_id)) staged_legacy = std::move(event);
+  }
+  void PublishLegacy(std::uint64_t id) {
+    NotifyOnExit notify{readiness};
+    std::lock_guard lock(mutex);
+    if (!staged_legacy || staged_legacy->operation_id != id) return;
+    if (pending.erase(id)) events.push_back(std::move(*staged_legacy));
+    staged_legacy.reset();
+  }
+
   static bool Advisory(std::uint8_t kind) {
     return kind >= kConnectionState && kind <= kNegotiationNeeded;
   }
@@ -405,6 +417,13 @@ struct EventState {
       });
       retained_controls = 0;
       retained_control_bytes = 0;
+      // Native close runs beyond the original SDK callback task (or cancels
+      // that controlled task first). Preserve a real already-copied result;
+      // the publication fence must not turn SDK success into cancellation.
+      if (staged_legacy) {
+        if (pending.erase(staged_legacy->operation_id)) events.push_back(std::move(*staged_legacy));
+        staged_legacy.reset();
+      }
       for (std::uint64_t operation_id : pending) {
         events.push_back(ClosedOperation(operation_id));
       }
@@ -422,6 +441,7 @@ struct EventState {
   const std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
   std::deque<FfiPeerEvent> events;
+  std::optional<FfiPeerEvent> staged_legacy;  // At most the one admitted stats result.
   std::size_t retained_controls = 0, retained_control_bytes = 0;
   std::uint64_t dropped_controls = 0, coalesced_advisories = 0;
   std::set<std::uint64_t> pending;
@@ -741,17 +761,25 @@ class StatsObserver : public webrtc::RTCStatsCollectorCallback {
 
 class LegacyStatsObserver : public webrtc::StatsObserver {
  public:
-  LegacyStatsObserver(std::shared_ptr<EventState> events, std::uint64_t id) : events_(std::move(events)), id_(id) {}
+  LegacyStatsObserver(std::shared_ptr<EventState> events, std::uint64_t id, webrtc::Thread* signaling) : events_(std::move(events)), id_(id), signaling_(signaling) {}
   void OnComplete(const webrtc::StatsReports& reports) override {
     FfiPeerEvent event; event.kind = kLegacyStatsReport; event.operation_id = id_;
     // Legacy Value references are sequence-bound. Copy every payload here;
     // only immutable atomic-refcounted SDK IDs survive the callback.
     event.legacy_stats_reports = copy_legacy_stats(reports);
-    events_->Complete(std::move(event));
+    // Post a retirement fence, not a second stats request. A callback is still
+    // inside PostGetStats' track-capturing task. Publish only after that task
+    // and all its SDK captures have been destroyed. The fence retains neither
+    // track/context nor abandoned result storage after the peer is dropped.
+    events_->StageLegacy(std::move(event));
+    signaling_->PostTask([events = std::weak_ptr<EventState>(events_), id = id_] {
+      if (auto state = events.lock()) state->PublishLegacy(id);
+    });
   }
  private:
   std::shared_ptr<EventState> events_;
   std::uint64_t id_;
+  webrtc::Thread* signaling_;
 };
 
 class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
@@ -1052,6 +1080,8 @@ struct NativePeerConnection::State {
   webrtc::Thread* worker_thread = nullptr;
   std::set<std::string> encoded_receiver_ids;
   std::set<std::string> audio_receiver_ids;
+  CapturedDriverTasks legacy_continuation;
+  std::uint64_t legacy_operation = 0;
   bool closed = false;
 };
 
@@ -2040,13 +2070,26 @@ std::uint8_t peer_request_stats(const NativePeerConnection& peer,
   return 0;
 }
 
-std::uint8_t peer_request_legacy_stats(const NativePeerConnection& peer, std::uint8_t level, std::uint64_t id) noexcept {
+static std::uint8_t RequestLegacyStats(const NativePeerConnection& peer, const NativeMediaTrack* selector, std::uint8_t level, std::uint64_t id) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->BeginStats(id); if (status != 0) return status;
-  auto observer = webrtc::make_ref_counted<LegacyStatsObserver>(state->events, id);
-  const bool accepted = state->peer->GetStats(observer.get(), nullptr, static_cast<webrtc::PeerConnectionInterface::StatsOutputLevel>(level));
+  auto observer = webrtc::make_ref_counted<LegacyStatsObserver>(state->events, id, state->signaling_thread);
+  // Pinned PeerConnection::GetStats posts PostGetStats last, immediately before
+  // returning true. False posts no observer continuation. Preserve any earlier
+  // unrelated posts from synchronous UpdateStats; never dispatch them here.
+  const bool accepted = state->legacy_continuation.Capture(state->signaling_thread, [&] {
+    return state->peer->GetStats(observer.get(), selector ? selector->track().get() : nullptr,
+        static_cast<webrtc::PeerConnectionInterface::StatsOutputLevel>(level));
+  });
   if (!accepted) { state->events->RejectStats(id); return 5; }
+  state->legacy_operation = id;
   return 0;
+}
+std::uint8_t peer_request_legacy_stats(const NativePeerConnection& peer, std::uint8_t level, std::uint64_t id) noexcept {
+  return RequestLegacyStats(peer, nullptr, level, id);
+}
+std::uint8_t peer_request_legacy_stats_with_track(const NativePeerConnection& peer, const NativeMediaTrack& selector, std::uint8_t level, std::uint64_t id) noexcept {
+  return RequestLegacyStats(peer, &selector, level, id);
 }
 std::uint8_t peer_request_sender_stats(const NativePeerConnection& peer, const NativeRtpSender& sender, std::uint64_t id) noexcept {
   const auto& state = peer.state();
@@ -2330,7 +2373,14 @@ std::uint8_t peer_add_ice_candidate(const NativePeerConnection& peer,
 }
 
 FfiPeerEvent peer_take_event(const NativePeerConnection& peer) noexcept {
-  return peer.state()->events->Take();
+  auto event = peer.state()->events->Take();
+  if ((event.kind == kLegacyStatsReport || event.kind == kOperationComplete) &&
+      event.operation_id && event.operation_id == peer.state()->legacy_operation) {
+    RTC_CHECK(peer.state()->legacy_continuation.retired());
+    peer.state()->legacy_continuation.Cancel();
+    peer.state()->legacy_operation = 0;
+  }
+  return event;
 }
 FfiPeerEventObservation peer_event_observation(const NativePeerConnection& peer) noexcept {
   return peer.state()->events->Observation();
@@ -2429,6 +2479,11 @@ bool close_peer_connection(const NativePeerConnection& peer) noexcept {
   }
   state->signaling_thread->BlockingCall([&] {
     if (!state->closed) {
+      // Production Close marshals behind prior signaling work. Controlled
+      // Close first destroys the retained continuation, before SDK teardown
+      // could require any unrelated native lifecycle work.
+      state->legacy_continuation.Cancel();
+      state->legacy_operation = 0;
       state->peer->Close();
       state->events->Close();
       state->closed = true;

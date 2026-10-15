@@ -121,6 +121,23 @@ fn main() {
         })
         .join()
         .unwrap();
+        let source = factory.create_audio_source().unwrap();
+        let track = factory.create_audio_track("consumer-legacy-selector", &source).unwrap().as_media_track();
+        assert_eq!(track.id(), b"consumer-legacy-selector");
+        assert!(track.same_resource(&track.clone()));
+        assert!(peer.request_legacy_stats_with_track(
+            Some(&track), pulsebeam_webrtc_sys::LegacyStatsOutputLevel::Standard
+        ).is_err()); // The SDK has not remembered this unattached track.
+        assert_eq!(peer.event_observation().admitted_operations, 0);
+        let stats_id = peer.request_legacy_stats(pulsebeam_webrtc_sys::LegacyStatsOutputLevel::Standard).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pulsebeam_webrtc_sys::PeerConnectionEvent::LegacyStats(snapshot)) = peer.try_next_event() {
+                if snapshot.operation_id == stats_id { assert!(!snapshot.reports.is_empty()); break; }
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
         let alias = channel.clone();
         assert!(channel.same_resource(&alias));
         let limits = pulsebeam_webrtc_sys::DataChannel::receive_queue_limits();
@@ -162,6 +179,9 @@ fn main() {
             )
             .unwrap();
         let sender = session.sender(transceiver).unwrap();
+        let selected = session.sender_track_reference(sender).unwrap().unwrap();
+        assert_eq!(session.media_track_id(selected).unwrap(), b"consumer-audio");
+        assert_eq!(session.sender_track_reference(sender).unwrap(), Some(selected));
         let dtmf = session.sender_dtmf(sender).unwrap().unwrap();
         assert_eq!(session.sender_dtmf(sender).unwrap(), Some(dtmf));
         assert!(!session.dtmf_can_insert_tones(dtmf).unwrap());
@@ -171,6 +191,8 @@ fn main() {
                 .unwrap()
         );
         std::thread::spawn(move || {
+            assert_eq!(session.media_track_kind(selected).unwrap(), pulsebeam_webrtc_sys::MediaTrackKind::Audio);
+            session.release_media_track_reference(selected).unwrap();
             session.shutdown().unwrap();
             assert!(!session.dtmf_can_insert_tones(dtmf).unwrap());
             session.release_dtmf_sender(dtmf).unwrap();

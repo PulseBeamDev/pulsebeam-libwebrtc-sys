@@ -1306,6 +1306,7 @@ impl PeerConnectionFactory {
                     _factory: self.0.clone(),
                     controlled_id,
                     closed: Cell::new(false),
+                    pending_legacy_selector: RefCell::new(None),
                     sender_tracks: RefCell::new(HashMap::new()),
                     audio_sender_tracks: RefCell::new(HashMap::new()),
                     sender_observers: RefCell::new(HashMap::new()),
@@ -1637,6 +1638,7 @@ pub(crate) struct PeerInner {
     pub(crate) _factory: Rc<FactoryInner>,
     pub(crate) controlled_id: Option<u64>,
     pub(crate) closed: Cell<bool>,
+    pending_legacy_selector: RefCell<Option<(OperationId, crate::MediaTrack)>>,
     pub(crate) sender_tracks: RefCell<HashMap<usize, SenderTrackLease<VideoTrack>>>,
     pub(crate) audio_sender_tracks: RefCell<HashMap<usize, SenderTrackLease<AudioTrack>>>,
     pub(crate) sender_observers:
@@ -2413,11 +2415,42 @@ impl PeerConnection {
         level: crate::LegacyStatsOutputLevel,
     ) -> Result<OperationId, crate::LegacyStatsRequestError> {
         let id = self.next_operation();
-        let status = ffi::peer_request_legacy_stats(self.native(), level as u8, id.0);
+        self.request_legacy_stats_at(id, None, level)
+    }
+    /// Forward the actual optional SDK track selector. Native false means no
+    /// operation was accepted and no callback/result is fabricated. A true
+    /// request retains the selected track's own source/factory roles until
+    /// the native continuation has retired, including across close/drop.
+    pub fn request_legacy_stats_with_track(
+        &self,
+        selector: Option<&crate::MediaTrack>,
+        level: crate::LegacyStatsOutputLevel,
+    ) -> Result<OperationId, crate::LegacyStatsRequestError> {
+        self.request_legacy_stats_at(self.next_operation(), selector, level)
+    }
+    fn request_legacy_stats_at(
+        &self,
+        id: OperationId,
+        selector: Option<&crate::MediaTrack>,
+        level: crate::LegacyStatsOutputLevel,
+    ) -> Result<OperationId, crate::LegacyStatsRequestError> {
+        let status = match selector {
+            Some(track) => ffi::peer_request_legacy_stats_with_track(
+                self.native(),
+                track.native(),
+                level as u8,
+                id.0,
+            ),
+            None => ffi::peer_request_legacy_stats(self.native(), level as u8, id.0),
+        };
         if status == 5 {
             return Err(crate::LegacyStatsRequestError::NativeRejected);
         }
-        Self::operation_admission(id, status).map_err(Into::into)
+        let admitted =
+            Self::operation_admission(id, status).map_err(crate::LegacyStatsRequestError::from)?;
+        *self.inner.pending_legacy_selector.borrow_mut() =
+            selector.map(|track| (admitted, track.clone()));
+        Ok(admitted)
     }
     pub fn clear_stats_cache(&self) {
         ffi::peer_clear_stats_cache(self.native());
@@ -2507,7 +2540,18 @@ impl PeerConnection {
     /// time; they are not a complete transition history. Accepted operation
     /// outcomes remain available until consumed, including after close.
     pub fn try_next_event(&self) -> Option<PeerConnectionEvent> {
-        event_from_ffi(ffi::peer_take_event(self.native()), &self.inner)
+        let event = ffi::peer_take_event(self.native());
+        let mut selector = self.inner.pending_legacy_selector.borrow_mut();
+        if matches!(event.kind, 1 | 16)
+            && selector
+                .as_ref()
+                .is_some_and(|(id, _)| id.0 == event.operation_id)
+        {
+            // Native publishes legacy DTOs only beyond its SDK-capture fence.
+            selector.take();
+        }
+        drop(selector);
+        event_from_ffi(event, &self.inner)
     }
 
     pub fn event_observation(&self) -> PeerEventObservation {
@@ -2550,6 +2594,7 @@ impl PeerConnection {
     pub fn close(&mut self) -> Result<(), PeerError> {
         if ffi::close_peer_connection(self.native()) {
             self.inner.closed.set(true);
+            self.inner.pending_legacy_selector.borrow_mut().take();
             self.inner.sender_tracks.borrow_mut().clear();
             self.inner.audio_sender_tracks.borrow_mut().clear();
             Ok(())
@@ -2928,6 +2973,50 @@ mod retention_tests {
         assert_eq!(peer.event_observation().retained_control_events, 0);
         assert_eq!(peer.event_observation().admitted_operations, 0);
         peer.close().unwrap();
+    }
+    #[test]
+    fn arrival_id_collision_does_not_retire_a_pending_legacy_operation() {
+        // Narrow bookkeeping regression, not simulated data-channel delivery.
+        // Arrival IDs and operation IDs deliberately occupy different spaces.
+        let world =
+            crate::ControlledWorld::acquire(919, std::time::Duration::from_secs(3)).unwrap();
+        let network = world.create_network().unwrap();
+        let endpoint = network
+            .register_endpoint(std::net::Ipv4Addr::new(10, 91, 9, 1).into())
+            .unwrap();
+        let factory = world
+            .peer_factory_builder()
+            .unwrap()
+            .network_manager(endpoint.network_manager().unwrap())
+            .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+            .build()
+            .unwrap();
+        let mut peer = factory.create_peer_connection(Default::default()).unwrap();
+        // A real SDK all-track request, explicitly assigned ID 1 to collide
+        // with the observer fixture's first data-channel arrival ID.
+        assert_eq!(ffi::peer_request_legacy_stats(peer.native(), 0, 1), 0);
+        let source = factory.create_video_source().unwrap();
+        let video = factory
+            .create_video_track("bookkeeping-lease", &source)
+            .unwrap();
+        // Attach an extra private lease solely to test Rust's cleanup filter;
+        // no claim that the SDK accepted this unregistered track selector.
+        *peer.inner.pending_legacy_selector.borrow_mut() =
+            Some((OperationId(1), video.as_media_track()));
+        assert!(ffi::test_peer_control_observations(peer.native(), 0, true));
+        let mut arrival = false;
+        while let Some(event) = peer.try_next_event() {
+            if matches!(event, PeerConnectionEvent::DataChannel(_)) {
+                arrival = true;
+                break;
+            }
+        }
+        assert!(arrival);
+        assert!(peer.inner.pending_legacy_selector.borrow().is_some());
+        assert_eq!(peer.event_observation().pending_operations, 1);
+        assert_eq!(world.now(), std::time::Duration::from_secs(3));
+        peer.close().unwrap();
+        assert!(peer.inner.pending_legacy_selector.borrow().is_none());
     }
     #[test]
     fn observer_control_backlog_is_bounded_and_states_are_callback_snapshots() {

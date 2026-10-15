@@ -8,6 +8,7 @@
 #include "rust/cxx.h"
 
 namespace webrtc {
+class MediaStreamTrackInterface;
 class RtpSenderInterface;
 class RtpReceiverInterface;
 class RtpTransceiverInterface;
@@ -79,6 +80,27 @@ class NativeVideoSource final {
  private:
   std::unique_ptr<State> state_;
 };
+
+class NativeMediaTrack final {
+ public:
+  explicit NativeMediaTrack(webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track) noexcept;
+  ~NativeMediaTrack();
+  const webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>& track() const noexcept;
+ private:
+  webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track_;
+};
+rust::Vec<std::uint8_t> media_track_id(const NativeMediaTrack&) noexcept;
+rust::Vec<std::uint8_t> media_track_kind(const NativeMediaTrack&) noexcept;
+std::int32_t media_track_state(const NativeMediaTrack&) noexcept;
+bool media_track_enabled(const NativeMediaTrack&) noexcept;
+bool media_track_set_enabled(const NativeMediaTrack&, bool) noexcept;
+bool media_track_same_resource(const NativeMediaTrack&, const NativeMediaTrack&) noexcept;
+class NativeVideoTrack;
+class NativeRtpSender;
+class NativeRtpReceiver;
+std::unique_ptr<NativeMediaTrack> video_track_reference(const NativeVideoTrack&) noexcept;
+std::unique_ptr<NativeMediaTrack> rtp_sender_track_reference(const NativeRtpSender&) noexcept;
+std::unique_ptr<NativeMediaTrack> rtp_receiver_track_reference(const NativeRtpReceiver&) noexcept;
 
 class NativeVideoTrack final {
  public:
