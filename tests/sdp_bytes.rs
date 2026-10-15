@@ -58,9 +58,14 @@ fn native_offer_completion_keeps_non_utf8_protocol_bytes_without_an_extra_termin
     );
     let source = factory.create_video_source().unwrap();
     let track = factory.create_video_track("raw-sdp", &source).unwrap();
-    let _transceiver = peer
+    let transceiver = peer
         .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
         .unwrap();
+    // SDP generation may discard codec-specific unknown capability parameters.
+    // Stream IDs are serialized by the SDK and accept these protocol bytes.
+    transceiver
+        .sender()
+        .set_stream_id_bytes(&[b"raw-stream-\xff\xfe".to_vec()]);
     let operation = peer.create_offer().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let description = loop {

@@ -38,7 +38,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .next()
             .ok_or("camera has no usable capture formats")?;
         let mut camera = factory.open_camera(&id, format.width, format.height, format.max_fps)?;
-        println!("camera state: {:?}", camera.status(Duration::from_secs(2)));
+        // status's duration is a staleness threshold, not a wait. Observe the
+        // asynchronous first-frame outcome before retiring this opt-in probe.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let state = loop {
+            let state = camera.status(Duration::from_secs(2));
+            if state != pulsebeam_webrtc_sys::CameraCaptureStatus::Starting
+                || std::time::Instant::now() >= deadline
+            {
+                break state;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        println!("camera state: {state:?}");
         camera.stop()?;
     }
     if let Ok(id) = std::env::var("PULSEBEAM_SCREEN_ID") {

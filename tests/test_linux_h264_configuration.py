@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LinuxH264ConfigurationTests(unittest.TestCase):
-    def gn_args(self, flavor: str, target: str) -> dict[str, str]:
+    def gn_args(self, flavor: str, target: str, protobuf: str = "true") -> dict[str, str]:
         with tempfile.TemporaryDirectory() as temporary:
             # The recipe needs the wrapper's path, not a compiler or SDK checkout.
             wrapper = Path(temporary) / "sccache"
@@ -21,6 +21,7 @@ class LinuxH264ConfigurationTests(unittest.TestCase):
             wrapper.chmod(0o755)
             environment = {**os.environ, "PATH": f"{temporary}:{os.environ['PATH']}"}
             environment.pop("PULSEBEAM_WEBRTC_SANITIZER", None)
+            environment["PULSEBEAM_WEBRTC_PROTOBUF"] = protobuf
             result = subprocess.run(
                 ["just", "--justfile", str(ROOT / "Justfile"), "_gn-args", flavor, target],
                 cwd=ROOT, env=environment, capture_output=True, text=True, check=False,
@@ -48,6 +49,17 @@ class LinuxH264ConfigurationTests(unittest.TestCase):
                 self.assertEqual(compiler_wrapper[2], "--contract-sha256")
                 self.assertEqual(compiler_wrapper[3], hashlib.sha256(
                     (ROOT / "tools/native_cc_wrapper.py").read_bytes()).hexdigest())
+
+    def test_protobuf_modes_preserve_software_implementations_and_flavor(self):
+        for flavor in ("core", "native"):
+            enabled = self.gn_args(flavor, "linux-x86_64")
+            disabled = self.gn_args(flavor, "linux-x86_64", "false")
+            self.assertEqual(enabled.pop("rtc_enable_protobuf"), "true")
+            self.assertEqual(disabled.pop("rtc_enable_protobuf"), "false")
+            # The per-invocation sccache path is deliberately machine-local.
+            enabled.pop("cc_wrapper")
+            disabled.pop("cc_wrapper")
+            self.assertEqual(enabled, disabled)
 
     def test_other_targets_keep_their_existing_h264_boundary(self):
         for target in ("linux-arm64", "windows-x86_64", "macos-x86_64", "macos-arm64",

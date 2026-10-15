@@ -39,6 +39,27 @@ class RustOnlyConsumerTests(unittest.TestCase):
                 else:
                     output_archive.addfile(member, content)
 
+    def test_override_extraction_retains_required_notices_and_rejects_traversal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for notice in ["LICENSES/NOTICE.txt", "LICENSES/../../outside"]:
+                path = root / "fixture.tar.gz"
+                with tarfile.open(path, "w:gz") as archive:
+                    for name, contents in [
+                        ("manifest.json", json.dumps({"licenses": {"files": [{"path": notice}]}}).encode()),
+                        ("lib/libwebrtc.a", b"archive"), (notice, b"notice"),
+                    ]:
+                        member = tarfile.TarInfo(name)
+                        member.size = len(contents)
+                        archive.addfile(member, io.BytesIO(contents))
+                destination = root / "kit"
+                if ".." in notice:
+                    with self.assertRaisesRegex(rust_only_consumer.ProofError, "notice path"):
+                        rust_only_consumer.extract_artifact(path, destination)
+                else:
+                    rust_only_consumer.extract_artifact(path, destination)
+                    self.assertEqual((destination / notice).read_bytes(), b"notice")
+
     def test_renders_each_linux_coordinate(self):
         for target, flavor, cargo_target in [
             ("linux-x86_64", "core", "x86_64-unknown-linux-gnu"),

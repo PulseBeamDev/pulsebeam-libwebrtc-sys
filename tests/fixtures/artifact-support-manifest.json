@@ -1,1 +1,116 @@
-{"schema_version":3,"bridge":{"identity":"pulsebeam-webrtc-sys-bridge-v2","native_adapter_sha256":"4ddf9c0da6e1822717f01e94f9e610bd40214868348fac4f5d6036c939aceeaa","cxx":{"version":"1.0.200","runtime_package_sha256":"2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7","generator_package_sha256":"25784b9f840a76b9b5151553ad70fc2abb3ec3b21fe379c5c7b029b2e0b91faf","rust_runtime_sha256":"35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d","header_sha256":"ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8","native_runtime_sha256":"6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866","bridge_source_sha256":"01cf6fe8e2de10d5bf0cef2359a5f90af2e74165210b68361683c2961c69ef98","generated_header_sha256":"b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555","generated_source_sha256":"b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a"}},"sources":{"webrtc":{"repository":"https://github.com/webrtc-sdk/webrtc.git","revision":"ba469aa2093ba950066258ca0a59a6fbd1295582"},"depot_tools":{"repository":"https://chromium.googlesource.com/chromium/tools/depot_tools.git","revision":"ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"}},"artifact":{"flavor":"core","target":"linux-x86_64","cargo_target":"x86_64-unknown-linux-gnu"},"native_configuration_sha256":"12648ccc1dcfbb51940956263574bfea92ba1454de0b0eac1cfee834100eb1bc","abi":{"toolchain":"artifact-support","cxx_standard":"C++20","cxx_runtime":"bundled libc++ and libc++abi","crt":"glibc","minimum_runtime":"glibc 2.31 (Debian Bullseye sysroot)"},"archive":{"member":"lib/libwebrtc.a","name":"webrtc"},"links":[{"kind":"dylib","name":"pthread"}],"licenses":{"sha256":"fe956273e437802f0d3b1253c8efe025f8abfd8edffcae26ae98676f7ce3b08c","files":[{"path":"LICENSES/WEBRTC-BSD.txt","sha256":"ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482"}]}}
+{
+  "schema_version": 4,
+  "bridge": {
+    "identity": "pulsebeam-webrtc-sys-bridge-v2",
+    "native_adapter_sha256": "316bed6c1fa72c7509e6fe2c9cd86af71a02fc12f3d9621d64438024b7859ee4",
+    "cxx": {
+      "version": "1.0.200",
+      "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
+      "generator_package_sha256": "25784b9f840a76b9b5151553ad70fc2abb3ec3b21fe379c5c7b029b2e0b91faf",
+      "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
+      "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
+      "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
+      "bridge_source_sha256": "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259",
+      "generated_header_sha256": "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555",
+      "generated_source_sha256": "b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a"
+    }
+  },
+  "sources": {
+    "webrtc": {
+      "repository": "https://github.com/webrtc-sdk/webrtc.git",
+      "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
+      "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+      "state": "pristine"
+    },
+    "depot_tools": {
+      "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+      "revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
+    }
+  },
+  "artifact": {
+    "flavor": "core",
+    "target": "linux-x86_64",
+    "cargo_target": "x86_64-unknown-linux-gnu"
+  },
+  "native_configuration_sha256": "434761426fb3106deb8a3ec59e945eb4e7666791f23018cc1e2e1f63146d4ec5",
+  "abi": {
+    "toolchain": "artifact-support",
+    "cxx_standard": "C++20",
+    "cxx_runtime": "bundled libc++ and libc++abi",
+    "crt": "glibc",
+    "minimum_runtime": "glibc 2.31 (Debian Bullseye sysroot)"
+  },
+  "archive": {
+    "member": "lib/libwebrtc.a",
+    "name": "webrtc",
+    "sha256": "cb28193bbd35cd3eb488869043bd0d03dbd528b0301197bd57ebd357065afaf2"
+  },
+  "links": [
+    {
+      "kind": "dylib",
+      "name": "pthread"
+    }
+  ],
+  "licenses": {
+    "sha256": "6a31ef5fa1f718cf694c85290e671f9007f969509adb4f56f3e3b579e06dd0f2",
+    "files": [
+      {
+        "path": "LICENSES/NOTICE.txt",
+        "sha256": "c0c56958ef8be5c1979366896b7e0c7206949a5aa2b23f51429c7f56b10990d3"
+      }
+    ]
+  },
+  "native_configuration": {
+    "native_adapter_sha256": "316bed6c1fa72c7509e6fe2c9cd86af71a02fc12f3d9621d64438024b7859ee4",
+    "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
+    "cxx": {
+      "version": "1.0.200",
+      "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
+      "generator_package_sha256": "25784b9f840a76b9b5151553ad70fc2abb3ec3b21fe379c5c7b029b2e0b91faf",
+      "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
+      "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
+      "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
+      "bridge_source_sha256": "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259",
+      "generated_header_sha256": "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555",
+      "generated_source_sha256": "b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a"
+    },
+    "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
+    "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+    "source_state": "pristine",
+    "depot_tools_revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4",
+    "flavor": "core",
+    "target": "linux-x86_64",
+    "cargo_target": "x86_64-unknown-linux-gnu",
+    "toolchain": "artifact-support",
+    "gn_args": {
+      "rtc_use_h264": "true",
+      "proprietary_codecs": "true",
+      "rtc_include_opus": "true",
+      "rtc_build_opus": "true",
+      "rtc_build_libvpx": "true",
+      "rtc_libvpx_build_vp9": "true",
+      "rtc_include_builtin_audio_codecs": "true",
+      "rtc_include_dav1d_in_internal_decoder_factory": "true",
+      "rtc_enable_protobuf": "true",
+      "target_os": "linux",
+      "target_cpu": "x64",
+      "rtc_system_openh264": "false",
+      "ffmpeg_branding": "Chrome",
+      "rtc_include_internal_audio_device": "false",
+      "rtc_use_x11": "false",
+      "rtc_use_pipewire": "false",
+      "cc_wrapper": "python tools/native_cc_wrapper.py --contract-sha256 75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d sccache"
+    },
+    "cxx_defines": [
+      "-DWEBRTC_LINUX",
+      "-DNDEBUG"
+    ],
+    "floating_point": {
+      "final_compiler_flags": [
+        "-fno-fast-math",
+        "-ffp-contract=off"
+      ],
+      "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
+    }
+  }
+}

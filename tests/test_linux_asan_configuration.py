@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -128,6 +129,13 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return [call.splitlines() for call in log.read_text(encoding="utf-8").strip().split("\n\n")]
 
+    @staticmethod
+    def _write_configuration(kit: Path) -> None:
+        (kit / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
+        (kit / "manifest.json").write_text(json.dumps({"native_configuration": {
+            "gn_args": {"rtc_enable_protobuf": "true"}
+        }}), encoding="utf-8")
+
     def _run_cpp_smoke(self, temporary: Path, flavor: str, sanitizer: str | None) -> list[str]:
         work = temporary / "work"
         kit = temporary / "kit"
@@ -141,7 +149,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         compiler.chmod(0o755)
         (kit / "include/c++/v1").mkdir(parents=True)
         (kit / "lib").mkdir()
-        (kit / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
+        self._write_configuration(kit)
         runtime = temporary / "runtime"
         runtime.mkdir()
         environment = {
@@ -167,7 +175,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
         kit = temporary / "kit"
         kit.mkdir()
-        (kit / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
+        self._write_configuration(kit)
         result = subprocess.run(
             ["just", "--justfile", str(JUSTFILE), "_rust-smoke", flavor, "linux-x86_64", str(kit)],
             cwd=ROOT,
@@ -183,10 +191,11 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
         source = temporary / "artifact-source"
         source.mkdir()
-        (source / "build.txt").write_text("cxx_defines=-DTEST=1\n", encoding="utf-8")
+        self._write_configuration(source)
         archive = temporary / "artifact.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(source / "build.txt", arcname="build.txt")
+            tar.add(source / "manifest.json", arcname="manifest.json")
         result = subprocess.run(
             ["just", "--justfile", str(JUSTFILE), "_runtime-test", flavor, "linux-x86_64", str(archive)],
             cwd=ROOT,

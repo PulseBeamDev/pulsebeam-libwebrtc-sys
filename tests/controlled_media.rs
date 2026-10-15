@@ -307,8 +307,39 @@ impl Observations {
                         }
                         format!("track:{id}")
                     }
+                    PeerConnectionEvent::TrackAdded { receiver, streams } => {
+                        let streams: Vec<_> = streams.iter().map(MediaStream::id).collect();
+                        format!("track-added:{}:{streams:?}", receiver.id())
+                    }
                     PeerConnectionEvent::TrackRemoved(receiver) => {
                         format!("removed:{}", receiver.id())
+                    }
+                    PeerConnectionEvent::StreamAdded(stream) => {
+                        format!("stream-added:{:?}", stream.id())
+                    }
+                    PeerConnectionEvent::StreamRemoved(stream) => {
+                        format!("stream-removed:{:?}", stream.id())
+                    }
+                    PeerConnectionEvent::IceConnectionReceivingChanged(value) => {
+                        format!("ice-receiving:{value}")
+                    }
+                    PeerConnectionEvent::IceSelectedCandidatePairChanged(change) => {
+                        format!(
+                            "selected-pair:{:?}:{:?}",
+                            change.transport_name, change.reason
+                        )
+                    }
+                    PeerConnectionEvent::InterestingUsage { usage_pattern } => {
+                        format!("usage:{usage_pattern}")
+                    }
+                    PeerConnectionEvent::DataChannelMessage(message) => {
+                        format!(
+                            "channel-message:{}:{:?}:{:?}:{:?}",
+                            message.datachannel_id,
+                            message.direction,
+                            message.label,
+                            message.message
+                        )
                     }
                     PeerConnectionEvent::DataChannel(channel) => {
                         self.channels.push((who, channel));
@@ -324,6 +355,7 @@ impl Observations {
                     PeerConnectionEvent::NegotiationNeeded { event_id } => {
                         format!("negotiation-needed:{event_id}")
                     }
+                    PeerConnectionEvent::RenegotiationNeeded => "renegotiation-needed".into(),
                     other => panic!("unexpected peer event: {other:?}"),
                 };
                 self.trace

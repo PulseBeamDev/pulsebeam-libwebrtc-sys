@@ -148,7 +148,8 @@ fn custom_provider_is_retained_copied_and_retired_after_native_owners() {
         .join()
         .unwrap();
     assert_eq!(live.load(Ordering::SeqCst), 0);
-    assert_eq!(lookups.load(Ordering::SeqCst), 2);
+    // Native copies share the immutable lookup cache across threads.
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
 }
 
 #[test]

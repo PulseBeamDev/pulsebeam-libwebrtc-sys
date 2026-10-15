@@ -117,7 +117,9 @@ fn absent_audio_choice_preserves_carrier_defaults_and_conflicting_input_is_rejec
 #[test]
 fn public_builder_provider_conveniences_install_the_selected_registration() {
     let drops = Arc::new(AtomicUsize::new(0));
+    let decoder = VideoDecoderFactoryHandle::builtin().unwrap();
     let session = ProductionSession::builder(ProductionSessionConfig::default())
+        .video_decoder_factory(&decoder)
         .video_encoder_provider(Encoder(drops.clone()))
         .unwrap()
         .build()
@@ -126,6 +128,7 @@ fn public_builder_provider_conveniences_install_the_selected_registration() {
     drop(session);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     let factory = PeerConnectionFactory::builder()
+        .video_decoder_factory(decoder)
         .video_encoder_provider(Encoder(drops.clone()))
         .unwrap()
         .build()

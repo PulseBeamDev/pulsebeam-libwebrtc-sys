@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -14,8 +15,49 @@ SPEC.loader.exec_module(native_provenance)
 class NativeProvenanceTests(unittest.TestCase):
     def test_fixture_agrees_with_current_sources_and_build_recipe(self):
         fixture = json.loads((ROOT / "native/manifest.core-linux-x86_64.json").read_text())
-        self.assertEqual(fixture["schema_version"], 3)
+        self.assertEqual(fixture["schema_version"], 4)
         self.assertEqual(fixture["bridge"]["native_adapter_sha256"], native_provenance.adapter_digest(ROOT))
+
+    def test_configuration_hash_uses_sorted_utf8_json(self):
+        value = {"path": "é/路径"}
+        expected = hashlib.sha256('{"path":"é/路径"}'.encode()).hexdigest()
+        self.assertEqual(native_provenance.configuration_digest(value), expected)
+
+    def test_configuration_rejects_rehashed_flavor_and_gn_substitution(self):
+        path = ROOT / "tests/fixtures/artifact-support-manifest.json"
+        for field, replacement in [("flavor", "native"), ("target", "linux-arm64")]:
+            value = json.loads(path.read_text())
+            value["native_configuration"][field] = replacement
+            value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                native_provenance.validate_configuration(value, ROOT)
+        value = json.loads(path.read_text())
+        value["native_configuration"]["gn_args"]["rtc_use_h264"] = "false"
+        value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+        with self.assertRaisesRegex(ValueError, "GN configuration"):
+            native_provenance.validate_configuration(value, ROOT)
+
+    def test_wrapper_identity_requires_the_command_not_a_digest_substring(self):
+        path = ROOT / "tests/fixtures/artifact-support-manifest.json"
+        fixture = json.loads(path.read_text())
+        digest = fixture["native_configuration"]["floating_point"]["compiler_wrapper_sha256"]
+        for command in [
+            f"unrelated --contract-sha256 {digest} sccache",
+            f"false tools/native_cc_wrapper.py --contract-sha256 {digest} sccache",
+            f"python tools/unrelated.py --contract-sha256 {digest} sccache",
+            f"python tools/native_cc_wrapper.py --contract-sha256 {digest} sccache extra",
+        ]:
+            with self.subTest(command=command):
+                value = json.loads(path.read_text())
+                value["native_configuration"]["gn_args"]["cc_wrapper"] = command
+                value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+                with self.assertRaisesRegex(ValueError, "floating-point"):
+                    native_provenance.validate_configuration(value, ROOT)
+        fixture["native_configuration"]["gn_args"]["cc_wrapper"] = (
+            f"'/host tools/bin/python3.13' '/relocated source/tools/native_cc_wrapper.py' "
+            f"--contract-sha256 {digest} '/cache tools/sccache'")
+        fixture["native_configuration_sha256"] = native_provenance.configuration_digest(fixture["native_configuration"])
+        native_provenance.validate_configuration(fixture, ROOT)
 
     def test_identity_is_order_and_root_independent_but_path_and_byte_sensitive(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -105,7 +105,9 @@ fn native_codec_identity_and_fuzzy_matching_are_not_exact_equality() {
 
 #[test]
 fn native_typed_insertion_preserves_output_on_guard_rejection() {
-    let good = SdpVideoFormat::new([0xff, 0]);
+    // Native RtcError stream formatting is C-string based. Keep this success
+    // path non-NUL while still exercising byte-preserving non-UTF-8 storage.
+    let good = SdpVideoFormat::new([0xff]);
     let bad = good.with_scalability_modes(&[ScalabilityMode::from_raw(255)]);
     let mut builder = StringBuilder::new(b"prefix:");
     assert!(!builder.append_sdp_video_format(&bad));

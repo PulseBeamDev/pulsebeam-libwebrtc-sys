@@ -4,10 +4,11 @@
 import argparse
 import hashlib
 import json
+import shlex
 from pathlib import Path
 
 from cxx_provenance import artifact_provenance, validate_artifact_provenance
-from native_provenance import adapter_digest
+from native_provenance import adapter_digest, configuration_digest, validate_configuration
 from native_cc_wrapper import floating_point_configuration
 
 
@@ -138,8 +139,7 @@ def links_for(flavor, target):
 
 
 def digest(value):
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return configuration_digest(value)
 
 
 def main():
@@ -188,13 +188,13 @@ def main():
         "target": args.target,
         "cargo_target": target["cargo_target"],
         "toolchain": toolchain,
-        "gn_args": args.gn_args_file.read_text().strip(),
+        "gn_args": dict(argument.split("=", 1) for argument in shlex.split(args.gn_args_file.read_text())),
         "cxx_defines": args.defines_file.read_text().splitlines(),
     }
     if args.target == "linux-x86_64":
         try:
             native_configuration["floating_point"] = floating_point_configuration(
-                native_configuration["gn_args"])
+                args.gn_args_file.read_text().strip())
         except ValueError as error:
             parser.error(str(error))
     license_files = []
@@ -205,7 +205,7 @@ def main():
         })
 
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
         "bridge": {"identity": args.bridge_identity, "cxx": cxx,
                    "native_adapter_sha256": native_adapter_sha256},
         "sources": {
@@ -225,6 +225,7 @@ def main():
             "target": args.target,
             "cargo_target": target["cargo_target"],
         },
+        "native_configuration": native_configuration,
         "native_configuration_sha256": digest(native_configuration),
         "abi": {
             "toolchain": toolchain,
@@ -233,10 +234,12 @@ def main():
             "crt": target["crt"],
             "minimum_runtime": target["minimum_runtime"],
         },
-        "archive": {"member": target["archive_member"], "name": "webrtc"},
+        "archive": {"member": target["archive_member"], "name": "webrtc",
+                    "sha256": hashlib.sha256((args.output.parent / target["archive_member"]).read_bytes()).hexdigest()},
         "links": links_for(args.flavor, args.target),
         "licenses": {"sha256": digest(license_files), "files": license_files},
     }
+    validate_configuration(manifest, Path(__file__).resolve().parents[1])
     args.output.write_text(json.dumps(manifest, indent=2) + "\n")
 
 

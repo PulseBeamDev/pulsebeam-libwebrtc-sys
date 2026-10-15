@@ -12,11 +12,11 @@ use std::{
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    CodecError, CodecSupport, DecodedImageCallback, EncodedH264Input, EncodedImageCallback,
-    EncodedVideoAccessUnit, EncodedVideoCodec, EncodedVideoFrame, EncodedVideoInput,
-    EncodedVideoMetadata, Environment, H264AccessUnit, ManualClock, Nv12Planes, OperationId,
-    PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind,
-    PeerStatsRecord, RtcErrorType, RtpSenderOperationError, RtpTransceiver,
+    CodecError, CodecSupport, ConnectionState, DecodedImageCallback, EncodedH264Input,
+    EncodedImageCallback, EncodedVideoAccessUnit, EncodedVideoCodec, EncodedVideoFrame,
+    EncodedVideoInput, EncodedVideoMetadata, Environment, H264AccessUnit, ManualClock, Nv12Planes,
+    OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    PeerErrorKind, PeerStatsRecord, RtcErrorType, RtpSenderOperationError, RtpTransceiver,
     RtpTransceiverDirection, SessionDescription, SimulatedNetwork, VideoCodecFormat, VideoDecoder,
     VideoDecoderFactory, VideoDecoderFactoryHandle, VideoDecoderInfo, VideoDecoderSettings,
     VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
@@ -1572,13 +1572,24 @@ fn direct_encoded_sources_keep_stream_identity_and_isolate_teardown() {
         .position(|(mid, _)| *mid == second_mid)
         .unwrap();
     assert_ne!(first_index, second_index);
-    for _ in 0..100_000 {
+    // Negotiated directions do not prove ICE/DTLS transport readiness. An
+    // initial frame submitted before the connection is ready may be dropped.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
         pair.progress();
-        if first_transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly)
+        if pair.alice.peer_connection_state() == ConnectionState::Connected
+            && pair.bob.peer_connection_state() == ConnectionState::Connected
+            && first_transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly)
             && second_transceiver.current_direction() == Some(RtpTransceiverDirection::SendOnly)
         {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "two-stream transport did not become ready: alice={:?}, bob={:?}",
+            pair.alice.peer_connection_state(),
+            pair.bob.peer_connection_state(),
+        );
     }
     let first_data = vec![
         0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x1e, 0x84, 0, 0, 3, 0, 4, 0, 0, 3, 0, 0xf0,
@@ -2377,6 +2388,9 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
             None
         })
         .expect("remote video transceiver did not arrive");
+    // TrackAdded also owns a receiver/peer. Retire unused observation handles
+    // before asserting final native codec destruction below.
+    drop(bob_events);
     assert_eq!(
         remote.current_direction(),
         Some(RtpTransceiverDirection::ReceiveOnly)
@@ -2504,6 +2518,17 @@ fn injected_h264_provider_carries_a_frame_between_peers() {
     drop(track);
     drop(source);
     drop(pair);
+    // SDK media-engine destruction can be posted to its worker queue.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while counters.encoder_release.load(Ordering::SeqCst) == 0
+        || counters.decoder_release.load(Ordering::SeqCst) == 0
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "codec teardown did not retire"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(counters.encoder_release.load(Ordering::SeqCst), 1);
     assert_eq!(counters.decoder_release.load(Ordering::SeqCst), 1);
 }

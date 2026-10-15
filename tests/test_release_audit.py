@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -16,10 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseAuditTests(unittest.TestCase):
     def build_release(self, root: Path, targets: set[str] | None = None, *,
-                      native_adapter: str | None = None, schema: int = 3) -> tuple[Path, Path]:
+                      native_adapter: str | None = None, schema: int = 4,
+                      license_path: str = "LICENSES/NOTICE.txt") -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
-        license_contents = b"license\n"
+        license_contents = b"archive" if license_path == "lib/libwebrtc.a" else b"license\n"
+        template = json.loads((ROOT / "tests/fixtures/artifact-support-manifest.json").read_text())
         entries = [
             entry
             for entry in lock["artifacts"]
@@ -44,29 +47,44 @@ class ReleaseAuditTests(unittest.TestCase):
                     "target": entry["artifact_target"],
                     "flavor": entry["flavor"],
                 },
-                "native_configuration_sha256": f"{index:064x}",
+                "native_configuration": {"test_configuration": index},
+                "native_configuration_sha256": audit_release.manifest_digest({"test_configuration": index}),
+                "archive": {"member": "lib/libwebrtc.a", "sha256": hashlib.sha256(b"archive").hexdigest()},
                 "licenses": {
                     "sha256": audit_release.manifest_digest(
                         [
                             {
-                                "path": "LICENSES/NOTICE.txt",
+                                "path": license_path,
                                 "sha256": hashlib.sha256(license_contents).hexdigest(),
                             }
                         ]
                     ),
                     "files": [
                         {
-                            "path": "LICENSES/NOTICE.txt",
+                            "path": license_path,
                             "sha256": hashlib.sha256(license_contents).hexdigest(),
                         }
                     ],
                 },
             }
+            config = copy.deepcopy(template["native_configuration"])
+            config.update(**manifest["artifact"], native_adapter_sha256=manifest["bridge"]["native_adapter_sha256"],
+                          bridge_identity=manifest["bridge"]["identity"], cxx=manifest["bridge"]["cxx"],
+                          source_revision=manifest["sources"]["webrtc"]["revision"],
+                          source_patch_sha256=manifest["sources"]["webrtc"]["patch_sha256"],
+                          source_state=manifest["sources"]["webrtc"]["state"],
+                          depot_tools_revision=manifest["sources"]["depot_tools"]["revision"])
+            manifest["abi"] = {"toolchain": config["toolchain"]}
+            if entry["flavor"] == "native":
+                config["gn_args"].update(rtc_include_internal_audio_device="true", rtc_use_x11="true", rtc_use_pipewire="true")
+            manifest["native_configuration"] = config
+            manifest["native_configuration_sha256"] = audit_release.manifest_digest(config)
             path = root / entry["asset_name"]
             with tarfile.open(path, "w:gz") as archive:
                 for name, contents in (
                     ("manifest.json", json.dumps(manifest).encode()),
-                    ("LICENSES/NOTICE.txt", license_contents),
+                    (license_path, license_contents),
+                    ("lib/libwebrtc.a", b"archive"),
                 ):
                     member = tarfile.TarInfo(name)
                     member.size = len(contents)
@@ -90,12 +108,31 @@ class ReleaseAuditTests(unittest.TestCase):
 
     def test_rejects_stale_adapters_and_legacy_schema_even_with_valid_checksums(self):
         for kwargs, expected in [({"native_adapter": "0" * 64}, "stale native"),
-                                 ({"schema": 2}, "schema 3")]:
+                                 ({"schema": 3}, "schema 4")]:
             with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 checksums, lock = self.build_release(root, {"linux-x86_64"}, **kwargs)
                 with self.assertRaisesRegex(audit_release.AuditError, expected):
                     audit_release.audit(root, checksums, lock, "linux")
+
+    def test_rejects_rehashed_license_paths_outside_the_notices_directory(self):
+        for path in ["lib/libwebrtc.a", "LICENSES/../NOTICE.txt", "LICENSES//NOTICE.txt"]:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checksums, lock = self.build_release(root, {"linux-x86_64"}, license_path=path)
+                with self.assertRaisesRegex(audit_release.AuditError, "license inventory path"):
+                    audit_release.audit(root, checksums, lock, "linux")
+
+    def test_rejects_duplicate_lock_selections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            value = json.loads(lock.read_text())
+            value["artifacts"].append(value["artifacts"][0])
+            duplicate = root / "duplicate-lock.json"
+            duplicate.write_text(json.dumps(value))
+            with self.assertRaisesRegex(audit_release.AuditError, "duplicate"):
+                audit_release.audit(root, checksums, duplicate, "linux")
 
     def test_accepts_exact_linux_scope_only(self):
         with tempfile.TemporaryDirectory() as temporary:

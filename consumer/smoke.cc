@@ -213,6 +213,8 @@ int main() {
       !video_encoders || !video_decoders)
     return 1;
 #if defined(__linux__) && defined(__x86_64__)
+  extern bool SoftwareImplementations(const webrtc::Environment&);
+  if (!SoftwareImplementations(environment)) return 5;
   if (!H264Roundtrip(environment, *video_encoders, *video_decoders))
     return 2;
 #endif

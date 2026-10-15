@@ -154,11 +154,10 @@ review nor the new product source is compiler/runtime/ABI/consumer qualification
 
 For ordinary builtin Opus, packet loss must be finite and in `[0, 1]`. Its packet
 loss smoother also requires retained, nondecreasing clock evidence and a complete
-microsecond range whose width is at most `INT64_MAX`. At exact equality,
-the legal signed subtraction becomes native `TimeDelta::PlusInfinity()`;
-conversion to floating milliseconds preserves infinity, and the pinned
-`ExpFilter` decays the old value to zero. A larger span cannot prove safe signed
-subtraction. A current clock sample is not a substitute for that lifetime
+microsecond range whose width is strictly less than `INT64_MAX`. At exact
+equality the signed subtraction fits, but the pinned finite
+`TimeDelta::Micros` constructor rejects the plus-infinity sentinel. Larger spans
+also cannot prove safe signed subtraction. A current clock sample is not a substitute for that lifetime
 guarantee. Rewindable clocks keep
 their existing behavior and do not acquire monotonic evidence implicitly.
 

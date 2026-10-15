@@ -453,6 +453,9 @@ impl Environment {
 
     pub fn close(&mut self) {
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
+        self._task_queue_factory = None;
+        self._clock = None;
+        self._randomness = None;
     }
 
     pub(crate) fn uses_controlled_clock(&self, clock: &ManualClock) -> bool {
@@ -1066,7 +1069,12 @@ mod tests {
     #[test]
     fn sdk_environment_preserves_only_identity_matched_rust_capabilities() {
         let clock = ManualClock::new(Duration::from_micros(100)).unwrap();
-        let selected = Environment::builder().clock(&clock).build().unwrap();
+        let queues = TaskQueueFactory::cooperative(&clock).unwrap();
+        let selected = Environment::builder()
+            .clock(&clock)
+            .task_queue_factory(&queues)
+            .build()
+            .unwrap();
         let other = Environment::builder().build().unwrap();
         let copied =
             Environment::from_sdk(ffi::clone_environment(selected.native()), Some(&selected));

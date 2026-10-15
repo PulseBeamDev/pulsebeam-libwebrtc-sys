@@ -11,7 +11,7 @@ import sys
 import tarfile
 
 from tools.write_artifact_lock import read_checksums
-from tools.native_provenance import adapter_digest
+from tools.native_provenance import adapter_digest, configuration_digest, validate_configuration
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,8 +31,7 @@ def digest(data: bytes) -> str:
 
 
 def manifest_digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return digest(encoded)
+    return configuration_digest(value)
 
 
 def read_member(archive: tarfile.TarFile, name: str) -> bytes:
@@ -59,6 +58,9 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
         for entry in lock["artifacts"]
         if targets is None or entry["artifact_target"] in targets
     }
+    selected = [entry for entry in lock["artifacts"] if targets is None or entry["artifact_target"] in targets]
+    if len(expected) != len(selected) or len({(entry["cargo_target"], entry["flavor"]) for entry in selected}) != len(selected):
+        raise AuditError("duplicate artifact lock selection or asset name")
     checksums = read_checksums(checksums_path)
     found = {path.name: path for path in archives.glob("webrtc-*.tar.gz")}
     if found.keys() != expected.keys() or checksums.keys() != expected.keys():
@@ -76,8 +78,8 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             raise AuditError(f"checksum mismatch: {name}")
         with tarfile.open(path, "r:gz") as archive:
             manifest = json.loads(read_member(archive, "manifest.json"))
-            if manifest.get("schema_version") != 3:
-                raise AuditError(f"artifact manifest is not schema 3: {name}")
+            if manifest.get("schema_version") != 4:
+                raise AuditError(f"artifact manifest is not schema 4: {name}")
             entry = expected[name]
             identity = manifest.get("artifact", {})
             for field in ("cargo_target", "artifact_target", "flavor"):
@@ -110,7 +112,14 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             configuration = manifest.get("native_configuration_sha256")
             if not isinstance(configuration, str) or configuration in configurations:
                 raise AuditError(f"missing or duplicate native configuration in {name}")
+            try:
+                validate_configuration(manifest, ROOT)
+            except (ValueError, KeyError, TypeError) as error:
+                raise AuditError(f"invalid native configuration in {name}: {error}") from error
             configurations.add(configuration)
+            native_archive = manifest["archive"]
+            if digest(read_member(archive, native_archive["member"])) != native_archive["sha256"]:
+                raise AuditError(f"native archive digest mismatch in {name}")
 
             licenses = manifest.get("licenses", {})
             files = licenses.get("files", []) if isinstance(licenses, dict) else []
@@ -119,7 +128,11 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             if licenses.get("sha256") != manifest_digest(files):
                 raise AuditError(f"wrong license inventory identity in {name}")
             for license_file in files:
-                contents = read_member(archive, license_file["path"])
+                path = license_file.get("path") if isinstance(license_file, dict) else None
+                if (not isinstance(path, str) or not path.startswith("LICENSES/")
+                        or "\\" in path or any(part in ("", ".", "..") for part in path.split("/"))):
+                    raise AuditError(f"invalid license inventory path in {name}: {path!r}")
+                contents = read_member(archive, path)
                 if digest(contents) != license_file["sha256"]:
                     raise AuditError(f"license checksum mismatch in {name}: {license_file['path']}")
 

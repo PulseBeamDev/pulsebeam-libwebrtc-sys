@@ -2030,6 +2030,11 @@ int SelectedAudioEncoderFormatAdmission(const NativeAudioEncoderFactory& factory
     if ((g722 || (g711 && format.num_channels >= 1)) &&
         (format.num_channels == 0 || format.num_channels > webrtc::AudioEncoder::kMaxNumberOfChannels)) return -1;
   }
+  // L16 is the final stock fallback. Its parser checks the channel narrowing
+  // before the codec name, and DCHECKs even for an otherwise unknown format.
+  // Earlier stock parsers cannot accept this width; preserve the unsupported
+  // result that L16 returns after its range check in non-DCHECK builds.
+  if (format.num_channels > static_cast<std::size_t>(std::numeric_limits<int>::max())) return 0;
   return 1;
 }
 }  // namespace
@@ -2073,9 +2078,9 @@ std::optional<AnaClockEvidence> RetainedAnaClockEvidence(const FfiClockTimeBound
   const auto maximum = webrtc::Timestamp::Micros(bounds.maximum_us).ms();
   const auto span_ms = static_cast<std::uint64_t>(maximum) - static_cast<std::uint64_t>(minimum);
   const auto span_us = static_cast<std::uint64_t>(bounds.maximum_us) - static_cast<std::uint64_t>(bounds.minimum_us);
-  // Equality is legal signed subtraction. TimeDelta represents that endpoint
-  // as +infinity; ms<float>() preserves it and ExpFilter's alpha^+inf is zero.
-  return AnaClockEvidence{minimum, maximum, span_ms, span_us <= static_cast<std::uint64_t>(INT64_MAX)};
+  // Timestamp subtraction constructs a finite TimeDelta::Micros. Its native
+  // DCHECK excludes INT64_MAX even though the signed subtraction itself fits.
+  return AnaClockEvidence{minimum, maximum, span_ms, span_us < static_cast<std::uint64_t>(INT64_MAX)};
 }
 
 static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<float>::digits == 24 &&

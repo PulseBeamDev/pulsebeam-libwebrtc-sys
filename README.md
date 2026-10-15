@@ -84,6 +84,13 @@ package checksums plus the imported runtime/header, bridge definition, and
 generated C++ output digests; export rechecks the packaged headers against that
 metadata before consumer smoke tests run.
 
+Schema 4 manifests carry the canonical native configuration as well as its
+SHA-256, including compiler, GN/protobuf, floating-point, bridge and source
+identities. Consumers reject inconsistent configurations, stale adapters, altered
+static archives and missing or altered inventoried notices. These checks detect
+mismatches; they do not authenticate a local artifact supplied by its owner.
+Older manifests require a matching rebuild, not relabeling.
+
 For development against a matching extracted artifact:
 
 ```console
@@ -106,6 +113,50 @@ while online. The checked-in lock is a producer/candidate template with all 18
 selections; it is not used by normal Git consumers. Only Linux x86_64 core and
 native are currently released. Other targets require a matching extracted
 artifact through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`.
+
+### Native diagnostics
+
+Generate ignored clangd inputs from a matching extracted Linux x86_64 kit and
+the pinned SDK checkout:
+
+```console
+python3 tools/native_compile_commands.py \
+  --kit .work/package/webrtc-core-linux-x86_64 \
+  --checkout-src .work/checkout/src --check
+```
+
+The SDK's Chromium Clang, Bullseye sysroot, exported definitions and bundled
+libc++ headers are required. `--check` parses the real codec adapter and verifies
+that an intentionally invalid SDK member produces a type diagnostic, rather
+than a missing-include cascade. Omit it to generate editor inputs only. This does
+not replace native compile/link or runtime validation.
+
+### Protobuf configurations and SDK execution
+
+Linux defaults to `rtc_enable_protobuf=true`. Set
+`PULSEBEAM_WEBRTC_PROTOBUF=false` when building either flavor to select the
+pinned no-protobuf configuration. Use a separate `WEBRTC_WORK` and `WEBRTC_DIST`
+for configurations that must coexist. The manifest records the selection. The
+built-in event logger writes native encoded events with protobuf enabled; with
+protobuf disabled the upstream factory produces its no-op logger and rejects
+output start. Ordinary event values, caller-provided loggers, RTP-extension
+helpers, software codecs and APM remain available in both configurations.
+
+AddressSanitizer Linux kits require the pinned Clang/lld linker and sanitizer
+runtime, including when linking a Rust-only consumer. Set
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` to the checkout's
+`third_party/llvm-build/Release+Asserts/bin/clang++`, and use
+`RUSTFLAGS="-C link-arg=-fsanitize=address -C link-arg=-fuse-ld=lld"`.
+A host GNU linker cannot consume the LLVM objects in those kits. This does not
+require downstream C or C++ compilation.
+
+`just _runtime-test <core|native> linux-x86_64 <archive>` executes the SDK C++
+consumer, the real Rust-linked companion, and the Rust runtime suite against the
+matching archive. The SDK consumer exercises every advertised built-in audio
+format, VP8/VP9/AV1/H264 encode/decode, native video metadata, processed APM PCM,
+and configuration-specific event/RTP helpers. Building alone only compile-links
+these consumers. Physical device behavior remains explicitly opt-in and is not
+certified by software codec or APM execution.
 
 ## Actor-owned production execution
 

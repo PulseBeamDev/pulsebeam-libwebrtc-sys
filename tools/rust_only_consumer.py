@@ -127,9 +127,21 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
 def extract_artifact(source_artifact: Path, destination: Path) -> None:
     wanted = {"manifest.json", "lib/libwebrtc.a"}
     with tarfile.open(source_artifact, "r:gz") as archive:
+        manifest_member = archive.getmember("manifest.json")
+        if not manifest_member.isfile():
+            raise ProofError("artifact manifest is not a regular file")
+        manifest_source = archive.extractfile(manifest_member)
+        if manifest_source is None:
+            raise ProofError("cannot read artifact manifest")
+        manifest = json.load(manifest_source)
+        for notice in manifest["licenses"]["files"]:
+            path = Path(notice["path"])
+            if path.is_absolute() or not path.parts or path.parts[0] != "LICENSES" or ".." in path.parts:
+                raise ProofError("invalid artifact notice path")
+            wanted.add(path.as_posix())
         members = {member.name: member for member in archive.getmembers() if member.name in wanted}
         if set(members) != wanted:
-            raise ProofError("checked-in host artifact is missing its manifest or native archive")
+            raise ProofError("artifact is missing its manifest, native archive or inventoried notices")
         for name in sorted(wanted):
             member = members[name]
             if not member.isfile():

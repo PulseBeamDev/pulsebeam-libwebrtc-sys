@@ -49,6 +49,7 @@ check:
     python3 -m unittest tests/test_opus_carrier_budget.py
     python3 -m unittest tests/test_linux_workflows.py
     python3 -m unittest tests/test_cxx_provenance.py
+    python3 -m unittest tests/test_native_provenance.py tests/test_native_cc_wrapper.py tests/test_native_compile_commands.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
     python3 -m unittest tests/test_release_audit.py
@@ -340,7 +341,10 @@ _gn-args flavor target:
     # Linux x86_64 parity includes real non-device H.264 in both flavors.
     # rtc_use_h264 alone does not make FFmpeg capable of decoding H.264.
     case "{{ target }}" in linux-x86_64) common+=' proprietary_codecs=true ffmpeg_branding="Chrome" rtc_use_h264=true rtc_system_openh264=false';; *) common+=' rtc_use_h264=false';; esac
-    case "{{ target }}" in linux-*) common+=' rtc_enable_protobuf=true';; *) common+=' rtc_enable_protobuf=false';; esac
+    case "{{ target }}" in
+      linux-*) protobuf="${PULSEBEAM_WEBRTC_PROTOBUF:-true}"; case "$protobuf" in true|false) ;; *) echo 'PULSEBEAM_WEBRTC_PROTOBUF must be true or false' >&2; exit 1;; esac; common+=" rtc_enable_protobuf=$protobuf";;
+      *) common+=' rtc_enable_protobuf=false';;
+    esac
     case "${PULSEBEAM_WEBRTC_SANITIZER:-}" in '') ;; address) common+=' is_asan=true dcheck_always_on=true';; *) echo 'PULSEBEAM_WEBRTC_SANITIZER must be empty or address' >&2; exit 1;; esac
     case "{{ flavor }}" in core) common+=' rtc_include_internal_audio_device=false';; native) common+=' rtc_include_internal_audio_device=true';; esac
     case "{{ target }}" in
@@ -398,7 +402,8 @@ _apple-host-protoc flavor target:
 _roots flavor target:
     #!/usr/bin/env bash
     set -euo pipefail
-    printf '%s\n' //:webrtc //api:field_trials //api:frame_transformer_factory //api:rtc_event_log_output_file //api/rtc_event_log:rtc_event_log_factory //api/video_codecs:builtin_video_encoder_factory //api/video_codecs:builtin_video_decoder_factory
+    printf '%s\n' //:webrtc //api:field_trials //api:frame_transformer_factory //api:rtc_event_log_output_file //api/rtc_event_log:rtc_event_log_factory //api/video_codecs:builtin_video_encoder_factory //api/video_codecs:builtin_video_decoder_factory //api/audio:builtin_audio_processing_builder //modules/rtp_rtcp:rtp_rtcp_format //logging:rtc_event_audio //logging:rtc_event_begin_end //logging:rtc_event_bwe //logging:rtc_event_pacing //logging:rtc_event_rtp_rtcp //logging:rtc_event_video //logging:rtc_event_bwe_update_scream //logging:rtc_event_frame_events //logging:ice_log
+    if test "{{ target }}" = linux-x86_64 && grep -q 'rtc_enable_protobuf=true' "{{ work }}/out/{{ flavor }}/{{ target }}/pulsebeam-gn-args.txt"; then printf '%s\n' //logging:rtc_event_log_parser; fi
     if test "{{ flavor }}" = native; then case "{{ target }}" in android-*) printf '%s\n' //sdk/android:native_api;; ios-*) printf '%s\n' //sdk:framework_objc;; macos-*) printf '%s\n' //sdk:mac_framework_objc;; esac; fi
 
 _compile flavor target:
@@ -691,7 +696,11 @@ _cpp-smoke flavor target kit:
     read -r -a exported_defines <<< "$(sed -n 's/^cxx_defines=//p' "{{ kit }}/build.txt")"
     defs=(-std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness "${exported_defines[@]}")
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then defs+=(-fsanitize=address); fi
-    sources=("$root_native/consumer/smoke.cc" "$root_native/consumer/frame_callback_slot.cc" "$root_native/consumer/video_frame_metadata.cc")
+    sources=("$root_native/consumer/smoke.cc" "$root_native/consumer/frame_callback_slot.cc" "$root_native/consumer/video_frame_metadata.cc" "$root_native/consumer/software_codecs.cc")
+    if test "{{ target }}" = linux-x86_64; then
+      protobuf=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["native_configuration"]["gn_args"]["rtc_enable_protobuf"] == "true"))' "{{ kit }}/manifest.json")
+      defs+=("-DPULSEBEAM_EXPECT_PROTOBUF=$protobuf")
+    fi
     library="$kit_native/lib/libwebrtc.a"; program=smoke
     # Only the Rust-linked companion may consume adapter/CXX-owned values.
     if test -n "${PULSEBEAM_WEBRTC_CONSUMER_STATICLIB:-}"; then
@@ -750,11 +759,16 @@ _runtime-test flavor target archive:
     src="{{ work }}/checkout/src"
     rustflags=(); linker=''; if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
       rustflags=(-C link-arg=-fsanitize=address)
-      if test "{{ target }}" = linux-x86_64; then linker="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+      if test "{{ target }}" = linux-x86_64; then
+        linker="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+        rustflags+=(-C link-arg=-fuse-ld=lld)
+      fi
     fi
     cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); runtime_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/runtime/{{ flavor }}/{{ target }}"); artifact_native=$(just --justfile "{{ root }}/Justfile" _native-path "$artifact")
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$runtime_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$artifact_native")
     test -z "$linker" || command+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$linker")
+    just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "$artifact"
+    case "{{ target }}" in windows-*) "$artifact/smoke.exe";; *) "$artifact/smoke";; esac
     just --justfile "{{ root }}/Justfile" _rust-smoke "{{ flavor }}" "{{ target }}" "$artifact"
     case "{{ target }}" in windows-*) "$artifact/bridge-smoke.exe";; *) "$artifact/bridge-smoke";; esac
     "${command[@]}" cargo test --locked "${features[@]}" --tests -- --test-threads=1

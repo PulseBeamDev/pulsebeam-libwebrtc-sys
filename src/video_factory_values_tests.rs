@@ -90,9 +90,9 @@ fn actual_native_create_and_deferred_encoder_create_deliver_independent_contexts
     .unwrap();
     let decoder =
         VideoDecoderFactoryHandle::from_provider(DecoderFactory(dec_contexts.clone())).unwrap();
-    // Existing native probe calls real SDK Create/InitEncode; no callback is
-    // invoked directly here. Encoder rejection happens during deferred Create.
-    let result = ffi::test_codec_roundtrip(encoder.native(), decoder.native(), 0);
+    // The SDK defers provider Create until the first Encode, not InitEncode.
+    // A zero-frame probe never enters that callback and cannot prove rejection.
+    let result = ffi::test_codec_roundtrip(encoder.native(), decoder.native(), 1);
     assert_ne!(result.status, 0);
     assert!(!enc_contexts.lock().unwrap().is_empty());
     assert_eq!(dec_contexts.lock().unwrap().len(), 1);

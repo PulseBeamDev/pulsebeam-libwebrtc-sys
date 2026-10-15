@@ -227,10 +227,12 @@ fn migrated_plan_b_uses_real_stream_callbacks_media_and_legacy_description_outco
             .unwrap();
         session.attach_encoded_audio(receiver).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !matches!(
-            session.peer_connection_state(peers[0]).unwrap(),
-            ConnectionState::Connected
-        ) {
+        // SDP completion and sender readiness do not prove that the receiving
+        // peer's ICE/DTLS transport is ready for the first media packet.
+        while peers
+            .iter()
+            .any(|&peer| session.peer_connection_state(peer).unwrap() != ConnectionState::Connected)
+        {
             events.drain(&mut session, peers);
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
@@ -256,12 +258,20 @@ fn migrated_plan_b_uses_real_stream_callbacks_media_and_legacy_description_outco
             assert!(Instant::now() < deadline, "no native Plan B media");
             std::thread::yield_now();
         }
-        assert!(
-            session
-                .take_receiver_packet_event(receiver)
-                .unwrap()
-                .is_some()
-        );
+        // Packet-observer delivery is queued separately from media delivery;
+        // receiving a frame is not a barrier for the observer callback.
+        while session
+            .take_receiver_packet_event(receiver)
+            .unwrap()
+            .is_none()
+        {
+            events.drain(&mut session, peers);
+            assert!(
+                Instant::now() < deadline,
+                "no native Plan B packet observation"
+            );
+            std::thread::yield_now();
+        }
         session.remove_stream(peers[0], stream).unwrap();
         assert!(session.local_streams(peers[0]).unwrap().is_empty());
         assert_eq!(session.media_stream_audio_tracks(stream).unwrap(), [track]);

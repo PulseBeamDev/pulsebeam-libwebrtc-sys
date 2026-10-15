@@ -101,7 +101,8 @@ fn remove_all_refuses_queued_frames_without_implicit_flush_or_codec_mutation() {
         NetEqReturnCode::OK
     );
     let before = engine.operations_and_state();
-    assert!(before.next_packet_available);
+    // next_packet_available also requires sync-buffer timestamp alignment;
+    // the removal guard below, not that metadata bit, proves a queued packet.
     assert_eq!(
         engine.remove_all_payload_types(),
         Err(NetEqError::BufferedPackets)

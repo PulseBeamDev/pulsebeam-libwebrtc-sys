@@ -837,15 +837,7 @@ pub struct RustVideoDecoder {
     terminal: AtomicBool,
 }
 
-// Known standard payloads have non-panicking destructors and can be freed.
-// Unknown user payloads can themselves panic, including during field cleanup.
-fn discard_video_panic(payload: Box<dyn std::any::Any + Send>) {
-    if payload.is::<String>() || payload.is::<&'static str>() {
-        drop(payload);
-    } else {
-        std::mem::forget(payload);
-    }
-}
+use crate::panic_payload::discard as discard_video_panic;
 // No application destructor or panic-payload destructor may unwind through CXX.
 fn contained_video_drop<T>(value: T) -> bool {
     match catch_unwind(AssertUnwindSafe(|| drop(value))) {

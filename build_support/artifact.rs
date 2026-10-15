@@ -786,6 +786,7 @@ pub(crate) fn validate_extracted(
             library.display()
         ));
     }
+    manifest.validate_payloads(artifact)?;
     Ok(manifest)
 }
 
@@ -1090,6 +1091,36 @@ mod tests {
         root
     }
 
+    #[test]
+    fn extracted_overrides_reject_altered_archive_and_missing_notices() {
+        let root = artifact_test_root("payload-integrity");
+        let archive = root.join("fixture.tar.gz");
+        fs::write(&archive, fixture_archive()).unwrap();
+        let extracted = root.join("extracted");
+        fs::create_dir(&extracted).unwrap();
+        extract_safely(&archive, &extracted).unwrap();
+        let validate = || {
+            validate_extracted(
+                &extracted,
+                "pulsebeam-webrtc-sys-bridge-v2",
+                "core",
+                "linux-x86_64",
+                "x86_64-unknown-linux-gnu",
+            )
+        };
+        validate().unwrap();
+        fs::write(extracted.join("lib/libwebrtc.a"), b"stale archive").unwrap();
+        assert!(validate().unwrap_err().contains("digest mismatch"));
+        fs::write(
+            extracted.join("lib/libwebrtc.a"),
+            b"artifact-support-sentinel",
+        )
+        .unwrap();
+        fs::remove_file(extracted.join("LICENSES/NOTICE.txt")).unwrap();
+        assert!(validate().unwrap_err().contains("NOTICE.txt"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn server(responses: Vec<Vec<u8>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1144,6 +1175,7 @@ mod tests {
                 include_bytes!("../tests/fixtures/artifact-support-manifest.json").as_slice(),
             ),
             ("lib/libwebrtc.a", b"artifact-support-sentinel".as_slice()),
+            ("LICENSES/NOTICE.txt", b"license\n".as_slice()),
         ] {
             let mut header = tar::Header::new_gnu();
             header.set_size(contents.len() as u64);

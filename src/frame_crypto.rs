@@ -181,8 +181,7 @@ impl FailureState {
             Ok(value) => Some(value),
             Err(payload) => {
                 self.set(FrameCryptoFailure::ProviderPanicked);
-                // Even a user panic payload's Drop can panic at this boundary.
-                std::mem::forget(payload);
+                crate::panic_payload::discard(payload);
                 None
             }
         }
@@ -198,7 +197,7 @@ pub(crate) struct RustFrameDecryptorProvider {
 }
 fn contained_drop<T>(value: T) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
-        std::mem::forget(payload);
+        crate::panic_payload::discard(payload);
     }
 }
 impl Drop for RustFrameEncryptorProvider {

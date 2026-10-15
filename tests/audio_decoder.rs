@@ -204,7 +204,8 @@ fn opus_empty_and_malformed_frames_and_plc_keep_native_outcomes() {
         .unwrap()
         .frame
         .unwrap();
-    assert_eq!(empty.duration(), 0);
+    // Empty Opus payloads represent the native ten-millisecond PLC frame.
+    assert_eq!(empty.duration(), 480);
     assert!(empty.is_dtx_packet());
     let decoded = empty.decode().unwrap().unwrap();
     assert_eq!(decoded.samples.len(), 480);

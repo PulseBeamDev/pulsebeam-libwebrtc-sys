@@ -83,10 +83,22 @@ class RustNetworkMonitorAdapter final : public webrtc::NetworkMonitorInterface {
     state_->callback = [this] { InvokeNetworksChangedCallback(); };
   }
   ~RustNetworkMonitorAdapter() override {
-    if (Suspend()) network_monitor_stop(*monitor_);
-    std::lock_guard lock(state_->mutex);
-    state_->thread = nullptr;
-    state_->callback = {};
+    // ConnectionContext destroys BasicNetworkManager on signaling, even though
+    // the monitor was created/used on network. Retire the Rust product on its
+    // original sequence while the factory still owns both threads.
+    auto retire = [this] {
+      if (Suspend()) network_monitor_stop(**monitor_);
+      {
+        std::lock_guard lock(state_->mutex);
+        state_->thread = nullptr;
+        state_->callback = {};
+      }
+      monitor_.reset();
+    };
+    webrtc::Thread* thread;
+    { std::lock_guard lock(state_->mutex); thread = state_->thread; }
+    if (thread && !thread->IsCurrent()) thread->BlockingCall(retire);
+    else retire();
   }
   void Start() override {
     {
@@ -94,17 +106,17 @@ class RustNetworkMonitorAdapter final : public webrtc::NetworkMonitorInterface {
       ++state_->generation;
       state_->running = true;
     }
-    if (!network_monitor_start(*monitor_)) {
+    if (!network_monitor_start(**monitor_)) {
       Suspend();
-      network_monitor_stop(*monitor_);
+      network_monitor_stop(**monitor_);
     }
   }
   void Stop() override {
     Suspend();
-    network_monitor_stop(*monitor_);
+    network_monitor_stop(**monitor_);
   }
   InterfaceInfo GetInterfaceInfo(absl::string_view name) override {
-    auto info = network_monitor_info(*monitor_, InterfaceBytes(name));
+    auto info = network_monitor_info(**monitor_, InterfaceBytes(name));
     InterfaceInfo result;
     result.adapter_type = static_cast<webrtc::AdapterType>(info.adapter_type);
     result.underlying_type_for_vpn = static_cast<webrtc::AdapterType>(info.underlying_type_for_vpn);
@@ -114,14 +126,14 @@ class RustNetworkMonitorAdapter final : public webrtc::NetworkMonitorInterface {
     return result;
   }
   bool SupportsBindSocketToNetwork() const override {
-    return network_monitor_supports_binding(*monitor_);
+    return network_monitor_supports_binding(**monitor_);
   }
   webrtc::NetworkBindingResult BindSocketToNetwork(
       int socket, const webrtc::IPAddress& address,
       absl::string_view name) override {
     auto bytes = FromIp(address);
     return static_cast<webrtc::NetworkBindingResult>(network_monitor_bind(
-        *monitor_, socket, {bytes.data(), bytes.size()}, InterfaceBytes(name)));
+        **monitor_, socket, {bytes.data(), bytes.size()}, InterfaceBytes(name)));
   }
  private:
   bool Suspend() {
@@ -131,7 +143,7 @@ class RustNetworkMonitorAdapter final : public webrtc::NetworkMonitorInterface {
     ++state_->generation;
     return running;
   }
-  rust::Box<RustNetworkMonitor> monitor_;
+  std::optional<rust::Box<RustNetworkMonitor>> monitor_;
   std::shared_ptr<NativeNetworkChange::State> state_;
 };
 class RustNetworkMonitorFactoryAdapter final : public webrtc::NetworkMonitorFactory {

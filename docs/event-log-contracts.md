@@ -2,10 +2,6 @@
 
 Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_interface,_output}.h`, `api/rtc_event_log/rtc_event.h`, the environment factory, and concrete `logging/rtc_event_log/events/rtc_event_*.h` headers.
 
-## Implementation status
-
-This implementation is in progress and has not been built or tested yet. Validation and matched artifact regeneration are deferred to the consolidated qualification phase. This document describes the current implementation, not an assertion of complete event-log or environment parity.
-
 ## Selection and actor access
 
 `PeerConnectionFactory::builder().event_logging(true)` selects the bundled native event-log factory for new peers. Logging is opt-in and does not create a file or start an output by itself. `event_log_factory(provider)` instead selects a caller-defined `RtcEventLogFactory`; it takes precedence over the built-in boolean. The factory is retained independently of the builder and can be invoked for multiple peers. Its `create` receives an owned native environment view and returns an owned logger. Native factory creation requires a non-null logger. A panicking Rust factory is contained and replaced with the native no-op logger, which rejects output start.
@@ -50,6 +46,6 @@ The built-in logger's synchronous stop posts to its output task queue and waits.
 
 A custom factory or environment logger can be used with controlled execution if its own work and outputs remain caller-controlled. It must not start autonomous threads, use physical sockets, depend on wall-clock progress, or retain stop completions without caller-controlled progress. The binding does not claim to make arbitrary externally supplied provider work deterministic.
 
-## Deferred qualification
+## Artifact configuration
 
-Required consolidated checks include core/native builds and tests, provider retention/drop and panic cases, output failure and limit behavior, native event payload/copy fidelity, actor migration/shutdown, and controlled logger execution without autonomous work. Remaining environment utility operations and the version-specific coverage inventory remain incomplete. Event constructor/copy, typed extension, and stateful dependency-descriptor test sources are present but have not been run.
+Linux packages default to protobuf enabled. Build with `PULSEBEAM_WEBRTC_PROTOBUF=false` for the pinned no-protobuf configuration, using a separate artifact work/output directory. This selects the upstream no-op built-in logger, which rejects output start. Ordinary event construction/copy and RTP-extension helpers do not require protobuf; caller-provided Rust loggers and outputs retain their own behavior. Use the matching manifest to distinguish configurations, not the presence of SDK headers.

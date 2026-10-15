@@ -235,9 +235,9 @@ fn present_malformed_extension_is_not_confused_with_absence_or_wrong_event_type(
 fn hdr_mastering_and_light_levels_are_native_normalized_fields() {
     use RtcEventRtpExtensionKind as K;
     let mut raw = vec![9, 16, 9, 0x10];
-    // Four xy pairs in units of 1/50000, then max/min luminance, CLL, FALL.
+    // Native wire order: max/min luminance, four xy pairs (1/50000), CLL/FALL.
     for value in [
-        25_000u16, 12_500, 5_000, 10_000, 15_000, 20_000, 10_000, 15_000, 1_000, 1, 2_000, 1_000,
+        1_000u16, 1, 25_000, 12_500, 5_000, 10_000, 15_000, 20_000, 10_000, 15_000, 2_000, 1_000,
     ] {
         raw.extend_from_slice(&value.to_be_bytes());
     }

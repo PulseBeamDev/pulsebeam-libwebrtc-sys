@@ -288,9 +288,7 @@ impl<P: ?Sized> FactoryState<P> {
             Err(payload) => {
                 let error = failure(AudioFactoryFailureKind::Panicked);
                 self.observer.disable();
-                // Panic payloads may have user-defined panicking destructors.
-                // Do not allow a second panic to escape a contained boundary.
-                std::mem::forget(payload);
+                crate::panic_payload::discard(payload);
                 Err(error)
             }
         }
@@ -309,7 +307,7 @@ impl<P: ?Sized> Drop for FactoryState<P> {
                 kind: AudioFactoryFailureKind::Panicked,
             });
             self.observer.disable();
-            std::mem::forget(payload);
+            crate::panic_payload::discard(payload);
         }
     }
 }

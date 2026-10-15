@@ -5,12 +5,13 @@ import tempfile
 import unittest
 
 from tools.native_compile_commands import compilation_commands
+from tools.native_provenance import adapter_digest
 
 
 class NativeCompileCommandsTests(unittest.TestCase):
-    def fixture(self, base, flavor="core", target="linux-x86_64"):
+    def fixture(self, base, flavor="core", target="linux-x86_64", asan=False):
         root, kit, checkout, overlay = (base / name for name in ("root space", "kit space", "checkout space", "overlay"))
-        for name in ("native/value.cc", "native/value.h", "consumer/smoke.cc", "src/lib.rs"):
+        for name in ("native/value.cc", "native/value.h", "consumer/smoke.cc", "src/lib.rs", "Justfile", "tools/native_cc_wrapper.py"):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("// source\n")
@@ -19,9 +20,13 @@ class NativeCompileCommandsTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
         (kit / "include/c++/v1").mkdir(parents=True)
-        (kit / "build.txt").write_text("cxx_defines=-DWEBRTC_LINUX -DNDEBUG\n")
+        configuration = {"cxx_defines": ["-DWEBRTC_LINUX", "-DNDEBUG"], "gn_args": {"rtc_enable_protobuf": "true"}}
+        if asan:
+            configuration["gn_args"]["is_asan"] = "true"
         (kit / "manifest.json").write_text(json.dumps({"artifact": {"target": target, "flavor": flavor},
-            "bridge": {"cxx": {"bridge_source_sha256": hashlib.sha256((root / "src/lib.rs").read_bytes()).hexdigest(),
+            "native_configuration": configuration,
+            "native_configuration_sha256": hashlib.sha256(json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "bridge": {"native_adapter_sha256": adapter_digest(root), "cxx": {"bridge_source_sha256": hashlib.sha256((root / "src/lib.rs").read_bytes()).hexdigest(),
                                  "generated_header_sha256": hashlib.sha256((kit / "include/pulsebeam-webrtc-sys/src/lib.rs.h").read_bytes()).hexdigest()}}}))
         compiler = checkout / "third_party/llvm-build/Release+Asserts/bin/clang++"
         compiler.parent.mkdir(parents=True)
@@ -48,7 +53,14 @@ class NativeCompileCommandsTests(unittest.TestCase):
                 self.assertIn("-DWEBRTC_LINUX", args)
                 self.assertLess(args.index(f"-I{overlay}"), args.index(f"-I{kit}/include"))
                 self.assertNotIn("-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1", args)
+                self.assertNotIn("-fsanitize=address", args)
                 self.assertEqual(args[-4:], ["-x", "c++", "-c", entry["file"]])
+
+    def test_asan_kit_enables_matching_compiler_instrumentation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = compilation_commands(*self.fixture(Path(directory), asan=True))
+            for entry in commands:
+                self.assertIn("-fsanitize=address", entry["arguments"])
 
     def test_native_flavor_adds_only_actual_native_audio_and_glib_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -87,7 +99,11 @@ class NativeCompileCommandsTests(unittest.TestCase):
                 compilation_commands(*inputs)
         with tempfile.TemporaryDirectory() as directory:
             inputs = self.fixture(Path(directory))
-            (inputs[1] / "build.txt").write_text("cxx_defines=-I/host/include\n")
+            path = inputs[1] / "manifest.json"
+            manifest = json.loads(path.read_text())
+            manifest["native_configuration"]["cxx_defines"] = ["-I/host/include"]
+            manifest["native_configuration_sha256"] = hashlib.sha256(json.dumps(manifest["native_configuration"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            path.write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, "exported -D"):
                 compilation_commands(*inputs)
 

@@ -13,6 +13,7 @@ native = []
 cxx = { version = "=1.0.200", path = "vendor/cxx" }
 
 [dev-dependencies]
+shlex = "=2.0.1"
 flate2 = { version = "=1.1.2", default-features = false, features = ["rust_backend"] }
 oxitls-rustcrypto-provider = "=0.3.0"
 rustls = { version = "=0.23.44", default-features = false, features = ["std", "tls12"] }
@@ -23,6 +24,7 @@ tar = { version = "=0.4.44", default-features = false }
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 
 [build-dependencies]
+shlex = "=2.0.1"
 flate2 = { version = "=1.1.2", default-features = false, features = ["rust_backend"] }
 oxitls-rustcrypto-provider = "=0.3.0"
 rustls = { version = "=0.23.44", default-features = false, features = ["std", "tls12"] }

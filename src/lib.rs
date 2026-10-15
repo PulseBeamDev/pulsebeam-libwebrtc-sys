@@ -23,6 +23,7 @@ pub(crate) use certificate_generator::{
     RustCertificateGenerator, certificate_generator_generate, certificate_generator_present,
 };
 mod codec;
+mod panic_payload;
 mod video_factory_values;
 #[cfg(test)]
 mod video_factory_values_tests;

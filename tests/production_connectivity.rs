@@ -249,7 +249,12 @@ fn migrated_actor_preserves_native_channel_configuration_metadata_and_text_bytes
             }
             if !completed || !received { wait(&mut session); }
         }
-        events.drain(&mut session, peers);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while events.messages.len() < 2 {
+            events.drain(&mut session, peers);
+            assert!(Instant::now() < deadline, "missing native send/receive observation");
+            if events.messages.len() < 2 { thread::sleep(Duration::from_millis(1)); }
+        }
         assert_eq!(events.messages.len(), 2);
         for (peer, logged) in &events.messages {
             assert_eq!(logged.label, expected_label);

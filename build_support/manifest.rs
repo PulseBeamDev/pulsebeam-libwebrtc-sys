@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const SOURCE_REPOSITORY: &str = "https://github.com/webrtc-sdk/webrtc.git";
@@ -18,7 +18,7 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "01cf6fe8e2de10d5bf0cef2359a5f90af2e74165210b68361683c2961c69ef98";
+    "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
     "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
@@ -297,6 +297,7 @@ pub(crate) struct ArtifactManifest {
     sources: Sources,
     artifact: Artifact,
     native_configuration_sha256: String,
+    native_configuration: NativeConfiguration,
     abi: Abi,
     pub(crate) archive: Archive,
     pub(crate) links: Vec<Link>,
@@ -311,7 +312,7 @@ struct Bridge {
     cxx: CxxProvenance,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CxxProvenance {
     version: String,
@@ -366,6 +367,7 @@ struct Abi {
 pub(crate) struct Archive {
     pub(crate) member: String,
     pub(crate) name: String,
+    sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,11 +393,74 @@ struct LicenseInventory {
     files: Vec<LicenseFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LicenseFile {
     path: String,
     sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NativeConfiguration {
+    native_adapter_sha256: String,
+    bridge_identity: String,
+    cxx: CxxProvenance,
+    source_revision: String,
+    source_patch_sha256: String,
+    source_state: String,
+    depot_tools_revision: String,
+    flavor: String,
+    target: String,
+    cargo_target: String,
+    toolchain: String,
+    gn_args: std::collections::BTreeMap<String, String>,
+    cxx_defines: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    floating_point: Option<FloatingPoint>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FloatingPoint {
+    final_compiler_flags: Vec<String>,
+    compiler_wrapper_sha256: String,
+}
+
+fn canonical_digest(value: &impl Serialize) -> String {
+    // Value maps are sorted recursively, matching the producer's sort_keys=True.
+    let value = serde_json::to_value(value).unwrap();
+    format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap()))
+}
+
+// The manifest is portable, so build-host tool prefixes may differ. Match the
+// producer's command structure, not a digest substring inside an unrelated shell
+// command. shlex preserves quoted paths without accepting shell execution here.
+fn valid_compiler_wrapper(value: &str, digest: &str) -> bool {
+    let Some(command) = shlex::split(value) else {
+        return false;
+    };
+    if command.len() != 5 {
+        return false;
+    }
+    let interpreter = std::path::Path::new(&command[0])
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let python = interpreter.strip_prefix("python").is_some_and(|version| {
+        version.is_empty()
+            || (version.bytes().any(|byte| byte.is_ascii_digit())
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.'))
+    });
+    python
+        && std::path::Path::new(&command[1]).ends_with("tools/native_cc_wrapper.py")
+        && command[2] == "--contract-sha256"
+        && command[3] == digest
+        && std::path::Path::new(&command[4])
+            .file_name()
+            .is_some_and(|name| name == "sccache")
 }
 
 impl ArtifactManifest {
@@ -407,7 +472,7 @@ impl ArtifactManifest {
         expected_cargo_target: &str,
     ) -> Result<Self, String> {
         let manifest: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        if manifest.schema_version != 3 {
+        if manifest.schema_version != 4 {
             return Err(format!(
                 "unsupported manifest schema {}",
                 manifest.schema_version
@@ -536,6 +601,7 @@ impl ArtifactManifest {
             return Err("wrong native archive identity".into());
         }
         for (name, value) in [
+            ("archive digest", manifest.archive.sha256.as_str()),
             (
                 "native configuration digest",
                 manifest.native_configuration_sha256.as_str(),
@@ -573,7 +639,123 @@ impl ArtifactManifest {
         {
             return Err("invalid native link entry".into());
         }
+        manifest.validate_configuration()?;
         Ok(manifest)
+    }
+
+    fn validate_configuration(&self) -> Result<(), String> {
+        let config = &self.native_configuration;
+        if canonical_digest(config) != self.native_configuration_sha256 {
+            return Err("native configuration digest mismatch".into());
+        }
+        if config.native_adapter_sha256 != self.bridge.native_adapter_sha256
+            || config.bridge_identity != self.bridge.identity
+            || canonical_digest(&config.cxx) != canonical_digest(&self.bridge.cxx)
+            || config.source_revision != self.sources.webrtc.revision
+            || Some(&config.source_patch_sha256) != self.sources.webrtc.patch_sha256.as_ref()
+            || Some(&config.source_state) != self.sources.webrtc.state.as_ref()
+            || config.depot_tools_revision != self.sources.depot_tools.revision
+            || config.flavor != self.artifact.flavor
+            || config.target != self.artifact.target
+            || config.cargo_target != self.artifact.cargo_target
+            || config.toolchain != self.abi.toolchain
+        {
+            return Err("native configuration identity mismatch".into());
+        }
+        if config.cxx_defines.is_empty()
+            || config
+                .cxx_defines
+                .iter()
+                .any(|value| !value.starts_with("-D") || value.contains(['\n', '\r']))
+        {
+            return Err("invalid native configuration definitions".into());
+        }
+        if self.artifact.target == "linux-x86_64" {
+            let native = self.artifact.flavor == "native";
+            for (key, expected) in [
+                ("target_os", "linux"),
+                ("target_cpu", "x64"),
+                ("rtc_use_h264", "true"),
+                ("proprietary_codecs", "true"),
+                ("ffmpeg_branding", "Chrome"),
+                ("rtc_system_openh264", "false"),
+                ("rtc_include_opus", "true"),
+                ("rtc_build_opus", "true"),
+                ("rtc_build_libvpx", "true"),
+                ("rtc_libvpx_build_vp9", "true"),
+                ("rtc_include_builtin_audio_codecs", "true"),
+                ("rtc_include_dav1d_in_internal_decoder_factory", "true"),
+                (
+                    "rtc_include_internal_audio_device",
+                    if native { "true" } else { "false" },
+                ),
+                ("rtc_use_x11", if native { "true" } else { "false" }),
+                ("rtc_use_pipewire", if native { "true" } else { "false" }),
+            ] {
+                if config.gn_args.get(key).map(String::as_str) != Some(expected) {
+                    return Err(format!("wrong native GN configuration: {key}"));
+                }
+            }
+            if !matches!(
+                config
+                    .gn_args
+                    .get("rtc_enable_protobuf")
+                    .map(String::as_str),
+                Some("true" | "false")
+            ) {
+                return Err("missing native protobuf configuration".into());
+            }
+            let wrapper_digest = format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("../tools/native_cc_wrapper.py"))
+            );
+            let fp = config
+                .floating_point
+                .as_ref()
+                .ok_or("missing native floating-point configuration")?;
+            if fp.final_compiler_flags != ["-fno-fast-math", "-ffp-contract=off"]
+                || fp.compiler_wrapper_sha256 != wrapper_digest
+                || !config
+                    .gn_args
+                    .get("cc_wrapper")
+                    .is_some_and(|wrapper| valid_compiler_wrapper(wrapper, &wrapper_digest))
+            {
+                return Err("wrong native floating-point configuration".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_payloads(&self, root: &std::path::Path) -> Result<(), String> {
+        let check = |relative: &str, expected: &str| -> Result<(), String> {
+            let path = std::path::Path::new(relative);
+            if !path
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(format!("invalid artifact payload path: {relative}"));
+            }
+            let path = root.join(path);
+            if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file()) {
+                return Err(format!("missing regular artifact payload: {relative}"));
+            }
+            let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+            if format!("{:x}", Sha256::digest(bytes)) != expected {
+                return Err(format!("artifact payload digest mismatch: {relative}"));
+            }
+            Ok(())
+        };
+        check(&self.archive.member, &self.archive.sha256)?;
+        if canonical_digest(&self.licenses.files) != self.licenses.sha256 {
+            return Err("license inventory digest mismatch".into());
+        }
+        for file in &self.licenses.files {
+            if !file.path.starts_with("LICENSES/") {
+                return Err("license outside LICENSES directory".into());
+            }
+            check(&file.path, &file.sha256)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn cargo_link_directives(&self, library_dir: &str) -> Vec<String> {
@@ -604,7 +786,7 @@ impl ArtifactManifest {
 mod tests {
     use super::{
         ArtifactManifest, BRIDGE_SOURCE_SHA256, NATIVE_ADAPTER_INPUTS, SUPPORTED_CARGO_TARGETS,
-        artifact_target, native_adapter_digest,
+        artifact_target, canonical_digest, native_adapter_digest,
     };
     use sha2::{Digest, Sha256};
 
@@ -618,6 +800,14 @@ mod tests {
             "linux-x86_64",
             "x86_64-unknown-linux-gnu",
         )
+    }
+
+    #[test]
+    fn configuration_hash_uses_sorted_utf8_json() {
+        assert_eq!(
+            canonical_digest(&serde_json::json!({"path": "é/路径"})),
+            format!("{:x}", Sha256::digest("{\"path\":\"é/路径\"}".as_bytes()))
+        );
     }
 
     #[test]
@@ -743,6 +933,75 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_changed_configuration_even_when_the_replacement_is_rehashed() {
+        for (pointer, replacement) in [
+            ("/native_configuration/gn_args/rtc_use_h264", "false"),
+            (
+                "/native_configuration/gn_args/rtc_include_internal_audio_device",
+                "true",
+            ),
+            ("/native_configuration/toolchain", "unrelated compiler"),
+            (
+                "/native_configuration/floating_point/compiler_wrapper_sha256",
+                "bad",
+            ),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            *value.pointer_mut(pointer).unwrap() = replacement.into();
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .contains("configuration digest mismatch")
+            );
+            value["native_configuration_sha256"] =
+                canonical_digest(&value["native_configuration"]).into();
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unrelated_wrapper_commands_even_with_the_expected_digest() {
+        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let digest = value["native_configuration"]["floating_point"]["compiler_wrapper_sha256"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for wrapper in [
+            format!("unrelated --contract-sha256 {digest} sccache"),
+            format!("false tools/native_cc_wrapper.py --contract-sha256 {digest} sccache"),
+            format!("python tools/unrelated.py --contract-sha256 {digest} sccache"),
+            format!("python tools/native_cc_wrapper.py --contract-sha256 {digest} sccache extra"),
+        ] {
+            value["native_configuration"]["gn_args"]["cc_wrapper"] = wrapper.into();
+            value["native_configuration_sha256"] =
+                canonical_digest(&value["native_configuration"]).into();
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .contains("floating-point")
+            );
+        }
+        value["native_configuration"]["gn_args"]["cc_wrapper"] = format!(
+            "'/host tools/bin/python3.13' '/relocated source/tools/native_cc_wrapper.py' --contract-sha256 {digest} '/cache tools/sccache'"
+        ).into();
+        value["native_configuration_sha256"] =
+            canonical_digest(&value["native_configuration"]).into();
+        validate(&serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn distinguishes_protobuf_configurations_without_changing_software_capabilities() {
+        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        value["native_configuration"]["gn_args"]["rtc_enable_protobuf"] = "false".into();
+        value["native_configuration_sha256"] =
+            canonical_digest(&value["native_configuration"]).into();
+        validate(&serde_json::to_vec(&value).unwrap()).unwrap();
     }
 
     #[test]

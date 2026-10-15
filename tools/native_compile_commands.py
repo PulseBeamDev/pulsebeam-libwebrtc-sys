@@ -9,7 +9,12 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import shlex
+import subprocess
+
+try:
+    from .native_provenance import adapter_digest, configuration_digest
+except ImportError:
+    from native_provenance import adapter_digest, configuration_digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,8 +27,13 @@ def compilation_commands(root: Path, kit: Path, checkout: Path, overlay: Path) -
     bridge = manifest["bridge"]["cxx"]
     if hashlib.sha256((root / "src/lib.rs").read_bytes()).hexdigest() != bridge["bridge_source_sha256"]:
         raise ValueError("kit generated bridge does not match current src/lib.rs; rebuild matching inputs")
-    fields = dict(line.split("=", 1) for line in (kit / "build.txt").read_text(encoding="utf-8").splitlines() if "=" in line)
-    defines = shlex.split(fields["cxx_defines"])
+    configuration = manifest["native_configuration"]
+    digest = configuration_digest(configuration)
+    if digest != manifest["native_configuration_sha256"]:
+        raise ValueError("native configuration digest mismatch")
+    if manifest["bridge"]["native_adapter_sha256"] != adapter_digest(root):
+        raise ValueError("kit native adapters do not match current source; rebuild matching inputs")
+    defines = configuration["cxx_defines"]
     if not defines or any(not value.startswith("-D") for value in defines):
         raise ValueError("expected exported -D compilation definitions")
     compiler = checkout / "third_party/llvm-build/Release+Asserts/bin/clang++"
@@ -42,7 +52,10 @@ def compilation_commands(root: Path, kit: Path, checkout: Path, overlay: Path) -
     arguments = [str(compiler), "--target=x86_64-linux-gnu", f"--sysroot={sysroot}",
                  "-std=c++20", "-fno-exceptions", "-fno-rtti", "-Wno-nullability-completeness",
                  "-nostdinc++", "-isystem", str(include / "c++/v1"), "-pthread",
-                 "-fno-fast-math", "-ffp-contract=off", f"-I{overlay}", f"-I{include}", *defines]
+                 "-fno-fast-math", "-ffp-contract=off", f"-I{overlay}", f"-I{include}", *defines,
+                 f'-DPULSEBEAM_EXPECT_PROTOBUF={int(configuration["gn_args"]["rtc_enable_protobuf"] == "true")}']
+    if configuration["gn_args"].get("is_asan") == "true":
+        arguments += ["-fsanitize=address"]
     if artifact["flavor"] == "native":
         arguments += ["-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1", "-isystem", str(glib_includes[0]),
                       "-isystem", str(glib_includes[1])]
@@ -53,11 +66,31 @@ def compilation_commands(root: Path, kit: Path, checkout: Path, overlay: Path) -
             for source in sources]
 
 
+def check_diagnostics(commands: list[dict], root: Path) -> None:
+    # First parse a real adapter, then prove errors reach SDK types instead of
+    # stopping in missing includes or a mismatched host standard library.
+    entry = next(command for command in commands if command["file"] == str(root / "native/codec.cc"))
+    arguments = entry["arguments"][:-4]
+    for source, expected in [(root / "native/codec.cc", None),
+                             (root / "tests/fixtures/native_diagnostic.cc", "pulsebeam_missing_sdk_member")]:
+        result = subprocess.run([*arguments, "-fsyntax-only", str(source)], capture_output=True, text=True)
+        output = result.stdout + result.stderr
+        if expected is None:
+            if result.returncode != 0:
+                raise ValueError(f"pinned native adapter diagnostics failed:\n{output}")
+        elif result.returncode == 0 or expected not in output or "file not found" in output:
+            raise ValueError(f"expected meaningful SDK member diagnostic:\n{output}")
+        else:
+            print(output, end="")
+    print("pinned-source native diagnostics passed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kit", type=Path, required=True)
     parser.add_argument("--checkout-src", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=ROOT / ".work/clangd/compile_commands.json")
+    parser.add_argument("--check", action="store_true", help="parse a native adapter and check a deliberate SDK type diagnostic")
     args = parser.parse_args()
     try:
         overlay = args.output.resolve().parent / "include"
@@ -76,6 +109,8 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(commands, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {len(commands)} clangd entries to {args.output}")
+    if args.check:
+        check_diagnostics(commands, ROOT)
     return 0
 
 

@@ -108,6 +108,33 @@ fn selected_encoder_query_and_creation_preserve_native_dispatch() {
 }
 
 #[test]
+fn stock_fallback_channel_narrowing_preserves_unsupported_results() {
+    let factory = AudioEncoderFactory::builtin().unwrap();
+    let environment = Environment::builder().build().unwrap();
+    let options = AudioEncoderOptions::default();
+    for name in [b"L16".as_slice(), b"unknown"] {
+        for channels in [i32::MAX as usize + 1, usize::MAX] {
+            let format = SdpAudioFormat::new(name.to_vec(), 48000, channels);
+            assert!(factory.query_encoder(&format).unwrap().is_none());
+            assert!(
+                factory
+                    .create(&environment, &format, &options)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    let valid = SdpAudioFormat::new(b"L16".to_vec(), 48000, 2);
+    assert!(factory.query_encoder(&valid).unwrap().is_some());
+    assert!(
+        factory
+            .create(&environment, &valid, &options)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn owning_pcm_encoder_preserves_packet_state_metadata_and_environment() {
     let factory = AudioEncoderFactory::builtin().unwrap();
     let mut environment = Environment::builder().build().unwrap();

@@ -153,7 +153,7 @@ impl AudioDecoderProductFailureObserver {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(call)) {
             self.report(operation, AudioDecoderProductFailureKind::Panicked);
             self.0.disabled.store(true, Ordering::Release);
-            std::mem::forget(payload); // Untrusted panic-payload Drop may panic.
+            crate::panic_payload::discard(payload);
             true
         } else {
             false
@@ -304,7 +304,7 @@ impl ProductState {
             Err(payload) => {
                 let e = failure(AudioDecoderProductFailureKind::Panicked);
                 self.observer.0.disabled.store(true, Ordering::Release);
-                std::mem::forget(payload);
+                crate::panic_payload::discard(payload);
                 Err(e)
             }
         };

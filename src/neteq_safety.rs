@@ -76,7 +76,11 @@ mod tests {
         assert!(!receive_time_is_safe(negative, timestamp(i64::MAX - 99)));
         assert!(receive_time_is_safe(negative, timestamp(i64::MAX - 100)));
         assert!(!receive_time_is_safe(negative, timestamp(i64::MAX - 1)));
-        assert!(receive_time_is_safe(negative, timestamp(i64::MIN + 1)));
+        assert!(!receive_time_is_safe(negative, timestamp(i64::MIN + 1)));
+        assert!(receive_time_is_safe(
+            bounds(-100, -1),
+            timestamp(i64::MIN + 1)
+        ));
     }
 
     #[test]
@@ -89,9 +93,11 @@ mod tests {
             }
             assert!(!receive_time_is_safe(range, timestamp(i64::MIN + 1)));
         }
-        // A bounded zero clock actually permits both extreme finite timestamps.
+        // At zero, MIN+1 subtracts to the +infinity sentinel, not a finite
+        // TimeDelta. The next receive timestamp and the upper extreme are safe.
         let zero = bounds(0, 0);
-        assert!(receive_time_is_safe(zero, timestamp(i64::MIN + 1)));
+        assert!(!receive_time_is_safe(zero, timestamp(i64::MIN + 1)));
+        assert!(receive_time_is_safe(zero, timestamp(i64::MIN + 2)));
         assert!(receive_time_is_safe(zero, timestamp(i64::MAX - 1)));
     }
 

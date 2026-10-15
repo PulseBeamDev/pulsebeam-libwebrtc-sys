@@ -126,8 +126,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         manifest = json.loads((args.artifact / "manifest.json").read_text())
-        if manifest.get("schema_version") != 3:
-            raise ProvenanceError("artifact manifest is not schema 3")
+        if manifest.get("schema_version") != 4:
+            raise ProvenanceError("artifact manifest is not schema 4")
         from native_provenance import adapter_digest
         bridge = manifest.get("bridge", {})
         if bridge.get("native_adapter_sha256") != adapter_digest(ROOT):

@@ -276,7 +276,7 @@ impl ProductState {
             Err(payload) => {
                 let e = failure(AudioEncoderProductFailureKind::Panicked);
                 self.observer.0.disabled.store(true, Ordering::Release);
-                std::mem::forget(payload); // A user panic-payload destructor may panic again.
+                crate::panic_payload::discard(payload);
                 Err(e)
             }
         }
@@ -295,7 +295,7 @@ impl Drop for ProductState {
                 kind: AudioEncoderProductFailureKind::Panicked,
             });
             self.observer.0.disabled.store(true, Ordering::Release);
-            std::mem::forget(payload);
+            crate::panic_payload::discard(payload);
         }
     }
 }

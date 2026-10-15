@@ -401,7 +401,10 @@ mod adaptor_admission_tests {
         assert!(!check(6000, true, -1));
         assert!(check(6000, true, -(1_i64 << 23))); // Negative native duration, alpha rounds to one.
         assert!(check(6000, true, i64::from(i32::MAX) / 4));
-        assert!(!check(6000, true, i64::from(i32::MAX) / 4 + 1));
+        // Multiplication reaches 2^31, then the pinned i64-to-int conversion
+        // yields INT32_MIN. Binary32 exp rounds this tiny positive exponent to
+        // one, so the frozen-filter behavior remains natively supported.
+        assert!(check(6000, true, i64::from(i32::MAX) / 4 + 1));
         assert!(check(6000, true, 1_i64 << 30)); // Native narrowing wraps to zero.
     }
 
@@ -692,15 +695,21 @@ mod adaptor_admission_tests {
         let minimum = FiniteTimestamp::from_microseconds(-1).unwrap();
         let maximum = FiniteTimestamp::from_microseconds(i64::MAX - 1).unwrap();
         let (endpoint, time) = make(minimum, ClockTimeBounds::new(minimum, maximum).unwrap());
-        endpoint
-            .on_received_uplink_packet_loss_fraction(0.1)
-            .unwrap();
+        // Exact INT64_MAX subtraction fits i64, but the SDK's finite
+        // TimeDelta::Micros constructor rejects that infinity sentinel.
+        assert_eq!(
+            endpoint.on_received_uplink_packet_loss_fraction(0.1),
+            Err(AudioEncoderError::UnsafeClock)
+        );
         time.store(maximum.microseconds(), Ordering::Relaxed);
-        // Exact INT64_MAX delta is representable signed subtraction, then the
-        // native infinite TimeDelta exponent decays the previous sample to zero.
-        endpoint
-            .on_received_uplink_packet_loss_fraction(0.2)
-            .unwrap();
+        assert_eq!(
+            endpoint.on_received_uplink_packet_loss_fraction(0.2),
+            Err(AudioEncoderError::UnsafeClock)
+        );
+        let (finite, time) = make(zero, ClockTimeBounds::new(zero, maximum).unwrap());
+        finite.on_received_uplink_packet_loss_fraction(0.1).unwrap();
+        time.store(maximum.microseconds(), Ordering::Relaxed);
+        finite.on_received_uplink_packet_loss_fraction(0.2).unwrap();
         let lower = FiniteTimestamp::from_microseconds(-2).unwrap();
         let (too_wide, _) = make(lower, ClockTimeBounds::new(lower, maximum).unwrap());
         assert_eq!(
