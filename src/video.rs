@@ -815,6 +815,89 @@ pub struct ReceivedVideoFrame {
     pub frame: VideoFrame,
 }
 
+/// Native source constraints reported to a raw video sink. Optional zero and
+/// absence remain distinct; values are copied without normalization.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VideoSourceConstraints {
+    pub min_fps: Option<f64>,
+    pub max_fps: Option<f64>,
+}
+
+/// Owned non-frame callbacks. Frame output has its separate bounded queue.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoSinkEvent {
+    DiscardedFrame,
+    ConstraintsChanged(VideoSourceConstraints),
+}
+
+impl VideoSinkEvent {
+    fn from_native(event: ffi::FfiVideoSinkEvent) -> Option<Self> {
+        if !event.valid {
+            return None;
+        }
+        Some(match event.kind {
+            0 => Self::DiscardedFrame,
+            1 => Self::ConstraintsChanged(VideoSourceConstraints {
+                min_fps: event.has_min_fps.then_some(event.min_fps),
+                max_fps: event.has_max_fps.then_some(event.max_fps),
+            }),
+            _ => unreachable!("native video sink returned an invalid callback kind"),
+        })
+    }
+}
+
+#[cfg(test)]
+mod video_sink_event_tests {
+    use super::*;
+
+    #[test]
+    fn control_callbacks_preserve_optional_and_floating_values() {
+        for bits in [0, 0x8000000000000000, 0x7ff0000000000000,
+                     0xfff0000000000000, 0x7ff8000000000123] {
+            let event = VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
+                valid: true,
+                kind: 1,
+                has_min_fps: true,
+                min_fps: f64::from_bits(bits),
+                has_max_fps: false,
+                max_fps: 0.0,
+            });
+            let Some(VideoSinkEvent::ConstraintsChanged(value)) = event else {
+                panic!("missing constraints callback");
+            };
+            assert_eq!(value.min_fps.unwrap().to_bits(), bits);
+            assert_eq!(value.max_fps, None);
+        }
+        assert_eq!(
+            VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
+                valid: true, kind: 1, has_min_fps: false, min_fps: 0.0,
+                has_max_fps: true, max_fps: 0.0,
+            }),
+            Some(VideoSinkEvent::ConstraintsChanged(VideoSourceConstraints {
+                min_fps: None, max_fps: Some(0.0),
+            })),
+        );
+    }
+
+    #[test]
+    fn discard_and_empty_callbacks_are_distinct() {
+        assert_eq!(
+            VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
+                valid: true, kind: 0, has_min_fps: false, min_fps: 0.0,
+                has_max_fps: false, max_fps: 0.0,
+            }),
+            Some(VideoSinkEvent::DiscardedFrame),
+        );
+        assert_eq!(
+            VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
+                valid: false, kind: 0, has_min_fps: false, min_fps: 0.0,
+                has_max_fps: false, max_fps: 0.0,
+            }),
+            None,
+        );
+    }
+}
+
 /// A sequence-bound caller-polled video sink.
 ///
 /// At most four frames and 16 MiB of I420 data are retained. When full, the
@@ -840,6 +923,23 @@ impl VideoSink {
     /// at `u64::MAX`. Closed sinks retain the last count.
     pub fn dropped_frames(&self) -> u64 {
         ffi::video_sink_dropped_frames(self.native.as_ref().expect("validated video sink"))
+    }
+
+    /// Pop an owned discarded-frame or constraints callback. The eight-event
+    /// FIFO drops its oldest event when full, independently of frame retention.
+    /// Accepted events remain available after close. Polling never invokes a
+    /// caller callback, pumps native work or advances controlled time.
+    pub fn try_next_event(&self) -> Option<VideoSinkEvent> {
+        VideoSinkEvent::from_native(ffi::video_sink_take_event(
+            self.native.as_ref().expect("validated video sink"),
+        ))
+    }
+
+    /// Control events lost to queue overflow, saturating at `u64::MAX`.
+    /// Native discarded-frame notifications do not increment the separate
+    /// frame-retention counter returned by [`Self::dropped_frames`].
+    pub fn dropped_events(&self) -> u64 {
+        ffi::video_sink_dropped_events(self.native.as_ref().expect("validated video sink"))
     }
 
     pub fn try_next_received_frame(&self) -> Option<ReceivedVideoFrame> {

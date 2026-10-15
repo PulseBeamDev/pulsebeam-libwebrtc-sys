@@ -4800,6 +4800,27 @@ impl ProductionSession {
         };
         Ok(sink.try_next_frame())
     }
+    /// Pop a native raw-sink control callback without pumping native work.
+    pub fn try_raw_video_sink_event(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::VideoSinkEvent>, PeerError> {
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.try_next_event())
+    }
+
+    pub fn dropped_raw_video_sink_events(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<u64, PeerError> {
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.dropped_events())
+    }
+
     pub fn try_audio_frame(
         &mut self,
         receiver: SessionReceiverId,

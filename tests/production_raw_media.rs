@@ -968,6 +968,10 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         assert_eq!((audio.sample_rate_hz, audio.channels), (48000, 1));
         assert_eq!(audio.samples.len(), audio.samples_per_channel as usize);
         let image = image.unwrap();
+        // Stock sources have not issued either control callback on this call.
+        // Frame receipt must not synthesize discarded/constraint notifications.
+        assert_eq!(session.try_raw_video_sink_event(call.video.unwrap()).unwrap(), None);
+        assert_eq!(session.dropped_raw_video_sink_events(call.video.unwrap()).unwrap(), 0);
         let (local, installed_view, remote, source_events, track_events, _, _) = retained_video;
         for view in [local, installed_view, remote] {
             let status = session.video_source_status(view).unwrap();

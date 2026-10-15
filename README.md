@@ -224,6 +224,16 @@ or an audio-mode switch; encoded-video interception retains its existing
 receiver-lifetime restriction. Returned frames own their data across source
 replacement, sink closure, session migration and shutdown.
 
+Local raw-video sinks expose native `DiscardedFrame` and `ConstraintsChanged`
+notifications through `VideoSink::try_next_event`; actor receivers use
+`try_raw_video_sink_event`. Their separate eight-event FIFO retains the newest
+notifications, with saturating overflow counts from `dropped_events` or
+`dropped_raw_video_sink_events`. Constraint optionals and floating values are
+copied unchanged. Local accepted notifications remain readable after sink close.
+These are native callbacks, not inferred frame loss or source-state changes;
+frame polling and frame-retention loss counters remain separate. Sink wants and
+source constraint operations are still incomplete binding work.
+
 Drain `try_peer_event`, `try_channel_event`, registered DTMF/DTLS/SCTP observer
 queues and any attached encoded sinks, then await `ready()` (or call `poll_ready` from an executor). Readiness coalesces
 activity, may be spurious and never enters the engine or drives a clock. A

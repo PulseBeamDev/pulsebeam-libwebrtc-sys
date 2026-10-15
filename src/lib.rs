@@ -659,8 +659,8 @@ pub use production::{
     SessionMediaStreamObserverId, SessionMediaTrackId, SessionPeerId, SessionReceiverId,
     SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
     SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTrackId,
-    SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
-    SessionVideoObserverId, SessionVideoSourceViewId,
+    SessionTrackSourceId, SessionTransceiverId, SessionTransportError, SessionVideoObserverId,
+    SessionVideoSourceViewId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -672,9 +672,9 @@ pub use video::{
     ReceivedVideoFrame, RtpHeaderExtensionCapability, RtpHeaderExtensionDirection, RtpReceiver,
     RtpReceiverOperationError, RtpSender, RtpSenderEncoding, RtpSenderOperationError,
     RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability,
-    VideoContentHint, VideoObserver, VideoObserverEvent, VideoSink, VideoSource, VideoSourceState,
-    VideoSourceStats, VideoSourceStatus, VideoSourceView, VideoTrack, VideoTrackState,
-    VideoTrackStatus,
+    VideoContentHint, VideoObserver, VideoObserverEvent, VideoSink, VideoSinkEvent, VideoSource,
+    VideoSourceConstraints, VideoSourceState, VideoSourceStats, VideoSourceStatus, VideoSourceView,
+    VideoTrack, VideoTrackState, VideoTrackStatus,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -3768,6 +3768,15 @@ mod ffi {
         state: u8,
         volume: f64,
         signal_level: FfiOptionalI32,
+    }
+
+    struct FfiVideoSinkEvent {
+        valid: bool,
+        kind: u8,
+        has_min_fps: bool,
+        min_fps: f64,
+        has_max_fps: bool,
+        max_fps: f64,
     }
 
     struct FfiVideoSourceStats {
@@ -7709,6 +7718,8 @@ mod ffi {
         fn video_track_attach_sink(track: &NativeVideoTrack) -> UniquePtr<NativeVideoSink>;
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
         fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;
+        fn video_sink_take_event(sink: &NativeVideoSink) -> FfiVideoSinkEvent;
+        fn video_sink_dropped_events(sink: &NativeVideoSink) -> u64;
         fn close_video_sink(sink: &NativeVideoSink) -> bool;
         fn peer_audio_transceivers(peer: &NativePeerConnection)
         -> UniquePtr<NativeTransceiverList>;

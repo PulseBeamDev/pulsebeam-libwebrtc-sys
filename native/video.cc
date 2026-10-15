@@ -1,5 +1,6 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
+#include "pulsebeam-webrtc-sys/native/video_sink_queue.h"
 #include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
@@ -411,78 +412,7 @@ class CameraFrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFra
 };
 #endif
 
-class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
- public:
-  void OnFrame(const webrtc::VideoFrame& frame) override {
-    std::lock_guard lock(mutex_);
-    if (!active_) {
-      return;
-    }
-    // Keep a small, byte-bounded queue of the most recent decoded frames.
-    // An oversized frame is discarded rather than retained beyond the budget.
-    if (frame.width() <= 0 || frame.height() <= 0) {
-      Lost();
-      return;
-    }
-    const std::uint64_t width = static_cast<std::uint64_t>(frame.width());
-    const std::uint64_t height = static_cast<std::uint64_t>(frame.height());
-    const std::uint64_t bytes = width * height +
-                                2 * ((width + 1) / 2) * ((height + 1) / 2);
-    if (bytes > kMaxBytes) {
-      Lost();
-      return;
-    }
-    while (frames_.size() >= kMaxFrames || queued_bytes_ + bytes > kMaxBytes) {
-      queued_bytes_ -= frames_.front().bytes;
-      frames_.pop_front();
-      Lost();
-    }
-    frames_.push_back({wrap_video_frame(frame), static_cast<std::size_t>(bytes)});
-    queued_bytes_ += static_cast<std::size_t>(bytes);
-  }
 
-  std::unique_ptr<NativeVideoFrame> Take() {
-    std::lock_guard lock(mutex_);
-    if (frames_.empty()) {
-      return nullptr;
-    }
-    auto frame = std::move(frames_.front());
-    frames_.pop_front();
-    queued_bytes_ -= frame.bytes;
-    return std::move(frame.frame);
-  }
-
-  std::uint64_t DroppedFrames() {
-    std::lock_guard lock(mutex_);
-    return dropped_frames_;
-  }
-
-  void Deactivate() {
-    std::lock_guard lock(mutex_);
-    active_ = false;
-    frames_.clear();
-    queued_bytes_ = 0;
-  }
-
- private:
-  void Lost() {
-    if (dropped_frames_ != std::numeric_limits<std::uint64_t>::max()) {
-      ++dropped_frames_;
-    }
-  }
-
-  struct QueuedFrame {
-    std::unique_ptr<NativeVideoFrame> frame;
-    std::size_t bytes;
-  };
-  static constexpr std::size_t kMaxFrames = 4;
-  static constexpr std::size_t kMaxBytes = 16 * 1024 * 1024;
-  std::mutex mutex_;
-  std::deque<QueuedFrame> frames_;
-  std::size_t queued_bytes_ = 0;
-  std::uint64_t dropped_frames_ = 0;
-  bool active_ = true;
-};
 
 // Receive-side transformer consumes encoded frames before the decoder. When
 // deactivated, future frames pass through to the upstream decoder instead.
@@ -1630,6 +1560,14 @@ std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
 
 std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept {
   return sink.state()->sink ? sink.state()->sink->DroppedFrames() : 0;
+}
+
+FfiVideoSinkEvent video_sink_take_event(const NativeVideoSink& sink) noexcept {
+  return sink.state()->sink ? sink.state()->sink->TakeEvent() : FfiVideoSinkEvent{};
+}
+
+std::uint64_t video_sink_dropped_events(const NativeVideoSink& sink) noexcept {
+  return sink.state()->sink ? sink.state()->sink->DroppedEvents() : 0;
 }
 
 bool close_video_sink(const NativeVideoSink& sink) noexcept {

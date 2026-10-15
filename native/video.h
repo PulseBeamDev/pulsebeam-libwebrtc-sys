@@ -48,6 +48,7 @@ class NativeVideoFrame;
 struct FfiSenderParameters;
 struct FfiCodecFormat;
 struct FfiVideoSourceStats;
+struct FfiVideoSinkEvent;
 struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
 struct FfiRtpHeaderExtension;
@@ -390,6 +391,8 @@ std::unique_ptr<NativeVideoSink> video_track_attach_sink(
 std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
     const NativeVideoSink& sink) noexcept;
 std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept;
+FfiVideoSinkEvent video_sink_take_event(const NativeVideoSink& sink) noexcept;
+std::uint64_t video_sink_dropped_events(const NativeVideoSink& sink) noexcept;
 bool close_video_sink(const NativeVideoSink& sink) noexcept;
 
 std::unique_ptr<NativeTransceiverList> peer_audio_transceivers(
