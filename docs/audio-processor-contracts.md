@@ -1,6 +1,117 @@
-# Standalone stock audio processing
+# Audio processing and echo components
 
-`AudioProcessor::builtin` owns a real builtin WebRTC AudioProcessing module and
+`AudioProcessingModule` owns a standalone WebRTC AudioProcessing graph. It is
+separate from `AudioProcessor`, the per-track SDK AudioProcessorInterface
+reference exposed by the media-track APIs. The native wrappers are likewise
+distinct; neither product is a substitute for the other.
+
+## Owning processors and echo controllers
+
+Custom processors expose explicit Process, analyzer Analyze and direct
+runtime-setting delivery, with borrowed initialized
+full-band planar FloatS16 views. These direct calls require successful matching
+Initialize. Mutating callback results commit only on success.
+
+EchoControlFactory exposes the pinned stock default/single/optional-multichannel
+constructors and both native Create overloads. EchoControl owns persistent
+render/capture split filters and its exact environment. An optional estimator is
+exclusively borrowed until final controller destruction. Analysis, both capture
+processing overloads, metrics, delay, output usage and activity dispatch to the
+real native controller. Optional linear output is 16 kHz with capture channels.
+BuiltinAudioProcessorBuilder can select the exact owning stock or caller
+factory, which supersedes the builder's AEC config as specified by the SDK.
+Stock configuration inputs are not substituted for caller factory decisions.
+CustomAudioProcessorBuilder consumes an existing processor and invokes native
+CustomAudioProcessing/Build. Like the pin's builder, it is one-shot: it returns
+the exact original module, keeps that module's original environment/dependencies,
+and ignores the extra build environment rather than constructing a replacement.
+Echo sample/delay envelopes remain conservative binding admission limits, not
+claims that the native controller lacks wider ranges.
+
+EchoControlFactory::from_provider serializes both native Create overloads.
+EchoControlCreationContext exposes the actual SDK environment, sample rate and
+render/capture channels. Its consuming construction methods either create through
+an owning factory with these inputs or transfer an owning caller controller.
+The default five-argument callback preserves the native default: it invokes the
+four-argument callback and ignores the estimator. Overriding it permits scoped
+access to the supplied estimator. Controller callbacks receive fresh
+EchoControlDependencies with the same creation inputs and callback-scoped
+estimator access. No estimator loan or raw native reference escapes a callback,
+and controller destruction cannot call a retired estimator.
+
+Products transfer uniquely and retain their native/Rust environment dependencies.
+Rate, channel, native environment-component and used-estimator identities are
+validated before SDK handoff. Earlier standalone products retain independent
+health when their factory is later consumed by an owning APM.
+
+EchoControl::from_provider implements the owning controller
+interface with current full/split-band callback views, both processing overloads,
+metrics/delay/usage/active callbacks and a retained failure observer. Full-band and
+split-band snapshots preserve native storage distinctions; multiband capture
+analysis cannot read not-yet-split storage. Native merge/filter history remains
+native. Linear output requires explicit initialized writes for every channel,
+never a mutable view of uninitialized native storage. Direct failures commit no
+caller PCM, linear output, default metrics or false active-processing result.
+Rejected or panicking factory creation cannot return null to the SDK. A private
+failed controller permits native unwinding, with persistent failed-product health
+that suppresses checked caller PCM, standalone APM statistics and installed
+configuration snapshots. It is not a
+stock replacement or successful output. Incomplete or failed linear production
+initializes only the SDK's private drain buffer before in-call consumers can read
+it; no partial linear output is published. Invalid-product health persists until
+native reconstruction selects a valid replacement.
+Direct APM statistics snapshots now carry an explicit failure marker; fallible
+try_statistics variants return errors instead of default metric values after
+callback failure. SDK-owned peer RTCStatsReport collection does not carry per-report APM failure
+validity. The facade's owner-level error channel is not a validity guarantee for
+an asynchronously collected or cached peer report. Capture publication validity follows the pinned
+statistics queue/cache order, including discarded newer snapshots. Callback
+failure scopes are operation-local, not shared observer counter differences.
+Linear getter copy-back is withheld after a failed capture callback until a
+successful capture replaces that result. Physical owning APM PCM forwarding is
+not enabled.
+
+A selected owning echo factory activates the native controller independently of
+Config.echo_canceller.enabled. Setting that bit or a source echo option false
+does not remove the factory. Admission and explicit render/delay feedback checks
+follow that native selection. Factory/session echo state accounts for this path;
+native_reported_echo_cancellation separately retains the SDK's original
+config-derived diagnostic. Platform observations and non-echo component reports
+are unchanged. These are selection diagnostics, not evidence of echo convergence
+or per-frame signal modification.
+
+For selected stock factories, a forwarding receipt observes actual Create calls
+and returns the exact native product. Linear-buffer availability follows native
+reconstruction and its export setting at that time, not later config echoes.
+Successful processing uses no replacement controller, buffer prefill or hidden
+render pump. The SDK's initialized pre-capture linear buffer remains a legitimate
+native result. Failure-only drain initialization is never exposed as successful
+caller output.
+
+PeerConnectionFactory/ProductionSession select either an exact owning
+AudioProcessingModule or a Send-only BuiltinAudioProcessorBuilder recipe through native
+CustomAudioProcessing. The facade retains the entire original
+module/environment/dump dependency graph through final SDK reference release.
+Caller-driven headless PCM uses admitted core operations and withholds sink delivery
+on callback/admission failure, with typed errors distinct from native status. Full
+selected configuration is preserved rather than collapsed to echo/noise/gain flags.
+Native physical owning-APM selection is rejected: the pinned transport treats
+APM failure status as a DCHECK and continues to send the frame. Its public
+post-processing callback requires a reply to an installed sink, not a rejection
+result. Observer notification alone cannot stop native capture publication. Headless
+render pulls do not drive reverse APM or provide analog microphone feedback.
+
+Factory/session controls can read/apply the selected owning module's full native
+config and explicitly process reverse i16 audio and set stream delay. The caller
+is responsible for the actual render stream and timing; no hidden pump fills this
+in. Echo capture is admitted only after successful explicit reverse and delay
+operations on that module. Reverse callback/admission failures leave caller PCM
+unchanged. Native statuses and delay clamping warnings remain native results.
+Analog-feedback-dependent caller capture is still refused. Session use requires
+PCM codec selection, such as pcm_audio(), rather than its absent carrier default.
+
+
+`AudioProcessingModule::builtin` owns a real builtin WebRTC AudioProcessing module and
 retains the exact supplied environment, including its Rust dependencies, until
 native module destruction. The module is single-sequence and neither Send nor
 Sync. It does not create a peer, activate a physical device or supply a hidden
@@ -173,8 +284,7 @@ Nonasserting builds retain actual native reconstruction behavior. initialize
 therefore returns Result, just like format initialization and processing, rather
 than fabricating a native status or silently resetting the gain. The wrapper does
 not repair this SDK mismatch. A caller may explicitly apply a valid replacement
-configuration if reconstruction is desired. This asserting-profile guard has
-source evidence; matching asserting-artifact runtime qualification remains open.
+configuration if reconstruction is desired.
 
 ## Stock AEC dump files and retained workers
 
@@ -212,8 +322,6 @@ stub returns false without consuming FILE; this owning adapter closes its input
 in that case rather than leaking it. It still calls the real overload and
 preserves false, without substituting a dumper. The Rust file is consumed on all
 wrapper results as well. Filename creation without protobuf retains native false.
-Matching enabled-artifact tests inspect actual framed protobuf PCM/runtime events,
-not a configuration echo. Protobuf-off runtime qualification remains open.
 
 ## Caller-owned AEC dump callbacks
 
@@ -236,8 +344,10 @@ its integer compression-gain factory.
 The independent failure observer survives unique handoff and native destruction.
 It retains the first failure and a count of failures. Callback rejection, panic,
 and provider Drop panic remain separate from native APM status. The single-owner
-standalone operation compares a native failure generation before/after the SDK
-call. A changed generation returns CallbackFailed, not an invented native status.
+standalone operation uses a native operation-local callback failure scope.
+A rejected callback returns CallbackFailed, not an invented native status.
+Nested operations handle their own failures; unrelated observer counter changes
+do not change the current operation's result.
 Processing uses caller-initialized scratch output, preserving native negative
 status/best-effort effects when no callback fails. On callback failure no PCM
 is published and caller prefixes/tails remain unchanged. Because callbacks return
@@ -252,10 +362,35 @@ destruction before releasing a retained stock worker. Module/unattached owner
 Drop contains provider panics and records them for retained observers. A panic
 payload destructor is also contained; only a second panic payload is deliberately
 forgotten if dropping the first payload panics. No normal callback data is leaked.
-The provider must not retain event borrows after return. Current qualification is
-single-sequence standalone use, not concurrent installed capture/render failure
-isolation or migrated actor teardown. Protobuf-off runtime remains unqualified.
+The provider must not retain event borrows after return.
 
-Processing providers/builders and installation of standalone selected products
-remain outside this API surface. Existing peer processing selection is not standalone-product
-installation or proof of complete pinned AudioProcessing parity.
+## Custom processors, analyzers and neural estimation
+
+Owning custom processor/analyzer products provide borrowed
+full-band FloatS16 row views and an owning BuiltinAudioProcessorBuilder selecting
+capture-post, render-pre and capture-analyzer modules through the real SDK builder.
+Providers are Send and serialized, with same-provider recursive entry refusal and
+retained failure observers. Native Initialize/ToString and runtime callbacks are
+bound; ToString preserves bytes and the default runtime callback is a no-op.
+
+Mutations use a copied working frame committed only after callback success and
+finiteness validation. Capture-post accepts finite extremes. Render output uses
+a provisional graph-dependent qualification boundary when echo/GC1 render DSP
+is selected; this is a conservative binding admission limit, not native
+unsupported behavior.
+
+Typed AEC3 mono/optional multichannel configuration preserves native defaults and
+explicit Validate behavior. Owning neural providers expose Estimate, AdjustConfig
+and Reset. Neural callbacks preserve exact Block band/channel and fixed row
+shapes; caller outputs are owned initialized arrays. Native estimate consumption
+requires shape-correct finite spectra without an arbitrary amplitude cap.
+AEC3 consumption of a returned suppressor validates a copy without changing the
+provider result, requires strict mask ordering, and preserves the original
+nearend-detector mode used at construction. Rejection records AdjustConfig failure
+and uses the original configuration only to drain failed native construction.
+An unhandled construction failure remains invalid for that owning module until
+actual successful reconstruction; a later successful Estimate alone cannot
+certify the rejected controller. Handled child creation attempts do not poison
+a different product returned by the caller factory.
+Explicit standalone and scoped-loan AdjustConfig calls return raw provider values;
+they do not impose the separate AEC3 consumer's constraints.

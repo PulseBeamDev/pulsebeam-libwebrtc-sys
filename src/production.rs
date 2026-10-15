@@ -267,7 +267,11 @@ pub struct ProductionSessionBuilder {
     audio_decoder_factory: Option<AudioDecoderFactory>,
     pcm_audio: bool,
     audio_processing: Option<crate::AudioProcessingConfig>,
+    audio_processor_builder: Option<crate::BuiltinAudioProcessorBuilder>,
+    audio_mixer_sources: Option<Vec<crate::AudioMixerSource>>,
+    audio_mixer_provider: Option<Box<dyn crate::AudioMixerProvider>>,
     native_audio: bool,
+    native_audio_creation: Option<crate::ffi::FfiNativeAudioDeviceCreation>,
     video_encoder_factory: Option<crate::VideoEncoderFactoryHandle>,
     video_decoder_factory: Option<crate::VideoDecoderFactoryHandle>,
     temporal_fps: Option<[u8; 3]>,
@@ -296,7 +300,28 @@ impl ProductionSessionBuilder {
 
     /// Select the factory's software processing module. PCM input is required;
     /// already encoded packets cannot be processed as captured PCM.
+    /// Construct and install a stock mixer retaining these exact source products
+    /// inside the actor. No sequence-bound standalone mixer crosses the boundary.
+    pub fn audio_mixer_sources(mut self, sources: Vec<crate::AudioMixerSource>) -> Self {
+        self.audio_mixer_provider = None;
+        self.audio_mixer_sources = Some(sources);
+        self
+    }
+    /// Construct the exact caller mixer inside the actor, not a stock delegate.
+    pub fn audio_mixer_provider(mut self, provider: impl crate::AudioMixerProvider) -> Self {
+        self.audio_mixer_sources = None;
+        self.audio_mixer_provider = Some(Box::new(provider));
+        self
+    }
+    /// A Send-only owning recipe, built in the actor's exact environment. The
+    /// resulting local APM never crosses the public actor boundary.
+    pub fn audio_processor_builder(mut self, builder: crate::BuiltinAudioProcessorBuilder) -> Self {
+        self.audio_processor_builder = Some(builder);
+        self.audio_processing = None;
+        self
+    }
     pub fn audio_processing(mut self, config: crate::AudioProcessingConfig) -> Self {
+        self.audio_processor_builder = None;
         self.audio_processing = Some(config);
         self
     }
@@ -310,6 +335,12 @@ impl ProductionSessionBuilder {
         self
     }
 
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn native_audio_device(mut self, config: crate::AudioDeviceCreationConfig) -> Self {
+        self.native_audio = true;
+        self.native_audio_creation = Some(config.ffi());
+        self
+    }
     /// Explicit selection, distinct from this builder's absent carrier default.
     pub fn audio_encoder_factory(mut self, factory: &AudioEncoderFactory) -> Self {
         self.audio_encoder_factory = Some(factory.clone());
@@ -476,7 +507,11 @@ impl ProductionSession {
             audio_decoder_factory: None,
             pcm_audio: false,
             audio_processing: None,
+            audio_processor_builder: None,
+            audio_mixer_sources: None,
+            audio_mixer_provider: None,
             native_audio: false,
+            native_audio_creation: None,
             video_encoder_factory: None,
             video_decoder_factory: None,
             temporal_fps: None,
@@ -613,7 +648,11 @@ impl ProductionSession {
             audio_decoder_factory,
             pcm_audio,
             audio_processing,
+            audio_processor_builder,
+            audio_mixer_sources,
+            audio_mixer_provider,
             native_audio,
+            native_audio_creation,
             video_encoder_factory,
             video_decoder_factory,
             temporal_fps,
@@ -666,8 +705,32 @@ impl ProductionSession {
         if let Some(config) = audio_processing {
             builder = builder.audio_processing(config);
         }
+        if let Some(processor) = audio_processor_builder {
+            builder = builder.audio_processor_builder(processor);
+        }
+        if let Some(sources) = audio_mixer_sources {
+            let mut mixer = crate::AudioMixer::stock()
+                .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
+            for source in &sources {
+                mixer
+                    .add_source(source)
+                    .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
+            }
+            builder = builder.audio_mixer(mixer);
+        }
+        if let Some(provider) = audio_mixer_provider {
+            builder = builder.audio_mixer(
+                crate::AudioMixer::from_boxed_provider(provider)
+                    .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?,
+            );
+        }
         #[cfg(feature = "native")]
-        { builder = builder.native_audio(native_audio); }
+        {
+            builder = builder.native_audio(native_audio);
+        }
+        if let Some(creation) = native_audio_creation {
+            builder = builder.native_audio_creation_wire(creation);
+        }
         #[cfg(not(feature = "native"))]
         let _ = native_audio;
         if let Some(metronome) = encode_metronome {
@@ -1697,15 +1760,570 @@ impl ProductionSession {
         Ok(())
     }
 
-    pub fn audio_encoder_failure_observer(&mut self) -> Result<crate::AudioEncoderSdkFailureObserver, PeerError> {
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playout_initialized(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.playout_initialized())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_recording_initialized(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.recording_initialized())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playing(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.playing())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_recording(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.recording())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_speaker_initialized(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.speaker_initialized())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_microphone_initialized(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.microphone_initialized())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playout_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.playout_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_recording_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.recording_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_speaker_volume_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.speaker_volume_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_speaker_volume(
+        &mut self,
+        value: u32,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_speaker_volume(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_speaker_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.speaker_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_max_speaker_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.max_speaker_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_min_speaker_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.min_speaker_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_microphone_volume_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.microphone_volume_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_microphone_volume(
+        &mut self,
+        value: u32,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_microphone_volume(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_microphone_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.microphone_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_max_microphone_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.max_microphone_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_min_microphone_volume(&mut self) -> Result<u32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.min_microphone_volume()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_speaker_mute_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.speaker_mute_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_speaker_mute(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_speaker_mute(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_speaker_mute(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.speaker_mute()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_microphone_mute_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.microphone_mute_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_microphone_mute(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_microphone_mute(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_microphone_mute(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.microphone_mute()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_stereo_playout_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.stereo_playout_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_stereo_playout(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_stereo_playout(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_stereo_playout(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.stereo_playout()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_stereo_recording_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.stereo_recording_available()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_stereo_recording(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_stereo_recording(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_stereo_recording(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.stereo_recording()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_built_in_aec_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.built_in_aec_available())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_built_in_agc_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.built_in_agc_available())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_built_in_ns_available(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.built_in_ns_available())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_enable_built_in_aec(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.enable_built_in_aec(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_enable_built_in_agc(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.enable_built_in_agc(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_enable_built_in_ns(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.enable_built_in_ns(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_platform_voice_processing_path_available(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.platform_voice_processing_path_available())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_enable_platform_voice_processing_path(
+        &mut self,
+        value: bool,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.enable_platform_voice_processing_path(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_playout_device(
+        &mut self,
+        value: u16,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_playout_device(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_set_recording_device(
+        &mut self,
+        value: u16,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.set_recording_device(value)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playout_device_count(&mut self) -> Result<u16, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.playout_device_count()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_recording_device_count(&mut self) -> Result<u16, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.recording_device_count()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playout_underrun_count(&mut self) -> Result<i32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.playout_underrun_count())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_current_playout_device(&mut self) -> Result<i32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.current_playout_device())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_current_recording_device(
+        &mut self,
+    ) -> Result<i32, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.current_recording_device())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_playout_delay_ms(&mut self) -> Result<u16, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.playout_delay_ms()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_active_audio_layer(
+        &mut self,
+    ) -> Result<crate::AudioDeviceLayer, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        device.active_audio_layer()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_initialized(&mut self) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.initialized())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_stop_on_mute_mode_enabled(
+        &mut self,
+    ) -> Result<bool, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        let mut device = self.factory.audio_device_module()?;
+        Ok(device.stop_on_mute_mode_enabled())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_statistics(
+        &mut self,
+    ) -> Result<Option<crate::AudioDeviceStatistics>, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        Ok(self.factory.audio_device_module()?.statistics())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_platform_processing_state(
+        &mut self,
+    ) -> Result<crate::PlatformAudioProcessingState, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        Ok(self
+            .factory
+            .audio_device_module()?
+            .platform_processing_state())
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_name(
+        &mut self,
+        recording: bool,
+        index: u16,
+    ) -> Result<crate::AudioDeviceName, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        self.factory
+            .audio_device_module()?
+            .device_name(recording, index)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn register_audio_device_observer(
+        &mut self,
+        observer: crate::AudioDeviceObserver,
+    ) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        self.factory
+            .audio_device_module()?
+            .register_observer(observer)
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn unregister_audio_device_observer(&mut self) -> Result<(), crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        self.factory.audio_device_module()?.unregister_observer()
+    }
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_platform_processing_topology(
+        &mut self,
+    ) -> Result<crate::PlatformAudioProcessingTopology, crate::AudioDeviceError> {
+        if self.closed {
+            return Err(crate::AudioDeviceError::SessionClosed);
+        }
+        Ok(self
+            .factory
+            .audio_device_module()?
+            .platform_processing_topology())
+    }
+    pub fn audio_mixer_failure_observer(
+        &mut self,
+    ) -> Result<Option<crate::AudioMixerFailureObserver>, PeerError> {
+        self.check_open()?;
+        Ok(self.factory.audio_mixer_failure_observer())
+    }
+    pub fn audio_encoder_failure_observer(
+        &mut self,
+    ) -> Result<crate::AudioEncoderSdkFailureObserver, PeerError> {
         self.check_open()?;
         Ok(self.factory.audio_encoder_failure_observer())
     }
 
     /// Factory-wide diagnostic state, not a claim that hardware is running.
+    pub fn audio_processor_config(&mut self) -> Result<crate::AudioProcessorConfig, PeerError> {
+        self.check_open()?;
+        self.factory
+            .audio_processor_config()
+            .map_err(|e| error(PeerErrorKind::AudioProcessingAdmission, &e.to_string()))
+    }
+    pub fn apply_audio_processor_config(
+        &mut self,
+        config: crate::AudioProcessorConfig,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.factory
+            .apply_audio_processor_config(config)
+            .map_err(|e| error(PeerErrorKind::AudioProcessingAdmission, &e.to_string()))
+    }
+    pub fn process_reverse_audio(
+        &mut self,
+        format: crate::AudioProcessingStream,
+        samples: &mut [i16],
+    ) -> Result<crate::AudioProcessingStatus, PeerError> {
+        self.check_open()?;
+        self.factory
+            .process_reverse_audio(format, samples)
+            .map_err(|e| error(PeerErrorKind::AudioProcessingAdmission, &e.to_string()))
+    }
+    pub fn set_audio_processing_delay(
+        &mut self,
+        milliseconds: i32,
+    ) -> Result<crate::AudioProcessingStatus, PeerError> {
+        self.check_open()?;
+        self.factory
+            .set_audio_processing_delay(milliseconds)
+            .map_err(|e| error(PeerErrorKind::AudioProcessingAdmission, &e.to_string()))
+    }
     pub fn audio_processing_state(&mut self) -> Result<crate::AudioProcessingState, PeerError> {
         self.check_open()?;
-        Ok(self.factory.audio_processing_state())
+        self.factory
+            .try_audio_processing_state()
+            .map_err(|e| error(PeerErrorKind::AudioProcessingAdmission, &e.to_string()))
     }
 
     #[cfg(feature = "native")]
@@ -1721,9 +2339,18 @@ impl ProductionSession {
     }
 
     #[cfg(feature = "native")]
-    pub fn set_native_audio_enabled(&mut self, peer: SessionPeerId, recording: bool, enabled: bool) -> Result<(), PeerError> {
+    pub fn set_native_audio_enabled(
+        &mut self,
+        peer: SessionPeerId,
+        recording: bool,
+        enabled: bool,
+    ) -> Result<(), PeerError> {
         self.check_open()?;
-        self.peers.get(&peer).ok_or_else(missing)?.value.set_native_audio_enabled(recording, enabled)
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .set_native_audio_enabled(recording, enabled)
     }
 
     pub fn create_pcm_source(&mut self) -> Result<SessionSourceId, PeerError> {
@@ -1734,13 +2361,21 @@ impl ProductionSession {
         Ok(id)
     }
 
-    pub fn push_pcm(&mut self, source: SessionSourceId, frame: &crate::AudioPcmFrame) -> Result<(), PeerError> {
+    pub fn push_pcm(
+        &mut self,
+        source: SessionSourceId,
+        frame: &crate::AudioPcmFrame,
+    ) -> Result<(), PeerError> {
         self.check_open()?;
-        let Some(Source::Pcm(source)) = self.sources.get(&source) else { return Err(missing()); };
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
         source.push_frame(frame).map_err(|e| {
             let kind = match e {
                 crate::AudioFrameError::ProcessingFailed(_) => PeerErrorKind::Internal,
-                crate::AudioFrameError::UnsupportedProcessing => PeerErrorKind::UnsupportedOperation,
+                crate::AudioFrameError::UnsupportedProcessing => {
+                    PeerErrorKind::UnsupportedOperation
+                }
                 crate::AudioFrameError::ReentrantCall => PeerErrorKind::InvalidState,
                 crate::AudioFrameError::Released => PeerErrorKind::Closed,
                 _ => PeerErrorKind::InvalidParameter,
@@ -1943,23 +2578,44 @@ impl ProductionSession {
     ) -> Result<SessionTransceiverId, PeerError> {
         self.check_open()?;
         let target = &self.peers.get(&peer).ok_or_else(missing)?.value;
-        if target.inner.closed.get() { return Err(error(PeerErrorKind::Closed, "peer is closed")); }
-        let Some(Source::Pcm(source)) = self.sources.get(&source) else { return Err(missing()); };
+        if target.inner.closed.get() {
+            return Err(error(PeerErrorKind::Closed, "peer is closed"));
+        }
+        let Some(Source::Pcm(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
         let track = self.factory.create_audio_track(track_id, source)?;
-        if let Some(options) = processing { track.set_audio_processing_options(options)?; }
+        if let Some(options) = processing {
+            track.set_audio_processing_options(options)?;
+        }
         let value = target.add_audio_transceiver(&track, direction)?;
         self.insert_transceiver(peer, value)
     }
 
     /// Change the real retained local track's processing choices. Processing
     /// is shared by the voice engine, not isolated independently per track.
-    pub fn set_audio_processing_options(&mut self, sender: SessionSenderId, options: crate::AudioProcessingOptions) -> Result<(), PeerError> {
+    pub fn set_audio_processing_options(
+        &mut self,
+        sender: SessionSenderId,
+        options: crate::AudioProcessingOptions,
+    ) -> Result<(), PeerError> {
         self.check_open()?;
         let sender = self.senders.get(&sender).ok_or_else(missing)?;
         let peer = self.peers.get(&sender.peer).ok_or_else(missing)?;
-        let native_id = sender.value.id();
-        let track = peer.value.inner.audio_sender_tracks.borrow().get(&native_id).cloned()
-            .ok_or_else(|| error(PeerErrorKind::UnsupportedOperation, "sender has no local audio track"))?;
+        let native_id = sender.value.resource_key();
+        let track = peer
+            .value
+            .inner
+            .audio_sender_tracks
+            .borrow()
+            .get(&native_id)
+            .map(|lease| lease.track.clone())
+            .ok_or_else(|| {
+                error(
+                    PeerErrorKind::UnsupportedOperation,
+                    "sender has no local audio track",
+                )
+            })?;
         track.set_audio_processing_options(options)
     }
 
@@ -1973,9 +2629,13 @@ impl ProductionSession {
     ) -> Result<SessionTransceiverId, PeerError> {
         self.check_open()?;
         let target = &self.peers.get(&peer).ok_or_else(missing)?.value;
-        if target.inner.closed.get() { return Err(error(PeerErrorKind::Closed, "peer is closed")); }
+        if target.inner.closed.get() {
+            return Err(error(PeerErrorKind::Closed, "peer is closed"));
+        }
         let track = self.factory.create_microphone_track(track_id)?;
-        if let Some(options) = processing { track.set_audio_processing_options(options)?; }
+        if let Some(options) = processing {
+            track.set_audio_processing_options(options)?;
+        }
         let value = target.add_audio_transceiver(&track, direction)?;
         self.insert_transceiver(peer, value)
     }
@@ -3088,24 +3748,46 @@ impl ProductionSession {
     }
     pub fn attach_pcm_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         self.check_open()?;
-        if self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) || self.video_sinks.contains_key(&receiver) {
-            return Err(error(PeerErrorKind::InvalidState, "receiver already has a sink"));
+        if self.audio_sinks.contains_key(&receiver)
+            || self.pcm_sinks.contains_key(&receiver)
+            || self.video_sinks.contains_key(&receiver)
+        {
+            return Err(error(
+                PeerErrorKind::InvalidState,
+                "receiver already has a sink",
+            ));
         }
-        let sink = self.receivers.get(&receiver).ok_or_else(missing)?.value.attach_audio_sink()?;
+        let sink = self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .attach_audio_sink()?;
         self.pcm_sinks.insert(receiver, sink);
         Ok(())
     }
 
     /// Caller-paced headless playout. Readiness is not an audio playout timer.
-    pub fn try_pcm_audio_frame(&mut self, receiver: SessionReceiverId) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
-        Ok(self.pcm_sinks.get(&receiver).ok_or_else(missing)?.try_next_frame())
+    pub fn try_pcm_audio_frame(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
+        Ok(self
+            .pcm_sinks
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .try_next_frame())
     }
 
     /// Detach either audio receive mode before selecting another one. Stop
     /// reception first if future encoded packets must never enter a decoder.
     pub fn detach_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
-        if let Some(sink) = self.pcm_sinks.get_mut(&receiver) { sink.close()?; }
-        if let Some(sink) = self.audio_sinks.get_mut(&receiver) { sink.close()?; }
+        if let Some(sink) = self.pcm_sinks.get_mut(&receiver) {
+            sink.close()?;
+        }
+        if let Some(sink) = self.audio_sinks.get_mut(&receiver) {
+            sink.close()?;
+        }
         self.pcm_sinks.remove(&receiver);
         self.audio_sinks.remove(&receiver);
         Ok(())
@@ -3113,7 +3795,10 @@ impl ProductionSession {
 
     pub fn attach_encoded_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         self.check_open()?;
-        if self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) || self.video_sinks.contains_key(&receiver) {
+        if self.audio_sinks.contains_key(&receiver)
+            || self.pcm_sinks.contains_key(&receiver)
+            || self.video_sinks.contains_key(&receiver)
+        {
             return Err(error(
                 PeerErrorKind::InvalidState,
                 "receiver already has a sink",
@@ -3130,7 +3815,10 @@ impl ProductionSession {
     }
     pub fn attach_encoded_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         self.check_open()?;
-        if self.video_sinks.contains_key(&receiver) || self.audio_sinks.contains_key(&receiver) || self.pcm_sinks.contains_key(&receiver) {
+        if self.video_sinks.contains_key(&receiver)
+            || self.audio_sinks.contains_key(&receiver)
+            || self.pcm_sinks.contains_key(&receiver)
+        {
             return Err(error(
                 PeerErrorKind::InvalidState,
                 "receiver already has a sink",

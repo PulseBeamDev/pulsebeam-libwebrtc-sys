@@ -24,6 +24,10 @@ pub enum AudioProcessorError {
     InvalidConfiguration,
     /// Raw SDK value is preserved, but this consuming range is not yet qualified.
     UnqualifiedGainRange,
+    UnqualifiedEchoInputRange,
+    UnqualifiedEchoDelayRange,
+    ReentrantCall,
+    NoOwningProcessorSelected,
     LinearOutputUnavailable,
     LinearEchoNotConfigured,
     UnqualifiedLinearOutputQuery,
@@ -37,7 +41,7 @@ pub enum AudioProcessorError {
     InvalidDumpPath,
     UnqualifiedDumpFileAccess,
     /// A void caller callback failed. Native processing may have continued,
-    /// but no PCM result was published. Inspect the retained dump observer.
+    /// but no PCM result was published. Inspect the retained component observer.
     CallbackFailed,
 }
 impl std::fmt::Display for AudioProcessorError {
@@ -129,6 +133,8 @@ pub struct AudioProcessingFormatState {
 /// reporting queue and aggregation-window side effects.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioProcessingStatistics {
+    /// On failure every value is unavailable, not a successful native absence.
+    pub failure: Option<AudioProcessorError>,
     pub voice_detected: Option<bool>,
     pub echo_return_loss: Option<f64>,
     pub echo_return_loss_enhancement: Option<f64>,
@@ -142,6 +148,7 @@ pub struct AudioProcessingStatistics {
 impl AudioProcessingStatistics {
     fn from_ffi(s: ffi::FfiApmStatistics) -> Self {
         Self {
+            failure: AudioProcessingModule::admission(s.error).err(),
             voice_detected: (s.present & (1 << 0) != 0).then_some(s.voice_detected),
             echo_return_loss: (s.present & (1 << 1) != 0).then_some(s.echo_return_loss),
             echo_return_loss_enhancement: (s.present & (1 << 2) != 0)
@@ -167,13 +174,33 @@ impl Default for AudioProcessingStatistics {
 
 /// Single-sequence owning stock module. The exact environment is retained until
 /// after native module destruction. No device, worker or hidden pump is created.
-pub struct AudioProcessor {
-    native: cxx::UniquePtr<ffi::NativeAudioProcessor>,
+pub(crate) struct RustInstalledApmEnvironment {
+    pub(crate) _environment: Environment,
+}
+pub struct AudioProcessingModule {
+    native: cxx::UniquePtr<ffi::NativeAudioProcessingModule>,
     _environment: Environment,
     _sequence: PhantomData<Rc<()>>,
 }
-impl AudioProcessor {
-    fn admission(error: u8) -> Result<(), AudioProcessorError> {
+impl AudioProcessingModule {
+    pub(crate) fn native_pin(&mut self) -> std::pin::Pin<&mut ffi::NativeAudioProcessingModule> {
+        self.native.pin_mut()
+    }
+    pub(crate) fn into_installed(
+        self,
+    ) -> Result<cxx::UniquePtr<ffi::NativeInstalledAudioProcessor>, AudioProcessorError> {
+        let mut error = 0;
+        let native = ffi::audio_processor_into_installed(
+            self.native,
+            Box::new(RustInstalledApmEnvironment {
+                _environment: self._environment,
+            }),
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(native)
+    }
+    pub(crate) fn admission(error: u8) -> Result<(), AudioProcessorError> {
         match error {
             0 => Ok(()),
             1 => Err(AudioProcessorError::UnsafeFieldTrial),
@@ -193,6 +220,10 @@ impl AudioProcessor {
             16 => Err(AudioProcessorError::InvalidDumpPath),
             17 => Err(AudioProcessorError::UnqualifiedDumpFileAccess),
             18 => Err(AudioProcessorError::CallbackFailed),
+            19 => Err(AudioProcessorError::UnqualifiedEchoInputRange),
+            20 => Err(AudioProcessorError::UnqualifiedEchoDelayRange),
+            21 => Err(AudioProcessorError::ReentrantCall),
+            22 => Err(AudioProcessorError::NoOwningProcessorSelected),
             _ => Err(AudioProcessorError::InvalidConfiguration),
         }
     }
@@ -262,6 +293,19 @@ impl AudioProcessor {
             dump.into_inner(),
         ))
     }
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeAudioProcessingModule>,
+        environment: Environment,
+    ) -> Result<Self, AudioProcessorError> {
+        if native.is_null() {
+            return Err(AudioProcessorError::CreationFailed);
+        }
+        Ok(Self {
+            native,
+            _environment: environment,
+            _sequence: PhantomData,
+        })
+    }
     /// Call the actual void native setter. Ok means the call was admitted,
     /// not that enqueueing succeeded. Its native acknowledgment is unavailable.
     pub fn set_runtime_setting(
@@ -308,7 +352,28 @@ impl AudioProcessor {
         Self::admission(error)?;
         Ok(available)
     }
-    /// Pull the actual native statistics snapshot.
+    /// Fallible projection of the same native statistics operation. No snapshot
+    /// is returned after a callback failure, even if native getters supplied
+    /// fallback metric values internally.
+    pub fn try_statistics(&mut self) -> Result<AudioProcessingStatistics, AudioProcessorError> {
+        let statistics = self.statistics();
+        match statistics.failure {
+            Some(error) => Err(error),
+            None => Ok(statistics),
+        }
+    }
+    pub fn try_statistics_for_remote_tracks(
+        &mut self,
+        has_remote_tracks: bool,
+    ) -> Result<AudioProcessingStatistics, AudioProcessorError> {
+        let statistics = self.statistics_for_remote_tracks(has_remote_tracks);
+        match statistics.failure {
+            Some(error) => Err(error),
+            None => Ok(statistics),
+        }
+    }
+    /// Pull the actual native statistics snapshot. Inspect failure before using
+    /// any values, or use try_statistics to enforce the fallible projection.
     pub fn statistics(&mut self) -> AudioProcessingStatistics {
         AudioProcessingStatistics::from_ffi(ffi::audio_processor_statistics(
             self.native.pin_mut(),

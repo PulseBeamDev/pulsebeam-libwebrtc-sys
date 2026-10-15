@@ -223,12 +223,12 @@ fn opus_bitrate_trial_and_unsigned_overhead_guards_are_operation_specific() {
         .on_received_uplink_bandwidth(6000, Some(i64::MIN))
         .unwrap();
     assert_eq!(encoder.target_bitrate_bps(), original);
-    encoder.on_received_overhead(0);
+    encoder.on_received_overhead(0).unwrap();
     assert_eq!(
         encoder.on_received_uplink_bandwidth(6000, None),
         Err(AudioEncoderError::InvalidControl)
     );
-    encoder.on_received_overhead(usize::MAX);
+    encoder.on_received_overhead(usize::MAX).unwrap();
     assert_eq!(
         encoder.on_received_uplink_bandwidth(i32::MAX, None),
         Err(AudioEncoderError::InvalidControl)

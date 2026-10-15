@@ -130,11 +130,12 @@ fn dump() -> (
     let observer = dump.failure_observer();
     (dump, state, observer)
 }
-fn processor(gain: f32) -> AudioProcessor {
+fn processor(gain: f32) -> AudioProcessingModule {
     let mut c = AudioProcessorConfig::default();
     c.pre_amplifier.enabled = gain != 1.0;
     c.pre_amplifier.fixed_gain_factor = gain;
-    AudioProcessor::builtin_with_config(&Environment::builder().build().unwrap(), &c).unwrap()
+    AudioProcessingModule::builtin_with_config(&Environment::builder().build().unwrap(), &c)
+        .unwrap()
 }
 fn stream(channels: usize) -> AudioProcessingStream {
     AudioProcessingStream {

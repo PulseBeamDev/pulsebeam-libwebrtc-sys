@@ -23,17 +23,6 @@ class IosBridgeShellTests(unittest.TestCase):
             for target, (sdk, minimum) in self.targets.items():
                 with self.subTest(flavor=flavor, target=target):
                     calls, stage = self._run_bridge(flavor, target)
-                    expected_sources = {
-                        str(source) for source in (ROOT / "native").glob("*.cc")
-                    } | {str(ROOT / "vendor/cxx/src/cxx.cc")}
-                    compiled_sources = [call[-3] for call in calls]
-                    # The generated bridge lives under the temporary work root.
-                    generated = [source for source in compiled_sources if source.endswith("/lib.rs.cc")]
-                    self.assertEqual(len(generated), 1)
-                    self.assertCountEqual(
-                        [source for source in compiled_sources if source not in generated],
-                        expected_sources,
-                    )
                     expected_prefix = [
                         "-arch", "arm64", "-isysroot", "/fake SDK path", minimum,
                         "-std=c++20", "-fno-exceptions", "-fno-rtti",
@@ -42,6 +31,17 @@ class IosBridgeShellTests(unittest.TestCase):
                     if flavor == "native":
                         expected_prefix.append("-DPULSEBEAM_WEBRTC_NATIVE_AUDIO=1")
                     expected_prefix.extend([f"-I{stage}/include", "-DTEST=1", "-c"])
+                    sources = [Path(call[len(expected_prefix)]) for call in calls]
+                    # Every adapter TU, generated bridge and CXX runtime must
+                    # participate exactly once as the adapter inventory grows.
+                    self.assertCountEqual(
+                        [source for source in sources if source.parent == ROOT / "native"],
+                        list((ROOT / "native").glob("*.cc")),
+                    )
+                    self.assertCountEqual(
+                        [source.name for source in sources if source.parent != ROOT / "native"],
+                        ["lib.rs.cc", "cxx.cc"],
+                    )
                     for call in calls:
                         self.assertEqual(call[: len(expected_prefix)], expected_prefix)
                         self.assertEqual(call[-2], "-o")

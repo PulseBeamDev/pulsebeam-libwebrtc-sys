@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <memory>
 #include "rust/cxx.h"
-namespace webrtc { class AudioFrame; }
+#include "api/scoped_refptr.h"
+namespace webrtc { class AudioFrame; class AudioMixer; }
 namespace pulsebeam::webrtc_sys {
 struct FfiAudioFrameFields;
+struct FfiMixerFrame;
 
 // Native operations mutate one uniquely owned frame. The full backing buffer
 // is initialized once before any Rust view or public-field assignment.
@@ -66,19 +68,47 @@ class NativeMixerSource final {
  private:
   std::shared_ptr<State> state_;
 };
+struct RustMixerProvider;
+class NativeMixerSourceToken final {
+ public:
+  struct State;
+  explicit NativeMixerSourceToken(std::shared_ptr<State>) noexcept;
+  ~NativeMixerSourceToken();
+  const std::shared_ptr<State>& state() const noexcept;
+ private:
+  std::shared_ptr<State> state_;
+};
+class NativeMixerInputs final {
+ public:
+  struct State;
+  explicit NativeMixerInputs(const State&) noexcept;
+  const State& state() const noexcept;
+ private:
+  const State& state_;
+};
+std::unique_ptr<NativeMixerSourceToken> mixer_token_clone(const NativeMixerSourceToken&) noexcept;
+bool mixer_token_equal(const NativeMixerSourceToken&, const NativeMixerSourceToken&) noexcept;
+std::int32_t mixer_input_ssrc(const NativeMixerInputs&, const NativeMixerSourceToken&, std::uint8_t&) noexcept;
+std::int32_t mixer_input_rate(const NativeMixerInputs&, const NativeMixerSourceToken&, std::uint8_t&) noexcept;
+FfiMixerFrame mixer_input_frame(const NativeMixerInputs&, const NativeMixerSourceToken&, std::int32_t, std::uint8_t&) noexcept;
+struct RustMixerModule;
 class NativeAudioMixer final {
  public:
   struct State;
-  NativeAudioMixer();
+  explicit NativeAudioMixer(rust::Box<RustMixerModule>);
+  NativeAudioMixer(rust::Box<RustMixerModule>, rust::Box<RustMixerProvider>);
   ~NativeAudioMixer();
   State& state() noexcept;
+  webrtc::scoped_refptr<webrtc::AudioMixer> mixer() const noexcept;
  private:
-  std::unique_ptr<State> state_;
+  std::shared_ptr<State> state_;
 };
 std::unique_ptr<NativeMixerSource> mixer_source_new(rust::Box<RustMixerSource>) noexcept;
+FfiMixerFrame mixer_source_get_audio(const NativeMixerSource&, std::int32_t, std::uint8_t&) noexcept;
 std::int32_t mixer_source_get_ssrc(const NativeMixerSource&, bool&) noexcept;
 std::int32_t mixer_source_get_rate(const NativeMixerSource&, bool&) noexcept;
-std::unique_ptr<NativeAudioMixer> audio_mixer_new() noexcept;
+std::unique_ptr<NativeAudioMixer> audio_mixer_new(rust::Box<RustMixerModule>) noexcept;
+std::unique_ptr<NativeAudioMixer> audio_mixer_from_provider(rust::Box<RustMixerModule>, rust::Box<RustMixerProvider>) noexcept;
 bool audio_mixer_add(NativeAudioMixer&, const NativeMixerSource&, std::uint8_t&) noexcept;
 bool audio_mixer_remove(NativeAudioMixer&, const NativeMixerSource&, std::uint8_t&) noexcept;
 std::unique_ptr<NativeAudioFrame> audio_mixer_mix(NativeAudioMixer&, std::size_t, std::uint8_t&) noexcept;

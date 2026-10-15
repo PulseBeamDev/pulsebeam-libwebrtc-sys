@@ -14,7 +14,7 @@ import shlex
 def adapter_inputs(root: Path) -> list[Path]:
     return sorted(
         [root / "Justfile", root / "tools/native_cc_wrapper.py",
-         *root.glob("native/*.cc"), *root.glob("native/*.h")],
+         *root.glob("native/*.cc"), *root.glob("native/*.h"), *root.glob("native/*.inc")],
         key=lambda path: path.relative_to(root).as_posix(),
     )
 

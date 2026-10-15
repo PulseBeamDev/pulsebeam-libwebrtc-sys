@@ -44,6 +44,7 @@ class PcmCaptureScope {
   }
   ~PcmCaptureScope() { if (admitted_) active_.pop_back(); }
   bool admitted() const { return admitted_; }
+  static bool Active(const void* source) { return std::find(active_.begin(), active_.end(), source) != active_.end(); }
  private:
   static thread_local std::vector<const void*> active_;
   bool admitted_ = false;
@@ -414,6 +415,7 @@ struct NativeAudioSource::State {
   webrtc::scoped_refptr<PushAudioSource> source;
   webrtc::scoped_refptr<webrtc::AudioProcessing> processing;
   FfiAudioProcessingConfig processing_config{};
+  std::shared_ptr<NativeInstalledAudioProcessor::State> installed_processing;
   webrtc::Thread* signaling_thread = nullptr;
   webrtc::Thread* worker_thread = nullptr;
   std::mutex frame_mutex;
@@ -468,6 +470,7 @@ std::unique_ptr<NativeAudioSource> create_audio_source(
   state->worker_thread = factory.worker_thread();
   state->processing = factory.audio_processing();
   state->processing_config = factory.audio_processing_config();
+  state->installed_processing = factory.installed_audio_processing();
   // Native capture owns the shared APM's capture thread. Do not call that
   // instance from a second custom capture path or manufacture another module.
   if (state->processing && factory.audio_device()) { failure = 1; return nullptr; }
@@ -505,7 +508,11 @@ rust::Vec<FfiAudioCodecCapability> peer_audio_codec_capabilities(
   }
   return result;
 }
+bool audio_source_capture_active(const NativeAudioSource& source) noexcept {
+  return PcmCaptureScope::Active(source.state().get()) || installed_audio_processor_reentry(source.state()->installed_processing);
+}
 bool close_audio_source(const NativeAudioSource& source) noexcept {
+  if (audio_source_capture_active(source)) return false;
   auto& state = *source.state();
   if (!state.source || !state.signaling_thread) return false;
   {
@@ -525,9 +532,10 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            std::uint8_t channels,
                            std::int64_t timestamp_us,
                            std::uint8_t& failure,
-                           std::int32_t& processing_error) noexcept {
+                           std::int32_t& processing_error,
+                           std::uint8_t& wrapper_error) noexcept {
   failure = 0;
-  processing_error = 0;
+  processing_error = 0; wrapper_error = 0;
   auto& state = *source.state();
   PcmCaptureScope caller_scope(&state);
   if (!caller_scope.admitted()) { failure = 3; return false; }
@@ -548,6 +556,20 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
     // BlockingCall may run directly when the caller already owns this worker.
     // Its caller scope already protects that case; a different worker needs its
     // own scope before APM can call environment dependencies.
+    if (state.installed_processing) {
+      const auto options = state.source->options();
+      const auto option = [](std::optional<bool> v) -> std::uint8_t { return !v ? 0 : (*v ? 2 : 1); };
+      bool needs_feedback = false;
+      processing_error = installed_audio_processor_capture(state.installed_processing,
+          static_cast<std::int32_t>(sample_rate_hz), channels,
+          rust::Slice<std::int16_t>(processed.data(), processed.size()),
+          option(options.echo_cancellation), option(options.noise_suppression), option(options.auto_gain_control),
+          !state.source->HasSinks(), needs_feedback, wrapper_error);
+      if (needs_feedback) failure = 2;
+      else if (wrapper_error) failure = 4;
+      else if (processing_error != webrtc::AudioProcessing::kNoError) failure = 1;
+      return;
+    }
     const auto current = state.processing->GetConfig();
     auto config = current;
     const auto options = state.source->options();

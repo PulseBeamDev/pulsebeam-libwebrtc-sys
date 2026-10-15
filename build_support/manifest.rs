@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259";
+    "5dd15a9e42e18f3a279a6b2127c706f69bee03a7071754af877ab420543cdf54";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555";
+    "7bf6377e3e16f5a2aa5aeb26afe28a464502148bf39059649a4ebcaf094c09c8";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a";
+    "9a5999e97df519e6d2f562e864435bf90865a6f61f2e98a9fbf2981c175ef206";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -46,8 +46,38 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/audio_frame_values.h",
         include_bytes!("../native/audio_frame_values.h"),
     ),
-    ("native/audio_processor.cc", include_bytes!("../native/audio_processor.cc")),
-    ("native/audio_processor.h", include_bytes!("../native/audio_processor.h")),
+    (
+        "native/audio_processor.cc",
+        include_bytes!("../native/audio_processor.cc"),
+    ),
+    (
+        "native/audio_processor.h",
+        include_bytes!("../native/audio_processor.h"),
+    ),
+    (
+        "native/audio_encoder_ana_access.h",
+        include_bytes!("../native/audio_encoder_ana_access.h"),
+    ),
+    (
+        "native/audio_encoder_ana.inc",
+        include_bytes!("../native/audio_encoder_ana.inc"),
+    ),
+    (
+        "native/audio_device.cc",
+        include_bytes!("../native/audio_device.cc"),
+    ),
+    (
+        "native/audio_device.h",
+        include_bytes!("../native/audio_device.h"),
+    ),
+    (
+        "native/audio_echo_config.cc",
+        include_bytes!("../native/audio_echo_config.cc"),
+    ),
+    (
+        "native/audio_echo_config.h",
+        include_bytes!("../native/audio_echo_config.h"),
+    ),
     (
         "native/certificate_generator.cc",
         include_bytes!("../native/certificate_generator.cc"),
@@ -833,7 +863,10 @@ mod tests {
         for entry in std::fs::read_dir(root.join("native")).unwrap() {
             let path = entry.unwrap().path();
             if path.is_file()
-                && matches!(path.extension().and_then(|e| e.to_str()), Some("cc" | "h"))
+                && matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("cc" | "h" | "inc")
+                )
             {
                 expected.push(format!(
                     "native/{}",

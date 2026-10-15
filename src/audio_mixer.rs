@@ -13,7 +13,9 @@ pub enum AudioMixerError {
     CreationFailed,
     InvalidChannels,
     InvalidPreferredRate,
+    InvalidSampleRate,
     InvalidFrame,
+    InvalidSource,
     CallbackRejected,
     CallbackPanicked,
     ReentrantCall,
@@ -53,10 +55,19 @@ impl AudioMixerFailureObserver {
             .get_or_insert(e);
     }
 }
+pub(crate) struct RustMixerModule(pub AudioMixerFailureObserver);
+pub(crate) fn mixer_module_failed(module: &RustMixerModule, error: u8) {
+    module.0.record(match error {
+        1 => AudioMixerError::ReentrantCall,
+        2 => AudioMixerError::InvalidPreferredRate,
+        3 => AudioMixerError::InvalidFrame,
+        _ => AudioMixerError::CallbackRejected,
+    });
+}
 thread_local! { static ACTIVE: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
-struct Scope(usize);
+pub(crate) struct Scope(usize);
 impl Scope {
-    fn enter(id: usize) -> Result<Self, AudioMixerError> {
+    pub(crate) fn enter(id: usize) -> Result<Self, AudioMixerError> {
         ACTIVE.with(|active| {
             let mut active = active.borrow_mut();
             if active.contains(&id) {
@@ -76,7 +87,7 @@ impl Drop for Scope {
     }
 }
 pub(crate) struct RustMixerSource {
-    provider: Mutex<Box<dyn AudioMixerSourceProvider>>,
+    provider: Mutex<Option<Box<dyn AudioMixerSourceProvider>>>,
     failure: AudioMixerFailureObserver,
 }
 impl RustMixerSource {
@@ -87,13 +98,34 @@ impl RustMixerSource {
         let result = (|| {
             let _scope = Scope::enter(self as *const Self as usize)?;
             let mut provider = self.provider.lock().unwrap_or_else(|e| e.into_inner());
-            catch_unwind(AssertUnwindSafe(|| f(provider.as_mut())))
-                .unwrap_or(Err(AudioMixerError::CallbackPanicked))
+            match catch_unwind(AssertUnwindSafe(|| match provider.as_deref_mut() {
+                Some(p) => f(p),
+                None => Err(AudioMixerError::CallbackRejected),
+            })) {
+                Ok(result) => result,
+                Err(payload) => {
+                    crate::audio_processor_caller_dump::dispose_panic(payload);
+                    Err(AudioMixerError::CallbackPanicked)
+                }
+            }
         })();
         if let Err(error) = result {
             self.failure.record(error);
         }
         result
+    }
+}
+impl Drop for RustMixerSource {
+    fn drop(&mut self) {
+        let provider = self
+            .provider
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(provider))) {
+            crate::audio_processor_caller_dump::dispose_panic(payload);
+            self.failure.record(AudioMixerError::CallbackPanicked);
+        }
     }
 }
 pub(crate) fn mixer_source_frame(source: &RustMixerSource, rate: i32) -> ffi::FfiMixerFrame {
@@ -158,7 +190,7 @@ impl AudioMixerSource {
     pub fn from_provider(provider: impl AudioMixerSourceProvider) -> Self {
         let failure = AudioMixerFailureObserver::default();
         let native = ffi::mixer_source_new(Box::new(RustMixerSource {
-            provider: Mutex::new(Box::new(provider)),
+            provider: Mutex::new(Some(Box::new(provider))),
             failure: failure.clone(),
         }));
         Self {
@@ -184,6 +216,36 @@ impl AudioMixerSource {
                 .unwrap_or(AudioMixerError::CallbackRejected))
         }
     }
+    /// Direct actual Source::GetAudioFrameWithInfo. Native kError is a normal
+    /// disposition and stays distinct from a Rust callback failure. The returned
+    /// muted frame preserves the producer's implicit-zero contract.
+    pub fn audio_frame(&self, sample_rate_hz: i32) -> Result<MixerAudioFrame, AudioMixerError> {
+        let mut error = 0;
+        let result = ffi::mixer_source_get_audio(self.inner(), sample_rate_hz, &mut error);
+        if error != 0 {
+            return Err(match error {
+                1 => AudioMixerError::ReentrantCall,
+                2 => AudioMixerError::InvalidPreferredRate,
+                3 => AudioMixerError::InvalidFrame,
+                _ => self
+                    .failure
+                    .failure()
+                    .unwrap_or(AudioMixerError::CallbackRejected),
+            });
+        }
+        if result.disposition == 2 {
+            return Ok(MixerAudioFrame::Error);
+        }
+        if result.frame.is_null() {
+            return Err(AudioMixerError::InvalidFrame);
+        }
+        let frame = AudioFrame::from_native(result.frame);
+        Ok(if result.disposition == 1 {
+            MixerAudioFrame::Muted(frame)
+        } else {
+            MixerAudioFrame::Normal(frame)
+        })
+    }
     pub fn preferred_sample_rate(&self) -> Result<i32, AudioMixerError> {
         let mut valid = false;
         let value = ffi::mixer_source_get_rate(self.inner(), &mut valid);
@@ -203,18 +265,53 @@ impl AudioMixerSource {
 /// before the SDK mixer mutex. The default SDK calculator and limiter are used.
 pub struct AudioMixer {
     native: cxx::UniquePtr<ffi::NativeAudioMixer>,
+    failure: AudioMixerFailureObserver,
     _sequence: PhantomData<Rc<()>>,
 }
 impl AudioMixer {
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeAudioMixer> {
+        self.native
+    }
     pub fn stock() -> Result<Self, AudioMixerError> {
-        let native = ffi::audio_mixer_new();
+        let failure = AudioMixerFailureObserver::default();
+        let native = ffi::audio_mixer_new(Box::new(RustMixerModule(failure.clone())));
         if native.is_null() {
             return Err(AudioMixerError::CreationFailed);
         }
         Ok(Self {
             native,
+            failure,
             _sequence: PhantomData,
         })
+    }
+    /// Select a caller implementation without constructing a stock mixer.
+    pub fn from_provider(
+        provider: impl crate::AudioMixerProvider,
+    ) -> Result<Self, AudioMixerError> {
+        Self::from_boxed_provider(Box::new(provider))
+    }
+    pub(crate) fn from_boxed_provider(
+        provider: Box<dyn crate::AudioMixerProvider>,
+    ) -> Result<Self, AudioMixerError> {
+        let failure = AudioMixerFailureObserver::default();
+        let native = ffi::audio_mixer_from_provider(
+            Box::new(RustMixerModule(failure.clone())),
+            Box::new(crate::audio_mixer_provider::RustMixerProvider::new(
+                provider,
+                failure.clone(),
+            )),
+        );
+        if native.is_null() {
+            return Err(AudioMixerError::CreationFailed);
+        }
+        Ok(Self {
+            native,
+            failure,
+            _sequence: PhantomData,
+        })
+    }
+    pub fn failure_observer(&self) -> AudioMixerFailureObserver {
+        self.failure.clone()
     }
     pub fn add_source(&mut self, source: &AudioMixerSource) -> Result<bool, AudioMixerError> {
         let mut error = 0;
@@ -222,7 +319,11 @@ impl AudioMixer {
         if error == 0 {
             Ok(added)
         } else {
-            Err(AudioMixerError::ReentrantCall)
+            Err(if error == 1 {
+                AudioMixerError::ReentrantCall
+            } else {
+                AudioMixerError::CallbackRejected
+            })
         }
     }
     /// Returns false for an absent source without invoking the SDK's asserting
@@ -233,7 +334,11 @@ impl AudioMixer {
         if error == 0 {
             Ok(removed)
         } else {
-            Err(AudioMixerError::ReentrantCall)
+            Err(if error == 1 {
+                AudioMixerError::ReentrantCall
+            } else {
+                AudioMixerError::CallbackRejected
+            })
         }
     }
     pub fn mix(&mut self, channels: usize) -> Result<AudioFrame, AudioMixerError> {

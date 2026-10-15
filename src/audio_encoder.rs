@@ -23,7 +23,7 @@ pub enum AudioEncoderError {
     UnsafeClock,
     /// The selected pinned encoder has no native implementation of this control.
     UnsupportedControl,
-    /// ANA consuming-operation admission remains incomplete for this backend.
+    /// An ANA configuration or reached consumer cannot be safely admitted.
     UnsafeAdaptor,
 }
 impl std::fmt::Display for AudioEncoderError {
@@ -37,7 +37,7 @@ impl std::fmt::Display for AudioEncoderError {
                 "selected native audio encoder does not support this control"
             }
             Self::UnsafeAdaptor => {
-                "audio network adaptor consuming operations are not safely admitted"
+                "audio network adaptor configuration or consumer violates admission"
             }
         })
     }
@@ -139,6 +139,8 @@ impl AudioEncoder {
         match result.status {
             1 => return Err(AudioEncoderError::InvalidSamples),
             0 => {}
+            3 => return Err(AudioEncoderError::UnsafeAdaptor),
+            4 => return Err(AudioEncoderError::UnsafeClock),
             _ => return Err(AudioEncoderError::NativeInvariant),
         }
         Ok(crate::AudioEncoderOutput {
@@ -168,8 +170,23 @@ impl AudioEncoder {
             application == crate::AudioEncoderApplication::Speech,
         )
     }
+    /// Enable/replace actual native ANA using the supplied protobuf bytes.
+    /// Admission failure does not invoke replacement. A native false remains
+    /// false, not a fabricated capability result. Reset preserves ANA history;
+    /// disable/re-enable replaces controllers but retains the bitrate smoother.
+    pub fn enable_audio_network_adaptor(&self, config: &[u8]) -> Result<bool, AudioEncoderError> {
+        let mut error = 0;
+        let enabled = ffi::audio_encoder_enable_network_adaptor(self.native(), config, &mut error);
+        match error {
+            0 => Ok(enabled),
+            1 => Err(AudioEncoderError::InvalidControl),
+            2 => Err(AudioEncoderError::UnsafeClock),
+            3 => Err(AudioEncoderError::UnsupportedControl),
+            4 => Err(AudioEncoderError::UnsafeAdaptor),
+            _ => Err(AudioEncoderError::NativeInvariant),
+        }
+    }
     /// Delegate the native idempotent adaptor teardown.
-    /// Enabling an adaptor still requires a complete configuration admission proof.
     pub fn disable_audio_network_adaptor(&self) {
         ffi::audio_encoder_disable_network_adaptor(self.native());
     }
@@ -212,8 +229,11 @@ impl AudioEncoder {
             &update.to_native(),
         ))
     }
-    pub fn on_received_overhead(&self, bytes_per_packet: usize) {
-        ffi::audio_encoder_on_overhead(self.native(), bytes_per_packet);
+    pub fn on_received_overhead(&self, bytes_per_packet: usize) -> Result<(), AudioEncoderError> {
+        control_result(ffi::audio_encoder_on_overhead(
+            self.native(),
+            bytes_per_packet,
+        ))
     }
     /// Ordinary Opus requires a finite fraction in 0..=1 and a retaining
     /// nondecreasing clock whose complete range fits native timestamp subtraction.
@@ -225,6 +245,7 @@ impl AudioEncoder {
             0 => Ok(()),
             1 => Err(AudioEncoderError::InvalidControl),
             2 => Err(AudioEncoderError::UnsafeClock),
+            3 => Err(AudioEncoderError::UnsafeAdaptor),
             _ => Err(AudioEncoderError::NativeInvariant),
         }
     }
@@ -236,11 +257,22 @@ impl AudioEncoder {
     ) -> Result<(), AudioEncoderError> {
         Err(AudioEncoderError::UnsupportedControl)
     }
-    pub fn on_received_rtt(&self, rtt_ms: i32) {
-        ffi::audio_encoder_on_rtt(self.native(), rtt_ms);
+    pub fn on_received_rtt(&self, rtt_ms: i32) -> Result<(), AudioEncoderError> {
+        control_result(ffi::audio_encoder_on_rtt(self.native(), rtt_ms))
     }
-    pub fn set_receiver_frame_length_range(&self, minimum_ms: i32, maximum_ms: i32) {
-        ffi::audio_encoder_set_receiver_frame_length_range(self.native(), minimum_ms, maximum_ms);
+    /// Refuse the native ordering DCHECK in asserting profiles while ANA is
+    /// active. Nonasserting profiles retain native behavior; no adaptor rebuild
+    /// or silent teardown is substituted for the operation.
+    pub fn set_receiver_frame_length_range(
+        &self,
+        minimum_ms: i32,
+        maximum_ms: i32,
+    ) -> Result<(), AudioEncoderError> {
+        control_result(ffi::audio_encoder_set_receiver_frame_length_range(
+            self.native(),
+            minimum_ms,
+            maximum_ms,
+        ))
     }
     pub fn frame_length_range(&self) -> Option<crate::AudioEncoderFrameLengthRange> {
         let range = ffi::audio_encoder_frame_length_range(self.native());
@@ -349,7 +381,7 @@ mod adaptor_admission_tests {
             assert_eq!(check(&[0x0a, 3, 0xba, 1, 0]), 1); // Missing channel fields (tag 23).
             assert_eq!(check(&[0x0a, 3, 0xb2, 1, 0]), 1); // Missing legacy frame fields (tag 22).
             let duplicate = [dtx.as_slice(), dtx.as_slice()].concat();
-            assert_eq!(check(&duplicate), 1); // Both controllers write the DTX slot.
+            assert_eq!(check(&duplicate), 0); // Writer occupancy is a reached decision check, not construction.
             // V2's absent optional fields natively mean zero/false.
             assert_eq!(check(&[0x0a, 3, 0xda, 1, 0]), 0); // V2 tag 27.
             // Ignored/unknown root fields are not rewritten or rejected.
@@ -550,13 +582,25 @@ mod adaptor_admission_tests {
         let positive = probe(1, i32::MIN, &[step(Some(6000), Some(8), None, true, false)]);
         assert_eq!(positive.status, 0);
         assert_eq!(positive.bitrates, [2400]);
+        let asserting = crate::AudioCodecInfo::new(0, 0, 0).is_err();
         let selected_min = probe(i32::MIN, 0, &[step(Some(6000), Some(8), None, true, false)]);
-        assert_eq!(selected_min.status, 3);
-        assert!(selected_min.bitrates.is_empty());
+        let rate = 8_usize
+            .wrapping_add_signed(i32::MIN as isize)
+            .wrapping_mul(8)
+            .wrapping_mul(1000)
+            / 20;
+        let difference = 6000_i64 - i64::from(rate as i32);
+        if asserting || i32::try_from(difference).is_err() {
+            assert_eq!(selected_min.status, 3);
+            assert!(selected_min.bitrates.is_empty());
+        } else {
+            assert_eq!(selected_min.status, 0);
+            assert_eq!(selected_min.bitrates, [difference.max(0) as i32]);
+        }
         let zero_overhead = probe(0, 0, &[step(None, Some(0), None, false, false)]);
-        assert_eq!(zero_overhead.status, 1);
+        assert_eq!(zero_overhead.status, if asserting { 1 } else { 0 });
         let occupied = probe(0, 0, &[step(None, None, None, false, true)]);
-        assert_eq!(occupied.status, 2);
+        assert_eq!(occupied.status, if asserting { 2 } else { 0 });
         let consumed_zero_frame = probe(0, 0, &[step(Some(8000), Some(10), Some(0), false, false)]);
         assert_eq!(consumed_zero_frame.status, 3);
         let underflow = probe(
@@ -579,8 +623,12 @@ mod adaptor_admission_tests {
         use crate::{Clock, ClockProvider, ClockTimeBounds, FiniteTimestamp, NtpTime, Timestamp};
         struct Frozen(FiniteTimestamp);
         impl ClockProvider for Frozen {
-            fn current_time(&self) -> FiniteTimestamp { self.0 }
-            fn convert_timestamp_to_ntp_time(&self, _: Timestamp) -> NtpTime { NtpTime::from_raw(0) }
+            fn current_time(&self) -> FiniteTimestamp {
+                self.0
+            }
+            fn convert_timestamp_to_ntp_time(&self, _: Timestamp) -> NtpTime {
+                NtpTime::from_raw(0)
+            }
         }
         let epoch = FiniteTimestamp::from_microseconds(-1_230_000).unwrap();
         let bounds = ClockTimeBounds::new(epoch, epoch).unwrap();
@@ -588,9 +636,16 @@ mod adaptor_admission_tests {
         let environment = Environment::builder().clock_handle(&clock).build().unwrap();
         assert!(!environment.clock_is_monotonic());
         let encoder = encoder_in(&environment, "opus", 48000, 2);
-        encoder.on_received_uplink_packet_loss_fraction(0.25).unwrap();
-        encoder.on_received_uplink_packet_loss_fraction(0.5).unwrap();
-        assert_eq!(clock.current_time().microseconds().unwrap(), epoch.microseconds());
+        encoder
+            .on_received_uplink_packet_loss_fraction(0.25)
+            .unwrap();
+        encoder
+            .on_received_uplink_packet_loss_fraction(0.5)
+            .unwrap();
+        assert_eq!(
+            clock.current_time().microseconds().unwrap(),
+            epoch.microseconds()
+        );
     }
 
     #[test]
@@ -864,7 +919,9 @@ mod adaptor_admission_tests {
         let v2 = [0x0a, 3, 0xda, 1, 0];
         let availability = ffi::audio_encoder_check_network_adaptor_config(encoder.native(), &v2);
         assert!(matches!(availability, 0 | 3));
-        encoder.set_receiver_frame_length_range(i32::MAX, i32::MIN);
+        encoder
+            .set_receiver_frame_length_range(i32::MAX, i32::MIN)
+            .unwrap();
         assert_eq!(
             ffi::audio_encoder_check_network_adaptor_config(encoder.native(), &v2),
             if availability == 3 { 3 } else { 1 }

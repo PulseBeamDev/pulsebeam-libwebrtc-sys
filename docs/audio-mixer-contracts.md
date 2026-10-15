@@ -37,6 +37,40 @@ registered with multiple mixers. A thread-local source scope rejects recursive
 callbacks before mutex acquisition. Nested mixer operations during native mixing
 are rejected before the SDK mixer mutex.
 
-This milestone is the standalone stock mixer and source callback contract. It
-does not yet provide peer-factory/ProductionSession mixer selection or an owning
-caller implementation of the entire mixer interface.
+## Factory and session installation
+
+PeerConnectionFactoryBuilder::audio_mixer consumes the owning mixer and its
+registered sources. ProductionSessionBuilder::audio_mixer_sources constructs and
+installs a mixer from Send source products inside the actor without accepting a
+sequence-bound standalone handle. The native installed adapter delegates to the
+exact selected SDK mixer and retains its shared source/observer state through
+final native release. It does not create a replacement engine or a second mixer.
+
+AudioMixer::failure_observer, factory and session accessors retain the first
+native mix failure independently of source observers. Direct SDK invocation gets
+a mix scope too, preserving preferred-rate guards and callback failure tracking.
+Native Mix is void: an installed failure can only deliver a safe muted frame and
+observer notification with this adapter. That is an explicit publication-channel
+limitation, not fail-stop installed custom PCM or successful custom output.
+AudioMixer::from_provider supplies an owning caller implementation of the entire
+mixer interface.
+
+## Caller mixer implementation
+
+AudioMixerProvider supplies the entire selected native mixer, not a callback on a
+stock mixer. Its native registration tokens retain exact registration-epoch
+identity across clones. A removed source cannot be called through an old token,
+even if another source later occupies the same address. Add/remove info loans
+allow current SSRC/preferred-rate queries; the mix loan additionally drives the
+real registered SDK sources. No raw source or callable loan escapes publicly.
+Sources can be added/removed on other threads, serialized against the entire mix
+callback. Returning native false from AddSource is distinct from Err/panic.
+RemoveSource retires raw-source access even if user removal fails. A provider
+keeps tokens, not SDK source ownership; the SDK owns its receive streams.
+
+ProductionSessionBuilder::audio_mixer_provider takes a Send provider and builds
+the sequence-bound native product inside the actor. This selector and
+audio_mixer_sources are last-choice-wins. Valid caller frames preserve actual
+native prefix/metadata/mute; failed or malformed standalone mixes return errors
+without manufacturing audio. Installed void Mix still has the publication gap
+above; safe muted failure-drain metadata is not a successful custom result.

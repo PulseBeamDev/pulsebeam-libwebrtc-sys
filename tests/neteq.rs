@@ -152,8 +152,10 @@ fn same_format_payload_switches_recreate_destroyed_instances() {
 fn remove_all_refuses_queued_frames_without_implicit_flush_or_codec_mutation() {
     let mut engine = stock();
     assert!(engine.register_payload_type(96, &pcmu()));
+    // PCMU 0xff decodes to silence. Use nonzero audio to prove that the
+    // rejected removal retains the queued decoder data, not just a zero frame.
     assert_eq!(
-        engine.insert_packet(&header(96, 1, 1000), &[0xff; 160]),
+        engine.insert_packet(&header(96, 1, 1000), &[0; 160]),
         NetEqReturnCode::OK
     );
     let before = engine.operations_and_state();

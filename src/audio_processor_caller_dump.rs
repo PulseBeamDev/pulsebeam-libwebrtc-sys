@@ -225,7 +225,7 @@ pub(crate) struct RustCallerApmDump {
     provider: Option<Box<dyn AudioProcessingDumpProvider>>,
     failure: AudioProcessingDumpFailureObserver,
 }
-fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
+pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
     // Also contain a pathological panic-payload destructor. Only the nested
     // payload is leaked if dropping the original payload itself panics.
     if let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {

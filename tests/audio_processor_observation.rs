@@ -9,7 +9,8 @@ fn stream() -> AudioProcessingStream {
 #[test]
 fn statistics_preserve_absence_and_real_echo_reporting() {
     let environment = Environment::builder().build().unwrap();
-    let mut p = AudioProcessor::builtin(&environment, AudioProcessingConfig::default()).unwrap();
+    let mut p =
+        AudioProcessingModule::builtin(&environment, AudioProcessingConfig::default()).unwrap();
     assert_eq!(p.statistics(), AudioProcessingStatistics::default());
     assert_eq!(
         p.statistics_for_remote_tracks(false),
@@ -47,9 +48,11 @@ fn statistics_preserve_absence_and_real_echo_reporting() {
 #[test]
 fn linear_output_uses_native_rows_and_preserves_caller_tails() {
     let environment = Environment::builder().build().unwrap();
-    let mut p =
-        AudioProcessor::builtin_with_linear_echo(&environment, &AudioProcessorConfig::default())
-            .unwrap();
+    let mut p = AudioProcessingModule::builtin_with_linear_echo(
+        &environment,
+        &AudioProcessorConfig::default(),
+    )
+    .unwrap();
     let mut out = [[9.0; 160]; 2];
     assert!(matches!(
         p.linear_aec_output(&mut out),
@@ -106,7 +109,7 @@ fn linear_output_uses_native_rows_and_preserves_caller_tails() {
     ));
     assert_eq!(out, before);
     let mut ordinary =
-        AudioProcessor::builtin_with_config(&environment, &AudioProcessorConfig::default())
+        AudioProcessingModule::builtin_with_config(&environment, &AudioProcessorConfig::default())
             .unwrap();
     c.echo_canceller.enabled = true;
     c.echo_canceller.export_linear_aec_output = true;

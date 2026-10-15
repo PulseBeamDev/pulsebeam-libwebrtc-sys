@@ -37,12 +37,13 @@ fn worker() -> TaskQueue {
         .create_queue("explicit-aec-worker", QueuePriority::Normal)
         .unwrap()
 }
-fn processor(preamp: bool) -> AudioProcessor {
+fn processor(preamp: bool) -> AudioProcessingModule {
     let mut config = AudioProcessorConfig::default();
     config.pre_amplifier.enabled = preamp;
-    AudioProcessor::builtin_with_config(&Environment::builder().build().unwrap(), &config).unwrap()
+    AudioProcessingModule::builtin_with_config(&Environment::builder().build().unwrap(), &config)
+        .unwrap()
 }
-fn capture(p: &mut AudioProcessor) {
+fn capture(p: &mut AudioProcessingModule) {
     let mut pcm = vec![1000; 160];
     pcm.extend([777; 9]);
     assert_eq!(

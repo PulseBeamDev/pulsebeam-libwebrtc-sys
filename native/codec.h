@@ -761,6 +761,8 @@ bool audio_encoder_set_dtx(const NativeAudioEncoder &encoder,
                            bool enable) noexcept;
 bool audio_encoder_set_application(const NativeAudioEncoder &encoder,
                                    bool speech) noexcept;
+bool audio_encoder_enable_network_adaptor(const NativeAudioEncoder &encoder,
+    rust::Slice<const std::uint8_t> config, std::uint8_t &error) noexcept;
 void audio_encoder_disable_network_adaptor(
     const NativeAudioEncoder &encoder) noexcept;
 void audio_encoder_set_max_playback_rate(const NativeAudioEncoder &encoder,
@@ -775,13 +777,13 @@ bool audio_encoder_on_bandwidth(const NativeAudioEncoder &encoder,
 bool audio_encoder_on_allocation(
     const NativeAudioEncoder &encoder,
     const FfiBitrateAllocationUpdate &update) noexcept;
-void audio_encoder_on_overhead(const NativeAudioEncoder &encoder,
+bool audio_encoder_on_overhead(const NativeAudioEncoder &encoder,
                                std::size_t overhead) noexcept;
 std::uint8_t audio_encoder_on_packet_loss(const NativeAudioEncoder &encoder,
                                           float fraction) noexcept;
-void audio_encoder_on_rtt(const NativeAudioEncoder &encoder,
+bool audio_encoder_on_rtt(const NativeAudioEncoder &encoder,
                           std::int32_t rtt) noexcept;
-void audio_encoder_set_receiver_frame_length_range(
+bool audio_encoder_set_receiver_frame_length_range(
     const NativeAudioEncoder &encoder, std::int32_t minimum,
     std::int32_t maximum) noexcept;
 rust::Vec<FfiAudioCodecSpec>

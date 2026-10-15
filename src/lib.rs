@@ -4,19 +4,125 @@ mod async_dns;
 mod audio;
 mod audio_processing;
 mod audio_processor_config;
-pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplifier, ApmCaptureLevelAdjustment, ApmAnalogMicGainEmulation, ApmHighPassFilter, ApmEchoCanceller, ApmNoiseSuppression, ApmTransientSuppression, ApmGainController1, ApmAnalogGainController, ApmClippingPredictor, ApmGainController2, ApmInputVolumeController, ApmAdaptiveDigital, ApmFixedDigital, ApmDownmixMethod, ApmNoiseSuppressionLevel, ApmGainController1Mode, ApmClippingPredictorMode};
+pub use audio_processor_config::{
+    ApmAdaptiveDigital, ApmAnalogGainController, ApmAnalogMicGainEmulation,
+    ApmCaptureLevelAdjustment, ApmClippingPredictor, ApmClippingPredictorMode, ApmDownmixMethod,
+    ApmEchoCanceller, ApmFixedDigital, ApmGainController1, ApmGainController1Mode,
+    ApmGainController2, ApmHighPassFilter, ApmInputVolumeController, ApmNoiseSuppression,
+    ApmNoiseSuppressionLevel, ApmPipeline, ApmPreAmplifier, ApmTransientSuppression,
+    AudioProcessorConfig,
+};
+mod audio_echo_control;
+mod audio_echo_factory_provider;
 mod audio_processor;
-mod audio_processor_runtime;
-mod audio_processor_dump;
 mod audio_processor_caller_dump;
-pub use audio_processor_caller_dump::{AudioProcessingDump, AudioProcessingDumpProvider, AudioProcessingDumpEvent, AudioProcessingDumpSamples, AudioProcessingDumpConfig, AudioProcessingDumpState, AudioProcessingDumpOperation, AudioProcessingDumpFailure, AudioProcessingDumpFailureKind, AudioProcessingDumpFailureObserver};
-use audio_processor_caller_dump::{RustCallerApmDump, apm_dump_dispose, apm_dump_initialize, apm_dump_audio, apm_dump_state, apm_dump_capture, apm_dump_runtime, apm_dump_config};
+mod audio_processor_custom;
+mod audio_processor_dump;
+mod audio_processor_runtime;
+pub use audio_echo_factory_provider::{EchoControlCreationContext, EchoControlFactoryProvider};
+use audio_echo_factory_provider::{
+    RustEchoEnvironment, apm_echo_environment_native, apm_echo_factory_create,
+    apm_echo_factory_invalid,
+};
+mod audio_echo_dependencies;
+pub use audio_echo_control::{
+    EchoControl, EchoControlFactory, EchoControlMetrics, EchoControlSampleRate,
+};
+pub use audio_echo_dependencies::{EchoControlDependencies, NeuralResidualEchoEstimatorLoan};
+mod audio_echo_config;
+mod audio_processor_neural;
+pub use audio_echo_config::{
+    Aec3AlignmentMixing, Aec3Buffering, Aec3CoarseFilter, Aec3ComfortNoise, Aec3Delay,
+    Aec3DelaySelectionThresholds, Aec3DominantNearendDetection, Aec3EchoAudibility, Aec3EchoModel,
+    Aec3EchoRemovalControl, Aec3EpStrength, Aec3Erle, Aec3Filter, Aec3HighBandsSuppression,
+    Aec3HighFrequencySuppression, Aec3MaskingThresholds, Aec3MultiChannel, Aec3RefinedFilter,
+    Aec3RenderLevels, Aec3SubbandNearendDetection, Aec3SubbandRegion, Aec3Suppressor, Aec3Tuning,
+    EchoCanceller3Config,
+};
+pub use audio_processor_neural::{
+    AudioProcessingRows, NeuralEchoEstimate, NeuralEchoEstimateInput, NeuralEchoRenderBlock,
+    NeuralResidualEchoEstimator, NeuralResidualEchoEstimatorProvider,
+};
+use audio_processor_neural::{
+    apm_neural_adjust, apm_neural_adjust_invalid, apm_neural_estimate, apm_neural_invalid,
+    apm_neural_reset,
+};
+mod audio_device_callbacks;
+pub use audio_device_callbacks::{
+    AudioDeviceCallbackFailure, AudioDeviceCallbackFailureKind, AudioDeviceCallbackFailureObserver,
+    AudioDeviceCallbackOperation, AudioDeviceCapture, AudioDeviceCaptureResult,
+    AudioDeviceObserver, AudioDeviceObserverProvider, AudioDevicePcmSpec, AudioDevicePlayoutResult,
+    AudioDeviceRenderTiming, AudioDeviceSpeechActivity, AudioTransport, AudioTransportProvider,
+};
+use audio_device_callbacks::{
+    RustAudioDeviceCallbacks, audio_device_callbacks_dispose, audio_device_callbacks_invalid,
+    audio_device_observed, audio_device_recorded, audio_device_render,
+};
+#[cfg(all(feature = "native", target_os = "linux"))]
+mod audio_device;
+#[cfg(all(feature = "native", target_os = "linux"))]
+pub use audio_device::{
+    AudioDeviceCreationConfig, AudioDeviceCreationMethod, AudioDeviceError, AudioDeviceLayer,
+    AudioDeviceModule, AudioDeviceName, AudioDeviceStatistics, InstalledAudioDevice,
+    PlatformAudioProcessingState, PlatformAudioProcessingTopology,
+};
+use audio_processor::RustInstalledApmEnvironment;
+pub use audio_processor::{
+    AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingModule,
+    AudioProcessingStatistics, AudioProcessingStatus, AudioProcessingStream, AudioProcessorError,
+};
+pub use audio_processor_caller_dump::{
+    AudioProcessingDump, AudioProcessingDumpConfig, AudioProcessingDumpEvent,
+    AudioProcessingDumpFailure, AudioProcessingDumpFailureKind, AudioProcessingDumpFailureObserver,
+    AudioProcessingDumpOperation, AudioProcessingDumpProvider, AudioProcessingDumpSamples,
+    AudioProcessingDumpState,
+};
+use audio_processor_caller_dump::{
+    RustCallerApmDump, apm_dump_audio, apm_dump_capture, apm_dump_config, apm_dump_dispose,
+    apm_dump_initialize, apm_dump_runtime, apm_dump_state,
+};
+pub use audio_processor_custom::{
+    AudioProcessingBuffer, AudioProcessingBufferMut, AudioProcessingCustomAnalyzer,
+    AudioProcessingCustomAnalyzerProvider, AudioProcessingCustomFailure,
+    AudioProcessingCustomFailureKind, AudioProcessingCustomFailureObserver,
+    AudioProcessingCustomOperation, AudioProcessingCustomProcessor,
+    AudioProcessingCustomProcessorProvider, AudioProcessingEchoDetector,
+    AudioProcessingEchoDetectorMetrics, AudioProcessingEchoDetectorProvider,
+    BuiltinAudioProcessorBuilder, CustomAudioProcessorBuilder,
+};
+use audio_processor_custom::{
+    RustApmCustomModule, apm_custom_analyze, apm_custom_description, apm_custom_dispose,
+    apm_custom_initialize, apm_custom_process, apm_custom_runtime, apm_custom_unqualified_render,
+    apm_echo_analyze, apm_echo_initialize, apm_echo_metrics,
+};
 use audio_processor_dump::{RustApmDumpWorker, apm_dump_worker_queue};
 pub use audio_processor_runtime::{AudioPlayoutDeviceInfo, AudioProcessingRuntimeSetting};
-pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingStatistics};
+mod audio_echo_provider;
+pub use audio_echo_provider::{
+    EchoControlAudio, EchoControlAudioMut, EchoControlLinearOutput, EchoControlProvider,
+};
+use audio_echo_provider::{
+    apm_echo_control_active, apm_echo_control_analyze, apm_echo_control_delay,
+    apm_echo_control_invalid, apm_echo_control_metrics, apm_echo_control_process,
+    apm_echo_control_usage,
+};
 mod audio_mixer;
-use audio_mixer::{RustMixerSource, mixer_source_frame, mixer_source_ssrc, mixer_source_rate, mixer_source_invalid};
-pub use audio_mixer::{AudioMixer, AudioMixerSource, AudioMixerSourceProvider, AudioMixerError, AudioMixerFailureObserver, MixerAudioFrame};
+mod audio_mixer_provider;
+pub use audio_mixer::{
+    AudioMixer, AudioMixerError, AudioMixerFailureObserver, AudioMixerSource,
+    AudioMixerSourceProvider, MixerAudioFrame,
+};
+use audio_mixer::{RustMixerModule, mixer_module_failed};
+use audio_mixer::{
+    RustMixerSource, mixer_source_frame, mixer_source_invalid, mixer_source_rate, mixer_source_ssrc,
+};
+pub use audio_mixer_provider::{
+    AudioMixerInputs, AudioMixerProvider, AudioMixerSourceInfo, AudioMixerSourceToken,
+};
+use audio_mixer_provider::{
+    RustMixerProvider, mixer_provider_add, mixer_provider_invalid, mixer_provider_mix,
+    mixer_provider_remove,
+};
 mod certificate;
 mod certificate_generator;
 pub use async_dns::{
@@ -140,8 +246,8 @@ mod neteq_sdk_safety;
 mod neteq_values;
 pub(crate) use neteq_safety::receive_time_bits_are_safe as neteq_receive_time_safe;
 mod neteq;
-mod neteq_factory;
 mod neteq_callback_scope;
+mod neteq_factory;
 mod neteq_provider;
 pub use neteq::{NetEq, NetEqError};
 pub use neteq_factory::{
@@ -1790,6 +1896,7 @@ mod ffi {
     }
 
     struct FfiApmStatistics {
+        error: u8,
         present: u16,
         voice_detected: bool,
         echo_return_loss: f64,
@@ -1883,8 +1990,11 @@ mod ffi {
     }
 
     struct FfiAudioProcessingState {
+        binding_error: u8,
         has_module: bool,
         echo_software: i8,
+        echo_reported_software: i8,
+        echo_reported_effective: u8,
         echo_platform_available: bool,
         echo_platform: i8,
         echo_effective: u8,
@@ -2590,6 +2700,262 @@ mod ffi {
         message: String,
     }
 
+    struct FfiAudioDevicePcm {
+        frames: usize,
+        bytes_per_frame: usize,
+        channels: usize,
+        rate: i64,
+        bits: i32,
+        delay_ms: u32,
+        clock_drift: i32,
+        mic_level: u32,
+        key_pressed: bool,
+        capture_time_present: bool,
+        capture_time_ns: i64,
+    }
+    struct FfiAudioDeviceCallbackResult {
+        failed: bool,
+        status: i32,
+        frames: usize,
+        mic_level: u32,
+        elapsed_ms: i64,
+        ntp_ms: i64,
+    }
+    #[derive(Default)]
+    struct FfiEchoCanceller3Config {
+        buffering_excess_render_detection_interval_blocks: usize,
+        buffering_max_allowed_excess_render_blocks: usize,
+        delay_default_delay: usize,
+        delay_down_sampling_factor: usize,
+        delay_num_filters: usize,
+        delay_delay_headroom_samples: usize,
+        delay_hysteresis_limit_blocks: usize,
+        delay_fixed_capture_delay_samples: usize,
+        delay_delay_estimate_smoothing: f32,
+        delay_delay_estimate_smoothing_delay_found: f32,
+        delay_delay_candidate_detection_threshold: f32,
+        delay_delay_selection_thresholds_initial: i32,
+        delay_delay_selection_thresholds_converged: i32,
+        delay_use_external_delay_estimator: bool,
+        delay_log_warning_on_delay_changes: bool,
+        delay_render_alignment_mixing_downmix: bool,
+        delay_render_alignment_mixing_adaptive_selection: bool,
+        delay_render_alignment_mixing_activity_power_threshold: f32,
+        delay_render_alignment_mixing_prefer_first_two_channels: bool,
+        delay_capture_alignment_mixing_downmix: bool,
+        delay_capture_alignment_mixing_adaptive_selection: bool,
+        delay_capture_alignment_mixing_activity_power_threshold: f32,
+        delay_capture_alignment_mixing_prefer_first_two_channels: bool,
+        delay_detect_pre_echo: bool,
+        filter_refined_length_blocks: usize,
+        filter_refined_leakage_converged: f32,
+        filter_refined_leakage_diverged: f32,
+        filter_refined_error_floor: f32,
+        filter_refined_error_ceil: f32,
+        filter_refined_noise_gate: f32,
+        filter_coarse_length_blocks: usize,
+        filter_coarse_rate: f32,
+        filter_coarse_noise_gate: f32,
+        filter_refined_initial_length_blocks: usize,
+        filter_refined_initial_leakage_converged: f32,
+        filter_refined_initial_leakage_diverged: f32,
+        filter_refined_initial_error_floor: f32,
+        filter_refined_initial_error_ceil: f32,
+        filter_refined_initial_noise_gate: f32,
+        filter_coarse_initial_length_blocks: usize,
+        filter_coarse_initial_rate: f32,
+        filter_coarse_initial_noise_gate: f32,
+        filter_config_change_duration_blocks: usize,
+        filter_initial_state_seconds: f32,
+        filter_coarse_reset_hangover_blocks: i32,
+        filter_conservative_initial_phase: bool,
+        filter_enable_coarse_filter_output_usage: bool,
+        filter_use_linear_filter: bool,
+        filter_high_pass_filter_echo_reference: bool,
+        filter_export_linear_aec_output: bool,
+        erle_min: f32,
+        erle_max_l: f32,
+        erle_max_h: f32,
+        erle_onset_detection: bool,
+        erle_num_sections: usize,
+        erle_clamp_quality_estimate_to_zero: bool,
+        erle_clamp_quality_estimate_to_one: bool,
+        ep_strength_default_gain: f32,
+        ep_strength_default_len: f32,
+        ep_strength_nearend_len: f32,
+        ep_strength_echo_can_saturate: bool,
+        ep_strength_bounded_erl: bool,
+        ep_strength_erle_onset_compensation_in_dominant_nearend: bool,
+        ep_strength_use_conservative_tail_frequency_response: bool,
+        echo_audibility_low_render_limit: f32,
+        echo_audibility_normal_render_limit: f32,
+        echo_audibility_floor_power: f32,
+        echo_audibility_audibility_threshold_lf: f32,
+        echo_audibility_audibility_threshold_mf: f32,
+        echo_audibility_audibility_threshold_hf: f32,
+        echo_audibility_use_stationarity_properties: bool,
+        echo_audibility_use_stationarity_properties_at_init: bool,
+        render_levels_active_render_limit: f32,
+        render_levels_poor_excitation_render_limit: f32,
+        render_levels_poor_excitation_render_limit_ds8: f32,
+        render_levels_render_power_gain_db: f32,
+        echo_removal_control_has_clock_drift: bool,
+        echo_removal_control_linear_and_stable_echo_path: bool,
+        echo_model_noise_floor_hold: usize,
+        echo_model_min_noise_floor_power: f32,
+        echo_model_stationary_gate_slope: f32,
+        echo_model_noise_gate_power: f32,
+        echo_model_noise_gate_slope: f32,
+        echo_model_render_pre_window_size: usize,
+        echo_model_render_post_window_size: usize,
+        echo_model_model_reverb_in_nonlinear_mode: bool,
+        comfort_noise_noise_floor_dbfs: f32,
+        suppressor_nearend_average_blocks: usize,
+        suppressor_normal_tuning_mask_lf_enr_transparent: f32,
+        suppressor_normal_tuning_mask_lf_enr_suppress: f32,
+        suppressor_normal_tuning_mask_lf_emr_transparent: f32,
+        suppressor_normal_tuning_mask_hf_enr_transparent: f32,
+        suppressor_normal_tuning_mask_hf_enr_suppress: f32,
+        suppressor_normal_tuning_mask_hf_emr_transparent: f32,
+        suppressor_normal_tuning_max_inc_factor: f32,
+        suppressor_normal_tuning_max_dec_factor_lf: f32,
+        suppressor_nearend_tuning_mask_lf_enr_transparent: f32,
+        suppressor_nearend_tuning_mask_lf_enr_suppress: f32,
+        suppressor_nearend_tuning_mask_lf_emr_transparent: f32,
+        suppressor_nearend_tuning_mask_hf_enr_transparent: f32,
+        suppressor_nearend_tuning_mask_hf_enr_suppress: f32,
+        suppressor_nearend_tuning_mask_hf_emr_transparent: f32,
+        suppressor_nearend_tuning_max_inc_factor: f32,
+        suppressor_nearend_tuning_max_dec_factor_lf: f32,
+        suppressor_lf_smoothing_during_initial_phase: bool,
+        suppressor_last_permanent_lf_smoothing_band: i32,
+        suppressor_last_lf_smoothing_band: i32,
+        suppressor_last_lf_band: i32,
+        suppressor_first_hf_band: i32,
+        suppressor_dominant_nearend_detection_enr_threshold: f32,
+        suppressor_dominant_nearend_detection_enr_exit_threshold: f32,
+        suppressor_dominant_nearend_detection_snr_threshold: f32,
+        suppressor_dominant_nearend_detection_hold_duration: i32,
+        suppressor_dominant_nearend_detection_trigger_threshold: i32,
+        suppressor_dominant_nearend_detection_use_during_initial_phase: bool,
+        suppressor_dominant_nearend_detection_use_unbounded_echo_spectrum: bool,
+        suppressor_subband_nearend_detection_nearend_average_blocks: usize,
+        suppressor_subband_nearend_detection_subband1_low: usize,
+        suppressor_subband_nearend_detection_subband1_high: usize,
+        suppressor_subband_nearend_detection_subband2_low: usize,
+        suppressor_subband_nearend_detection_subband2_high: usize,
+        suppressor_subband_nearend_detection_nearend_threshold: f32,
+        suppressor_subband_nearend_detection_snr_threshold: f32,
+        suppressor_use_subband_nearend_detection: bool,
+        suppressor_high_bands_suppression_enr_threshold: f32,
+        suppressor_high_bands_suppression_max_gain_during_echo: f32,
+        suppressor_high_bands_suppression_anti_howling_activation_threshold: f32,
+        suppressor_high_bands_suppression_anti_howling_gain: f32,
+        suppressor_high_frequency_suppression_limiting_gain_band: i32,
+        suppressor_high_frequency_suppression_bands_in_limiting_gain: i32,
+        suppressor_floor_first_increase: f32,
+        suppressor_conservative_hf_suppression: bool,
+        multi_channel_detect_stereo_content: bool,
+        multi_channel_stereo_detection_threshold: f32,
+        multi_channel_stereo_detection_timeout_threshold_seconds: i32,
+        multi_channel_stereo_detection_hysteresis_seconds: f32,
+    }
+    struct FfiNeuralEchoInput {
+        render_bands: usize,
+        render_channels: usize,
+        render: Vec<f32>,
+        microphone: Vec<f32>,
+        linear_error: Vec<f32>,
+        linear_echo_spectrum: Vec<f32>,
+        microphone_spectrum: Vec<f32>,
+        linear_error_spectrum: Vec<f32>,
+        dominant_nearend: bool,
+        conservative_channels: usize,
+        unbounded_channels: usize,
+    }
+    struct FfiNeuralEchoResult {
+        failed: bool,
+        conservative: Vec<f32>,
+        unbounded: Vec<f32>,
+    }
+    struct FfiEchoAudioShape {
+        rate: i32,
+        channels: usize,
+        frames: usize,
+        bands: usize,
+        band_frames: usize,
+        split_ready: bool,
+    }
+    struct FfiEchoControlAudio {
+        error: u8,
+        samples: Vec<f32>,
+        linear: Vec<f32>,
+    }
+    struct FfiEchoControlMetrics {
+        error: u8,
+        echo_return_loss: f64,
+        echo_return_loss_enhancement: f64,
+        delay_ms: i32,
+    }
+    struct FfiAec3Selection {
+        mono_present: bool,
+        mono: FfiEchoCanceller3Config,
+        multi_present: bool,
+        multi: FfiEchoCanceller3Config,
+    }
+    struct FfiNativeAudioDeviceCreation {
+        layer: u8,
+        bypass: bool,
+        helper: bool,
+    }
+    struct FfiAudioDeviceResult {
+        status: i32,
+        int_value: u32,
+        bool_value: bool,
+    }
+    struct FfiAudioDeviceName {
+        status: i32,
+        name: Vec<u8>,
+        guid: Vec<u8>,
+    }
+    struct FfiAudioDeviceStatistics {
+        present: bool,
+        synthesized_samples_duration_s: f64,
+        synthesized_samples_events: u64,
+        total_samples_duration_s: f64,
+        total_playout_delay_s: f64,
+        total_samples_count: u64,
+        dropped_samples_duration_s: f64,
+        dropped_samples_events: u64,
+        total_capture_samples_duration_s: f64,
+        total_capture_delay_s: f64,
+        total_capture_samples_count: u64,
+    }
+    struct FfiAudioDevicePlatformState {
+        topology: i32,
+        echo_cancellation_available: bool,
+        noise_suppression_available: bool,
+        auto_gain_control_available: bool,
+        echo_cancellation_requested: u8,
+        noise_suppression_requested: u8,
+        auto_gain_control_requested: u8,
+        echo_cancellation_active: u8,
+        noise_suppression_active: u8,
+        auto_gain_control_active: u8,
+        voice_processing_enabled_requested: u8,
+        voice_processing_bypassed_requested: u8,
+        voice_processing_agc_enabled_requested: u8,
+        voice_processing_enabled_active: u8,
+        voice_processing_bypassed_active: u8,
+        voice_processing_agc_enabled_active: u8,
+    }
+    struct FfiApmEchoDetectorMetrics {
+        failed: bool,
+        likelihood_present: bool,
+        likelihood: f64,
+        recent_max_present: bool,
+        recent_max: f64,
+    }
     struct FfiApmDumpConfig {
         aec_enabled: bool,
         aec_delay_agnostic_enabled: bool,
@@ -2610,11 +2976,154 @@ mod ffi {
         api_config_string: Vec<u8>,
     }
     extern "Rust" {
+        type RustMixerProvider;
+        fn mixer_provider_add(
+            provider: &RustMixerProvider,
+            token: UniquePtr<NativeMixerSourceToken>,
+            inputs: &NativeMixerInputs,
+            failed: &mut bool,
+        ) -> bool;
+        fn mixer_provider_remove(
+            provider: &RustMixerProvider,
+            token: UniquePtr<NativeMixerSourceToken>,
+            inputs: &NativeMixerInputs,
+        ) -> bool;
+        fn mixer_provider_mix(
+            provider: &RustMixerProvider,
+            channels: usize,
+            inputs: &NativeMixerInputs,
+        ) -> FfiMixerFrame;
+        fn mixer_provider_invalid(provider: &RustMixerProvider);
+        type RustMixerModule;
+        fn mixer_module_failed(module: &RustMixerModule, error: u8);
+        type RustAudioDeviceCallbacks;
+        fn audio_device_callbacks_dispose(callbacks: &mut RustAudioDeviceCallbacks);
+        fn audio_device_callbacks_invalid(callbacks: &RustAudioDeviceCallbacks, operation: u8);
+        fn audio_device_recorded(
+            callbacks: &RustAudioDeviceCallbacks,
+            pcm: FfiAudioDevicePcm,
+            data: &[u8],
+        ) -> FfiAudioDeviceCallbackResult;
+        fn audio_device_render(
+            callbacks: &RustAudioDeviceCallbacks,
+            pcm: FfiAudioDevicePcm,
+            pull: bool,
+            data: &mut [u8],
+        ) -> FfiAudioDeviceCallbackResult;
+        fn audio_device_observed(callbacks: &RustAudioDeviceCallbacks, speech: bool, event: i32);
+        type RustInstalledApmEnvironment;
+        type RustApmCustomModule;
+        type RustEchoEnvironment;
+        fn apm_echo_factory_create(
+            module: &RustApmCustomModule,
+            environment: UniquePtr<NativeEnvironment>,
+            retention: &RustEchoEnvironment,
+            context: &NativeEchoCreationContext,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            neural_overload: bool,
+        ) -> UniquePtr<NativeEchoControl>;
+        fn apm_echo_factory_invalid(module: &RustApmCustomModule);
+        fn apm_echo_environment_native(
+            environment: &RustEchoEnvironment,
+        ) -> UniquePtr<NativeEnvironment>;
+        fn apm_echo_control_analyze(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            audio: &NativeEchoAudio,
+            render: bool,
+        ) -> bool;
+        fn apm_echo_control_process(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            audio: Pin<&mut NativeEchoAudio>,
+            linear: Pin<&mut NativeEchoLinearOutput>,
+            linear_overload: bool,
+            level_change: bool,
+        ) -> bool;
+        fn apm_echo_control_metrics(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+        ) -> FfiEchoControlMetrics;
+        fn apm_echo_control_delay(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            milliseconds: i32,
+        ) -> bool;
+        fn apm_echo_control_usage(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            used: bool,
+        ) -> bool;
+        fn apm_echo_control_active(
+            module: &RustApmCustomModule,
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            valid: &mut bool,
+        ) -> bool;
+        fn apm_echo_control_invalid(module: &RustApmCustomModule, audio: bool);
+        fn apm_echo_initialize(
+            module: &RustApmCustomModule,
+            capture_rate: i32,
+            capture_channels: i32,
+            render_rate: i32,
+            render_channels: i32,
+        ) -> bool;
+        fn apm_echo_analyze(module: &RustApmCustomModule, render: bool, samples: &[f32]) -> bool;
+        fn apm_echo_metrics(module: &RustApmCustomModule) -> FfiApmEchoDetectorMetrics;
+        fn apm_neural_estimate(
+            module: &RustApmCustomModule,
+            input: FfiNeuralEchoInput,
+        ) -> FfiNeuralEchoResult;
+        fn apm_neural_adjust(
+            module: &RustApmCustomModule,
+            config: FfiEchoCanceller3Config,
+            valid: &mut bool,
+        ) -> FfiEchoCanceller3Config;
+        fn apm_neural_reset(module: &RustApmCustomModule) -> bool;
+        fn apm_neural_invalid(module: &RustApmCustomModule);
+        fn apm_neural_adjust_invalid(module: &RustApmCustomModule);
+        fn apm_custom_dispose(module: &mut RustApmCustomModule) -> bool;
+        fn apm_custom_initialize(module: &RustApmCustomModule, rate: i32, channels: i32) -> bool;
+        fn apm_custom_description(module: &RustApmCustomModule, valid: &mut bool) -> Vec<u8>;
+        fn apm_custom_process(
+            module: &RustApmCustomModule,
+            rate: i32,
+            channels: usize,
+            frames: usize,
+            samples: &mut [f32],
+        ) -> bool;
+        fn apm_custom_analyze(
+            module: &RustApmCustomModule,
+            rate: i32,
+            channels: usize,
+            frames: usize,
+            samples: &[f32],
+        ) -> bool;
+        fn apm_custom_runtime(module: &RustApmCustomModule, setting: FfiApmRuntimeSetting) -> bool;
+        fn apm_custom_unqualified_render(module: &RustApmCustomModule);
         type RustCallerApmDump;
         fn apm_dump_dispose(dump: &mut RustCallerApmDump) -> bool;
-        fn apm_dump_initialize(dump: &RustCallerApmDump, formats: FfiApmFormats, time_now_ms: i64) -> bool;
-        fn apm_dump_audio(dump: &RustCallerApmDump, operation: u8, layout: u8, channels: usize, frames: usize, integers: &[i16], floats: &[f32]) -> bool;
-        fn apm_dump_state(dump: &RustCallerApmDump, delay: i32, drift: i32, volume_present: bool, volume: i32, keypress: bool) -> bool;
+        fn apm_dump_initialize(
+            dump: &RustCallerApmDump,
+            formats: FfiApmFormats,
+            time_now_ms: i64,
+        ) -> bool;
+        fn apm_dump_audio(
+            dump: &RustCallerApmDump,
+            operation: u8,
+            layout: u8,
+            channels: usize,
+            frames: usize,
+            integers: &[i16],
+            floats: &[f32],
+        ) -> bool;
+        fn apm_dump_state(
+            dump: &RustCallerApmDump,
+            delay: i32,
+            drift: i32,
+            volume_present: bool,
+            volume: i32,
+            keypress: bool,
+        ) -> bool;
         fn apm_dump_capture(dump: &RustCallerApmDump) -> bool;
         fn apm_dump_runtime(dump: &RustCallerApmDump, setting: FfiApmRuntimeSetting) -> bool;
         fn apm_dump_config(dump: &RustCallerApmDump, config: FfiApmDumpConfig) -> bool;
@@ -3303,50 +3812,417 @@ mod ffi {
         fn network_change_notify(changes: &NativeNetworkChange) -> bool;
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/audio_processor.h");
-        type NativeAudioProcessor;
-        fn audio_processor_dump_path(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, filename: &[u8], maximum_bytes: i64, error: &mut u8) -> bool;
-        fn audio_processor_dump_file(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, descriptor: i32, maximum_bytes: i64, error: &mut u8) -> bool;
-        fn audio_processor_dump_attach(processor: Pin<&mut NativeAudioProcessor>, dump: Box<RustCallerApmDump>) -> u8;
-        fn audio_processor_dump_detach(processor: Pin<&mut NativeAudioProcessor>) -> u8;
+        include!("pulsebeam-webrtc-sys/native/audio_echo_config.h");
+        include!("pulsebeam-webrtc-sys/native/audio_device.h");
+        fn audio_echo_config_default(multichannel: bool) -> FfiEchoCanceller3Config;
+        fn audio_echo_config_validate(config: &mut FfiEchoCanceller3Config) -> bool;
+        type NativeAudioProcessingModule;
+        type NativeApmCustomModule;
+        type NativeAudioDevice;
+        type NativeAudioTransport;
+        type NativeAudioDeviceObserver;
+        fn audio_transport_new(
+            callbacks: Box<RustAudioDeviceCallbacks>,
+        ) -> UniquePtr<NativeAudioTransport>;
+        fn audio_device_observer_new(
+            callbacks: Box<RustAudioDeviceCallbacks>,
+        ) -> UniquePtr<NativeAudioDeviceObserver>;
+        fn audio_device_register_transport(
+            device: Pin<&mut NativeAudioDevice>,
+            transport: UniquePtr<NativeAudioTransport>,
+            error: &mut u8,
+        ) -> i32;
+        fn audio_device_register_observer(
+            device: Pin<&mut NativeAudioDevice>,
+            observer: UniquePtr<NativeAudioDeviceObserver>,
+        ) -> i32;
+        fn audio_device_from_factory(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeAudioDevice>;
+        fn factory_register_audio_device_observer(
+            factory: &NativePeerConnectionFactory,
+            observer: UniquePtr<NativeAudioDeviceObserver>,
+        ) -> i32;
+        fn audio_device_new(
+            environment: &NativeEnvironment,
+            worker: &NativeThread,
+            layer: u8,
+            bypass: bool,
+            helper: bool,
+            error: &mut u8,
+        ) -> UniquePtr<NativeAudioDevice>;
+        fn audio_device_call(
+            device: Pin<&mut NativeAudioDevice>,
+            operation: u8,
+            argument: u32,
+        ) -> FfiAudioDeviceResult;
+        fn audio_device_name(
+            device: Pin<&mut NativeAudioDevice>,
+            recording: bool,
+            index: u16,
+        ) -> FfiAudioDeviceName;
+        fn audio_device_statistics(device: Pin<&mut NativeAudioDevice>)
+        -> FfiAudioDeviceStatistics;
+        fn audio_device_platform_state(
+            device: Pin<&mut NativeAudioDevice>,
+        ) -> FfiAudioDevicePlatformState;
+        type NativeInstalledAudioProcessor;
+        fn audio_processor_into_installed(
+            processor: UniquePtr<NativeAudioProcessingModule>,
+            environment: Box<RustInstalledApmEnvironment>,
+            error: &mut u8,
+        ) -> UniquePtr<NativeInstalledAudioProcessor>;
+        type NativeEchoControl;
+        type NativeEchoCreationContext;
+        type NativeEchoDependencies;
+        fn audio_processor_echo_factory_provider_new(
+            module: Box<RustApmCustomModule>,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        fn audio_processor_echo_factory_environment(
+            factory: Pin<&mut NativeApmCustomModule>,
+            environment: Box<RustEchoEnvironment>,
+        );
+        fn audio_echo_control_retain_environment(
+            control: Pin<&mut NativeEchoControl>,
+            environment: Box<RustEchoEnvironment>,
+        );
+        fn audio_echo_context_rate(context: &NativeEchoCreationContext) -> i32;
+        fn audio_echo_context_render_channels(context: &NativeEchoCreationContext) -> i32;
+        fn audio_echo_context_capture_channels(context: &NativeEchoCreationContext) -> i32;
+        fn audio_echo_context_create(
+            factory: Pin<&mut NativeApmCustomModule>,
+            context: &NativeEchoCreationContext,
+            include_neural: bool,
+            error: &mut u8,
+        ) -> UniquePtr<NativeEchoControl>;
+        fn audio_echo_context_controller(
+            context: &NativeEchoCreationContext,
+            include_neural: bool,
+            module: Box<RustApmCustomModule>,
+            error: &mut u8,
+        ) -> UniquePtr<NativeEchoControl>;
+        fn audio_echo_dependency_present(dependencies: &NativeEchoDependencies) -> bool;
+        fn audio_echo_dependency_reset(dependencies: Pin<&mut NativeEchoDependencies>) -> u8;
+        fn audio_echo_dependency_adjust(
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            config: &FfiEchoCanceller3Config,
+            error: &mut u8,
+        ) -> FfiEchoCanceller3Config;
+        fn audio_echo_dependency_estimate(
+            dependencies: Pin<&mut NativeEchoDependencies>,
+            input: FfiNeuralEchoInput,
+        ) -> FfiNeuralEchoResult;
+        type NativeEchoAudio;
+        type NativeEchoLinearOutput;
+        fn audio_echo_view_shape(audio: &NativeEchoAudio) -> FfiEchoAudioShape;
+        fn audio_echo_view_channel<'a>(
+            audio: &'a NativeEchoAudio,
+            channel: usize,
+            split: bool,
+            band: usize,
+            valid: &mut bool,
+        ) -> &'a [f32];
+        fn audio_echo_view_channel_mut<'a>(
+            audio: Pin<&'a mut NativeEchoAudio>,
+            channel: usize,
+            split: bool,
+            band: usize,
+            valid: &mut bool,
+        ) -> &'a mut [f32];
+        fn audio_echo_linear_channels(output: &NativeEchoLinearOutput) -> usize;
+        fn audio_echo_linear_frames(output: &NativeEchoLinearOutput) -> usize;
+        fn audio_echo_linear_write(
+            output: Pin<&mut NativeEchoLinearOutput>,
+            channel: usize,
+            samples: &[f32],
+        ) -> bool;
+        fn audio_echo_control_from_provider(
+            rate: i32,
+            render_channels: i32,
+            capture_channels: i32,
+            module: Box<RustApmCustomModule>,
+            error: &mut u8,
+        ) -> UniquePtr<NativeEchoControl>;
+        fn audio_processor_echo_factory_new(
+            constructor: u8,
+            config: &FfiAec3Selection,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        unsafe fn audio_echo_control_create(
+            factory: Pin<&mut NativeApmCustomModule>,
+            environment: &NativeEnvironment,
+            rate: i32,
+            render_channels: i32,
+            capture_channels: i32,
+            neural_overload: bool,
+            neural: *const NativeApmCustomModule,
+            error: &mut u8,
+        ) -> UniquePtr<NativeEchoControl>;
+        fn audio_echo_control_audio(
+            control: Pin<&mut NativeEchoControl>,
+            operation: u8,
+            rate: i32,
+            channels: usize,
+            samples: &[f32],
+            level_change: bool,
+            linear: bool,
+        ) -> FfiEchoControlAudio;
+        fn audio_echo_control_metrics(
+            control: Pin<&mut NativeEchoControl>,
+        ) -> FfiEchoControlMetrics;
+        fn audio_echo_control_delay(control: Pin<&mut NativeEchoControl>, delay: i32) -> u8;
+        fn audio_echo_control_usage(control: Pin<&mut NativeEchoControl>, used: bool) -> u8;
+        fn audio_echo_control_active(control: Pin<&mut NativeEchoControl>, error: &mut u8) -> bool;
+        fn audio_processor_neural_new(
+            module: Box<RustApmCustomModule>,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        fn audio_processor_neural_reset(module: Pin<&mut NativeApmCustomModule>) -> u8;
+        fn audio_processor_neural_adjust(
+            module: Pin<&mut NativeApmCustomModule>,
+            config: &FfiEchoCanceller3Config,
+            error: &mut u8,
+        ) -> FfiEchoCanceller3Config;
+        fn audio_processor_neural_estimate(
+            module: Pin<&mut NativeApmCustomModule>,
+            input: FfiNeuralEchoInput,
+        ) -> FfiNeuralEchoResult;
+        fn audio_processor_echo_detector_new(
+            module: Box<RustApmCustomModule>,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        fn audio_processor_echo_detector_clone(
+            module: &NativeApmCustomModule,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        fn audio_processor_echo_detector_initialize(
+            module: Pin<&mut NativeApmCustomModule>,
+            capture_rate: i32,
+            capture_channels: i32,
+            render_rate: i32,
+            render_channels: i32,
+        ) -> u8;
+        fn audio_processor_echo_detector_analyze(
+            module: Pin<&mut NativeApmCustomModule>,
+            render: bool,
+            samples: &[f32],
+        ) -> u8;
+        fn audio_processor_echo_detector_metrics(
+            module: Pin<&mut NativeApmCustomModule>,
+        ) -> FfiApmEchoDetectorMetrics;
+        fn audio_processor_custom_new(
+            module: Box<RustApmCustomModule>,
+            analyzer: bool,
+        ) -> UniquePtr<NativeApmCustomModule>;
+        fn audio_processor_custom_description(
+            module: Pin<&mut NativeApmCustomModule>,
+            error: &mut u8,
+        ) -> Vec<u8>;
+        fn audio_processor_custom_audio(
+            module: Pin<&mut NativeApmCustomModule>,
+            rate: i32,
+            channels: usize,
+            samples: &[f32],
+            analyze: bool,
+            error: &mut u8,
+        ) -> Vec<f32>;
+        fn audio_processor_custom_runtime(
+            module: Pin<&mut NativeApmCustomModule>,
+            setting: &FfiApmRuntimeSetting,
+        ) -> u8;
+        fn audio_processor_custom_initialize(
+            module: Pin<&mut NativeApmCustomModule>,
+            rate: i32,
+            channels: i32,
+        ) -> u8;
+        fn audio_processor_new_custom(
+            environment: &NativeEnvironment,
+            config: &FfiApmConfig,
+            linear_echo: bool,
+            echo_config: &FfiAec3Selection,
+            capture_post: UniquePtr<NativeApmCustomModule>,
+            render_pre: UniquePtr<NativeApmCustomModule>,
+            analyzer: UniquePtr<NativeApmCustomModule>,
+            echo_detector: UniquePtr<NativeApmCustomModule>,
+            neural: UniquePtr<NativeApmCustomModule>,
+            echo_factory: UniquePtr<NativeApmCustomModule>,
+            error: &mut u8,
+        ) -> UniquePtr<NativeAudioProcessingModule>;
+        fn audio_processor_dump_path(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            worker: Box<RustApmDumpWorker>,
+            filename: &[u8],
+            maximum_bytes: i64,
+            error: &mut u8,
+        ) -> bool;
+        fn audio_processor_dump_file(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            worker: Box<RustApmDumpWorker>,
+            descriptor: i32,
+            maximum_bytes: i64,
+            error: &mut u8,
+        ) -> bool;
+        fn audio_processor_dump_attach(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            dump: Box<RustCallerApmDump>,
+        ) -> u8;
+        fn audio_processor_dump_detach(processor: Pin<&mut NativeAudioProcessingModule>) -> u8;
         fn audio_processor_dump_config_default() -> FfiApmDumpConfig;
-        fn audio_processor_dump_config_equal(left: &FfiApmDumpConfig, right: &FfiApmDumpConfig) -> bool;
-        fn audio_processor_runtime_setting(processor: Pin<&mut NativeAudioProcessor>, setting: &FfiApmRuntimeSetting, post: bool, error: &mut u8) -> bool;
-        fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
-        fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, linear_echo: bool, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;
-        fn audio_processor_config_apply(processor: Pin<&mut NativeAudioProcessor>, config: &FfiApmConfig) -> u8;
-        fn audio_processor_linear_output(processor: Pin<&mut NativeAudioProcessor>, output: &mut [f32], error: &mut u8) -> bool;
+        fn audio_processor_dump_config_equal(
+            left: &FfiApmDumpConfig,
+            right: &FfiApmDumpConfig,
+        ) -> bool;
+        fn audio_processor_runtime_setting(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            setting: &FfiApmRuntimeSetting,
+            post: bool,
+            error: &mut u8,
+        ) -> bool;
+        fn audio_processor_config_equal(
+            left: &FfiApmConfig,
+            right: &FfiApmConfig,
+            group: u8,
+        ) -> bool;
+        fn audio_processor_custom_build(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            environment: &NativeEnvironment,
+        ) -> bool;
+        fn audio_processor_new_config(
+            environment: &NativeEnvironment,
+            config: &FfiApmConfig,
+            linear_echo: bool,
+            error: &mut u8,
+        ) -> UniquePtr<NativeAudioProcessingModule>;
+        fn audio_processor_config_apply(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            config: &FfiApmConfig,
+        ) -> u8;
+        fn audio_processor_linear_output(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            output: &mut [f32],
+            error: &mut u8,
+        ) -> bool;
         fn audio_processor_statistics_default() -> FfiApmStatistics;
-        fn audio_processor_statistics(processor: Pin<&mut NativeAudioProcessor>, has_remote_argument: bool, has_remote_tracks: bool) -> FfiApmStatistics;
+        fn audio_processor_statistics(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            has_remote_argument: bool,
+            has_remote_tracks: bool,
+        ) -> FfiApmStatistics;
         fn audio_processor_config_default() -> FfiApmConfig;
         fn audio_processor_config_string(config: &FfiApmConfig) -> String;
-        fn audio_processor_config_get(processor: &NativeAudioProcessor) -> FfiApmConfig;
-        fn audio_processor_new(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> UniquePtr<NativeAudioProcessor>;
-        fn audio_processor_effects_admitted(environment: &NativeEnvironment, config: &FfiAudioProcessingConfig) -> bool;
-        fn audio_processor_initialize(processor: Pin<&mut NativeAudioProcessor>, error: &mut u8) -> i32;
+        fn audio_processor_config_get(processor: &NativeAudioProcessingModule) -> FfiApmConfig;
+        fn audio_processor_new(
+            environment: &NativeEnvironment,
+            config: &FfiAudioProcessingConfig,
+        ) -> UniquePtr<NativeAudioProcessingModule>;
+        fn audio_processor_effects_admitted(
+            environment: &NativeEnvironment,
+            config: &FfiAudioProcessingConfig,
+        ) -> bool;
+        fn audio_processor_initialize(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            error: &mut u8,
+        ) -> i32;
         fn audio_processor_formats_default() -> FfiApmFormats;
-        fn audio_processor_initialize_formats(processor: Pin<&mut NativeAudioProcessor>, formats: &FfiApmFormats, admitted: &mut bool, error: &mut u8) -> i32;
-        fn audio_processor_configure(processor: Pin<&mut NativeAudioProcessor>, config: &FfiAudioProcessingConfig) -> u8;
-        fn audio_processor_format(processor: &NativeAudioProcessor) -> FfiAudioProcessingFormatState;
-        fn audio_processor_set_muted(processor: Pin<&mut NativeAudioProcessor>, muted: bool);
-        fn audio_processor_muted(processor: Pin<&mut NativeAudioProcessor>) -> bool;
-        fn audio_processor_set_delay(processor: Pin<&mut NativeAudioProcessor>, delay: i32) -> i32;
-        fn audio_processor_delay(processor: &NativeAudioProcessor) -> i32;
-        fn audio_processor_set_analog_level(processor: Pin<&mut NativeAudioProcessor>, level: i32);
-        fn audio_processor_analog_level(processor: &NativeAudioProcessor) -> i32;
-        fn audio_processor_set_key(processor: Pin<&mut NativeAudioProcessor>, pressed: bool);
-        fn audio_processor_i16(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &mut [i16], reverse: bool, error: &mut u8) -> i32;
-        fn audio_processor_float(processor: Pin<&mut NativeAudioProcessor>, input_rate: i32, input_channels: usize, samples: &[f32], output_rate: i32, output_channels: usize, destination: &mut [f32], reverse: bool, error: &mut u8) -> i32;
-        fn audio_processor_analyze(processor: Pin<&mut NativeAudioProcessor>, rate: i32, channels: usize, samples: &[f32], error: &mut u8) -> i32;
+        fn audio_processor_initialize_formats(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            formats: &FfiApmFormats,
+            admitted: &mut bool,
+            error: &mut u8,
+        ) -> i32;
+        fn audio_processor_configure(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            config: &FfiAudioProcessingConfig,
+        ) -> u8;
+        fn audio_processor_format(
+            processor: &NativeAudioProcessingModule,
+        ) -> FfiAudioProcessingFormatState;
+        fn audio_processor_set_muted(processor: Pin<&mut NativeAudioProcessingModule>, muted: bool);
+        fn audio_processor_muted(processor: Pin<&mut NativeAudioProcessingModule>) -> bool;
+        fn audio_processor_set_delay(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            delay: i32,
+        ) -> i32;
+        fn audio_processor_delay(processor: &NativeAudioProcessingModule) -> i32;
+        fn audio_processor_set_analog_level(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            level: i32,
+        );
+        fn audio_processor_analog_level(processor: &NativeAudioProcessingModule) -> i32;
+        fn audio_processor_set_key(processor: Pin<&mut NativeAudioProcessingModule>, pressed: bool);
+        fn audio_processor_i16(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            rate: i32,
+            channels: usize,
+            samples: &mut [i16],
+            reverse: bool,
+            error: &mut u8,
+        ) -> i32;
+        fn audio_processor_float(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            input_rate: i32,
+            input_channels: usize,
+            samples: &[f32],
+            output_rate: i32,
+            output_channels: usize,
+            destination: &mut [f32],
+            reverse: bool,
+            error: &mut u8,
+        ) -> i32;
+        fn audio_processor_analyze(
+            processor: Pin<&mut NativeAudioProcessingModule>,
+            rate: i32,
+            channels: usize,
+            samples: &[f32],
+            error: &mut u8,
+        ) -> i32;
         include!("pulsebeam-webrtc-sys/native/audio_frame_values.h");
         type NativeMixerSource;
         type NativeAudioMixer;
         fn mixer_source_new(source: Box<RustMixerSource>) -> UniquePtr<NativeMixerSource>;
+        fn mixer_source_get_audio(
+            source: &NativeMixerSource,
+            rate: i32,
+            error: &mut u8,
+        ) -> FfiMixerFrame;
         fn mixer_source_get_ssrc(source: &NativeMixerSource, valid: &mut bool) -> i32;
         fn mixer_source_get_rate(source: &NativeMixerSource, valid: &mut bool) -> i32;
-        fn audio_mixer_new() -> UniquePtr<NativeAudioMixer>;
-        fn audio_mixer_add(mixer: Pin<&mut NativeAudioMixer>, source: &NativeMixerSource, error: &mut u8) -> bool;
-        fn audio_mixer_remove(mixer: Pin<&mut NativeAudioMixer>, source: &NativeMixerSource, error: &mut u8) -> bool;
-        fn audio_mixer_mix(mixer: Pin<&mut NativeAudioMixer>, channels: usize, error: &mut u8) -> UniquePtr<NativeAudioFrame>;
+        type NativeMixerSourceToken;
+        type NativeMixerInputs;
+        fn mixer_token_clone(token: &NativeMixerSourceToken) -> UniquePtr<NativeMixerSourceToken>;
+        fn mixer_token_equal(a: &NativeMixerSourceToken, b: &NativeMixerSourceToken) -> bool;
+        fn mixer_input_ssrc(
+            inputs: &NativeMixerInputs,
+            token: &NativeMixerSourceToken,
+            error: &mut u8,
+        ) -> i32;
+        fn mixer_input_rate(
+            inputs: &NativeMixerInputs,
+            token: &NativeMixerSourceToken,
+            error: &mut u8,
+        ) -> i32;
+        fn mixer_input_frame(
+            inputs: &NativeMixerInputs,
+            token: &NativeMixerSourceToken,
+            rate: i32,
+            error: &mut u8,
+        ) -> FfiMixerFrame;
+        fn audio_mixer_new(module: Box<RustMixerModule>) -> UniquePtr<NativeAudioMixer>;
+        fn audio_mixer_from_provider(
+            module: Box<RustMixerModule>,
+            provider: Box<RustMixerProvider>,
+        ) -> UniquePtr<NativeAudioMixer>;
+        fn audio_mixer_add(
+            mixer: Pin<&mut NativeAudioMixer>,
+            source: &NativeMixerSource,
+            error: &mut u8,
+        ) -> bool;
+        fn audio_mixer_remove(
+            mixer: Pin<&mut NativeAudioMixer>,
+            source: &NativeMixerSource,
+            error: &mut u8,
+        ) -> bool;
+        fn audio_mixer_mix(
+            mixer: Pin<&mut NativeAudioMixer>,
+            channels: usize,
+            error: &mut u8,
+        ) -> UniquePtr<NativeAudioFrame>;
         type NativeAudioFrame;
         fn media_audio_frame_new() -> UniquePtr<NativeAudioFrame>;
         fn media_audio_frame_with_format(
@@ -5876,6 +6752,11 @@ mod ffi {
         fn audio_encoder_set_fec(encoder: &NativeAudioEncoder, enable: bool) -> bool;
         fn audio_encoder_set_dtx(encoder: &NativeAudioEncoder, enable: bool) -> bool;
         fn audio_encoder_set_application(encoder: &NativeAudioEncoder, speech: bool) -> bool;
+        fn audio_encoder_enable_network_adaptor(
+            encoder: &NativeAudioEncoder,
+            config: &[u8],
+            error: &mut u8,
+        ) -> bool;
         fn audio_encoder_disable_network_adaptor(encoder: &NativeAudioEncoder);
         fn audio_encoder_set_max_playback_rate(encoder: &NativeAudioEncoder, frequency: i32);
         fn audio_encoder_set_target_bitrate(encoder: &NativeAudioEncoder, bitrate: i32) -> bool;
@@ -5890,14 +6771,14 @@ mod ffi {
             encoder: &NativeAudioEncoder,
             update: &FfiBitrateAllocationUpdate,
         ) -> bool;
-        fn audio_encoder_on_overhead(encoder: &NativeAudioEncoder, overhead: usize);
+        fn audio_encoder_on_overhead(encoder: &NativeAudioEncoder, overhead: usize) -> bool;
         fn audio_encoder_on_packet_loss(encoder: &NativeAudioEncoder, fraction: f32) -> u8;
-        fn audio_encoder_on_rtt(encoder: &NativeAudioEncoder, rtt: i32);
+        fn audio_encoder_on_rtt(encoder: &NativeAudioEncoder, rtt: i32) -> bool;
         fn audio_encoder_set_receiver_frame_length_range(
             encoder: &NativeAudioEncoder,
             minimum: i32,
             maximum: i32,
-        );
+        ) -> bool;
         fn audio_decoder_formats(factory: &NativeAudioDecoderFactory) -> Vec<FfiAudioCodecSpec>;
         fn audio_decoder_factory_builtin_kind(factory: &NativeAudioDecoderFactory) -> u8;
         fn audio_decoder_factory_context_contract(
@@ -6123,12 +7004,16 @@ mod ffi {
             video_creation_environment: Box<RustVideoFactoryEnvironment>,
             production_system_clock: bool,
             native_audio: bool,
+            native_audio_creation: &FfiNativeAudioDeviceCreation,
+            audio_device_module: UniquePtr<NativeAudioDevice>,
             event_logging: bool,
             event_log_factory: *const NativeRtcEventLogFactory,
             encode_metronome: Box<RustMetronome>,
             decode_metronome: Box<RustMetronome>,
             readiness: *const NativeReadiness,
             processing: &FfiAudioProcessingConfig,
+            audio_mixer: UniquePtr<NativeAudioMixer>,
+            audio_processor: UniquePtr<NativeInstalledAudioProcessor>,
             error: &mut String,
         ) -> UniquePtr<NativePeerConnectionFactory>;
         fn certificate_default_key_params(rsa: bool) -> FfiCertificateKeyParams;
@@ -6163,7 +7048,29 @@ mod ffi {
             disabled: &[u16],
         ) -> FfiCryptoOptions;
         fn factory_set_options(factory: &NativePeerConnectionFactory, options: &FfiFactoryOptions);
-        fn factory_audio_encoder_failure_observer(factory: &NativePeerConnectionFactory) -> UniquePtr<NativeAudioEncoderFailureObserver>;
+        fn factory_audio_encoder_failure_observer(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeAudioEncoderFailureObserver>;
+        fn factory_audio_processor_config(
+            factory: &NativePeerConnectionFactory,
+            error: &mut u8,
+        ) -> FfiApmConfig;
+        fn factory_audio_processor_apply(
+            factory: &NativePeerConnectionFactory,
+            config: &FfiApmConfig,
+        ) -> u8;
+        fn factory_audio_processor_reverse(
+            factory: &NativePeerConnectionFactory,
+            rate: i32,
+            channels: usize,
+            samples: &mut [i16],
+            error: &mut u8,
+        ) -> i32;
+        fn factory_audio_processor_delay(
+            factory: &NativePeerConnectionFactory,
+            delay: i32,
+            error: &mut u8,
+        ) -> i32;
         fn factory_audio_processing_state(
             factory: &NativePeerConnectionFactory,
         ) -> FfiAudioProcessingState;
@@ -6413,6 +7320,7 @@ mod ffi {
             error_type: &mut u8,
             error: &mut String,
         ) -> bool;
+        fn audio_source_capture_active(source: &NativeAudioSource) -> bool;
         fn close_audio_source(source: &NativeAudioSource) -> bool;
         fn audio_source_push_pcm(
             source: &NativeAudioSource,
@@ -6422,6 +7330,7 @@ mod ffi {
             timestamp_us: i64,
             failure: &mut u8,
             processing_error: &mut i32,
+            wrapper_error: &mut u8,
         ) -> bool;
         fn create_microphone_track(
             factory: &NativePeerConnectionFactory,

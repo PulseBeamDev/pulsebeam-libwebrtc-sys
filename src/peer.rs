@@ -291,6 +291,9 @@ pub enum PeerErrorKind {
     DescriptionNotUtf8,
     MessageNotUtf8,
     UnrepresentableCodecCapability,
+    /// Binding admission/qualification failure, not a native unsupported backend.
+    AudioProcessingAdmission,
+    AudioDeviceAdmission,
 }
 
 /// Exact owned native error bytes when text projection is unavailable.
@@ -617,11 +620,17 @@ pub struct PeerConnectionFactoryBuilder {
     video_encoder: Option<VideoEncoderFactoryHandle>,
     video_decoder: Option<VideoDecoderFactoryHandle>,
     native_audio: bool,
+    native_audio_creation: ffi::FfiNativeAudioDeviceCreation,
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    audio_device_module: Option<crate::AudioDeviceModule>,
     event_logging: bool,
     event_log_factory: Option<std::sync::Arc<dyn crate::RtcEventLogFactory>>,
     encode_metronome: Option<crate::Metronome>,
     decode_metronome: Option<crate::Metronome>,
     audio_processing: Option<crate::AudioProcessingConfig>,
+    audio_processor: Option<crate::AudioProcessingModule>,
+    audio_processor_builder: Option<crate::BuiltinAudioProcessorBuilder>,
+    audio_mixer: Option<crate::AudioMixer>,
     options: crate::FactoryOptions,
     readiness: Option<std::sync::Arc<crate::readiness::Readiness>>,
 }
@@ -792,6 +801,7 @@ impl PeerConnectionFactoryBuilder {
     /// device initialization is unavailable. No device is opened by default.
     #[cfg(feature = "native")]
     pub fn native_audio(mut self, enabled: bool) -> Self {
+        self.audio_device_module = None;
         self.native_audio = enabled;
         self
     }
@@ -799,7 +809,59 @@ impl PeerConnectionFactoryBuilder {
     /// Create WebRTC's software audio processing module with the requested
     /// initial AEC, noise suppression and gain-control configuration. This
     /// affects decoded PCM, never directly supplied encoded Opus packets.
+    /// Explicit Linux/native backend and actual SDK creation method. Construction
+    /// occurs on the retained factory worker; nullable and Init errors are not
+    /// replaced with a headless/default device. Does not start recording.
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn native_audio_device(mut self, config: crate::AudioDeviceCreationConfig) -> Self {
+        self.audio_device_module = None;
+        self.native_audio = true;
+        self.native_audio_creation = config.ffi();
+        self
+    }
+    /// Transfer the exact owning ADM and adopt its retained worker. Do not also
+    /// supply a different worker. The SDK applies its ordinary Init/default
+    /// device/stereo/processing options and replaces the audio transport; inspect
+    /// or configure the actual installed module after construction.
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_module(mut self, module: crate::AudioDeviceModule) -> Self {
+        self.native_audio = true;
+        self.audio_device_module = Some(module);
+        self
+    }
+    pub(crate) fn native_audio_creation_wire(
+        mut self,
+        creation: ffi::FfiNativeAudioDeviceCreation,
+    ) -> Self {
+        self.native_audio_creation = creation;
+        self
+    }
+    /// Transfer this exact owning mixer, including retained source registrations,
+    /// into the native media engine. No mutable standalone alias survives.
+    pub fn audio_mixer(mut self, mixer: crate::AudioMixer) -> Self {
+        self.audio_mixer = Some(mixer);
+        self
+    }
+    /// Install this exact owning APM. No standalone mutable alias survives.
+    /// Currently admitted for caller-driven headless PCM only. Native device
+    /// callback failure/publication integration remains unqualified.
+    pub fn audio_processor(mut self, processor: crate::AudioProcessingModule) -> Self {
+        self.audio_processor = Some(processor);
+        self.audio_processor_builder = None;
+        self.audio_processing = None;
+        self
+    }
+    /// Build with this factory's actual environment, then transfer that product.
+    pub fn audio_processor_builder(mut self, builder: crate::BuiltinAudioProcessorBuilder) -> Self {
+        self.audio_processor_builder = Some(builder);
+        self.audio_processor = None;
+        self.audio_processing = None;
+        self
+    }
+    /// Last explicit processing selection wins.
     pub fn audio_processing(mut self, config: crate::AudioProcessingConfig) -> Self {
+        self.audio_processor = None;
+        self.audio_processor_builder = None;
         self.audio_processing = Some(config);
         self
     }
@@ -837,6 +899,18 @@ impl PeerConnectionFactoryBuilder {
     }
 
     pub fn build(self) -> Result<PeerConnectionFactory, PeerError> {
+        #[cfg(all(feature = "native", target_os = "linux"))]
+        if self.audio_device_module.is_some() && self.worker_thread.is_some() {
+            return Err(PeerError { kind: PeerErrorKind::AudioDeviceAdmission, message: "an owning ADM adopts its construction worker; a separate factory worker is incompatible".into() });
+        }
+        let has_audio_processing = self.audio_processing.is_some()
+            || self.audio_processor.is_some()
+            || self.audio_processor_builder.is_some();
+        if self.native_audio
+            && (self.audio_processor.is_some() || self.audio_processor_builder.is_some())
+        {
+            return Err(PeerError { kind: PeerErrorKind::AudioProcessingAdmission, message: "owning APM native-device integration is not yet qualified: physical capture ignores wrapper/callback failure outcomes; use caller-driven headless PCM".into() });
+        }
         if self.network_manager.is_some() && self.network_monitor_factory.is_some() {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter,
                 message: "network manager and network monitor factory are mutually exclusive native dependencies".into() });
@@ -875,7 +949,7 @@ impl PeerConnectionFactoryBuilder {
                     .into(),
             });
         }
-        if (self.native_audio || self.audio_processing.is_some())
+        if (self.native_audio || has_audio_processing)
             && self
                 .audio_encoder
                 .as_ref()
@@ -907,7 +981,7 @@ impl PeerConnectionFactoryBuilder {
                         (encoder.is_direct_vp8() && decoder.is_builtin_vp8())
                             || (encoder.is_direct_h264() && decoder.is_encoded_h264_receive())
                     })
-                || self.audio_processing.is_some())
+                || has_audio_processing)
         {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -927,7 +1001,7 @@ impl PeerConnectionFactoryBuilder {
             if !driver.is_current()
                 || !environment.uses_controlled_clock(driver.clock())
                 || self.native_audio
-                || self.audio_processing.is_some()
+                || has_audio_processing
                 || self.network_thread.is_some()
                 || self.worker_thread.is_some()
                 || self.signaling_thread.is_some()
@@ -965,7 +1039,25 @@ impl PeerConnectionFactoryBuilder {
             (None, Some(driver)) => NetworkThread::from_native(driver.borrow_thread()),
             (None, None) => NetworkThread::start().map_err(native_build_error)?,
         };
-        let worker_thread = match (self.worker_thread, &self.controlled_driver) {
+        #[cfg(all(feature = "native", target_os = "linux"))]
+        let (audio_device_module, device_worker, audio_device_environment) =
+            match self.audio_device_module {
+                Some(module) => {
+                    let (native, worker, environment) = module.into_factory();
+                    (native, Some(worker), Some(environment))
+                }
+                None => (cxx::UniquePtr::null(), None, None),
+            };
+        #[cfg(not(all(feature = "native", target_os = "linux")))]
+        let (audio_device_module, device_worker, audio_device_environment) = (
+            cxx::UniquePtr::<ffi::NativeAudioDevice>::null(),
+            None::<WorkerThread>,
+            None::<Environment>,
+        );
+        let worker_thread = match (
+            self.worker_thread.or(device_worker),
+            &self.controlled_driver,
+        ) {
             (Some(thread), _) => thread,
             (None, Some(driver)) => WorkerThread::from_native(driver.borrow_thread()),
             (None, None) => WorkerThread::start().map_err(native_build_error)?,
@@ -985,6 +1077,26 @@ impl PeerConnectionFactoryBuilder {
         let event_log_factory = self.event_log_factory.map(|factory| {
             ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(factory)))
         });
+        let audio_processor = match (self.audio_processor, self.audio_processor_builder) {
+            (Some(processor), _) => Some(processor),
+            (_, Some(builder)) => Some(builder.build(&environment).map_err(|e| PeerError {
+                kind: PeerErrorKind::AudioProcessingAdmission,
+                message: e.to_string(),
+            })?),
+            _ => None,
+        };
+        let installed_audio_processor = audio_processor
+            .map(crate::AudioProcessingModule::into_installed)
+            .transpose()
+            .map_err(|e| PeerError {
+                kind: PeerErrorKind::AudioProcessingAdmission,
+                message: e.to_string(),
+            })?
+            .unwrap_or_else(cxx::UniquePtr::null);
+        let audio_mixer_failure = self
+            .audio_mixer
+            .as_ref()
+            .map(crate::AudioMixer::failure_observer);
         let native = unsafe {
             ffi::new_peer_connection_factory(
                 environment.native(),
@@ -1014,6 +1126,8 @@ impl PeerConnectionFactoryBuilder {
                 Box::new(crate::RustVideoFactoryEnvironment(environment.clone())),
                 environment.uses_system_clock() && production_lease.is_some(),
                 self.native_audio,
+                &self.native_audio_creation,
+                audio_device_module,
                 self.event_logging,
                 optional_ptr(
                     event_log_factory
@@ -1036,12 +1150,21 @@ impl PeerConnectionFactoryBuilder {
                     },
                     crate::AudioProcessingConfig::ffi,
                 ),
+                self.audio_mixer
+                    .map_or_else(cxx::UniquePtr::null, crate::AudioMixer::into_native),
+                installed_audio_processor,
                 &mut message,
             )
         };
         if native.is_null() {
             return Err(PeerError {
-                kind: PeerErrorKind::NativeConstruction,
+                kind: if message.starts_with("owning APM admission") {
+                    PeerErrorKind::AudioProcessingAdmission
+                } else if message.starts_with("owning ADM admission") {
+                    PeerErrorKind::AudioDeviceAdmission
+                } else {
+                    PeerErrorKind::NativeConstruction
+                },
                 message,
             });
         }
@@ -1052,11 +1175,13 @@ impl PeerConnectionFactoryBuilder {
         Ok(PeerConnectionFactory(Rc::new(FactoryInner {
             native,
             _environment: environment,
+            _audio_device_environment: audio_device_environment,
             _network_thread: network_thread,
             _worker_thread: worker_thread,
             _signaling_thread: signaling_thread,
             _controlled_driver: self.controlled_driver,
             controlled_media: self.controlled_media,
+            audio_mixer_failure,
             _network_manager: self.network_manager,
             _packet_socket_factory: self.packet_socket_factory,
             _audio_encoder: self.audio_encoder,
@@ -1088,11 +1213,21 @@ impl Default for PeerConnectionFactoryBuilder {
             video_encoder: None,
             video_decoder: None,
             native_audio: false,
+            native_audio_creation: ffi::FfiNativeAudioDeviceCreation {
+                layer: 0,
+                bypass: false,
+                helper: true,
+            },
+            #[cfg(all(feature = "native", target_os = "linux"))]
+            audio_device_module: None,
             event_logging: false,
             event_log_factory: None,
             encode_metronome: None,
             decode_metronome: None,
             audio_processing: None,
+            audio_processor: None,
+            audio_processor_builder: None,
+            audio_mixer: None,
             options: crate::FactoryOptions::default(),
             readiness: None,
         }
@@ -1102,11 +1237,13 @@ impl Default for PeerConnectionFactoryBuilder {
 pub(crate) struct FactoryInner {
     native: cxx::UniquePtr<ffi::NativePeerConnectionFactory>,
     _environment: Environment,
+    _audio_device_environment: Option<Environment>,
     _network_thread: NetworkThread,
     _worker_thread: WorkerThread,
     _signaling_thread: SignalingThread,
     _controlled_driver: Option<ControlledPeerDriver>,
     pub(crate) controlled_media: bool,
+    audio_mixer_failure: Option<crate::AudioMixerFailureObserver>,
     _network_manager: Option<NetworkManagerProvider>,
     _packet_socket_factory: Option<PacketSocketFactoryProvider>,
     _audio_encoder: Option<AudioEncoderFactory>,
@@ -1198,13 +1335,92 @@ impl PeerConnectionFactory {
 
     /// First rejected installed encoder control or unsafe factory operation.
     /// The observer retains only the shared failure record and survives retirement.
+    #[cfg(all(feature = "native", target_os = "linux"))]
+    pub fn audio_device_module(
+        &self,
+    ) -> Result<crate::InstalledAudioDevice, crate::AudioDeviceError> {
+        crate::InstalledAudioDevice::from_native(
+            ffi::audio_device_from_factory(self.native()),
+            self.0.clone(),
+        )
+    }
+    pub fn audio_mixer_failure_observer(&self) -> Option<crate::AudioMixerFailureObserver> {
+        self.0.audio_mixer_failure.clone()
+    }
     pub fn audio_encoder_failure_observer(&self) -> crate::AudioEncoderSdkFailureObserver {
         crate::AudioEncoderSdkFailureObserver::from_native(
-            ffi::factory_audio_encoder_failure_observer(self.native()))
+            ffi::factory_audio_encoder_failure_observer(self.native()),
+        )
     }
 
     /// Read WebRTC's factory-wide audio processing state. Unknown status and
     /// platform availability are not proof that a device effect is active.
+    /// Actual current config of the owning selection, not its constructor echo.
+    /// Requires audio_processor or audio_processor_builder selection.
+    pub fn audio_processor_config(
+        &self,
+    ) -> Result<crate::AudioProcessorConfig, crate::AudioProcessorError> {
+        let mut error = 0;
+        let config = ffi::factory_audio_processor_config(self.native(), &mut error);
+        crate::AudioProcessingModule::admission(error)?;
+        Ok(crate::AudioProcessorConfig::from_ffi(config))
+    }
+    pub fn apply_audio_processor_config(
+        &self,
+        config: crate::AudioProcessorConfig,
+    ) -> Result<(), crate::AudioProcessorError> {
+        crate::AudioProcessingModule::admission(ffi::factory_audio_processor_apply(
+            self.native(),
+            &config.ffi(),
+        ))
+    }
+    /// Explicit caller render input on the same selected APM. Headless playout
+    /// pulls do not call this automatically. Prefix/tail behavior matches the
+    /// standalone i16 API; callback/admission failure commits no caller PCM.
+    pub fn process_reverse_audio(
+        &self,
+        format: crate::AudioProcessingStream,
+        samples: &mut [i16],
+    ) -> Result<crate::AudioProcessingStatus, crate::AudioProcessorError> {
+        if format.channels > u16::MAX as usize {
+            return Err(crate::AudioProcessorError::InvalidDimensions);
+        }
+        let count = format.sample_count()?;
+        if samples.len() < count {
+            return Err(crate::AudioProcessorError::BufferTooShort);
+        }
+        let mut error = 0;
+        let status = ffi::factory_audio_processor_reverse(
+            self.native(),
+            format.sample_rate_hz,
+            format.channels,
+            &mut samples[..count],
+            &mut error,
+        );
+        crate::AudioProcessingModule::admission(error)?;
+        Ok(crate::AudioProcessingStatus(status))
+    }
+    /// Caller-supplied capture/render delay, preserving native clamping/warnings.
+    pub fn set_audio_processing_delay(
+        &self,
+        milliseconds: i32,
+    ) -> Result<crate::AudioProcessingStatus, crate::AudioProcessorError> {
+        let mut error = 0;
+        let status = ffi::factory_audio_processor_delay(self.native(), milliseconds, &mut error);
+        crate::AudioProcessingModule::admission(error)?;
+        Ok(crate::AudioProcessingStatus(status))
+    }
+    pub fn try_audio_processing_state(
+        &self,
+    ) -> Result<crate::AudioProcessingState, crate::AudioProcessorError> {
+        let state = self.audio_processing_state();
+        match state.failure {
+            Some(error) => Err(error),
+            None => Ok(state),
+        }
+    }
+    /// Inspect failure before interpreting component values, or use the
+    /// fallible try_audio_processing_state projection.
     pub fn audio_processing_state(&self) -> crate::AudioProcessingState {
         ffi::factory_audio_processing_state(self.native()).into()
     }
@@ -1407,7 +1623,9 @@ impl PeerConnectionFactory {
     fn create_audio_source_inner(&self) -> Result<AudioSource, PeerError> {
         let mut failure = 0;
         let native = ffi::create_audio_source(
-            self.0.native.as_ref().expect("validated peer factory"), &mut failure);
+            self.0.native.as_ref().expect("validated peer factory"),
+            &mut failure,
+        );
         if failure == 1 {
             Err(PeerError {
                 kind: PeerErrorKind::UnsupportedOperation,

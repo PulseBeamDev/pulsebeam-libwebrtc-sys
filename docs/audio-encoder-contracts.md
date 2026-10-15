@@ -13,9 +13,11 @@ encoding returns owned bytes, primary metadata, and ordered redundancy metadata.
 The byte lengths are checked against the native encoded buffer.
 
 `AudioEncoderFactory::create_with_options` consumes a const view of an
-`OwnedAudioEncoderOptions` value through the real SDK `Create` method. It shares
-selected-backend admission and product ownership with `create`, but does not
-project the owned SDK value through Rust fields. Defaults, the full signed
+`OwnedAudioEncoderOptions` value through native creation. It shares selected-backend
+admission and product ownership with `create`, without projecting the owned SDK
+value through Rust fields. The privately proven builtin Opus selection now uses
+its identical SDK leaf/config/payload via `CreateForTesting` to install delegating
+ANA guards at initial creation. Other selections retain the real factory `Create`. Defaults, the full signed
 payload field and optional pair identity remain unchanged. Opus's reached
 constructor payload assertion remains backend-specific, not an options-value
 restriction or a reason to reject an ordinary unsupported format.
@@ -91,10 +93,11 @@ operation/error, rather than silently proceeding, clamping inputs or synthesizin
 successful encoding. Valid later operations still use actual retained codec state;
 direct Rust controls continue returning their own Result errors. The native
 recoverable-loss default is not invoked and is observed as UnsupportedControl.
-Opus EnableAudioNetworkAdaptor records UnsafeAdaptor and returns false pending
-#11/#12 consuming admission. That is not a claim of native capability absence or
-completed ANA parity. Other selected implementations preserve native unsupported
-returns. Persistent standalone SDK factory ownership is now source-wired;
+Opus EnableAudioNetworkAdaptor is now source-wired through the same owning
+configuration and consuming guards as direct Rust enablement. Admission errors
+remain typed/observer-visible; native false stays false. Other selected
+implementations preserve native unsupported returns. This new path is uncompiled
+and unqualified, not completed ANA parity. Persistent standalone SDK factory ownership is now source-wired;
 safe installation and native caller product adapters remain unfinished.
 
 New prefix/packet accumulation, nested handoff, actual Opus guard, post-retirement
@@ -139,7 +142,7 @@ native product boundary and actual SDK/ACM refusal proof before installation.
 `CallerAudioEncoder` is intentionally not an AudioEncoder SDK handle and cannot
 be returned by the current native factory provider Create contract. No fake
 encoded metadata, success-on-error buffering, fallback codec or patched SDK is
-introduced. #37 Query instability and #11/#12 ANA admission remain separate.
+introduced. #37 Query instability and ANA qualification remain separate.
 
 Fixtures delegate to real PCM and cover retained environment/migrated use,
 packet buffering/provenance, exact sample refusal, malformed output rejection,
@@ -174,20 +177,26 @@ Products returning an empty span do not authorize that call.
 
 ## Audio network adaptor construction
 
-ANA enablement is not exposed. Idempotent native adaptor teardown is available
+`enable_audio_network_adaptor` is now source-wired as `Result<bool, AudioEncoderError>`.
+It preserves the supplied protobuf bytes and the native enable result, distinguishing
+binding admission from unsupported/native false. No runtime or artifact qualification
+has run for this implementation. Idempotent native adaptor teardown remains available
 as `disable_audio_network_adaptor`.
 
 Internal construction preflight parses bytes with the pinned generated protobuf
 parser without creating or replacing controllers. It checks supported oneofs,
-required fields, constructor assertions, unique runtime-config writers, scoring
-field presence, and the actual native encoder's channel and frame state. It
+required fields, constructor assertions, scoring field presence, and the actual
+native encoder's channel and frame state. Per-controller kinds/bitrate offsets
+and all FEC time constants are retained independently. It
 retains controller-specific arithmetic obligations separately. Construction
 preflight is not a runtime admission decision.
 
 Unknown fields and unused values are not rewritten or unnecessarily restricted.
 An empty controller list is accepted. The removed RPLR controller and unset
-oneofs are rejected. Legacy and V2 frame controllers cannot coexist because they
-write the same asserted runtime-config slot. V2's absent minimum payload bitrate
+oneofs are rejected. Duplicate writers are not rejected at construction: actual
+occupied-slot DCHECKs are checked only when reached in asserting profiles. V2
+has no occupied-slot assertion and preserves its real overwrites; its missing-metric
+early return consumes neither arithmetic nor the frame slot. V2's absent minimum payload bitrate
 and slow-adaptation flag retain their native zero/false defaults. Legacy frame
 transition entries are retained independently, including older entries that the
 protobuf comments describe as replaced but the native implementation still
@@ -205,9 +214,10 @@ native-valid comparator domains.
 
 No scoring arithmetic is evaluated when scoring is absent or either supplied
 metric is absent. Reordering thresholds, including NaN and infinite thresholds,
-are not rejected or used to bypass the comparator-domain check. This helper does
-not mirror native retained metrics, order changes, or time/distance gates; it is
-not yet a consuming-operation guard. Its overflow projection assumes the pinned
+are not rejected or used to bypass the comparator-domain check. The hypothetical helper alone does
+not mirror native retained metrics, order changes, or time/distance gates. The
+production wrapper separately uses exact forwarded sparse metrics and private
+read-only access to the native manager's actual cached order/skip-gate state. Its overflow projection assumes the pinned
 RN-even IEEE float narrowing semantics, which remain part of artifact
 qualification.
 
@@ -217,15 +227,16 @@ channels. A protobuf-disabled artifact or a non-Opus product reports unavailable
 construction capability without invoking the asserting disabled controller
 manager branch.
 
-## Native runtime injection seams under investigation
+## Source-wired native runtime injection
 
 The public `AudioEncoderOpus::MakeAudioEncoder` factory has no injection hook.
 The pinned implementation's `CreateForTesting` accepts an adaptor creator and
 a `SmoothingFilter`; stock SDP parsing remains available through
 `AudioEncoderOpus::SdpToConfig`. The default adaptor creator's mutable initial
 values have implementation-level native getters, including coded channels,
-next frame length and FEC state. These seams are not yet installed in owning
-creation.
+next frame length and FEC state. These seams are installed only for the privately
+proven builtin Opus selection, once at initial owning creation. No mutable product
+is replaced and no provenance is inferred from metadata alone.
 
 A delegating `ControllerManager` can reuse `ControllerManagerImpl::Create`
 without duplicating the controller factory. Its `GetSortedControllers` receives
@@ -234,9 +245,24 @@ controller proxies can inspect metric updates and runtime-config slots before
 native arithmetic. A guarded bitrate smoother can likewise forward to the
 native `SmoothingFilterImpl` rather than predict its evolving average.
 The internal bounded bitrate smoother and bitrate-controller proxy delegate to
-these native components. They are not installed in owning creation. Exact reorder
-gates, floating-point artifact qualification, operation failure reporting and
-manager/proxy lifetimes still require a complete runtime contract.
+these native components in owning creation. The manager uses the exact native
+cached-order/time/distance gates when an unsafe fresh comparator could genuinely
+be skipped, rather than inventing clock/history state. Floating-point artifact,
+callback and lifecycle qualification remains deferred.
+
+Before the native adaptor's success metadata writer, `Prepare` runs the unchanged
+native controllers once in actual native sorted order. A single-use private
+`DecisionHandoff` carries only that operation's complete genuine native result
+through the real adaptor's unchanged stats/event logging. Rejected partial
+configurations never enter that writer. The handoff is not a cached answer for a
+later operation or a synthesized decision. Exact forwarded sparse setters mirror
+the pinned adaptor's only metric writes without additional clock samples.
+
+Direct controls report admission failures. SDK void controls also record the
+first typed operation/error. Encode-driven failure withholds standalone Rust
+output; SDK forwarding preserves the actual codec payload/metadata and observes
+the separate adaptation failure rather than fabricating successful zero output.
+Overhead/RTT/frame-range methods now return Results to expose reached refusals.
 
 `AudioEncoderOpusImpl::Reset()` recreates codec state but does not reset the
 adaptor or its smoothing/scoring history. Disable destroys the current adaptor;
@@ -365,8 +391,8 @@ native state. Signed time arithmetic remains independently guarded.
 
 Written fixtures distinguish a safe advancing amplification from an overflowing
 native result, ignored initialization periods and zero-delta endpoint behavior.
-These fixtures have not yet run. Native artifact compiler provenance and all
-other ANA consuming paths remain gates before public enablement.
+These fixtures have not yet run. Native artifact compiler provenance and the
+new complete production path remain final qualification gates.
 
 ## Controller integer arithmetic preflight
 
@@ -411,17 +437,19 @@ unsafe. For example, a frozen initialized filter can retain its earlier safe
 average after receiving `INT32_MAX`.
 
 Native period setters ignored during initialization are forwarded unchanged.
-After initialization, the bounded component admits rounded alpha in `[0, 1]`,
-and also alpha greater than one at the retained upper millisecond endpoint,
-where every future admitted delta is zero. Amplifying periods with possible
-further advancement remain outside this component's proof. This is not a
-complete native-value admission policy and must not become a public enablement
-path with that gap.
+After initialization, the bounded component also admits finite amplifying alpha
+with advancing clocks: native extrapolation performs nontrapping FP only, and
+the actual returned average is guarded before integer conversion. An overflowed
+or nonfinite result is refused, not normalized. FEC likewise admits its actual
+native estimate before stats/event logging, including the new-format logger's
+float-to-uint32 conversion and artifact-local probability DCHECKs. FEC durations
+retain clock-arithmetic obligations rather than a predicted-average whitelist.
 
 The bitrate-controller proxy retains the exact sparse target/overhead updates
 and only frame changes actually consumed by native `MakeDecision`. It checks a
-positive overhead update even before a target is known, the occupied bitrate
-slot, the selected change-direction offset, the consumed frame divisor, and the
+positive overhead update even before a target is known and the occupied bitrate
+slot in asserting profiles, the selected change-direction offset, the consumed
+frame divisor, and the
 signed target subtraction. It preserves native `size_t` wrap and pinned int
 narrowing. An inactive `INT_MIN` offset or a frame slot ignored before both
 metrics are known does not cause rejection. Native code still computes and
@@ -429,11 +457,12 @@ writes the bitrate; the proxy does not synthesize that result.
 
 Both components use sticky per-operation failure evidence. Their owner must
 serialize calls, translate failures, and retain the original native objects and
-matching construction arguments. Isolated internal probes exercise delegation
-without enabling ANA or mutating an encoder/adaptor. They do not establish
-complete controller-manager, codec, clock-callback or artifact admission.
+matching construction arguments. The owning operation scope now supplies these
+lifetimes, serializes calls, resets only per-operation failures, and records typed
+errors. Isolated probes remain useful historical witnesses, not qualification of
+the newly wired controller-manager, codec, clock-callback or artifact path.
 
-## Requirements before ANA enablement
+## Final ANA qualification obligations
 
 Every consuming operation must preserve retained obligations before unsafe
 native consumption, including encode-driven adaptor updates, overhead changes,
@@ -447,7 +476,8 @@ and receiver frame-range changes. Required guards include:
 - Controller-specific signed overhead products, offset negation, threshold sums,
   target-minus-overhead subtraction, and bitrate field-trial transformations.
 - Safe scoring distances and ordering, including deferred NaN obligations.
-- The SDK prohibition on receiver frame-range changes while ANA is active.
+- The SDK receiver frame-range ordering DCHECK while ANA is active, preserving
+  nonasserting native behavior without hidden teardown or reconstruction.
 - Retained smoother state across adaptor teardown and replacement.
 
 Artifacts using protobuf must ship the pinned generated ANA headers and their

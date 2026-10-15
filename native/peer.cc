@@ -2,6 +2,8 @@
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "api/data_channel_event_observer_interface.h"
 #include "api/transport/bandwidth_estimation_settings.h"
+#include "pulsebeam-webrtc-sys/native/audio_frame_values.h"
+#include "pulsebeam-webrtc-sys/native/audio_device.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/metronome.h"
 #include "pulsebeam-webrtc-sys/native/certificate_generator.h"
@@ -1192,10 +1194,14 @@ struct NativePeerConnectionFactory::State {
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   std::shared_ptr<ReadinessSignal> readiness;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
+  std::vector<std::unique_ptr<NativeAudioDeviceObserver>> device_observers;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
+  std::unique_ptr<NativeAudioDevice> selected_audio_device;
   webrtc::scoped_refptr<webrtc::AudioProcessing> audio_processing;
   FfiAudioProcessingConfig processing_config{};
+  std::unique_ptr<NativeInstalledAudioProcessor> selected_audio_processor;
   std::unique_ptr<NativeInstalledAudioEncoderFactory> audio_encoder;
+  std::unique_ptr<NativeAudioMixer> selected_audio_mixer;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   std::unique_ptr<CertificateGeneratorScope> certificate_generator_scope;
   std::shared_ptr<PeerCallCreationContext> call_creation;
@@ -1239,6 +1245,11 @@ NativePeerConnectionFactory::~NativePeerConnectionFactory() {
     // PulseAudio's ADM must also be destroyed on its construction thread.
     state_->worker_thread->BlockingCall([this] { state_->audio_device = nullptr; });
   }
+  if (state_ && state_->selected_audio_device) {
+    // Release the final standalone retention and its callback registrations on
+    // the original worker, while Rust still retains that worker/environment.
+    state_->selected_audio_device.reset();
+  }
 }
 const std::unique_ptr<NativePeerConnectionFactory::State>&
 NativePeerConnectionFactory::state() const noexcept {
@@ -1268,6 +1279,9 @@ webrtc::Thread* NativePeerConnectionFactory::worker_thread() const noexcept {
 webrtc::scoped_refptr<webrtc::AudioProcessing>
 NativePeerConnectionFactory::audio_processing() const noexcept {
   return state_->audio_processing;
+}
+std::shared_ptr<NativeInstalledAudioProcessor::State> NativePeerConnectionFactory::installed_audio_processing() const noexcept {
+  return state_->selected_audio_processor ? state_->selected_audio_processor->state() : nullptr;
 }
 FfiAudioProcessingConfig NativePeerConnectionFactory::audio_processing_config() const noexcept {
   return state_->processing_config;
@@ -1352,13 +1366,19 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
     bool production_system_clock,
     bool native_audio,
+    const FfiNativeAudioDeviceCreation& native_audio_creation,
+    std::unique_ptr<NativeAudioDevice> audio_device_module,
     bool event_logging,
     const NativeRtcEventLogFactory* event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome,
     const NativeReadiness* readiness,
     const FfiAudioProcessingConfig& processing,
+    std::unique_ptr<NativeAudioMixer> audio_mixer,
+    std::unique_ptr<NativeInstalledAudioProcessor> audio_processor,
     rust::String& error) noexcept {
+  if (audio_device_module && !native_audio) { error = "owning ADM admission: explicit native selection required"; return nullptr; }
+  if (audio_processor && native_audio) { error = "owning APM admission: physical callback failure/publication path is not qualified"; return nullptr; }
   webrtc::PeerConnectionFactoryDependencies dependencies;
   dependencies.env = environment.environment();
   dependencies.network_state_predictor_factory = network_predictor_factory_adapter(std::move(network_predictor_factory));
@@ -1408,27 +1428,42 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_audio_device;
   if (native_audio) {
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO)
+    if (!audio_device_module && !native_audio_creation.helper) {
+      error = "native ADM static Create is declaration-only at the pinned SDK; no entry point is linked and no helper substitution is made";
+      return nullptr;
+    }
     dependencies.worker_thread->BlockingCall([&] {
-      platform_audio_device = webrtc::CreateAudioDeviceModule(
-          *dependencies.env, webrtc::AudioDeviceModule::kPlatformDefaultAudio);
+      if (audio_device_module) {
+        if (audio_device_module->worker() == dependencies.worker_thread) platform_audio_device = audio_device_module->module();
+      } else {
+        const auto layer = static_cast<webrtc::AudioDeviceModule::AudioLayer>(native_audio_creation.layer);
+        platform_audio_device = webrtc::CreateAudioDeviceModule(*dependencies.env, layer, native_audio_creation.bypass);
+      }
     });
+    if (!platform_audio_device && audio_device_module) { error = "owning ADM admission: missing module or construction worker mismatch"; return nullptr; }
     if (!platform_audio_device) {
-      error = "native audio device module unavailable";
+      error = "native audio device module unavailable: selected SDK factory returned null (layer=" + std::to_string(native_audio_creation.layer) + (native_audio_creation.helper ? ", helper)" : ", Module::Create)");
       return nullptr;
     }
     // WebRtcVoiceEngine::Init calls adm_helpers::Init on the worker and
     // RTC_CHECKs the result. Fail gracefully before constructing a peer on
     // hosts without a usable sound service instead of aborting the process.
-    bool audio_initialized = false;
+    std::int32_t initialization_status = -1; bool active_handoff = false;
     dependencies.worker_thread->BlockingCall([&] {
-      audio_initialized = platform_audio_device->Init() == 0;
+      active_handoff = audio_device_module && platform_audio_device->Initialized() &&
+          (platform_audio_device->Playing() || platform_audio_device->Recording());
+      if (!active_handoff) initialization_status = platform_audio_device->Initialized() ? 0 : platform_audio_device->Init();
     });
-    if (!audio_initialized) {
+    if (active_handoff) {
+      dependencies.worker_thread->BlockingCall([&] { platform_audio_device = nullptr; });
+      error = "owning ADM admission: stop recording and playout before engine transport handoff"; return nullptr;
+    }
+    if (initialization_status != 0) {
       // The PulseAudio backend checks destructor thread affinity as well.
       dependencies.worker_thread->BlockingCall([&] {
         platform_audio_device = nullptr;
       });
-      error = "native audio device module initialization failed";
+      error = "native audio device module initialization failed: " + std::to_string(initialization_status);
       return nullptr;
     }
     dependencies.adm = platform_audio_device;
@@ -1461,7 +1496,10 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   }
   auto processing_selection = std::make_shared<AudioProcessingSelection>();
   std::optional<webrtc::AudioProcessing::Config> requested_processing;
-  if (processing.enabled) {
+  if (audio_processor) {
+    processing_selection->module = audio_processor->module();
+    dependencies.audio_processing_builder = webrtc::CustomAudioProcessing(processing_selection->module);
+  } else if (processing.enabled) {
     if (processing.noise_suppression > 4 || processing.gain_control > 4) {
       error = "invalid audio processing configuration";
       return nullptr;
@@ -1490,6 +1528,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     dependencies.audio_processing_builder =
         std::make_unique<RetainedAudioProcessingBuilder>(config, processing_selection);
   }
+  if (audio_mixer) dependencies.audio_mixer = audio_mixer->mixer();
   webrtc::EnableMedia(dependencies);
   auto call_creation = std::make_shared<PeerCallCreationContext>();
   // Wrap the actual selected instance. Do not substitute engines, encoder stream
@@ -1505,6 +1544,14 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     error = "CreateModularPeerConnectionFactory failed";
     return nullptr;
   }
+  if (audio_processor) {
+    std::uint8_t admission_error = 0;
+    worker_thread.thread()->BlockingCall([&] { admission_error = installed_audio_processor_restore(audio_processor->state()); });
+    if (admission_error) {
+      signaling_thread.thread()->BlockingCall([&] { factory = nullptr; });
+      error = "owning APM admission: " + std::to_string(admission_error); return nullptr;
+    }
+  }
   if (requested_processing && processing_selection->module) {
     worker_thread.thread()->BlockingCall([&] {
       processing_selection->module->ApplyConfig(*requested_processing);
@@ -1514,9 +1561,13 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   state->readiness = readiness ? readiness->signal() : nullptr;
   state->headless_audio_device = std::move(headless_audio_device);
   state->audio_device = std::move(platform_audio_device);
+  if (audio_device_module) audio_device_module->installed();
+  state->selected_audio_device = std::move(audio_device_module);
   state->audio_processing = std::move(processing_selection->module);
   state->processing_config = processing;
+  state->selected_audio_processor = std::move(audio_processor);
   state->audio_encoder = std::move(installed_audio_encoder);
+  state->selected_audio_mixer = std::move(audio_mixer);
   state->opus_transformer = audio_encoder ? audio_encoder->opus_transformer() : nullptr;
   state->factory = std::move(factory);
   state->call_creation = std::move(call_creation);
@@ -1781,14 +1832,38 @@ std::unique_ptr<NativeAudioEncoderFailureObserver> factory_audio_encoder_failure
   return audio_installed_encoder_failure_observer(*factory.state()->audio_encoder);
 }
 
+FfiApmConfig factory_audio_processor_config(const NativePeerConnectionFactory& factory, std::uint8_t& error) noexcept {
+  FfiApmConfig result{}; factory.worker_thread()->BlockingCall([&] { result = installed_audio_processor_config(factory.installed_audio_processing(), error); }); return result;
+}
+std::uint8_t factory_audio_processor_apply(const NativePeerConnectionFactory& factory, const FfiApmConfig& config) noexcept {
+  std::uint8_t error = 0; factory.worker_thread()->BlockingCall([&] { error = installed_audio_processor_apply(factory.installed_audio_processing(), config); }); return error;
+}
+std::int32_t factory_audio_processor_reverse(const NativePeerConnectionFactory& factory, std::int32_t rate, std::size_t channels, rust::Slice<std::int16_t> samples, std::uint8_t& error) noexcept {
+  std::int32_t status = 0; factory.worker_thread()->BlockingCall([&] { status = installed_audio_processor_reverse(factory.installed_audio_processing(), rate, channels, samples, error); }); return status;
+}
+std::int32_t factory_audio_processor_delay(const NativePeerConnectionFactory& factory, std::int32_t delay, std::uint8_t& error) noexcept {
+  std::int32_t status = 0; factory.worker_thread()->BlockingCall([&] { status = installed_audio_processor_delay(factory.installed_audio_processing(), delay, error); }); return status;
+}
 FfiAudioProcessingState factory_audio_processing_state(
     const NativePeerConnectionFactory& factory) noexcept {
   FfiAudioProcessingState result{};
+  result.echo_software = result.echo_reported_software = result.echo_platform = -1;
+  result.noise_software = result.noise_platform = -1;
+  result.gain_software = result.gain_platform = -1;
+  result.highpass_software = result.highpass_platform = -1;
   if (!factory.factory() || !factory.state()->worker_thread) return result;
   const auto encode = [](const std::optional<bool>& value) -> std::int8_t {
     return value ? (*value ? 1 : 0) : -1;
   };
   factory.state()->worker_thread->BlockingCall([&] {
+    if (installed_audio_processor_reentry(factory.installed_audio_processing())) {
+      result.binding_error = 21; result.has_module = bool(factory.audio_processing()); return;
+    }
+    bool selected_echo_factory = false;
+    if (factory.installed_audio_processing()) {
+      selected_echo_factory = installed_audio_processor_has_echo_factory(factory.installed_audio_processing(), result.binding_error);
+      if (result.binding_error) { result.has_module = bool(factory.audio_processing()); return; }
+    }
     const auto state = factory.factory()->GetAudioProcessingState();
     result.has_module = state.has_audio_processing_module;
     const auto fill = [&](const webrtc::AudioProcessingComponentState& component,
@@ -1802,6 +1877,20 @@ FfiAudioProcessingState factory_audio_processing_state(
     fill(state.echo_cancellation, result.echo_software,
          result.echo_platform_available, result.echo_platform,
          result.echo_effective);
+    result.echo_reported_software = result.echo_software;
+    result.echo_reported_effective = result.echo_effective;
+    if (selected_echo_factory && result.has_module) {
+      // The pin's controller report reads only Config.enabled, whereas APM's
+      // NeedEchoController also includes the actual unique factory input. Keep
+      // the SDK report above and expose the selected software path accurately.
+      result.echo_software = 1;
+      const auto& echo = state.echo_cancellation;
+      const bool platform_on = echo.platform_active.value_or(
+          echo.platform_available && echo.platform_resolved.value_or(false));
+      result.echo_effective = static_cast<std::uint8_t>(platform_on
+          ? webrtc::AudioProcessingImplementation::kSoftwareAndPlatform
+          : webrtc::AudioProcessingImplementation::kSoftware);
+    }
     fill(state.noise_suppression, result.noise_software,
          result.noise_platform_available, result.noise_platform,
          result.noise_effective);
@@ -1815,6 +1904,12 @@ FfiAudioProcessingState factory_audio_processing_state(
   return result;
 }
 
+std::int32_t factory_register_audio_device_observer(const NativePeerConnectionFactory& factory, std::unique_ptr<NativeAudioDeviceObserver> observer) noexcept {
+  auto module = factory.audio_device(); if (!module) return -1;
+  std::int32_t status = -1;
+  factory.worker_thread()->BlockingCall([&] { status = module->SetObserver(observer.get()); if (!status && observer) factory.state()->device_observers.push_back(std::move(observer)); });
+  return status;
+}
 bool factory_audio_devices(const NativePeerConnectionFactory& factory,
                            bool recording, rust::Vec<FfiAudioDevice>& devices,
                            rust::String& error) noexcept {

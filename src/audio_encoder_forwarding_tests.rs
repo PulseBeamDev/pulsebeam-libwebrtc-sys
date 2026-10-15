@@ -146,7 +146,7 @@ fn sdk_void_controls_keep_actual_opus_guards_and_first_failure_after_retirement(
 }
 
 #[test]
-fn missing_clock_and_pending_ana_admission_are_not_silent_sdk_success() {
+fn missing_clock_is_not_silent_sdk_loss_or_ana_success() {
     let env = Environment::builder().build().unwrap();
     let factory = AudioEncoderFactory::builtin().unwrap();
     let format = SdpAudioFormat::new(b"opus".to_vec(), 48000, 2);
@@ -174,7 +174,7 @@ fn missing_clock_and_pending_ana_admission_are_not_silent_sdk_success() {
         observer.failure(),
         Some(AudioEncoderSdkFailure {
             operation: AudioEncoderSdkOperation::ENABLE_ADAPTOR,
-            error: AudioEncoderError::UnsafeAdaptor,
+            error: AudioEncoderError::UnsafeClock,
         })
     );
     // The actual underlying encoder continues to produce real codec output;

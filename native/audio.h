@@ -74,6 +74,7 @@ bool rtp_transceiver_set_audio_codec_preferences(
     const NativePeerConnectionFactory& factory,
     rust::Slice<const FfiCodecFormat> formats, std::uint8_t& error_type,
     rust::String& error) noexcept;
+bool audio_source_capture_active(const NativeAudioSource& source) noexcept;
 bool close_audio_source(const NativeAudioSource& source) noexcept;
 bool audio_source_push_pcm(const NativeAudioSource& source,
                            rust::Slice<const std::int16_t> samples,
@@ -81,7 +82,7 @@ bool audio_source_push_pcm(const NativeAudioSource& source,
                            std::uint8_t channels,
                            std::int64_t timestamp_us,
                            std::uint8_t& failure,
-                           std::int32_t& processing_error) noexcept;
+                           std::int32_t& processing_error, std::uint8_t& wrapper_error) noexcept;
 bool audio_source_push_opus(const NativeAudioSource& source,
                             rust::Slice<const std::uint8_t> payload,
                             std::uint32_t rtp_timestamp,

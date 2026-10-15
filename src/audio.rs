@@ -93,6 +93,8 @@ pub enum AudioFrameError {
     Released,
     /// Actual native ProcessStream error. No frame is delivered on failure.
     ProcessingFailed(i32),
+    /// Binding admission or callback failure. No PCM reached the source sinks.
+    ProcessingAdmission(crate::AudioProcessorError),
     /// The custom capture path lacks required echo or microphone feedback.
     UnsupportedProcessing,
     /// Same-source callback recursion was refused before acquiring source locks.
@@ -380,7 +382,7 @@ impl AudioSource {
             frame.timestamp_us,
             frame.samples.len(),
         )?;
-        let (mut failure, mut processing_error) = (0, 0);
+        let (mut failure, mut processing_error, mut wrapper_error) = (0, 0, 0);
         if ffi::audio_source_push_pcm(
             self.native(),
             &frame.samples,
@@ -389,6 +391,7 @@ impl AudioSource {
             frame.timestamp_us,
             &mut failure,
             &mut processing_error,
+            &mut wrapper_error,
         ) {
             Ok(())
         } else {
@@ -396,12 +399,19 @@ impl AudioSource {
                 1 => AudioFrameError::ProcessingFailed(processing_error),
                 2 => AudioFrameError::UnsupportedProcessing,
                 3 => AudioFrameError::ReentrantCall,
+                4 => AudioFrameError::ProcessingAdmission(
+                    crate::AudioProcessingModule::admission(wrapper_error)
+                        .expect_err("nonzero binding admission code"),
+                ),
                 _ => AudioFrameError::Released,
             })
         }
     }
 
     pub fn close(&mut self) -> Result<(), AudioFrameError> {
+        if ffi::audio_source_capture_active(self.native()) {
+            return Err(AudioFrameError::ReentrantCall);
+        }
         if !self.inner.closed.replace(true) && !ffi::close_audio_source(self.native()) {
             return Err(AudioFrameError::Released);
         }

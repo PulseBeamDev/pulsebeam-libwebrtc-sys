@@ -250,6 +250,8 @@ fn owning_real_frame_survives_decoder_retirement_and_migrated_use() {
     assert_eq!(product.channels(), Ok(1));
     assert_eq!(product.error_code(), Ok(0));
     assert_eq!(product.packet_duration(&payload), Ok(160));
+    // The selected native PCMU decoder overrides PacketDurationRedundant and
+    // delegates to PacketDuration; kNotImplemented is only the base default.
     assert_eq!(product.redundant_packet_duration(&payload), Ok(160));
     assert_eq!(product.packet_has_fec(&payload), Ok(false));
     let frame = one_frame(&product, payload);

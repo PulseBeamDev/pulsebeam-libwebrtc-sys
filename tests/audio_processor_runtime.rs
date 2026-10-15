@@ -6,10 +6,11 @@ fn stream() -> AudioProcessingStream {
         channels: 1,
     }
 }
-fn processor(config: &AudioProcessorConfig) -> AudioProcessor {
-    AudioProcessor::builtin_with_config(&Environment::builder().build().unwrap(), config).unwrap()
+fn processor(config: &AudioProcessorConfig) -> AudioProcessingModule {
+    AudioProcessingModule::builtin_with_config(&Environment::builder().build().unwrap(), config)
+        .unwrap()
 }
-fn capture(p: &mut AudioProcessor) -> Vec<i16> {
+fn capture(p: &mut AudioProcessingModule) -> Vec<i16> {
     let mut data = vec![1000; 169];
     assert_eq!(
         p.process_interleaved(stream(), &mut data).unwrap(),

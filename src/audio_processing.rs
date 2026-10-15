@@ -121,11 +121,19 @@ impl ProcessingComponentState {
     }
 }
 
-/// Snapshot of the factory-wide AEC, NS, AGC and high-pass-filter status.
+/// Snapshot of factory-wide AEC, NS, AGC and high-pass-filter status. Echo
+/// includes an owning selected controller independently of the native config bit;
+/// the SDK's uncorrected config-derived echo report remains available separately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioProcessingState {
+    /// A failed/reentrant snapshot has unknown components, not fabricated state.
+    pub failure: Option<crate::AudioProcessorError>,
     pub has_software_module: bool,
     pub echo_cancellation: ProcessingComponentState,
+    /// Exact SDK echo diagnostic before accounting for the owning factory input.
+    /// It is config-derived and can report disabled while a selected controller
+    /// is processing. No platform observation is changed by the correction.
+    pub native_reported_echo_cancellation: ProcessingComponentState,
     pub noise_suppression: ProcessingComponentState,
     pub gain_control: ProcessingComponentState,
     pub high_pass_filter: ProcessingComponentState,
@@ -133,13 +141,32 @@ pub struct AudioProcessingState {
 
 impl From<ffi::FfiAudioProcessingState> for AudioProcessingState {
     fn from(s: ffi::FfiAudioProcessingState) -> Self {
+        if let Some(failure) = crate::AudioProcessingModule::admission(s.binding_error).err() {
+            let unknown = ProcessingComponentState::from_native(-1, false, -1, 0);
+            return Self {
+                failure: Some(failure),
+                has_software_module: s.has_module,
+                echo_cancellation: unknown,
+                native_reported_echo_cancellation: unknown,
+                noise_suppression: unknown,
+                gain_control: unknown,
+                high_pass_filter: unknown,
+            };
+        }
         Self {
+            failure: crate::AudioProcessingModule::admission(s.binding_error).err(),
             has_software_module: s.has_module,
             echo_cancellation: ProcessingComponentState::from_native(
                 s.echo_software,
                 s.echo_platform_available,
                 s.echo_platform,
                 s.echo_effective,
+            ),
+            native_reported_echo_cancellation: ProcessingComponentState::from_native(
+                s.echo_reported_software,
+                s.echo_platform_available,
+                s.echo_platform,
+                s.echo_reported_effective,
             ),
             noise_suppression: ProcessingComponentState::from_native(
                 s.noise_software,

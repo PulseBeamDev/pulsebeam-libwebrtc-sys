@@ -6,9 +6,9 @@ fn stream(sample_rate_hz: i32, channels: usize) -> AudioProcessingStream {
         channels,
     }
 }
-fn processor(config: AudioProcessingConfig) -> AudioProcessor {
+fn processor(config: AudioProcessingConfig) -> AudioProcessingModule {
     let environment = Environment::builder().build().unwrap();
-    AudioProcessor::builtin(&environment, config).unwrap()
+    AudioProcessingModule::builtin(&environment, config).unwrap()
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn unsafe_trials_are_refused_without_replacing_environment_or_live_config() {
         )
         .unwrap();
     let env = Environment::builder().field_trials(trials).build().unwrap();
-    let mut p = AudioProcessor::builtin(&env, AudioProcessingConfig::default()).unwrap();
+    let mut p = AudioProcessingModule::builtin(&env, AudioProcessingConfig::default()).unwrap();
     let analog = AudioProcessingConfig {
         gain_control: GainControl::AdaptiveAnalog,
         ..Default::default()
@@ -209,7 +209,7 @@ fn unsafe_trials_are_refused_without_replacing_environment_or_live_config() {
         Err(AudioProcessorError::UnsafeFieldTrial)
     );
     assert!(matches!(
-        AudioProcessor::builtin(&env, analog),
+        AudioProcessingModule::builtin(&env, analog),
         Err(AudioProcessorError::UnsafeFieldTrial)
     ));
     let echo = AudioProcessingConfig {
@@ -221,7 +221,7 @@ fn unsafe_trials_are_refused_without_replacing_environment_or_live_config() {
         Err(AudioProcessorError::UnsafeFieldTrial)
     );
     assert!(matches!(
-        AudioProcessor::builtin(&env, echo),
+        AudioProcessingModule::builtin(&env, echo),
         Err(AudioProcessorError::UnsafeFieldTrial)
     ));
     let mut pcm = vec![900; 80];
@@ -244,8 +244,8 @@ fn unsafe_trials_are_refused_without_replacing_environment_or_live_config() {
     )
     .unwrap();
     let env = Environment::builder().field_trials(safe).build().unwrap();
-    assert!(AudioProcessor::builtin(&env, analog).is_ok());
-    assert!(AudioProcessor::builtin(&env, echo).is_ok());
+    assert!(AudioProcessingModule::builtin(&env, analog).is_ok());
+    assert!(AudioProcessingModule::builtin(&env, echo).is_ok());
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn aec_numeric_parser_representations_are_guarded_before_native_scan() {
         trials.set(name, group).unwrap();
         let env = Environment::builder().field_trials(trials).build().unwrap();
         assert!(matches!(
-            AudioProcessor::builtin(
+            AudioProcessingModule::builtin(
                 &env,
                 AudioProcessingConfig {
                     echo_cancellation: true,

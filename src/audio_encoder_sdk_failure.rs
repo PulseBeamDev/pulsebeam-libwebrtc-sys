@@ -14,6 +14,10 @@ impl AudioEncoderSdkOperation {
     pub const ENABLE_ADAPTOR: Self = Self(7);
     pub const QUERY_ENCODER: Self = Self(8);
     pub const CREATE_ENCODER: Self = Self(9);
+    pub const ENCODE_ADAPTATION: Self = Self(10);
+    pub const OVERHEAD: Self = Self(11);
+    pub const RTT: Self = Self(12);
+    pub const RECEIVER_FRAME_RANGE: Self = Self(13);
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioEncoderSdkFailure {

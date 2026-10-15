@@ -2,7 +2,6 @@
   "schema_version": 4,
   "bridge": {
     "identity": "pulsebeam-webrtc-sys-bridge-v2",
-    "native_adapter_sha256": "316bed6c1fa72c7509e6fe2c9cd86af71a02fc12f3d9621d64438024b7859ee4",
     "cxx": {
       "version": "1.0.200",
       "runtime_package_sha256": "2d93a9baeb9798b2e8ff0de24463b9e5cf9a0dd0a88f5ea02afc9ea35e7abae7",
@@ -10,10 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259",
-      "generated_header_sha256": "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555",
-      "generated_source_sha256": "b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a"
-    }
+      "bridge_source_sha256": "5dd15a9e42e18f3a279a6b2127c706f69bee03a7071754af877ab420543cdf54",
+      "generated_header_sha256": "7bf6377e3e16f5a2aa5aeb26afe28a464502148bf39059649a4ebcaf094c09c8",
+      "generated_source_sha256": "9a5999e97df519e6d2f562e864435bf90865a6f61f2e98a9fbf2981c175ef206"
+    },
+    "native_adapter_sha256": "0be77f4e4f8c4a054ccb46c169ccc966c53c27b4db4657e9ec40c5655c35e85b"
   },
   "sources": {
     "webrtc": {
@@ -32,36 +32,8 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "434761426fb3106deb8a3ec59e945eb4e7666791f23018cc1e2e1f63146d4ec5",
-  "abi": {
-    "toolchain": "artifact-support",
-    "cxx_standard": "C++20",
-    "cxx_runtime": "bundled libc++ and libc++abi",
-    "crt": "glibc",
-    "minimum_runtime": "glibc 2.31 (Debian Bullseye sysroot)"
-  },
-  "archive": {
-    "member": "lib/libwebrtc.a",
-    "name": "webrtc",
-    "sha256": "cb28193bbd35cd3eb488869043bd0d03dbd528b0301197bd57ebd357065afaf2"
-  },
-  "links": [
-    {
-      "kind": "dylib",
-      "name": "pthread"
-    }
-  ],
-  "licenses": {
-    "sha256": "6a31ef5fa1f718cf694c85290e671f9007f969509adb4f56f3e3b579e06dd0f2",
-    "files": [
-      {
-        "path": "LICENSES/NOTICE.txt",
-        "sha256": "c0c56958ef8be5c1979366896b7e0c7206949a5aa2b23f51429c7f56b10990d3"
-      }
-    ]
-  },
   "native_configuration": {
-    "native_adapter_sha256": "316bed6c1fa72c7509e6fe2c9cd86af71a02fc12f3d9621d64438024b7859ee4",
+    "native_adapter_sha256": "0be77f4e4f8c4a054ccb46c169ccc966c53c27b4db4657e9ec40c5655c35e85b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -70,9 +42,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "a635bde8d7d61dadf02ae9d4ae5fdd253c380fbe814af2449e98a98705705259",
-      "generated_header_sha256": "b3a9f58b2faf051ead55c83637b3a6c2dc4cc5eb2b344c9484a414deedb27555",
-      "generated_source_sha256": "b598b6e761b3380e32b8980a1a57dcad3da6fe2d3548350d9da2d3f53123145a"
+      "bridge_source_sha256": "5dd15a9e42e18f3a279a6b2127c706f69bee03a7071754af877ab420543cdf54",
+      "generated_header_sha256": "7bf6377e3e16f5a2aa5aeb26afe28a464502148bf39059649a4ebcaf094c09c8",
+      "generated_source_sha256": "9a5999e97df519e6d2f562e864435bf90865a6f61f2e98a9fbf2981c175ef206"
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
@@ -81,29 +53,85 @@
     "flavor": "core",
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu",
-    "toolchain": "artifact-support",
+    "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "gn_args": {
-      "rtc_use_h264": "true",
-      "proprietary_codecs": "true",
+      "is_debug": "false",
+      "is_component_build": "false",
+      "use_rtti": "false",
+      "rtc_include_tests": "false",
+      "rtc_build_examples": "false",
+      "rtc_build_tools": "false",
       "rtc_include_opus": "true",
       "rtc_build_opus": "true",
       "rtc_build_libvpx": "true",
       "rtc_libvpx_build_vp9": "true",
       "rtc_include_builtin_audio_codecs": "true",
       "rtc_include_dav1d_in_internal_decoder_factory": "true",
+      "symbol_level": "0",
+      "use_siso": "false",
+      "treat_warnings_as_errors": "false",
+      "proprietary_codecs": "true",
+      "ffmpeg_branding": "Chrome",
+      "rtc_use_h264": "true",
+      "rtc_system_openh264": "false",
       "rtc_enable_protobuf": "true",
+      "rtc_include_internal_audio_device": "false",
+      "cc_wrapper": "/home/linuxbrew/.linuxbrew/opt/python@3.15/bin/python3.15 /home/lukas/wt/pulsebeam-libwebrtc-sys/audio/tools/native_cc_wrapper.py --contract-sha256 75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d /home/linuxbrew/.linuxbrew/bin/sccache",
       "target_os": "linux",
       "target_cpu": "x64",
-      "rtc_system_openh264": "false",
-      "ffmpeg_branding": "Chrome",
-      "rtc_include_internal_audio_device": "false",
+      "use_sysroot": "true",
+      "target_sysroot": "//build/linux/debian_bullseye_amd64-sysroot",
+      "use_custom_libcxx": "true",
       "rtc_use_x11": "false",
-      "rtc_use_pipewire": "false",
-      "cc_wrapper": "python tools/native_cc_wrapper.py --contract-sha256 75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d sccache"
+      "rtc_use_pipewire": "false"
     },
     "cxx_defines": [
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D_FORTIFY_SOURCE=3",
+      "-D_FILE_OFFSET_BITS=64",
+      "-D_LARGEFILE_SOURCE",
+      "-D_LARGEFILE64_SOURCE",
+      "-D_GNU_SOURCE",
+      "-DCR_CLANG_REVISION=\"llvmorg-23-init-10931-g20b6ec66-11\"",
+      "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE",
+      "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+      "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+      "-D_LIBCPP_INSTRUMENTED_WITH_ASAN=0",
+      "-DCR_LIBCXX_REVISION=5abc7f839700f0f17338434e1c1c6a8c87c00c11",
+      "-DCR_SYSROOT_KEY=20250129T203412Z-2",
+      "-DUSE_UDEV",
+      "-DUSE_AURA=1",
+      "-DUSE_GLIB=1",
+      "-DUSE_OZONE=1",
+      "-DNDEBUG",
+      "-DNVALGRIND",
+      "-DDYNAMIC_ANNOTATIONS_ENABLED=0",
+      "-DWEBRTC_ENABLE_PROTOBUF=1",
+      "-DWEBRTC_STRICT_FIELD_TRIALS=0",
+      "-DRTC_ENABLE_VP9",
+      "-DRTC_ENABLE_H265",
+      "-DRTC_DAV1D_IN_INTERNAL_DECODER_FACTORY",
+      "-DWEBRTC_HAVE_SCTP",
+      "-DWEBRTC_USE_H264",
+      "-DWEBRTC_ENCODER_PSNR_STATS",
+      "-DWEBRTC_LIBRARY_IMPL",
+      "-DPROTOBUF_ENABLE_DEBUG_LOGGING_MAY_LEAK_PII=0",
+      "-DWEBRTC_ENABLE_AVX2",
+      "-DWEBRTC_DEPRECATE_PLAN_B",
+      "-DWEBRTC_NON_STATIC_TRACE_EVENT_HANDLERS=0",
+      "-DWEBRTC_POSIX",
       "-DWEBRTC_LINUX",
-      "-DNDEBUG"
+      "-DABSL_ALLOCATOR_NOTHROW=1",
+      "-DCHROMIUM",
+      "-DLIBYUV_DISABLE_NEON",
+      "-DLIBYUV_DISABLE_SVE",
+      "-DLIBYUV_DISABLE_SME",
+      "-DLIBYUV_DISABLE_LSX",
+      "-DLIBYUV_DISABLE_LASX",
+      "-DGOOGLE_PROTOBUF_NO_RTTI",
+      "-DPROTOBUF_INTERNAL_BOUNDS_CHECK_MODE_ABORT",
+      "-DHAVE_PTHREAD"
     ],
     "floating_point": {
       "final_compiler_flags": [
@@ -112,5 +140,69 @@
       ],
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
     }
+  },
+  "native_configuration_sha256": "4e295653e76197f5fe9ae9d602ce9abdf081c6ffd0cfa0bea376048b288f8680",
+  "abi": {
+    "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
+    "cxx_standard": "C++20",
+    "cxx_runtime": "bundled libc++ and libc++abi",
+    "crt": "glibc",
+    "minimum_runtime": "glibc 2.31 (Debian Bullseye sysroot)"
+  },
+  "archive": {
+    "member": "lib/libwebrtc.a",
+    "name": "webrtc",
+    "sha256": "bc523a578859f50633ac96eea4280786f08096c346972510129e1747f9845a42"
+  },
+  "links": [
+    {
+      "kind": "link_arg",
+      "name": "-fuse-ld=lld"
+    },
+    {
+      "kind": "dylib",
+      "name": "pthread"
+    },
+    {
+      "kind": "dylib",
+      "name": "dl"
+    },
+    {
+      "kind": "dylib",
+      "name": "rt"
+    },
+    {
+      "kind": "dylib",
+      "name": "m"
+    }
+  ],
+  "licenses": {
+    "sha256": "4224f8307e774a8b00f30ffefdf1a3d237cfa2d5e7d06a7fa5085d8bf2258094",
+    "files": [
+      {
+        "path": "LICENSES/CXX-APACHE-2.0.txt",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "LICENSES/CXX-MIT.txt",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      },
+      {
+        "path": "LICENSES/LICENSE.md",
+        "sha256": "5dac3fc560689dd9fcdbc0c062b87f542fd73e72899fc6dbf0f9b6ae9718d508"
+      },
+      {
+        "path": "LICENSES/PATENTS",
+        "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145"
+      },
+      {
+        "path": "LICENSES/REPOSITORY-APACHE-2.0.txt",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      {
+        "path": "LICENSES/WEBRTC-BSD.txt",
+        "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482"
+      }
+    ]
   }
 }

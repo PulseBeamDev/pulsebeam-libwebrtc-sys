@@ -6,6 +6,7 @@
 
 #include "api/scoped_refptr.h"
 #include "rust/cxx.h"
+#include "pulsebeam-webrtc-sys/native/audio_processor.h"
 
 namespace webrtc {
 class AudioDeviceModule;
@@ -44,6 +45,7 @@ struct FfiFactoryOptions;
 struct FfiCryptoOptions;
 struct FfiOfferAnswerOptions;
 struct FfiAudioDevice;
+struct FfiNativeAudioDeviceCreation;
 struct FfiAudioProcessingConfig;
 struct FfiAudioProcessingState;
 class NativeAudioEncoderFailureObserver;
@@ -51,6 +53,9 @@ struct FfiDescriptionSnapshot;
 struct FfiPeerIceSnapshot;
 struct FfiPeerEvent;
 struct FfiPeerEventObservation;
+class NativeAudioMixer;
+class NativeAudioDeviceObserver;
+class NativeAudioDevice;
 class NativeAudioDecoderFactory;
 class NativeAudioEncoderFactory;
 class NativeDataChannel;
@@ -127,6 +132,7 @@ public:
   webrtc::scoped_refptr<webrtc::AudioProcessing>
   audio_processing() const noexcept;
   FfiAudioProcessingConfig audio_processing_config() const noexcept;
+  std::shared_ptr<NativeInstalledAudioProcessor::State> installed_audio_processing() const noexcept;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule>
   audio_device() const noexcept;
   std::shared_ptr<ReadinessSignal> readiness() const noexcept;
@@ -176,11 +182,11 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoEncoderFactory *video_encoder,
     const NativeVideoDecoderFactory *video_decoder,
     rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
-    bool production_system_clock, bool native_audio, bool event_logging,
+    bool production_system_clock, bool native_audio, const FfiNativeAudioDeviceCreation& native_audio_creation, std::unique_ptr<NativeAudioDevice> audio_device_module, bool event_logging,
     const NativeRtcEventLogFactory *event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome, const NativeReadiness *readiness,
-    const FfiAudioProcessingConfig &processing, rust::String &error) noexcept;
+    const FfiAudioProcessingConfig &processing, std::unique_ptr<NativeAudioMixer> audio_mixer, std::unique_ptr<NativeInstalledAudioProcessor> audio_processor, rust::String &error) noexcept;
 std::unique_ptr<NativeAudioEncoderFailureObserver> factory_audio_encoder_failure_observer(
     const NativePeerConnectionFactory&) noexcept;
 FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept;
@@ -218,8 +224,13 @@ FfiCryptoOptions crypto_update_key_exchange_groups(
     rust::Slice<const std::uint16_t> disabled) noexcept;
 void factory_set_options(const NativePeerConnectionFactory &factory,
                          const FfiFactoryOptions &options) noexcept;
+FfiApmConfig factory_audio_processor_config(const NativePeerConnectionFactory&, std::uint8_t&) noexcept;
+std::uint8_t factory_audio_processor_apply(const NativePeerConnectionFactory&, const FfiApmConfig&) noexcept;
+std::int32_t factory_audio_processor_reverse(const NativePeerConnectionFactory&, std::int32_t, std::size_t, rust::Slice<std::int16_t>, std::uint8_t&) noexcept;
+std::int32_t factory_audio_processor_delay(const NativePeerConnectionFactory&, std::int32_t, std::uint8_t&) noexcept;
 FfiAudioProcessingState factory_audio_processing_state(
     const NativePeerConnectionFactory &factory) noexcept;
+std::int32_t factory_register_audio_device_observer(const NativePeerConnectionFactory&, std::unique_ptr<NativeAudioDeviceObserver>) noexcept;
 bool factory_audio_devices(const NativePeerConnectionFactory &factory,
                            bool recording, rust::Vec<FfiAudioDevice> &devices,
                            rust::String &error) noexcept;

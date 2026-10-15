@@ -77,6 +77,7 @@ impl ProductionSession {
             channels: std::mem::take(&mut self.channels),
             video_sinks: std::mem::take(&mut self.video_sinks),
             audio_sinks: std::mem::take(&mut self.audio_sinks),
+            pcm_sinks: std::mem::take(&mut self.pcm_sinks),
             track_observers: std::mem::take(&mut self.track_observers),
             stream_observers: std::mem::take(&mut self.stream_observers),
             media_streams: std::mem::take(&mut self.media_streams),

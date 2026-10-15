@@ -29,6 +29,23 @@ pub enum AudioProcessingRuntimeSetting {
     CaptureOutputUsed(bool),
 }
 impl AudioProcessingRuntimeSetting {
+    pub(crate) fn from_ffi(f: ffi::FfiApmRuntimeSetting) -> Option<Self> {
+        Some(match f.kind {
+            0 => Self::Unspecified,
+            1 => Self::CapturePreGain(f.float_value),
+            2 => Self::CapturePostGain(f.float_value),
+            3 => Self::CompressionGainDb(f.int_value),
+            4 => Self::CaptureFixedPostGainDb(f.float_value),
+            5 => Self::PlayoutVolumeChange(f.int_value),
+            6 => Self::CustomRenderSetting(f.float_value),
+            7 => Self::PlayoutAudioDeviceChange(AudioPlayoutDeviceInfo {
+                id: f.device_id,
+                max_volume: f.device_max_volume,
+            }),
+            8 => Self::CaptureOutputUsed(f.bool_value),
+            _ => return None,
+        })
+    }
     pub(crate) fn ffi(self) -> ffi::FfiApmRuntimeSetting {
         let mut f = ffi::FfiApmRuntimeSetting {
             kind: 0,
