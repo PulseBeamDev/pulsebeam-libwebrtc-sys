@@ -129,6 +129,8 @@ private:
   std::unique_ptr<State> state_;
 };
 
+bool factory_requires_deferred_teardown(const NativePeerConnectionFactory&) noexcept;
+
 class NativePeerConnection final {
 public:
   struct State;

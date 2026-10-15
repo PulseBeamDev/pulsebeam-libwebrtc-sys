@@ -116,6 +116,10 @@ application owner executor. All mutations require `&mut self`; peers, channels,
 encoded sources, RTP handles, DTMF senders, transports and sinks stay private. Copyable session IDs and
 owned event/frame values are the application boundary, so an async actor may
 retain the session across awaits and migrate between executor threads.
+Final drop from an SDK callback moves the entire private resource graph to a
+cleanup caller, allowing the callback to return before its native roles retire.
+That cleanup is asynchronous; ordinary caller-thread drop remains synchronous.
+The cleanup caller does not execute application operations or controlled work.
 
 Use `ProductionSession::new(ProductionSessionConfig::default())` for encoded
 Opus and data channels. An optional `video_format` selects direct encoded H.264

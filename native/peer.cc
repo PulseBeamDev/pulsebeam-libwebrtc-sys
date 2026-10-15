@@ -1110,6 +1110,17 @@ webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
 NativePeerConnectionFactory::factory() const noexcept {
   return state_->factory;
 }
+bool factory_requires_deferred_teardown(const NativePeerConnectionFactory& factory) noexcept {
+  auto* thread = webrtc::Thread::Current();
+  const auto& state = *factory.state();
+  if (thread && (thread == state.network_thread || thread == state.worker_thread ||
+                 thread == state.signaling_thread)) return true;
+  // Ordinary auto-wrapped caller Threads remain callers. Codec/custom SDK
+  // queues can run off those threads and still prohibit reentrant teardown.
+  auto* queue = webrtc::TaskQueueBase::Current();
+  return queue && queue != static_cast<webrtc::TaskQueueBase*>(thread);
+}
+
 webrtc::Thread* NativePeerConnectionFactory::signaling_thread() const noexcept {
   return state_->signaling_thread;
 }

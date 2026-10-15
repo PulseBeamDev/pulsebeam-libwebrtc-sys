@@ -24,6 +24,8 @@ use crate::{
     VideoCodecFormat, VideoRateControl, readiness::Readiness,
 };
 
+#[path = "production_cleanup.rs"]
+mod cleanup;
 #[path = "production_connectivity.rs"]
 mod connectivity;
 #[path = "production_media.rs"]
@@ -180,6 +182,9 @@ pub enum SessionEvent {
 /// uses the engine's existing signaling/worker/network roles, not a second
 /// application owner executor. Controlled worlds and legacy local handles stay
 /// non-Send and cannot be imported into this graph.
+/// Final drop from an SDK callback transfers the whole graph to a private
+/// cleanup caller, so callback retirement precedes native role destruction.
+/// This cleanup is asynchronous only on SDK callback roles.
 ///
 /// ```
 /// fn assert_send<T: Send>() {}
@@ -213,7 +218,7 @@ pub struct ProductionSession {
     sources: HashMap<SessionSourceId, Source>,
     peers: HashMap<SessionPeerId, Peer>,
     input: Option<EncodedVideoInput>,
-    factory: PeerConnectionFactory,
+    factory: cleanup::CaptiveFactory,
     readiness: Arc<Readiness>,
     closed: bool,
     _exclusive: PhantomData<Cell<()>>,
@@ -229,6 +234,8 @@ pub struct ProductionSession {
 // engine role threads (including the bypass-proxy SDP initiation overloads).
 // Only the independently synchronized Readiness and codec broker states cross
 // callback threads. Drop tears down all dependents before the role threads.
+// If the final owner is released by an SDK-thread Waker, the entire graph moves
+// once to the cleanup caller; no Rc alias remains in the emptied old owner.
 // This rationale does NOT apply to any individual legacy/local handle.
 unsafe impl Send for ProductionSession {}
 
@@ -551,6 +558,7 @@ impl ProductionSession {
     }
 
     fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
+        cleanup::prepare()?;
         let ProductionSessionBuilder {
             config,
             audio_encoder_factory,
@@ -708,7 +716,7 @@ impl ProductionSession {
             sources: HashMap::new(),
             peers: HashMap::new(),
             input,
-            factory,
+            factory: cleanup::CaptiveFactory::new(factory),
             readiness,
             closed: false,
             _exclusive: PhantomData,
@@ -2925,6 +2933,13 @@ impl ProductionSession {
 
 impl Drop for ProductionSession {
     fn drop(&mut self) {
+        if self.factory.is_empty() {
+            return;
+        }
+        if self.factory.requires_deferred_teardown() {
+            cleanup::defer(self.take_for_cleanup());
+            return;
+        }
         let _ = self.shutdown();
         // Field order releases observers/sinks, RTP handles, sources and peers
         // before the factory releases its existing engine role threads.

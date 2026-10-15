@@ -3425,6 +3425,7 @@ mod ffi {
         type NativeDecodedImageCallback;
         type NativeCertificate;
         type NativePeerConnectionFactory;
+        fn factory_requires_deferred_teardown(factory: &NativePeerConnectionFactory) -> bool;
         type NativePeerConnection;
         type NativeDataChannel;
         type NativeScreenCapture;

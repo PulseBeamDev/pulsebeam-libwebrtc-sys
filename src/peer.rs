@@ -1122,6 +1122,9 @@ impl FactoryInner {
 pub struct PeerConnectionFactory(Rc<FactoryInner>);
 
 impl PeerConnectionFactory {
+    pub(crate) fn requires_deferred_teardown(&self) -> bool {
+        ffi::factory_requires_deferred_teardown(self.native())
+    }
     pub fn clock_timestamp(&self) -> crate::Timestamp {
         self.0._environment.timestamp()
     }
