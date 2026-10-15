@@ -8,6 +8,9 @@ pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplif
 mod audio_processor;
 mod audio_processor_runtime;
 mod audio_processor_dump;
+mod audio_processor_caller_dump;
+pub use audio_processor_caller_dump::{AudioProcessingDump, AudioProcessingDumpProvider, AudioProcessingDumpEvent, AudioProcessingDumpSamples, AudioProcessingDumpConfig, AudioProcessingDumpState, AudioProcessingDumpOperation, AudioProcessingDumpFailure, AudioProcessingDumpFailureKind, AudioProcessingDumpFailureObserver};
+use audio_processor_caller_dump::{RustCallerApmDump, apm_dump_dispose, apm_dump_initialize, apm_dump_audio, apm_dump_state, apm_dump_capture, apm_dump_runtime, apm_dump_config};
 use audio_processor_dump::{RustApmDumpWorker, apm_dump_worker_queue};
 pub use audio_processor_runtime::{AudioPlayoutDeviceInfo, AudioProcessingRuntimeSetting};
 pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingStatistics};
@@ -2587,7 +2590,34 @@ mod ffi {
         message: String,
     }
 
+    struct FfiApmDumpConfig {
+        aec_enabled: bool,
+        aec_delay_agnostic_enabled: bool,
+        aec_drift_compensation_enabled: bool,
+        aec_extended_filter_enabled: bool,
+        aec_suppression_level: i32,
+        agc_enabled: bool,
+        agc_mode: i32,
+        agc_limiter_enabled: bool,
+        hpf_enabled: bool,
+        ns_enabled: bool,
+        ns_level: i32,
+        transient_suppression_enabled: bool,
+        noise_robust_agc_enabled: bool,
+        pre_amplifier_enabled: bool,
+        pre_amplifier_fixed_gain_factor: f32,
+        experiments_description: Vec<u8>,
+        api_config_string: Vec<u8>,
+    }
     extern "Rust" {
+        type RustCallerApmDump;
+        fn apm_dump_dispose(dump: &mut RustCallerApmDump) -> bool;
+        fn apm_dump_initialize(dump: &RustCallerApmDump, formats: FfiApmFormats, time_now_ms: i64) -> bool;
+        fn apm_dump_audio(dump: &RustCallerApmDump, operation: u8, layout: u8, channels: usize, frames: usize, integers: &[i16], floats: &[f32]) -> bool;
+        fn apm_dump_state(dump: &RustCallerApmDump, delay: i32, drift: i32, volume_present: bool, volume: i32, keypress: bool) -> bool;
+        fn apm_dump_capture(dump: &RustCallerApmDump) -> bool;
+        fn apm_dump_runtime(dump: &RustCallerApmDump, setting: FfiApmRuntimeSetting) -> bool;
+        fn apm_dump_config(dump: &RustCallerApmDump, config: FfiApmDumpConfig) -> bool;
         type RustApmDumpWorker;
         fn apm_dump_worker_queue(worker: &RustApmDumpWorker) -> &NativeTaskQueue;
         type RustMixerSource;
@@ -3276,7 +3306,10 @@ mod ffi {
         type NativeAudioProcessor;
         fn audio_processor_dump_path(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, filename: &[u8], maximum_bytes: i64, error: &mut u8) -> bool;
         fn audio_processor_dump_file(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, descriptor: i32, maximum_bytes: i64, error: &mut u8) -> bool;
-        fn audio_processor_dump_detach(processor: Pin<&mut NativeAudioProcessor>);
+        fn audio_processor_dump_attach(processor: Pin<&mut NativeAudioProcessor>, dump: Box<RustCallerApmDump>) -> u8;
+        fn audio_processor_dump_detach(processor: Pin<&mut NativeAudioProcessor>) -> u8;
+        fn audio_processor_dump_config_default() -> FfiApmDumpConfig;
+        fn audio_processor_dump_config_equal(left: &FfiApmDumpConfig, right: &FfiApmDumpConfig) -> bool;
         fn audio_processor_runtime_setting(processor: Pin<&mut NativeAudioProcessor>, setting: &FfiApmRuntimeSetting, post: bool, error: &mut u8) -> bool;
         fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
         fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, linear_echo: bool, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;

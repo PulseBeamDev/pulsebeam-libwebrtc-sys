@@ -1,6 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/audio_processor.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <span>
 #include <cerrno>
 #include <cctype>
@@ -21,6 +22,7 @@
 #include <utility>
 #include <vector>
 #include "api/audio/builtin_audio_processing_builder.h"
+#include "modules/audio_processing/include/aec_dump.h"
 #include "api/environment/environment.h"
 #include "common_audio/include/audio_util.h"
 #include "rtc_base/checks.h"
@@ -34,6 +36,138 @@ EchoCanceller3Config AdjustConfig(const EchoCanceller3Config&, const FieldTrials
 }
 namespace pulsebeam::webrtc_sys {
 namespace {
+
+// Caller callbacks are void in the SDK. Retain a separate operation-local
+// failure generation without inventing native APM status codes.
+struct DumpCallbackStatus { std::atomic<std::uint64_t> failures{0}; };
+rust::Vec<std::uint8_t> DumpBytes(const std::string& value) {
+  rust::Vec<std::uint8_t> result;
+  result.reserve(value.size());
+  for (unsigned char byte : value) result.push_back(byte);
+  return result;
+}
+FfiApmDumpConfig DumpConfigToFfi(const webrtc::InternalAPMConfig& c) {
+  FfiApmDumpConfig f{};
+  f.aec_enabled = c.aec_enabled;
+  f.aec_delay_agnostic_enabled = c.aec_delay_agnostic_enabled;
+  f.aec_drift_compensation_enabled = c.aec_drift_compensation_enabled;
+  f.aec_extended_filter_enabled = c.aec_extended_filter_enabled;
+  f.aec_suppression_level = c.aec_suppression_level;
+  f.agc_enabled = c.agc_enabled;
+  f.agc_mode = c.agc_mode;
+  f.agc_limiter_enabled = c.agc_limiter_enabled;
+  f.hpf_enabled = c.hpf_enabled;
+  f.ns_enabled = c.ns_enabled;
+  f.ns_level = c.ns_level;
+  f.transient_suppression_enabled = c.transient_suppression_enabled;
+  f.noise_robust_agc_enabled = c.noise_robust_agc_enabled;
+  f.pre_amplifier_enabled = c.pre_amplifier_enabled;
+  f.pre_amplifier_fixed_gain_factor = c.pre_amplifier_fixed_gain_factor;
+  f.experiments_description = DumpBytes(c.experiments_description);
+  f.api_config_string = DumpBytes(c.api_config_string);
+  return f;
+}
+webrtc::InternalAPMConfig DumpConfigFromFfi(const FfiApmDumpConfig& f) {
+  webrtc::InternalAPMConfig c;
+  c.aec_enabled = f.aec_enabled;
+  c.aec_delay_agnostic_enabled = f.aec_delay_agnostic_enabled;
+  c.aec_drift_compensation_enabled = f.aec_drift_compensation_enabled;
+  c.aec_extended_filter_enabled = f.aec_extended_filter_enabled;
+  c.aec_suppression_level = f.aec_suppression_level;
+  c.agc_enabled = f.agc_enabled;
+  c.agc_mode = f.agc_mode;
+  c.agc_limiter_enabled = f.agc_limiter_enabled;
+  c.hpf_enabled = f.hpf_enabled;
+  c.ns_enabled = f.ns_enabled;
+  c.ns_level = f.ns_level;
+  c.transient_suppression_enabled = f.transient_suppression_enabled;
+  c.noise_robust_agc_enabled = f.noise_robust_agc_enabled;
+  c.pre_amplifier_enabled = f.pre_amplifier_enabled;
+  c.pre_amplifier_fixed_gain_factor = f.pre_amplifier_fixed_gain_factor;
+  c.experiments_description.assign(reinterpret_cast<const char*>(f.experiments_description.data()), f.experiments_description.size());
+  c.api_config_string.assign(reinterpret_cast<const char*>(f.api_config_string.data()), f.api_config_string.size());
+  return c;
+}
+class CallerAecDump final : public webrtc::AecDump {
+ public:
+  CallerAecDump(rust::Box<RustCallerApmDump> provider, std::shared_ptr<DumpCallbackStatus> status)
+      : provider_(std::move(provider)), status_(std::move(status)) {}
+  ~CallerAecDump() override { Observe(apm_dump_dispose(*provider_)); }
+  void WriteInitMessage(const webrtc::ProcessingConfig& c, std::int64_t time) override {
+    Observe(apm_dump_initialize(*provider_, {
+      c.input_stream().sample_rate_hz(), c.input_stream().num_channels(),
+      c.output_stream().sample_rate_hz(), c.output_stream().num_channels(),
+      c.reverse_input_stream().sample_rate_hz(), c.reverse_input_stream().num_channels(),
+      c.reverse_output_stream().sample_rate_hz(), c.reverse_output_stream().num_channels()}, time));
+  }
+  void AddCaptureStreamInput(const webrtc::AudioFrameView<const float>& v) override { Frame(0, v); }
+  void AddCaptureStreamInput(webrtc::MonoView<const float> v) override { Float(0, 2, 1, v.size(), v); }
+  void AddCaptureStreamOutput(const webrtc::AudioFrameView<const float>& v) override { Frame(1, v); }
+  void AddCaptureStreamOutput(webrtc::MonoView<const float> v) override { Float(1, 2, 1, v.size(), v); }
+  void AddCaptureStreamInput(const std::int16_t* data, int channels, int frames) override { Integer(0, data, channels, frames); }
+  void AddCaptureStreamOutput(const std::int16_t* data, int channels, int frames) override { Integer(1, data, channels, frames); }
+  void AddAudioProcessingState(const AudioProcessingState& s) override {
+    Observe(apm_dump_state(*provider_, s.delay, s.drift, s.applied_input_volume.has_value(), s.applied_input_volume.value_or(0), s.keypress));
+  }
+  void WriteCaptureStreamMessage() override { Observe(apm_dump_capture(*provider_)); }
+  void WriteRenderStreamMessage(const std::int16_t* data, int channels, int frames) override { Integer(2, data, channels, frames); }
+  void WriteRenderStreamMessage(const webrtc::AudioFrameView<const float>& v) override { Frame(2, v); }
+  void WriteRenderStreamMessage(const float* const* data, int channels, int frames) override {
+    std::vector<float> flat;
+    flat.reserve(std::size_t(channels) * std::size_t(frames));
+    for (int ch = 0; ch < channels; ++ch) flat.insert(flat.end(), data[ch], data[ch] + frames);
+    Float(2, 3, channels, frames, flat);
+  }
+  void WriteRuntimeSetting(const webrtc::AudioProcessing::RuntimeSetting& s) override {
+    FfiApmRuntimeSetting f{};
+    using T = webrtc::AudioProcessing::RuntimeSetting::Type;
+    switch (s.type()) {
+      case T::kNotSpecified: break;
+      case T::kCapturePreGain: f.kind = 1; s.GetFloat(&f.float_value); break;
+      case T::kCapturePostGain: f.kind = 2; s.GetFloat(&f.float_value); break;
+      case T::kCaptureCompressionGain: {
+        // The SDK integer factory stores its admitted 0..90 payload as float.
+        float value; s.GetFloat(&value); f.kind = 3; f.int_value = static_cast<std::int32_t>(value); break;
+      }
+      case T::kCaptureFixedPostGain: f.kind = 4; s.GetFloat(&f.float_value); break;
+      case T::kPlayoutVolumeChange: f.kind = 5; s.GetInt(&f.int_value); break;
+      case T::kCustomRenderProcessingRuntimeSetting: f.kind = 6; s.GetFloat(&f.float_value); break;
+      case T::kPlayoutAudioDeviceChange: {
+        webrtc::AudioProcessing::RuntimeSetting::PlayoutAudioDeviceInfo device;
+        s.GetPlayoutAudioDeviceInfo(&device); f.kind = 7;
+        f.device_id = device.id; f.device_max_volume = device.max_volume; break;
+      }
+      case T::kCaptureOutputUsed: f.kind = 8; s.GetBool(&f.bool_value); break;
+    }
+    Observe(apm_dump_runtime(*provider_, std::move(f)));
+  }
+  void WriteConfig(const webrtc::InternalAPMConfig& c) override { Observe(apm_dump_config(*provider_, DumpConfigToFfi(c))); }
+ private:
+  void Observe(bool success) { if (!success) status_->failures.fetch_add(1, std::memory_order_release); }
+  void Integer(std::uint8_t operation, const std::int16_t* data, int channels, int frames) {
+    const auto count = std::size_t(channels) * std::size_t(frames);
+    const std::int16_t empty_i = 0; const float empty_f = 0;
+    Observe(apm_dump_audio(*provider_, operation, 0, channels, frames,
+        rust::Slice<const std::int16_t>(count ? data : &empty_i, count), rust::Slice<const float>(&empty_f, 0)));
+  }
+  void Float(std::uint8_t operation, std::uint8_t layout, std::size_t channels, std::size_t frames, std::span<const float> data) {
+    const std::int16_t empty_i = 0; const float empty_f = 0;
+    Observe(apm_dump_audio(*provider_, operation, layout, channels, frames,
+        rust::Slice<const std::int16_t>(&empty_i, 0), rust::Slice<const float>(data.empty() ? &empty_f : data.data(), data.size())));
+  }
+  void Frame(std::uint8_t operation, const webrtc::AudioFrameView<const float>& view) {
+    std::vector<float> flat;
+    flat.reserve(std::size_t(view.num_channels()) * std::size_t(view.samples_per_channel()));
+    for (int ch = 0; ch < view.num_channels(); ++ch) {
+      const auto channel = view.channel(ch);
+      flat.insert(flat.end(), channel.begin(), channel.end());
+    }
+    Float(operation, 1, view.num_channels(), view.samples_per_channel(), flat);
+  }
+  rust::Box<RustCallerApmDump> provider_;
+  std::shared_ptr<DumpCallbackStatus> status_;
+};
+
 // A bounded safety envelope, not an acknowledgment cache or replacement queue.
 // The SDK retains the original payloads. Max magnitude suffices for finite
 // linear gain/product admission; NaN/Inf must be remembered independently.
@@ -83,12 +217,16 @@ struct NativeAudioProcessor::State {
   bool capture_format_known = true;
   bool render_format_known = true;
   bool capture_graph_dirty = false;
+  // Each native dumper holds its own shared copy through module destruction.
+  std::shared_ptr<DumpCallbackStatus> dump_callbacks = std::make_shared<DumpCallbackStatus>();
 };
 NativeAudioProcessor::NativeAudioProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeAudioProcessor::~NativeAudioProcessor() = default;
 NativeAudioProcessor::State& NativeAudioProcessor::state() noexcept { return *state_; }
 const NativeAudioProcessor::State& NativeAudioProcessor::state() const noexcept { return *state_; }
 namespace {
+std::uint64_t DumpGeneration(const NativeAudioProcessor& p) { return p.state().dump_callbacks->failures.load(std::memory_order_acquire); }
+std::uint8_t DumpOutcome(const NativeAudioProcessor& p, std::uint64_t before) { return DumpGeneration(p) == before ? 0 : 18; }
 void SelectEffects(webrtc::AudioProcessing::Config& config, const FfiAudioProcessingConfig& selected) {
   config.echo_canceller.enabled = selected.echo_cancellation;
   config.noise_suppression.enabled = selected.noise_suppression != 0;
@@ -540,10 +678,12 @@ bool audio_processor_dump_path(NativeAudioProcessor& p, rust::Box<RustApmDumpWor
   if (error) return false;
   const std::string filename(reinterpret_cast<const char*>(path.data()), path.size());
   if (filename.find('\0') != std::string::npos) { error = 16; return false; }
+  const auto generation = DumpGeneration(p);
   const bool attached = p.state().module->CreateAndAttachAecDump(filename, maximum, queue);
   // Native replacement has finished destroying/flushing the old dump while
   // its old queue owner is still retained. Only now retire that worker.
   if (attached) p.state().dump_worker = std::move(worker);
+  error = DumpOutcome(p, generation);
   return attached;
 }
 namespace {
@@ -578,6 +718,7 @@ bool audio_processor_dump_file(NativeAudioProcessor& p, rust::Box<RustApmDumpWor
   if (error) { CloseDumpDescriptor(fd); return false; }
   auto* stream = DumpStreamFromDescriptor(fd, maximum, error);
   if (!stream) { CloseDumpDescriptor(fd); if (!error) error = 15; return false; }
+  const auto generation = DumpGeneration(p);
   const bool attached = p.state().module->CreateAndAttachAecDump(stream, maximum, queue);
 #ifndef WEBRTC_ENABLE_PROTOBUF
   // The actual null factory does NOT consume FILE*, unlike the enabled one.
@@ -585,12 +726,23 @@ bool audio_processor_dump_file(NativeAudioProcessor& p, rust::Box<RustApmDumpWor
   std::fclose(stream);
 #endif
   if (attached) p.state().dump_worker = std::move(worker);
+  error = DumpOutcome(p, generation);
   return attached;
 }
-void audio_processor_dump_detach(NativeAudioProcessor& p) noexcept {
+std::uint8_t audio_processor_dump_attach(NativeAudioProcessor& p, rust::Box<RustCallerApmDump> dump) noexcept {
+  const auto generation = DumpGeneration(p);
+  p.state().module->AttachAecDump(std::make_unique<CallerAecDump>(std::move(dump), p.state().dump_callbacks));
+  p.state().dump_worker.reset();
+  return DumpOutcome(p, generation);
+}
+std::uint8_t audio_processor_dump_detach(NativeAudioProcessor& p) noexcept {
+  const auto generation = DumpGeneration(p);
   p.state().module->DetachAecDump();
   p.state().dump_worker.reset();
+  return DumpOutcome(p, generation);
 }
+FfiApmDumpConfig audio_processor_dump_config_default() noexcept { return DumpConfigToFfi(webrtc::InternalAPMConfig{}); }
+bool audio_processor_dump_config_equal(const FfiApmDumpConfig& a, const FfiApmDumpConfig& b) noexcept { return DumpConfigFromFfi(a) == DumpConfigFromFfi(b); }
 bool audio_processor_runtime_setting(NativeAudioProcessor& p, const FfiApmRuntimeSetting& f, bool post, std::uint8_t& error) noexcept {
   error = AdmitRuntime(p.state().module->GetConfig(), f);
   if (error) return false;
@@ -668,7 +820,9 @@ FfiApmConfig audio_processor_config_get(const NativeAudioProcessor& p) noexcept 
 std::int32_t audio_processor_initialize(NativeAudioProcessor& p, std::uint8_t& error) noexcept {
   error = RuntimeReinitializationUnsafe(p) ? 12 : 0;
   if (error) return 0;
+  const auto generation = DumpGeneration(p);
   const auto status = p.state().module->Initialize();
+  error = DumpOutcome(p, generation);
   if (status == 0) { const auto c = p.state().module->GetConfig(); p.state().linear_output_guaranteed = c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output; }
   return status;
 }
@@ -701,7 +855,9 @@ std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const F
   error = RuntimeReinitializationUnsafe(p) ? 12 : 0;
   if (error) return 0;
   admitted = true;
+  const auto generation = DumpGeneration(p);
   const auto status = p.state().module->Initialize(config);
+  error = DumpOutcome(p, generation);
   if (status == 0) {
     p.state().format_hint = config;
     p.state().capture_format_known = p.state().render_format_known = true;
@@ -744,10 +900,14 @@ std::int32_t audio_processor_i16(NativeAudioProcessor& p, std::int32_t rate, std
   std::vector<std::int16_t> input(samples.begin(), samples.begin() + config.num_samples());
   std::int16_t empty_input = 0, empty_output = 0;
   const auto* src = input.empty() ? &empty_input : input.data();
-  auto* dest = samples.empty() ? &empty_output : samples.data();
+  std::vector<std::int16_t> result(samples.begin(), samples.begin() + config.num_samples());
+  auto* dest = result.empty() ? &empty_output : result.data();
+  const auto generation = DumpGeneration(p);
   const auto status = reverse ? p.state().module->ProcessReverseStream(src, config, config, dest) : p.state().module->ProcessStream(src, config, config, dest);
   NoteProcessingFormats(p, config, config, reverse, status);
   if (!reverse) NoteCaptureResult(p, status);
+  error = DumpOutcome(p, generation);
+  if (!error) std::copy(result.begin(), result.end(), samples.begin());
   return status;
 }
 std::int32_t audio_processor_float(NativeAudioProcessor& p, std::int32_t input_rate, std::size_t input_channels, rust::Slice<const float> samples, std::int32_t output_rate, std::size_t output_channels, rust::Slice<float> destination, bool reverse, std::uint8_t& error) noexcept {
@@ -756,10 +916,14 @@ std::int32_t audio_processor_float(NativeAudioProcessor& p, std::int32_t input_r
   if (error) return 0;
   float empty_input = 0, empty_output = 0;
   auto src = InputPointers(samples, input, &empty_input);
-  auto dest = OutputPointers(destination, output, &empty_output);
+  std::vector<float> result(destination.begin(), destination.begin() + output.num_samples());
+  auto dest = OutputPointers(rust::Slice<float>(result.empty() ? &empty_output : result.data(), result.size()), output, &empty_output);
+  const auto generation = DumpGeneration(p);
   const auto status = reverse ? p.state().module->ProcessReverseStream(src.data(), input, output, dest.data()) : p.state().module->ProcessStream(src.data(), input, output, dest.data());
   NoteProcessingFormats(p, input, output, reverse, status);
   if (!reverse) NoteCaptureResult(p, status);
+  error = DumpOutcome(p, generation);
+  if (!error) std::copy(result.begin(), result.end(), destination.begin());
   return status;
 }
 std::int32_t audio_processor_analyze(NativeAudioProcessor& p, std::int32_t rate, std::size_t channels, rust::Slice<const float> samples, std::uint8_t& error) noexcept {
@@ -768,7 +932,9 @@ std::int32_t audio_processor_analyze(NativeAudioProcessor& p, std::int32_t rate,
   if (error) return 0;
   float empty = 0;
   auto src = InputPointers(samples, input, &empty);
+  const auto generation = DumpGeneration(p);
   const auto status = p.state().module->AnalyzeReverseStream(src.data(), input);
+  error = DumpOutcome(p, generation);
   NoteProcessingFormats(p, input, input, true, status);
   return status;
 }

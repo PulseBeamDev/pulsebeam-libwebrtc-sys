@@ -36,6 +36,9 @@ pub enum AudioProcessorError {
     DumpFileConversionFailed,
     InvalidDumpPath,
     UnqualifiedDumpFileAccess,
+    /// A void caller callback failed. Native processing may have continued,
+    /// but no PCM result was published. Inspect the retained dump observer.
+    CallbackFailed,
 }
 impl std::fmt::Display for AudioProcessorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -189,6 +192,7 @@ impl AudioProcessor {
             15 => Err(AudioProcessorError::DumpFileConversionFailed),
             16 => Err(AudioProcessorError::InvalidDumpPath),
             17 => Err(AudioProcessorError::UnqualifiedDumpFileAccess),
+            18 => Err(AudioProcessorError::CallbackFailed),
             _ => Err(AudioProcessorError::InvalidConfiguration),
         }
     }
@@ -244,8 +248,19 @@ impl AudioProcessor {
     }
     /// Native synchronous detach and flush. Release the retained queue only
     /// after the native dumper has finished its completion barrier.
-    pub fn detach_aec_dump(&mut self) {
-        ffi::audio_processor_dump_detach(self.native.pin_mut());
+    pub fn detach_aec_dump(&mut self) -> Result<(), AudioProcessorError> {
+        Self::admission(ffi::audio_processor_dump_detach(self.native.pin_mut()))
+    }
+    /// Transfer unique ownership to the actual native APM. A callback error
+    /// does not roll back attachment. Clone the dump observer before handoff.
+    pub fn attach_aec_dump(
+        &mut self,
+        dump: crate::AudioProcessingDump,
+    ) -> Result<(), AudioProcessorError> {
+        Self::admission(ffi::audio_processor_dump_attach(
+            self.native.pin_mut(),
+            dump.into_inner(),
+        ))
     }
     /// Call the actual void native setter. Ok means the call was admitted,
     /// not that enqueueing succeeded. Its native acknowledgment is unavailable.

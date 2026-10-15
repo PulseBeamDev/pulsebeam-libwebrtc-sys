@@ -136,8 +136,8 @@ fn stock_path_dump_contains_real_pcm_and_runtime_events_with_non_utf8_path() {
     );
     capture(&mut p);
     capture(&mut p);
-    p.detach_aec_dump();
-    p.detach_aec_dump();
+    p.detach_aec_dump().unwrap();
+    p.detach_aec_dump().unwrap();
     let bytes = fs::read(path).unwrap();
     let streams = streams(&bytes);
     assert_eq!(streams.len(), 2);
@@ -222,7 +222,7 @@ fn failed_creation_keeps_old_attachment_and_replacement_flushes_its_exact_worker
     );
     assert_eq!(streams(&fs::read(first).unwrap()).len(), 2);
     capture(&mut p);
-    p.detach_aec_dump();
+    p.detach_aec_dump().unwrap();
     assert_eq!(streams(&fs::read(second).unwrap()).len(), 1);
 }
 
@@ -236,7 +236,7 @@ fn native_zero_budget_is_successful_creation_not_invented_recording() {
             .unwrap()
     );
     capture(&mut p);
-    p.detach_aec_dump();
+    p.detach_aec_dump().unwrap();
     assert!(fs::read(path).unwrap().is_empty());
     // A readonly FILE is also safe when the native budget proves no writes.
     let readonly = File::open(&dir.0.join("empty")).unwrap();
@@ -245,7 +245,7 @@ fn native_zero_budget_is_successful_creation_not_invented_recording() {
             .unwrap()
     );
     capture(&mut p);
-    p.detach_aec_dump();
+    p.detach_aec_dump().unwrap();
 }
 
 #[test]

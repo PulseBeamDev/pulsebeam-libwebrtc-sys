@@ -215,7 +215,47 @@ wrapper results as well. Filename creation without protobuf retains native false
 Matching enabled-artifact tests inspect actual framed protobuf PCM/runtime events,
 not a configuration echo. Protobuf-off runtime qualification remains open.
 
-Unique-owner caller AecDump attachment and its callback/value surface, processing
-providers/builders, and installation of standalone selected products remain outside this
-API surface. Existing peer processing selection is not standalone-product
+## Caller-owned AEC dump callbacks
+
+AudioProcessingDump is a non-cloneable owning implementation of the pinned
+AecDump interface. attach_aec_dump transfers it into the actual stock APM; it
+does not select another engine or create a file/thread. The Send + Sync provider
+receives typed, borrowed events for every callback overload, including mono,
+planar frame-view, planar pointer-array and interleaved sample layouts. Sample
+units and native callback dimensions are preserved. The pin emits float capture
+as ordered mono callbacks per channel, rather than one aggregated planar frame.
+In particular the pin swaps
+the channel/frame arguments of its int16 render callback; the binding reports
+those actual values, not inferred or repaired metadata. Initialization separately
+reports the four actual StreamConfigs and the native UTC timestamp. Processing
+state preserves absent applied input volume. Config strings are bytes, including
+NUL/non-UTF8; config default/equality use the actual native value implementation.
+Runtime snapshots use the SDK's typed union getters, including float storage for
+its integer compression-gain factory.
+
+The independent failure observer survives unique handoff and native destruction.
+It retains the first failure and a count of failures. Callback rejection, panic,
+and provider Drop panic remain separate from native APM status. The single-owner
+standalone operation compares a native failure generation before/after the SDK
+call. A changed generation returns CallbackFailed, not an invented native status.
+Processing uses caller-initialized scratch output, preserving native negative
+status/best-effort effects when no callback fails. On callback failure no PCM
+is published and caller prefixes/tails remain unchanged. Because callbacks return
+void, native DSP can continue and update state or deliver later dump events;
+the wrapper does not pretend the engine aborted or rolled back. Capture-queue
+accounting still follows the actual native processing result.
+
+Attach/replacement errors do not undo a transfer already performed by the SDK.
+Detach returns Result so a failing caller destructor cannot appear as an
+unqualified successful operation. Native replacement/detach completes old dump
+destruction before releasing a retained stock worker. Module/unattached owner
+Drop contains provider panics and records them for retained observers. A panic
+payload destructor is also contained; only a second panic payload is deliberately
+forgotten if dropping the first payload panics. No normal callback data is leaked.
+The provider must not retain event borrows after return. Current qualification is
+single-sequence standalone use, not concurrent installed capture/render failure
+isolation or migrated actor teardown. Protobuf-off runtime remains unqualified.
+
+Processing providers/builders and installation of standalone selected products
+remain outside this API surface. Existing peer processing selection is not standalone-product
 installation or proof of complete pinned AudioProcessing parity.
