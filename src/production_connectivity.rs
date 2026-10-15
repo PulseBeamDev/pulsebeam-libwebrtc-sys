@@ -57,6 +57,9 @@ pub enum SessionTransportError {
     Resource(PeerError),
     Observer(crate::TransportObserverError),
     InternalUnavailable(crate::IceInternalUnavailable),
+    Operation(crate::IceOperationError),
+    Packet(crate::IcePacketSendError),
+    IceObserver(crate::IcePacketObserverError),
 }
 impl fmt::Display for SessionTransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,6 +67,9 @@ impl fmt::Display for SessionTransportError {
             Self::Resource(error) => error.fmt(f),
             Self::Observer(error) => error.fmt(f),
             Self::InternalUnavailable(error) => error.fmt(f),
+            Self::Operation(error) => error.fmt(f),
+            Self::Packet(error) => error.fmt(f),
+            Self::IceObserver(error) => error.fmt(f),
         }
     }
 }
@@ -324,16 +330,193 @@ impl ProductionSession {
         &self,
         transport: SessionIceTransportId,
     ) -> Result<crate::IceTransportInternal, SessionTransportError> {
-        self.connectivity
+        Ok(self
+            .connectivity
             .ice
             .get(&transport)
             .ok_or_else(|| SessionTransportError::Resource(missing()))?
             .value
-            .internal()
-            .ok_or(SessionTransportError::InternalUnavailable(
-                crate::IceInternalUnavailable,
-            ))
+            .internal_access())
     }
+    pub fn register_ice_packet_observer(
+        &mut self,
+        t: SessionIceTransportId,
+        capacity: usize,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(t)?
+            .register_packet_observer(capacity)
+            .map_err(SessionTransportError::IceObserver)
+    }
+    pub fn unregister_ice_packet_observer(
+        &mut self,
+        t: SessionIceTransportId,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(t)?
+            .unregister_packet_observer()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn take_ice_packet_event(
+        &mut self,
+        t: SessionIceTransportId,
+    ) -> Result<Option<crate::IcePacketEvent>, SessionTransportError> {
+        Ok(self.ice_internal(t)?.take_packet_event())
+    }
+    pub fn take_dropped_ice_packet_events(
+        &mut self,
+        t: SessionIceTransportId,
+    ) -> Result<u64, SessionTransportError> {
+        Ok(self.ice_internal(t)?.take_dropped_packet_events())
+    }
+    pub fn ice_packet_state(
+        &mut self,
+        t: SessionIceTransportId,
+    ) -> Result<crate::IcePacketState, SessionTransportError> {
+        self.ice_internal(t)?
+            .packet_state()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn send_ice_packet(
+        &mut self,
+        t: SessionIceTransportId,
+        data: &[u8],
+        options: &crate::IcePacketOptions,
+        flags: i32,
+    ) -> Result<crate::IceSocketOperationResult, SessionTransportError> {
+        self.ice_internal(t)?
+            .send_packet(data, options, flags)
+            .map_err(SessionTransportError::Packet)
+    }
+    pub fn set_ice_option(
+        &mut self,
+        t: SessionIceTransportId,
+        option: crate::IceSocketOption,
+        value: i32,
+    ) -> Result<crate::IceSocketOperationResult, SessionTransportError> {
+        self.ice_internal(t)?
+            .set_option(option, value)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn ice_option(
+        &mut self,
+        t: SessionIceTransportId,
+        option: crate::IceSocketOption,
+    ) -> Result<Option<i32>, SessionTransportError> {
+        self.ice_internal(t)?
+            .get_option(option)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn ice_network_route(
+        &mut self,
+        t: SessionIceTransportId,
+    ) -> Result<Option<crate::IceNetworkRoute>, SessionTransportError> {
+        self.ice_internal(t)?
+            .network_route()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn ice_stats(
+        &mut self,
+        transport: SessionIceTransportId,
+    ) -> Result<Option<crate::IceTransportStats>, SessionTransportError> {
+        self.ice_internal(transport)?
+            .stats()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn ice_selected_candidate_pair(
+        &mut self,
+        transport: SessionIceTransportId,
+    ) -> Result<Option<crate::IceCandidatePair>, SessionTransportError> {
+        self.ice_internal(transport)?
+            .selected_candidate_pair()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn add_remote_ice_candidate(
+        &mut self,
+        transport: SessionIceTransportId,
+        candidate: &crate::TransportCandidate,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .add_remote_candidate(candidate)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn remove_remote_ice_candidate(
+        &mut self,
+        transport: SessionIceTransportId,
+        candidate: &crate::TransportCandidate,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .remove_remote_candidate(candidate)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn remove_all_remote_ice_candidates(
+        &mut self,
+        transport: SessionIceTransportId,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .remove_all_remote_candidates()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn ice_config(
+        &mut self,
+        transport: SessionIceTransportId,
+    ) -> Result<crate::IceConfig, SessionTransportError> {
+        self.ice_internal(transport)?
+            .config()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn set_ice_config(
+        &mut self,
+        transport: SessionIceTransportId,
+        config: &crate::IceConfig,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .set_config(config)
+            .map_err(SessionTransportError::Operation)
+    }
+    pub fn set_ice_role(
+        &mut self,
+        transport: SessionIceTransportId,
+        role: crate::IceTransportRole,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .set_role(role)
+            .map_err(SessionTransportError::Operation)
+    }
+    pub fn set_ice_parameters(
+        &mut self,
+        transport: SessionIceTransportId,
+        parameters: &crate::IceParameters,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .set_parameters(parameters)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn set_remote_ice_parameters(
+        &mut self,
+        transport: SessionIceTransportId,
+        parameters: &crate::IceParameters,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .set_remote_parameters(parameters)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn set_remote_ice_mode(
+        &mut self,
+        transport: SessionIceTransportId,
+        mode: crate::IceMode,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .set_remote_mode(mode)
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+    pub fn maybe_start_ice_gathering(
+        &mut self,
+        transport: SessionIceTransportId,
+    ) -> Result<(), SessionTransportError> {
+        self.ice_internal(transport)?
+            .maybe_start_gathering()
+            .map_err(SessionTransportError::InternalUnavailable)
+    }
+
     pub fn ice_internal_state(
         &mut self,
         transport: SessionIceTransportId,

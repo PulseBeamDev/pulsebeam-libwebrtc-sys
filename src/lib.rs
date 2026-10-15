@@ -316,10 +316,17 @@ pub use rtc_error::{
 };
 mod transport;
 pub use transport::{
-    DtlsTransport, DtlsTransportEvent, DtlsTransportInformation, DtlsTransportRole,
-    DtlsTransportState, IceInternalUnavailable, IceTransport, IceTransportGatheringState,
-    IceTransportInternal, IceTransportInternalState, IceTransportRole, IceTransportState,
-    SctpTransport, SctpTransportInformation, SctpTransportState, TransportError,
+    CandidateNetworkCostOutOfRange, Dscp, DtlsTransport, DtlsTransportEvent,
+    DtlsTransportInformation, DtlsTransportRole, DtlsTransportState, IceCandidatePair,
+    IceCandidatePairChange, IceCandidatePairState, IceCandidateStats, IceConfig, IceConnectionInfo,
+    IceInternalUnavailable, IceMode, IceNetworkRoute, IceNominationMode, IceOperationError,
+    IcePacketDecryption, IcePacketEvent, IcePacketInfo, IcePacketObserverError, IcePacketOptions,
+    IcePacketSendError, IcePacketState, IcePacketTimeUpdate, IceParameters, IceReceivedPacket,
+    IceRouteEndpoint, IceSentPacket, IceSocketOperationResult, IceSocketOption, IceStunStats,
+    IceTransport, IceTransportGatheringState, IceTransportInternal, IceTransportInternalState,
+    IceTransportRole, IceTransportState, IceTransportStats, MAX_ICE_CANDIDATE_NETWORK_COST,
+    PacketInfoProtocol, PacketType, SctpTransport, SctpTransportInformation, SctpTransportState,
+    TransportCandidate, TransportCandidateProperties, TransportCandidateType, TransportError,
     TransportObserverError,
 };
 mod encoded_video;
@@ -1836,6 +1843,204 @@ mod ffi {
         has_sctp_cause_code: bool,
         sctp_cause_code: u16,
     }
+    struct FfiIcePacketEvent {
+        kind: u8,
+        flag: bool,
+        state: i32,
+        payload: Vec<u8>,
+        source: UniquePtr<NativeSocketAddress>,
+        has_arrival_time: bool,
+        arrival_time: i64,
+        ecn: i32,
+        decryption: i32,
+        packet_id: i64,
+        send_time_ms: i64,
+        info: FfiIcePacketInfo,
+        route: FfiIceRoute,
+    }
+
+    struct FfiIceRouteEndpoint {
+        adapter_type: i32,
+        adapter_id: u16,
+        network_id: u16,
+        uses_turn: bool,
+    }
+    struct FfiIceRoute {
+        present: bool,
+        connected: bool,
+        local: FfiIceRouteEndpoint,
+        remote: FfiIceRouteEndpoint,
+        last_sent_packet_id: i32,
+        packet_overhead: i32,
+    }
+    struct FfiIcePacketInfo {
+        included_in_feedback: bool,
+        included_in_allocation: bool,
+        is_media: bool,
+        packet_type: i32,
+        protocol: i32,
+        has_network_id: bool,
+        network_id: u16,
+        packet_size_bytes: usize,
+        turn_overhead_bytes: usize,
+        ip_overhead_bytes: usize,
+    }
+    struct FfiIcePacketOptions {
+        dscp: i32,
+        ect_1: bool,
+        packet_id: i64,
+        rtp_sendtime_extension_id: i32,
+        srtp_auth_key: Vec<u8>,
+        srtp_auth_tag_len: i32,
+        srtp_packet_index: i64,
+        info: FfiIcePacketInfo,
+        batchable: bool,
+        last_packet_in_batch: bool,
+    }
+    struct FfiIcePacketState {
+        available: bool,
+        name: Vec<u8>,
+        writable: bool,
+        receiving: bool,
+        error: i32,
+    }
+    struct FfiIceSocketResult {
+        available: bool,
+        result: i32,
+        error: i32,
+    }
+    struct FfiIceOption {
+        available: bool,
+        success: bool,
+        value: i32,
+    }
+    struct FfiIceRouteResult {
+        available: bool,
+        route: FfiIceRoute,
+    }
+
+    struct FfiTransportCandidate {
+        id: Vec<u8>,
+        protocol: Vec<u8>,
+        relay_protocol: Vec<u8>,
+        username: Vec<u8>,
+        password: Vec<u8>,
+        network_name: Vec<u8>,
+        foundation: Vec<u8>,
+        tcptype: Vec<u8>,
+        url: Vec<u8>,
+        component: i32,
+        priority: u32,
+        candidate_type: i32,
+        network_type: i32,
+        underlying_type_for_vpn: i32,
+        generation: u32,
+        network_id: u16,
+        network_cost: u16,
+        network_slice: i32,
+        address: UniquePtr<NativeSocketAddress>,
+        related_address: UniquePtr<NativeSocketAddress>,
+    }
+    struct FfiTransportCandidateParse {
+        candidate: UniquePtr<NativeTransportCandidate>,
+        error: UniquePtr<NativeRtcError>,
+    }
+    struct FfiIceCandidateStats {
+        candidate: UniquePtr<NativeTransportCandidate>,
+        has_stun_stats: bool,
+        stun_binding_requests_sent: i32,
+        stun_binding_responses_received: i32,
+        stun_binding_rtt_ms_total: f64,
+        stun_binding_rtt_ms_squared_total: f64,
+    }
+    struct FfiIceConnectionInfo {
+        best_connection: bool,
+        writable: bool,
+        receiving: bool,
+        timeout: bool,
+        rtt: usize,
+        sent_discarded_bytes: usize,
+        sent_total_bytes: usize,
+        sent_bytes_second: usize,
+        sent_discarded_packets: usize,
+        sent_total_packets: usize,
+        sent_ping_requests_total: usize,
+        sent_ping_requests_before_first_response: usize,
+        sent_ping_responses: usize,
+        recv_total_bytes: usize,
+        recv_bytes_second: usize,
+        packets_received: usize,
+        recv_ping_requests: usize,
+        recv_ping_responses: usize,
+        local_candidate: UniquePtr<NativeTransportCandidate>,
+        remote_candidate: UniquePtr<NativeTransportCandidate>,
+        state: i32,
+        priority: u64,
+        nominated: bool,
+        total_round_trip_time_ms: u64,
+        has_current_round_trip_time_ms: bool,
+        current_round_trip_time_ms: u32,
+        has_last_data_received: bool,
+        last_data_received: i64,
+        has_last_data_sent: bool,
+        last_data_sent: i64,
+    }
+    struct FfiIceStats {
+        available: bool,
+        success: bool,
+        candidate_stats: Vec<FfiIceCandidateStats>,
+        connection_infos: Vec<FfiIceConnectionInfo>,
+        selected_candidate_pair_changes: u32,
+        bytes_sent: u64,
+        bytes_received: u64,
+        packets_sent: u64,
+        packets_received: u64,
+        ice_role: i32,
+        ice_local_username_fragment: Vec<u8>,
+        ice_state: i32,
+    }
+    struct FfiIcePair {
+        available: bool,
+        local: UniquePtr<NativeTransportCandidate>,
+        remote: UniquePtr<NativeTransportCandidate>,
+    }
+
+    struct FfiIceConfig {
+        has_receiving_timeout: bool,
+        receiving_timeout: i64,
+        has_backup_connection_ping_interval: bool,
+        backup_connection_ping_interval: i64,
+        has_stable_writable_connection_ping_interval: bool,
+        stable_writable_connection_ping_interval: i64,
+        has_regather_on_failed_networks_interval: bool,
+        regather_on_failed_networks_interval: i64,
+        has_receiving_switching_delay: bool,
+        receiving_switching_delay: i64,
+        has_ice_check_interval_strong_connectivity: bool,
+        ice_check_interval_strong_connectivity: i64,
+        has_ice_check_interval_weak_connectivity: bool,
+        ice_check_interval_weak_connectivity: i64,
+        has_ice_check_min_interval: bool,
+        ice_check_min_interval: i64,
+        has_ice_unwritable_timeout: bool,
+        ice_unwritable_timeout: i64,
+        has_ice_inactive_timeout: bool,
+        ice_inactive_timeout: i64,
+        has_stun_keepalive_interval: bool,
+        stun_keepalive_interval: i64,
+        prioritize_most_likely_candidate_pairs: bool,
+        presume_writable_when_fully_relayed: bool,
+        surface_ice_candidates_on_ice_transport_type_changed: bool,
+        dtls_handshake_in_stun: bool,
+        continual_gathering_policy: u8,
+        default_nomination_mode: u8,
+        vpn_preference: u8,
+        has_network_preference: bool,
+        network_preference: i32,
+        has_ice_unwritable_min_checks: bool,
+        ice_unwritable_min_checks: i32,
+    }
+
     struct FfiIceInternalValue {
         available: bool,
         present: bool,
@@ -2118,7 +2323,17 @@ mod ffi {
         pending_operations: u32,
     }
 
+    struct FfiIcePairChange {
+        transport_name: Vec<u8>,
+        local: UniquePtr<NativeTransportCandidate>,
+        remote: UniquePtr<NativeTransportCandidate>,
+        last_data_received_ms: i64,
+        reason: Vec<u8>,
+        estimated_disconnected_time_ms: i64,
+        retained_bytes: usize,
+    }
     struct FfiPeerEvent {
+        pair_change: FfiIcePairChange,
         ice_state: i32,
         legacy_stats_reports: Vec<FfiLegacyStatsReport>,
         stats_report: UniquePtr<NativeRtcStatsReport>,
@@ -4852,7 +5067,93 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/transport.h");
         type NativeDtlsTransport;
         type NativeSctpTransport;
+        fn ice_transport_register_packet_observer(
+            transport: &NativeIceTransport,
+            capacity: usize,
+        ) -> u8;
+        fn ice_transport_unregister_packet_observer(transport: &NativeIceTransport) -> bool;
+        fn ice_transport_packet_event(transport: &NativeIceTransport) -> FfiIcePacketEvent;
+        fn ice_transport_packet_dropped(transport: &NativeIceTransport) -> u64;
+        fn ice_packet_options_default() -> FfiIcePacketOptions;
+        fn ice_transport_packet_state(transport: &NativeIceTransport) -> FfiIcePacketState;
+        fn ice_transport_send_packet(
+            transport: &NativeIceTransport,
+            data: &[u8],
+            options: &FfiIcePacketOptions,
+            flags: i32,
+        ) -> FfiIceSocketResult;
+        fn ice_transport_set_option(
+            transport: &NativeIceTransport,
+            option: u8,
+            value: i32,
+        ) -> FfiIceSocketResult;
+        fn ice_transport_get_option(transport: &NativeIceTransport, option: u8) -> FfiIceOption;
+        fn ice_transport_route(transport: &NativeIceTransport) -> FfiIceRouteResult;
+        type NativeTransportCandidate;
+        fn transport_candidate_default() -> UniquePtr<NativeTransportCandidate>;
+        fn transport_candidate_clone(
+            candidate: &NativeTransportCandidate,
+        ) -> UniquePtr<NativeTransportCandidate>;
+        fn transport_candidate_fields(
+            candidate: &NativeTransportCandidate,
+        ) -> FfiTransportCandidate;
+        fn transport_candidate_parse(bytes: &[u8]) -> FfiTransportCandidateParse;
+        fn transport_candidate_verify(
+            candidate: &NativeTransportCandidate,
+        ) -> UniquePtr<NativeRtcError>;
+        fn transport_candidate_set_bytes(
+            candidate: Pin<&mut NativeTransportCandidate>,
+            field: u8,
+            value: &[u8],
+        );
+        fn transport_candidate_set_integer(
+            candidate: Pin<&mut NativeTransportCandidate>,
+            field: u8,
+            value: i64,
+        );
+        fn transport_candidate_set_address(
+            candidate: Pin<&mut NativeTransportCandidate>,
+            related: bool,
+            value: &NativeSocketAddress,
+        );
+        fn transport_candidate_serialize(
+            candidate: &NativeTransportCandidate,
+            kind: u8,
+            include_ufrag: bool,
+        ) -> Vec<u8>;
+        fn transport_candidate_equivalent(
+            first: &NativeTransportCandidate,
+            second: &NativeTransportCandidate,
+            removal: bool,
+        ) -> bool;
+        fn ice_transport_candidate(
+            transport: &NativeIceTransport,
+            candidate: &NativeTransportCandidate,
+            remove: bool,
+        ) -> bool;
+        fn ice_transport_remove_all_candidates(transport: &NativeIceTransport) -> bool;
+        fn ice_transport_stats(transport: &NativeIceTransport) -> FfiIceStats;
+        fn ice_transport_selected_pair(transport: &NativeIceTransport) -> FfiIcePair;
+
         type NativeIceTransport;
+        fn ice_config_default() -> FfiIceConfig;
+        fn ice_config_resolve(config: &FfiIceConfig) -> FfiIceConfig;
+        fn ice_config_validate(config: &FfiIceConfig) -> UniquePtr<NativeRtcError>;
+        fn ice_transport_config(transport: &NativeIceTransport, config: &mut FfiIceConfig) -> bool;
+        fn ice_transport_set_config(
+            transport: &NativeIceTransport,
+            config: &FfiIceConfig,
+        ) -> UniquePtr<NativeRtcError>;
+        fn ice_transport_set_role(transport: &NativeIceTransport, role: i32) -> bool;
+        fn ice_transport_set_parameters(
+            transport: &NativeIceTransport,
+            remote: bool,
+            ufrag: &[u8],
+            password: &[u8],
+            renomination: bool,
+        ) -> bool;
+        fn ice_transport_set_remote_mode(transport: &NativeIceTransport, mode: u8) -> bool;
+        fn ice_transport_maybe_start_gathering(transport: &NativeIceTransport) -> bool;
         type NativeDtlsInformation;
         type NativeSctpInformation;
         type NativeDtlsEvent;

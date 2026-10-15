@@ -1,3 +1,16 @@
+#[path = "ice.rs"]
+mod ice;
+pub use ice::{
+    CandidateNetworkCostOutOfRange, Dscp, IceCandidatePair, IceCandidatePairChange,
+    IceCandidatePairState, IceCandidateStats, IceConfig, IceConnectionInfo, IceMode,
+    IceNetworkRoute, IceNominationMode, IceOperationError, IcePacketDecryption, IcePacketEvent,
+    IcePacketInfo, IcePacketObserverError, IcePacketOptions, IcePacketSendError, IcePacketState,
+    IcePacketTimeUpdate, IceParameters, IceReceivedPacket, IceRouteEndpoint, IceSentPacket,
+    IceSocketOperationResult, IceSocketOption, IceStunStats, IceTransportStats,
+    MAX_ICE_CANDIDATE_NETWORK_COST, PacketInfoProtocol, PacketType, TransportCandidate,
+    TransportCandidateProperties, TransportCandidateType,
+};
+
 use std::{cell::Cell, fmt, rc::Rc};
 
 use crate::{CertificateData, ffi, peer::PeerInner};
@@ -542,6 +555,9 @@ struct IceInner {
 #[derive(Clone)]
 pub struct IceTransport(Rc<IceInner>);
 impl IceTransport {
+    pub(crate) fn internal_access(&self) -> IceTransportInternal {
+        IceTransportInternal(self.clone())
+    }
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::ice_transport_same_resource(self.native(), other.native())
     }

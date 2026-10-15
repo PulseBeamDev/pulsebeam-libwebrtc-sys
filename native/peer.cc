@@ -55,6 +55,7 @@
 #include "api/video_codecs/video_encoder_factory.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/data_channel.h"
+#include "pulsebeam-webrtc-sys/native/transport.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/event_log.h"
 #include "pulsebeam-webrtc-sys/native/network.h"
@@ -94,6 +95,7 @@ enum EventKind : std::uint8_t {
   kStandardizedIceConnectionState = 14,
   kIceCandidateRemoved = 15,
   kLegacyStatsReport = 16,
+  kIceSelectedCandidatePairChanged = 17,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -243,7 +245,7 @@ struct EventState {
     return kind >= kConnectionState && kind <= kNegotiationNeeded;
   }
   static std::size_t ControlBytes(const FfiPeerEvent& event) {
-    return event.sdp.size() + event.sdp_mid.size() + event.candidate.size() +
+    return event.pair_change.retained_bytes + event.sdp.size() + event.sdp_mid.size() + event.candidate.size() +
            event.address.size() + event.url.size() + event.message.size();
   }
   bool PushControlLocked(FfiPeerEvent event) {
@@ -554,6 +556,26 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     event.sdp_mid = PeerTextBytes(candidate->sdp_mid());
     event.sdp_mline_index = candidate->sdp_mline_index();
     event.candidate = PeerTextBytes(candidate->ToString());
+    state_->Push(std::move(event));
+  }
+
+  void OnIceSelectedCandidatePairChanged(const webrtc::CandidatePairChangeEvent& value) override {
+    FfiPeerEvent event{};
+    event.kind = kIceSelectedCandidatePairChanged;
+    auto& change = event.pair_change;
+    change.transport_name = PeerTextBytes(value.transport_name);
+    change.reason = PeerTextBytes(value.reason);
+    change.last_data_received_ms = value.last_data_received_ms;
+    change.estimated_disconnected_time_ms = value.estimated_disconnected_time_ms;
+    change.local = std::make_unique<NativeTransportCandidate>(value.selected_candidate_pair.local);
+    change.remote = std::make_unique<NativeTransportCandidate>(value.selected_candidate_pair.remote);
+    auto bytes = [](const webrtc::Candidate& c) {
+      return c.id().size()+c.protocol().size()+c.relay_protocol().size()+c.username().size()+
+        c.password().size()+c.network_name().size()+c.foundation().size()+c.tcptype().size()+
+        c.url().size()+c.address().hostname().size()+c.related_address().hostname().size();
+    };
+    change.retained_bytes = change.transport_name.size()+change.reason.size()+
+        bytes(change.local->value)+bytes(change.remote->value);
     state_->Push(std::move(event));
   }
 

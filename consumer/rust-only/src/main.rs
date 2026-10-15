@@ -1,6 +1,17 @@
 use std::time::Duration;
 
 fn main() {
+    let ice = pulsebeam_webrtc_sys::IceConfig::default();
+    ice.validate().unwrap();
+    assert!(ice.receiving_timeout.is_none());
+    assert!(ice.resolved_defaults().receiving_timeout.is_some());
+    let candidate = pulsebeam_webrtc_sys::TransportCandidate::parse(
+        b"candidate:consumer 1 udp 2122260223 127.0.0.1 43210 typ host generation 0"
+    ).unwrap();
+    candidate.verify().unwrap();
+    assert_eq!(candidate.properties().foundation, b"consumer");
+    assert_eq!(candidate.properties().id, candidate.clone().properties().id);
+    assert_eq!(pulsebeam_webrtc_sys::IcePacketOptions::default().packet_id, -1);
     assert_eq!(
         pulsebeam_webrtc_sys::bridge_identity(),
         "pulsebeam-webrtc-sys-bridge-v2"

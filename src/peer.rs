@@ -449,6 +449,7 @@ pub struct PeerEventObservation {
 
 #[derive(Debug)]
 pub enum PeerConnectionEvent {
+    IceSelectedCandidatePairChanged(crate::IceCandidatePairChange),
     Stats(PeerStatsSnapshot),
     LegacyStats(crate::PeerLegacyStatsSnapshot),
     OperationComplete(OperationCompletion),
@@ -2772,6 +2773,9 @@ fn stats_record_from_ffi(record: ffi::FfiStatsRecord) -> PeerStatsRecord {
 
 fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<PeerConnectionEvent> {
     match event.kind {
+        17 => Some(PeerConnectionEvent::IceSelectedCandidatePairChanged(
+            crate::IceCandidatePairChange::from_native(event.pair_change),
+        )),
         0 => None,
         16 => Some(PeerConnectionEvent::LegacyStats(
             crate::PeerLegacyStatsSnapshot::from_native(

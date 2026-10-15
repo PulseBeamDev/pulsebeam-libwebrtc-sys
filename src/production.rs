@@ -126,6 +126,7 @@ enum Source {
 /// Owned peer notifications. Resource arrivals contain IDs, not local handles.
 #[derive(Debug)]
 pub enum SessionEvent {
+    IceSelectedCandidatePairChanged(crate::IceCandidatePairChange),
     Stats(PeerStatsSnapshot),
     LegacyStats(crate::PeerLegacyStatsSnapshot),
     OperationComplete(OperationCompletion),
@@ -1217,6 +1218,9 @@ impl ProductionSession {
                     operation_id,
                     error,
                 }
+            }
+            PeerConnectionEvent::IceSelectedCandidatePairChanged(value) => {
+                SessionEvent::IceSelectedCandidatePairChanged(value)
             }
             PeerConnectionEvent::IceCandidate(v) => SessionEvent::IceCandidate(v),
             PeerConnectionEvent::IceCandidateBytes(value) => SessionEvent::IceCandidateBytes(value),

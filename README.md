@@ -673,6 +673,32 @@ candidate previously existed. All these operations also have owned-ID
 `ProductionSession` counterparts and retain native sequencing after actor
 migration.
 
+Retained ICE access is revocable: `IceTransportInternal` reacquires the internal
+transport inside each network-role call. It exposes actual configuration,
+credentials/role/gathering controls, candidate mutation, candidate-pair and
+connection statistics, packet send/options/errors, and network routes.
+`IceConfig` keeps optional native defaults distinct from explicit timers;
+`resolved_defaults()` uses the SDK helpers. Native validation errors are
+`RtcError` values. A successful void configuration setter means invocation,
+not that the SDK applied every field; read `config()` for effective state.
+
+`TransportCandidate` owns the full SDK candidate value, distinct from a JSEP
+`IceCandidate`. Copies preserve its generated ID and byte-bearing fields.
+Parsing and `verify()` are separate native operations. Packet sends retain
+the exact native return and last error without claiming that the last error
+describes every failed operation. Empty successful P2P datagrams are unsupported.
+
+ICE packet observers copy borrowed payload/address/timestamp metadata and use a
+bounded drop-oldest queue with an observable loss counter. Writable, ready,
+gathering, received/sent packet and route subscriptions retire on the network
+role. Engine-owned candidate/error/removal/selected-pair wiring stays intact;
+those notifications use peer events, including
+`IceSelectedCandidatePairChanged`. The pin has no individual cancellation API
+for receiving-state or internal ICE-state hooks, so transient observers do not
+install them; `receiving()` and `ice_transport_state()` remain live reads.
+Copied packet observations remain consumable after revocation. Actor/session
+counterparts use retained transport IDs and the same native operations.
+
 Channel labels, protocols and stats string values retain native bytes, including
 non-UTF-8 and embedded NUL. Creation and channel errors retain the message bytes
 exposed by the SDK. Use explicit UTF-8 decoding when text is required. `PeerConnection::create_data_channel_bytes()`

@@ -42,6 +42,7 @@ struct Events {
     gathered: HashSet<SessionPeerId>,
     channels: Vec<(SessionPeerId, SessionChannelId, Vec<u8>)>,
     stats: HashMap<(SessionPeerId, OperationId), PeerStatsSnapshot>,
+    pairs: Vec<(SessionPeerId, IceCandidatePairChange)>,
 }
 impl Events {
     fn drain(&mut self, session: &mut ProductionSession, peers: [SessionPeerId; 2]) {
@@ -61,6 +62,9 @@ impl Events {
                                 .insert((peer, value.operation_id), value)
                                 .is_none()
                         );
+                    }
+                    SessionEvent::IceSelectedCandidatePairChanged(value) => {
+                        self.pairs.push((peer, value))
                     }
                     SessionEvent::DataChannel { channel, label } => {
                         self.channels.push((peer, channel, label));
@@ -415,6 +419,50 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
     let ice = session.dtls_ice_transport(dtls).unwrap().unwrap();
     assert_eq!(session.dtls_ice_transport(dtls).unwrap(), Some(ice));
     assert_eq!(session.ice_component(ice).unwrap(), 1);
+    let original_config = session.ice_config(ice).unwrap();
+    let mut changed = original_config.clone();
+    changed.receiving_timeout = Some(TimeDelta::from_native_microsecond_bits(7_000_000));
+    changed.continual_gathering_policy = ContinualGatheringPolicy::Continually;
+    session.set_ice_config(ice, &changed).unwrap();
+    let applied = session.ice_config(ice).unwrap();
+    assert_eq!(applied.receiving_timeout, changed.receiving_timeout);
+    // The SDK refuses to change gathering policy after gathering has started.
+    assert_eq!(
+        applied.continual_gathering_policy,
+        original_config.continual_gathering_policy
+    );
+    assert_ne!(
+        applied.continual_gathering_policy,
+        changed.continual_gathering_policy
+    );
+    let mut invalid = applied.clone();
+    invalid.receiving_timeout = Some(TimeDelta::from_native_microsecond_bits(0));
+    match session.set_ice_config(ice, &invalid) {
+        Err(SessionTransportError::Operation(IceOperationError::Native(error))) => {
+            assert_eq!(error.kind(), RtcErrorType::InvalidParameter);
+            assert!(!error.message_bytes().is_empty());
+        }
+        other => panic!("expected native config rejection, got {other:?}"),
+    }
+    assert_eq!(session.ice_config(ice).unwrap(), applied);
+    session.set_ice_config(ice, &original_config).unwrap();
+    assert_eq!(
+        session.ice_config(ice).unwrap().receiving_timeout,
+        original_config.receiving_timeout
+    );
+    assert!(matches!(
+        session.register_ice_packet_observer(ice, 0),
+        Err(SessionTransportError::IceObserver(
+            IcePacketObserverError::ZeroCapacity
+        ))
+    ));
+    session.register_ice_packet_observer(ice, 64).unwrap();
+    assert!(matches!(
+        session.register_ice_packet_observer(ice, 1),
+        Err(SessionTransportError::IceObserver(
+            IcePacketObserverError::AlreadyRegistered
+        ))
+    ));
     session.register_dtls_observer(dtls, 1).unwrap();
     assert!(matches!(
         session.register_dtls_observer(dtls, 1),
@@ -492,6 +540,221 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
             session.ice_transport_state(ice).unwrap(),
             IceTransportState::Connected | IceTransportState::Completed
         ));
+        let peer_sctp = session.peer_sctp_transport(peers[1]).unwrap().unwrap();
+        let peer_dtls = session.sctp_dtls_transport(peer_sctp).unwrap().unwrap();
+        let peer_ice = session.dtls_ice_transport(peer_dtls).unwrap().unwrap();
+        session.register_ice_packet_observer(peer_ice, 64).unwrap();
+        assert!(session.ice_packet_state(ice).unwrap().writable);
+        assert!(session.ice_packet_state(peer_ice).unwrap().receiving);
+        let pair = session.ice_selected_candidate_pair(ice).unwrap().unwrap();
+        let before = session.ice_stats(ice).unwrap().unwrap();
+        assert!(before.selected_candidate_pair_changes > 0);
+        assert!(
+            before
+                .connection_infos
+                .iter()
+                .any(|v| v.best_connection && v.writable)
+        );
+        assert!(!before.candidate_stats.is_empty());
+        let route = session.ice_network_route(ice).unwrap().unwrap();
+        assert!(route.connected);
+        assert!(route.packet_overhead > 0);
+        events.drain(&mut session, peers);
+        let pair_event = events
+            .pairs
+            .iter()
+            .find(|(peer, _)| *peer == peers[0])
+            .expect("native selected-pair notification");
+        assert_eq!(
+            pair_event.1.transport_name,
+            session.ice_packet_state(ice).unwrap().transport_name
+        );
+        assert_eq!(
+            pair_event
+                .1
+                .selected_candidate_pair
+                .local
+                .properties()
+                .address,
+            pair.local.properties().address
+        );
+        assert!(!pair_event.1.reason.is_empty());
+        let local_sdp = session
+            .descriptions(peers[0])
+            .unwrap()
+            .local()
+            .unwrap()
+            .sdp
+            .clone();
+        let credentials = IceParameters {
+            username_fragment: local_sdp
+                .lines()
+                .find_map(|l| l.strip_prefix("a=ice-ufrag:"))
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+            password: local_sdp
+                .lines()
+                .find_map(|l| l.strip_prefix("a=ice-pwd:"))
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+            renomination: false,
+        };
+        let opaque = IceParameters {
+            username_fragment: b"native\0\xff".to_vec(),
+            password: b"secret\0\x80".to_vec(),
+            renomination: true,
+        };
+        session.set_ice_parameters(ice, &opaque).unwrap();
+        assert_eq!(
+            session
+                .ice_stats(ice)
+                .unwrap()
+                .unwrap()
+                .ice_local_username_fragment,
+            opaque.username_fragment
+        );
+        session.set_ice_parameters(ice, &credentials).unwrap();
+        let peer_sdp = session
+            .descriptions(peers[1])
+            .unwrap()
+            .local()
+            .unwrap()
+            .sdp
+            .clone();
+        let remote = IceParameters {
+            username_fragment: peer_sdp
+                .lines()
+                .find_map(|l| l.strip_prefix("a=ice-ufrag:"))
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+            password: peer_sdp
+                .lines()
+                .find_map(|l| l.strip_prefix("a=ice-pwd:"))
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+            renomination: false,
+        };
+        session.set_remote_ice_parameters(ice, &remote).unwrap();
+        session.set_remote_ice_mode(ice, IceMode::Full).unwrap();
+        let role = session.ice_role(ice).unwrap();
+        session.set_ice_role(ice, role).unwrap();
+        assert!(matches!(
+            session.set_ice_role(ice, IceTransportRole::Other(222)),
+            Err(SessionTransportError::Operation(
+                IceOperationError::UnknownRole(222)
+            ))
+        ));
+        session.maybe_start_ice_gathering(ice).unwrap();
+        assert_eq!(
+            session.ice_gathering_state(ice).unwrap(),
+            IceTransportGatheringState::Complete
+        );
+        session.add_remote_ice_candidate(ice, &pair.remote).unwrap();
+        session
+            .remove_remote_ice_candidate(ice, &pair.remote)
+            .unwrap();
+        session.add_remote_ice_candidate(ice, &pair.remote).unwrap();
+        let option = session
+            .set_ice_option(ice, IceSocketOption::Dscp, 0)
+            .unwrap();
+        assert_eq!(option.return_value, 0);
+        assert_eq!(
+            session.ice_option(ice, IceSocketOption::Dscp).unwrap(),
+            Some(0)
+        );
+        let mut options = IcePacketOptions::default();
+        options.packet_id = 734;
+        options.info_signaled_after_sent.packet_type = PacketType::StunMessage;
+        let packet = b"\xf1actual-ice\0\xff";
+        let rejected = session.send_ice_packet(ice, packet, &options, 1).unwrap();
+        assert_eq!(rejected.return_value, -1);
+        assert_eq!(rejected.last_error, 22); // native Linux EINVAL, not a binding error
+        assert!(matches!(
+            session.send_ice_packet(ice, &[], &options, 0),
+            Err(SessionTransportError::Packet(
+                IcePacketSendError::EmptyPacket
+            ))
+        ));
+        while session.take_ice_packet_event(ice).unwrap().is_some() {}
+        while session.take_ice_packet_event(peer_ice).unwrap().is_some() {}
+        let sent = session.send_ice_packet(ice, packet, &options, 0).unwrap();
+        assert_eq!(sent.return_value, packet.len() as i32);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (mut received, mut sent_metadata) = (false, false);
+        while !received || !sent_metadata {
+            while let Some(e) = session.take_ice_packet_event(peer_ice).unwrap() {
+                if let IcePacketEvent::Received(value) = e {
+                    if value.payload == packet {
+                        assert_eq!(value.source, pair.local.properties().address);
+                        assert_eq!(value.decryption, IcePacketDecryption::NotDecrypted);
+                        received = true;
+                    }
+                }
+            }
+            while let Some(e) = session.take_ice_packet_event(ice).unwrap() {
+                if let IcePacketEvent::Sent(value) = e {
+                    if value.packet_id == 734 {
+                        assert_eq!(
+                            value.info.packet_type,
+                            PacketType::Data,
+                            "native ICE overwrites caller metadata"
+                        );
+                        assert!(value.send_time_ms >= 0);
+                        sent_metadata = true;
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native raw packet/callback did not arrive"
+            );
+            if !received || !sent_metadata {
+                wait(&mut session);
+            }
+        }
+        let after = session.ice_stats(ice).unwrap().unwrap();
+        assert!(after.bytes_sent >= before.bytes_sent + packet.len() as u64);
+        assert!(after.packets_sent > before.packets_sent);
+        session.unregister_ice_packet_observer(peer_ice).unwrap();
+        session.register_ice_packet_observer(peer_ice, 1).unwrap();
+        let received_before = session
+            .ice_stats(peer_ice)
+            .unwrap()
+            .unwrap()
+            .packets_received;
+        for _ in 0..4 {
+            assert_eq!(
+                session
+                    .send_ice_packet(ice, packet, &options, 0)
+                    .unwrap()
+                    .return_value,
+                packet.len() as i32
+            );
+        }
+        loop {
+            if session
+                .ice_stats(peer_ice)
+                .unwrap()
+                .unwrap()
+                .packets_received
+                >= received_before + 4
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(session.take_dropped_ice_packet_events(peer_ice).unwrap() >= 3);
+        assert_eq!(session.take_dropped_ice_packet_events(peer_ice).unwrap(), 0);
+        session.remove_all_remote_ice_candidates(ice).unwrap();
+        assert!(
+            session.ice_packet_state(ice).unwrap().writable,
+            "native candidate-cache removal is not connection destruction"
+        );
         let _native_optional_rtt = session.ice_rtt_estimate_ms(ice).unwrap();
         let _native_internal_state = session.ice_internal_state(ice).unwrap();
         assert!(session.dtmf_can_insert_tones(dtmf).unwrap());
@@ -655,6 +918,39 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
             session.ice_internal_state(ice),
             Err(SessionTransportError::InternalUnavailable(_))
         ));
+        assert!(matches!(
+            session.ice_config(ice),
+            Err(SessionTransportError::InternalUnavailable(_))
+        ));
+        assert!(matches!(
+            session.set_ice_config(ice, &IceConfig::default()),
+            Err(SessionTransportError::Operation(
+                IceOperationError::Unavailable(_)
+            ))
+        ));
+        assert!(matches!(
+            session.ice_stats(ice),
+            Err(SessionTransportError::InternalUnavailable(_))
+        ));
+        assert!(matches!(
+            session.ice_selected_candidate_pair(ice),
+            Err(SessionTransportError::InternalUnavailable(_))
+        ));
+        assert!(matches!(
+            session.send_ice_packet(ice, b"x", &IcePacketOptions::default(), 0),
+            Err(SessionTransportError::Packet(
+                IcePacketSendError::Unavailable(_)
+            ))
+        ));
+        assert!(matches!(
+            session.ice_option(ice, IceSocketOption::Dscp),
+            Err(SessionTransportError::InternalUnavailable(_))
+        ));
+        assert!(matches!(
+            session.unregister_ice_packet_observer(ice),
+            Err(SessionTransportError::InternalUnavailable(_))
+        ));
+        assert!(session.take_ice_packet_event(ice).unwrap().is_none());
         assert_eq!(
             session.dtls_information(dtls).unwrap().state(),
             DtlsTransportState::Closed
