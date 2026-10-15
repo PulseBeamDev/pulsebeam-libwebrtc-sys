@@ -275,6 +275,9 @@ pub struct TaskQueue {
 }
 
 impl TaskQueue {
+    pub(crate) fn native_for_consumer(&self) -> Option<&ffi::NativeTaskQueue> {
+        self.native.as_ref()
+    }
     pub fn identity(&self) -> Option<crate::TaskQueueIdentity> {
         self.native
             .as_ref()

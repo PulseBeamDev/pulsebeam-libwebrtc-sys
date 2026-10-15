@@ -6,6 +6,14 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
+#include <optional>
+#if defined(WEBRTC_WIN)
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <limits>
 #include <string>
 #include "api/audio/echo_canceller3_config.h"
@@ -62,8 +70,10 @@ struct PendingGains {
 };
 }
 struct NativeAudioProcessor::State {
-  // Destroy the module before its original environment dependencies.
+  // Destroy the module/dumper before its worker and original environment.
+  // The opaque Rust owner retains the exact queue, its factory and dependencies.
   webrtc::Environment environment;
+  std::optional<rust::Box<RustApmDumpWorker>> dump_worker;
   webrtc::scoped_refptr<webrtc::AudioProcessing> module;
   bool linear_echo_configured = false;
   bool linear_output_guaranteed = false;
@@ -109,7 +119,7 @@ std::unique_ptr<NativeAudioProcessor> audio_processor_new(const NativeEnvironmen
   if (selected.noise_suppression > 4 || selected.gain_control > 4) return nullptr;
   webrtc::AudioProcessing::Config config;
   SelectEffects(config, selected);
-  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{environment.environment(), nullptr});
+  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{environment.environment(), std::nullopt, nullptr});
   state->module = webrtc::BuiltinAudioProcessingBuilder(config).Build(state->environment);
   if (!state->module) return nullptr;
   return std::make_unique<NativeAudioProcessor>(std::move(state));
@@ -497,7 +507,7 @@ std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnv
   const auto config = ConfigFromFfi(f);
   error = AdmitConfig(env, config, true, linear_echo);
   if (error) return nullptr;
-  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{env, nullptr, linear_echo, config.echo_canceller.enabled && config.echo_canceller.export_linear_aec_output});
+  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{env, std::nullopt, nullptr, linear_echo, config.echo_canceller.enabled && config.echo_canceller.export_linear_aec_output});
   webrtc::BuiltinAudioProcessingBuilder builder(config);
   if (linear_echo) {
     webrtc::EchoCanceller3Config mono;
@@ -523,6 +533,63 @@ std::uint8_t audio_processor_config_apply(NativeAudioProcessor& p, const FfiApmC
   else if (!previous.echo_canceller.enabled)
     p.state().linear_output_guaranteed = true;
   return 0;
+}
+bool audio_processor_dump_path(NativeAudioProcessor& p, rust::Box<RustApmDumpWorker> worker, rust::Slice<const std::uint8_t> path, std::int64_t maximum, std::uint8_t& error) noexcept {
+  auto* queue = task_queue_for_blocking_consumer(apm_dump_worker_queue(*worker));
+  error = queue ? 0 : 13;
+  if (error) return false;
+  const std::string filename(reinterpret_cast<const char*>(path.data()), path.size());
+  if (filename.find('\0') != std::string::npos) { error = 16; return false; }
+  const bool attached = p.state().module->CreateAndAttachAecDump(filename, maximum, queue);
+  // Native replacement has finished destroying/flushing the old dump while
+  // its old queue owner is still retained. Only now retire that worker.
+  if (attached) p.state().dump_worker = std::move(worker);
+  return attached;
+}
+namespace {
+void CloseDumpDescriptor(int fd) {
+#if defined(WEBRTC_WIN)
+  ::_close(fd);
+#else
+  ::close(fd);
+#endif
+}
+std::FILE* DumpStreamFromDescriptor(int fd, std::int64_t maximum, std::uint8_t& error) {
+#if defined(WEBRTC_WIN)
+  return ::_fdopen(fd, "wb");  // The safe owning Rust FILE API is Unix-only.
+#else
+  const int flags = ::fcntl(fd, F_GETFL);
+  if (flags < 0) return nullptr;
+  const int access = flags & O_ACCMODE;
+#if RTC_DCHECK_IS_ON && defined(WEBRTC_ENABLE_PROTOBUF)
+  // Native writer asserts on failed fwrite. A zero budget provably never
+  // writes; for other budgets readonly input is not a qualified write path.
+  if (access == O_RDONLY && maximum != 0) { error = 17; return nullptr; }
+#endif
+  const char* mode = access == O_RDONLY ? "rb" : access == O_WRONLY ? "wb" : "r+b";
+  // fdopen does not truncate or reposition an already-open descriptor.
+  return ::fdopen(fd, mode);
+#endif
+}
+}
+bool audio_processor_dump_file(NativeAudioProcessor& p, rust::Box<RustApmDumpWorker> worker, std::int32_t fd, std::int64_t maximum, std::uint8_t& error) noexcept {
+  auto* queue = task_queue_for_blocking_consumer(apm_dump_worker_queue(*worker));
+  error = queue ? 0 : 13;
+  if (error) { CloseDumpDescriptor(fd); return false; }
+  auto* stream = DumpStreamFromDescriptor(fd, maximum, error);
+  if (!stream) { CloseDumpDescriptor(fd); if (!error) error = 15; return false; }
+  const bool attached = p.state().module->CreateAndAttachAecDump(stream, maximum, queue);
+#ifndef WEBRTC_ENABLE_PROTOBUF
+  // The actual null factory does NOT consume FILE*, unlike the enabled one.
+  // This owning adapter must reclaim it after the real native false result.
+  std::fclose(stream);
+#endif
+  if (attached) p.state().dump_worker = std::move(worker);
+  return attached;
+}
+void audio_processor_dump_detach(NativeAudioProcessor& p) noexcept {
+  p.state().module->DetachAecDump();
+  p.state().dump_worker.reset();
 }
 bool audio_processor_runtime_setting(NativeAudioProcessor& p, const FfiApmRuntimeSetting& f, bool post, std::uint8_t& error) noexcept {
   error = AdmitRuntime(p.state().module->GetConfig(), f);

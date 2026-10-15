@@ -5,6 +5,7 @@
 #include "rust/cxx.h"
 namespace pulsebeam::webrtc_sys {
 class NativeEnvironment;
+struct RustApmDumpWorker;
 struct FfiApmConfig;
 struct FfiApmFormats;
 struct FfiApmStatistics;
@@ -22,6 +23,9 @@ class NativeAudioProcessor final {
   std::unique_ptr<State> state_;
 };
 std::unique_ptr<NativeAudioProcessor> audio_processor_new(const NativeEnvironment&, const FfiAudioProcessingConfig&) noexcept;
+bool audio_processor_dump_path(NativeAudioProcessor&, rust::Box<RustApmDumpWorker>, rust::Slice<const std::uint8_t>, std::int64_t, std::uint8_t&) noexcept;
+bool audio_processor_dump_file(NativeAudioProcessor&, rust::Box<RustApmDumpWorker>, std::int32_t, std::int64_t, std::uint8_t&) noexcept;
+void audio_processor_dump_detach(NativeAudioProcessor&) noexcept;
 bool audio_processor_runtime_setting(NativeAudioProcessor&, const FfiApmRuntimeSetting&, bool, std::uint8_t&) noexcept;
 bool audio_processor_config_equal(const FfiApmConfig&, const FfiApmConfig&, std::uint8_t) noexcept;
 std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment&, const FfiApmConfig&, bool, std::uint8_t&) noexcept;

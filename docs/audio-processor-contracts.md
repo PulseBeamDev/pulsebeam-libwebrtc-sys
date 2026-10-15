@@ -176,7 +176,46 @@ not repair this SDK mismatch. A caller may explicitly apply a valid replacement
 configuration if reconstruction is desired. This asserting-profile guard has
 source evidence; matching asserting-artifact runtime qualification remains open.
 
-AEC dump, processing providers and builders, and installation of standalone
-selected products remain outside this
+## Stock AEC dump files and retained workers
+
+create_and_attach_aec_dump invokes the real filename overload with byte-preserved
+Linux paths. Embedded NUL is refused before the SDK's fatal filename check.
+create_and_attach_aec_dump_file owns a std::fs::File and invokes the actual FILE
+overload after fdopen, preserving access mode and current descriptor position.
+Both operations consume the explicitly supplied TaskQueue on every outcome;
+there is no hidden worker creation. A successful attach retains its exact native
+queue plus Rust factory/dependencies in an opaque owning leaf of the native APM
+state. Native replacement destroys and flushes the old dumper before releasing
+its old worker; detach and module destruction do the same. Failed creation keeps
+the existing attachment and owner unchanged. detach_aec_dump always calls native
+Detach, including its legitimate no-op case.
+
+The stock destructor posts a completion task and waits forever. Only the known
+threaded queue implementation is currently proven to make progress across that
+wait. Cooperative and provider-backed queues return UnqualifiedDumpWorker;
+closed queues are InvalidDumpWorker. This is a consuming safety/qualification
+boundary, not an assertion that the SDK lacks those queue types. Arbitrary
+provider progress, rejection and cancellation cannot be inferred from a prior
+successful post. Same-worker destruction must not block its own queue.
+
+Return bool is the native creation/attach result, not a write acknowledgment.
+Zero budgets may create an empty dump successfully; all negative size values
+retain the native unlimited behavior. An open failure returns native false;
+fdopen conversion failures are separate wrapper errors. In asserting builds,
+readonly FILE access with a nonzero budget is currently unqualified because the
+native writer DCHECKs failed fwrite. Zero budget proves no writes and remains
+available. Filesystem/resource failures during later writes are not made
+recoverable or represented as successful recording by the creation boolean.
+
+The enabled factory consumes and closes FILE on every result. The protobuf-off
+stub returns false without consuming FILE; this owning adapter closes its input
+in that case rather than leaking it. It still calls the real overload and
+preserves false, without substituting a dumper. The Rust file is consumed on all
+wrapper results as well. Filename creation without protobuf retains native false.
+Matching enabled-artifact tests inspect actual framed protobuf PCM/runtime events,
+not a configuration echo. Protobuf-off runtime qualification remains open.
+
+Unique-owner caller AecDump attachment and its callback/value surface, processing
+providers/builders, and installation of standalone selected products remain outside this
 API surface. Existing peer processing selection is not standalone-product
 installation or proof of complete pinned AudioProcessing parity.

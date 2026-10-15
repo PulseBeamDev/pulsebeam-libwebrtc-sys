@@ -31,6 +31,11 @@ pub enum AudioProcessorError {
     UnqualifiedQueuedRuntimeSetting,
     UnsafeRuntimeSetting,
     UnqualifiedRuntimeReinitialization,
+    UnqualifiedDumpWorker,
+    InvalidDumpWorker,
+    DumpFileConversionFailed,
+    InvalidDumpPath,
+    UnqualifiedDumpFileAccess,
 }
 impl std::fmt::Display for AudioProcessorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -179,8 +184,68 @@ impl AudioProcessor {
             10 => Err(AudioProcessorError::UnqualifiedQueuedRuntimeSetting),
             11 => Err(AudioProcessorError::UnsafeRuntimeSetting),
             12 => Err(AudioProcessorError::UnqualifiedRuntimeReinitialization),
+            13 => Err(AudioProcessorError::UnqualifiedDumpWorker),
+            14 => Err(AudioProcessorError::InvalidDumpWorker),
+            15 => Err(AudioProcessorError::DumpFileConversionFailed),
+            16 => Err(AudioProcessorError::InvalidDumpPath),
+            17 => Err(AudioProcessorError::UnqualifiedDumpFileAccess),
             _ => Err(AudioProcessorError::InvalidConfiguration),
         }
+    }
+    /// Create and attach the actual stock AEC dump. Filename bytes are passed
+    /// unchanged (non-UTF8 paths are supported on Linux); NUL is not a path.
+    /// The worker is consumed on every outcome and retained through native
+    /// dump destruction on success. Only proven threaded workers are admitted.
+    /// Negative maximum sizes retain native unlimited-size behavior.
+    pub fn create_and_attach_aec_dump(
+        &mut self,
+        filename: &[u8],
+        maximum_bytes: i64,
+        worker: crate::TaskQueue,
+    ) -> Result<bool, AudioProcessorError> {
+        if filename.contains(&0) {
+            return Err(AudioProcessorError::InvalidDumpPath);
+        }
+        let worker = crate::audio_processor_dump::RustApmDumpWorker::new(worker)?;
+        let mut error = 0;
+        let attached = ffi::audio_processor_dump_path(
+            self.native.pin_mut(),
+            worker,
+            filename,
+            maximum_bytes,
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(attached)
+    }
+    /// Owning FILE overload. The file and worker are consumed even on failure.
+    /// Conversion preserves the descriptor's access mode and current position.
+    /// In protobuf-disabled builds the SDK leaves FILE open; this owning adapter
+    /// closes it instead of leaking it, while retaining the native false result.
+    #[cfg(unix)]
+    pub fn create_and_attach_aec_dump_file(
+        &mut self,
+        file: std::fs::File,
+        maximum_bytes: i64,
+        worker: crate::TaskQueue,
+    ) -> Result<bool, AudioProcessorError> {
+        use std::os::fd::IntoRawFd;
+        let worker = crate::audio_processor_dump::RustApmDumpWorker::new(worker)?;
+        let mut error = 0;
+        let attached = ffi::audio_processor_dump_file(
+            self.native.pin_mut(),
+            worker,
+            file.into_raw_fd(),
+            maximum_bytes,
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(attached)
+    }
+    /// Native synchronous detach and flush. Release the retained queue only
+    /// after the native dumper has finished its completion barrier.
+    pub fn detach_aec_dump(&mut self) {
+        ffi::audio_processor_dump_detach(self.native.pin_mut());
     }
     /// Call the actual void native setter. Ok means the call was admitted,
     /// not that enqueueing succeeded. Its native acknowledgment is unavailable.

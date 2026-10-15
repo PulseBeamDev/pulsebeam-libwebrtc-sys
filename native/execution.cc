@@ -251,6 +251,12 @@ struct NativeTaskQueue::State {
   const bool cooperative;
 };
 
+webrtc::TaskQueueBase* task_queue_for_blocking_consumer(const NativeTaskQueue& queue) noexcept {
+  const auto& s = *queue.state();
+  if (s.provider_backed || s.cooperative || s.queue->IsCurrent()) return nullptr;
+  return s.queue.get();
+}
+
 struct NativeEnvironment::State {
   explicit State(webrtc::Environment value, FfiClockTimeBounds bounds = {}) noexcept
       : environment(std::move(value)), clock_bounds(bounds) {}

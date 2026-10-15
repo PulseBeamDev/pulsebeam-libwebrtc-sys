@@ -7,6 +7,8 @@ mod audio_processor_config;
 pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplifier, ApmCaptureLevelAdjustment, ApmAnalogMicGainEmulation, ApmHighPassFilter, ApmEchoCanceller, ApmNoiseSuppression, ApmTransientSuppression, ApmGainController1, ApmAnalogGainController, ApmClippingPredictor, ApmGainController2, ApmInputVolumeController, ApmAdaptiveDigital, ApmFixedDigital, ApmDownmixMethod, ApmNoiseSuppressionLevel, ApmGainController1Mode, ApmClippingPredictorMode};
 mod audio_processor;
 mod audio_processor_runtime;
+mod audio_processor_dump;
+use audio_processor_dump::{RustApmDumpWorker, apm_dump_worker_queue};
 pub use audio_processor_runtime::{AudioPlayoutDeviceInfo, AudioProcessingRuntimeSetting};
 pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingStatistics};
 mod audio_mixer;
@@ -2586,6 +2588,8 @@ mod ffi {
     }
 
     extern "Rust" {
+        type RustApmDumpWorker;
+        fn apm_dump_worker_queue(worker: &RustApmDumpWorker) -> &NativeTaskQueue;
         type RustMixerSource;
         fn mixer_source_frame(source: &RustMixerSource, rate: i32) -> FfiMixerFrame;
         fn mixer_source_ssrc(source: &RustMixerSource, valid: &mut bool) -> i32;
@@ -3270,6 +3274,9 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/codec.h");
         include!("pulsebeam-webrtc-sys/native/audio_processor.h");
         type NativeAudioProcessor;
+        fn audio_processor_dump_path(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, filename: &[u8], maximum_bytes: i64, error: &mut u8) -> bool;
+        fn audio_processor_dump_file(processor: Pin<&mut NativeAudioProcessor>, worker: Box<RustApmDumpWorker>, descriptor: i32, maximum_bytes: i64, error: &mut u8) -> bool;
+        fn audio_processor_dump_detach(processor: Pin<&mut NativeAudioProcessor>);
         fn audio_processor_runtime_setting(processor: Pin<&mut NativeAudioProcessor>, setting: &FfiApmRuntimeSetting, post: bool, error: &mut u8) -> bool;
         fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
         fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, linear_echo: bool, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;

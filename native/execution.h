@@ -12,6 +12,7 @@
 
 namespace webrtc {
 class Thread;
+class TaskQueueBase;
 }
 
 namespace pulsebeam::webrtc_sys {
@@ -145,6 +146,10 @@ class NativeTaskQueue final {
  private:
   std::unique_ptr<State> state_;
 };
+
+// Only known threaded queues can guarantee progress while a synchronous SDK
+// consumer blocks waiting for a posted completion task. The owner must survive.
+webrtc::TaskQueueBase* task_queue_for_blocking_consumer(const NativeTaskQueue&) noexcept;
 
 class NativeEnvironment final {
  public:
