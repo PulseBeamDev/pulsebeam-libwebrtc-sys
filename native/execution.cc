@@ -1115,6 +1115,15 @@ void environment_factory_set_log(NativeEnvironmentFactory& factory, rust::Box<Ru
   factory.state()->factory.Set(shared_custom_event_log(std::move(log)));
   factory.state()->log_selected = true;
 }
+std::uint8_t environment_factory_set_log_product(NativeEnvironmentFactory& factory, std::unique_ptr<NativeRtcEventLogProduct> log) noexcept {
+  if (!log) return 1;
+  std::uint8_t error;
+  auto logger = take_event_log_product(*log, error);
+  if (error) return error;
+  factory.state()->factory.Set(std::move(logger));
+  factory.state()->log_selected = true;
+  return 0;
+}
 namespace {
 // An owning field-trial delegate is the storage root for the complete SDK
 // environment and its Rust input branch. Clock, queue and logger pointers stay

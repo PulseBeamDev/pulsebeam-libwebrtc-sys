@@ -194,6 +194,8 @@ void environment_factory_set_manual_clock(NativeEnvironmentFactory& factory, con
 void environment_factory_set_clock(NativeEnvironmentFactory& factory, const NativeClock& clock, FfiClockTimeBounds bounds) noexcept;
 void environment_factory_set_queues(NativeEnvironmentFactory& factory, const NativeTaskQueueFactory& queues) noexcept;
 void environment_factory_set_log(NativeEnvironmentFactory& factory, rust::Box<RustRtcEventLog> log) noexcept;
+class NativeRtcEventLogProduct;
+std::uint8_t environment_factory_set_log_product(NativeEnvironmentFactory& factory, std::unique_ptr<NativeRtcEventLogProduct> log) noexcept;
 std::unique_ptr<NativeEnvironment> environment_factory_create(const NativeEnvironmentFactory& factory, rust::Box<RustEnvironmentFactoryRetention> retention) noexcept;
 std::unique_ptr<NativeTaskQueueFactory> environment_default_queue_metadata(const NativeEnvironment& environment) noexcept;
 

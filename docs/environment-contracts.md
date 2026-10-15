@@ -28,6 +28,14 @@ installed utilities, while later setters affect only that factory's branch.
 `set_field_trials`, `set_clock`, `set_clock_handle`, `set_task_queue_factory` and
 `set_event_log` install owning typed inputs. Replacing a selection does not
 prematurely release dependencies of earlier utilities still owned by SDK storage.
+`set_event_log_product` consumes an existing `RtcEventLogHandle` without
+recreating or stopping its native logger. It can transfer an active or pending
+product: existing stop observers and installed SDK/utility aliases coordinate
+through the same admission state. Stock controls bind on the first accepted
+control sequence and retain that affinity after transfer; log delivery remains
+thread-safe. The SDK kill-switch null product requires no production executor
+and is valid with cooperative queues.
+
 `set_randomness` retains the explicit Rust installation without reseeding it.
 Created environments and copied trial snapshots retain the SDK storage and Rust
 input branch through native destruction, independently of factory close. A

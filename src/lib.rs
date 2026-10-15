@@ -7486,6 +7486,7 @@ mod ffi {
         fn environment_factory_set_clock(factory: Pin<&mut NativeEnvironmentFactory>, clock: &NativeClock, bounds: FfiClockTimeBounds);
         fn environment_factory_set_queues(factory: Pin<&mut NativeEnvironmentFactory>, queues: &NativeTaskQueueFactory);
         fn environment_factory_set_log(factory: Pin<&mut NativeEnvironmentFactory>, log: Box<RustRtcEventLog>);
+        fn environment_factory_set_log_product(factory: Pin<&mut NativeEnvironmentFactory>, log: UniquePtr<NativeRtcEventLogProduct>) -> u8;
         fn environment_factory_create(factory: &NativeEnvironmentFactory, retention: Box<RustEnvironmentFactoryRetention>) -> UniquePtr<NativeEnvironment>;
         fn environment_default_queue_metadata(environment: &NativeEnvironment) -> UniquePtr<NativeTaskQueueFactory>;
         type NativeFieldTrials;

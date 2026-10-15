@@ -234,6 +234,22 @@ impl EnvironmentFactory {
         );
         Ok(())
     }
+    /// Move an existing native product without stopping or reconstructing it.
+    /// Its pending stop and all SDK/utility aliases share one admission state.
+    /// Stock control affinity survives installation; moving ownership does not
+    /// authorize control on another sequence.
+    pub fn set_event_log_product(
+        &mut self,
+        logger: crate::RtcEventLogHandle,
+    ) -> Result<(), crate::EventLogError> {
+        if self.native.is_null() {
+            return Err(crate::EventLogError::Closed);
+        }
+        crate::event_log_product::status(ffi::environment_factory_set_log_product(
+            self.native.pin_mut(),
+            logger.into_native(),
+        ))
+    }
     pub fn set_randomness(&mut self, lease: &RandomnessLease) -> Result<(), BuildEnvironmentError> {
         self.check_open()?;
         self.randomness = Some(lease.0.clone());

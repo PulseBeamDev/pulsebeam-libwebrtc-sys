@@ -325,3 +325,164 @@ fn native_kill_switch_and_factory_failure_reject_without_substituting_stock_outp
         Err(EventLogError::ProviderFailed)
     ));
 }
+
+#[test]
+fn pending_product_installation_preserves_shared_admission_and_final_lease() {
+    let _guard = GLOBAL.lock().unwrap();
+    let lease = RandomnessLease::acquire(3405).unwrap();
+    let clock = ManualClock::new(Duration::from_secs(10)).unwrap();
+    let queues = TaskQueueFactory::cooperative(&clock).unwrap();
+    let mut source = Environment::builder()
+        .task_queue_factory(&queues)
+        .randomness(&lease)
+        .build()
+        .unwrap();
+    let state = Arc::new(State::default());
+    let provider = RtcEventLogFactoryHandle::from_provider(Factory(state.clone()));
+    let mut product = provider.create(&source).unwrap();
+    product
+        .start(output(&state), EventLogOutputPeriod::Immediate)
+        .unwrap();
+    let mut stop = product.stop_async().unwrap();
+    let mut selected = EnvironmentFactory::from_environment(&source).unwrap();
+    selected.set_event_log_product(product).unwrap();
+    let mut first = selected.create().unwrap();
+    let mut second = selected.clone().create().unwrap();
+    let mut a = first.event_log().unwrap();
+    let mut b = second.event_log().unwrap();
+    assert_eq!(a.log(event()), Err(EventLogError::StopPending));
+    assert_eq!(b.stop(), Err(EventLogError::StopPending));
+    assert_eq!(state.creations.load(Ordering::SeqCst), 1);
+    complete(&state);
+    assert_eq!(stop.try_take(), Some(Ok(())));
+    a.log(event()).unwrap();
+    b.log(event()).unwrap();
+    assert_eq!(state.events.lock().unwrap().len(), 2);
+    // Admit another stop and retire every public owner before caller completion.
+    drop(b.stop_async().unwrap());
+    a.close();
+    b.close();
+    first.close();
+    second.close();
+    selected.close();
+    source.close();
+    drop((provider, lease));
+    assert_eq!(state.product_drops.load(Ordering::SeqCst), 0);
+    assert!(RandomnessLease::acquire(3405).is_err());
+    assert_eq!(clock.now(), Duration::from_secs(10));
+    assert_eq!(queues.next_deadline(), None);
+    complete(&state);
+    assert_eq!(state.product_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(state.factory_drops.load(Ordering::SeqCst), 1);
+    drop(RandomnessLease::acquire(3405).unwrap());
+}
+
+#[test]
+fn installed_custom_product_receives_real_peer_controls_after_actor_migration() {
+    let _guard = GLOBAL.lock().unwrap();
+    let source = Environment::builder().build().unwrap();
+    let state = Arc::new(State::default());
+    let provider = RtcEventLogFactoryHandle::from_provider(Factory(state.clone()));
+    let mut product = provider.create(&source).unwrap();
+    product
+        .start(output(&state), EventLogOutputPeriod::Immediate)
+        .unwrap();
+    let mut selected = EnvironmentFactory::from_environment(&source).unwrap();
+    selected.set_event_log_product(product).unwrap();
+    assert!(state.output.lock().unwrap().is_some());
+    assert_eq!(state.output_drops.load(Ordering::SeqCst), 0);
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .environment_factory(&selected)
+        .build()
+        .unwrap();
+    selected.close();
+    drop((provider, source));
+    let observed = state.clone();
+    std::thread::spawn(move || {
+        let peer = session.create_peer(PeerConfiguration::default()).unwrap();
+        session
+            .start_peer_event_log(
+                peer,
+                output(&observed),
+                Some(EventLogOutputPeriod::Immediate),
+            )
+            .unwrap();
+        assert!(observed.output.lock().unwrap().is_some());
+        session.stop_peer_event_log(peer).unwrap();
+        session.shutdown().unwrap();
+    })
+    .join()
+    .unwrap();
+    assert_eq!(state.creations.load(Ordering::SeqCst), 1);
+    assert_eq!(state.output_drops.load(Ordering::SeqCst), 2);
+    assert_eq!(state.product_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn installed_stock_product_binds_first_control_on_sdk_worker_not_creation_thread() {
+    let _guard = GLOBAL.lock().unwrap();
+    let source = Environment::builder().build().unwrap();
+    let product = RtcEventLogFactoryHandle::builtin().create(&source).unwrap();
+    let mut selected = EnvironmentFactory::from_environment(&source).unwrap();
+    selected.set_event_log_product(product).unwrap();
+    let environment = selected.create().unwrap();
+    let mut view = environment.event_log().unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .environment_factory(&selected)
+        .build()
+        .unwrap();
+    let state = Arc::new(State::default());
+    let observed = state.clone();
+    std::thread::spawn(move || {
+        let peer = session.create_peer(PeerConfiguration::default()).unwrap();
+        session
+            .start_peer_event_log(
+                peer,
+                output(&observed),
+                Some(EventLogOutputPeriod::Immediate),
+            )
+            .unwrap();
+        session.stop_peer_event_log(peer).unwrap();
+        session.shutdown().unwrap();
+    })
+    .join()
+    .unwrap();
+    assert!(!state.bytes.lock().unwrap().is_empty());
+    assert_eq!(
+        view.start(output(&state), EventLogOutputPeriod::Immediate),
+        Err(EventLogError::WrongSequence)
+    );
+    // Thread-safe delivery does not inherit the control-sequence restriction.
+    view.log(event()).unwrap();
+    assert_eq!(state.output_drops.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn sdk_kill_switch_product_is_valid_on_controlled_queues_without_progress() {
+    let _guard = GLOBAL.lock().unwrap();
+    let world = ControlledWorld::acquire(3406, Duration::from_secs(2)).unwrap();
+    let clock = ManualClock::new(Duration::from_secs(2)).unwrap();
+    let queues = TaskQueueFactory::cooperative(&clock).unwrap();
+    let source = Environment::builder()
+        .task_queue_factory(&queues)
+        .field_trials(FieldTrials::parse("WebRTC-RtcEventLogKillSwitch/Enabled/").unwrap())
+        .build()
+        .unwrap();
+    let product = RtcEventLogFactoryHandle::builtin().create(&source).unwrap();
+    let mut factory = EnvironmentFactory::from_environment(&source).unwrap();
+    factory.set_event_log_product(product).unwrap();
+    let environment = factory.create().unwrap();
+    let mut log = environment.event_log().unwrap();
+    let state = Arc::new(State::default());
+    assert_eq!(
+        log.start(output(&state), EventLogOutputPeriod::Immediate),
+        Err(EventLogError::NativeRejected)
+    );
+    log.stop().unwrap();
+    assert_eq!(log.stop_async().unwrap().try_take(), Some(Ok(())));
+    assert_eq!(state.output_drops.load(Ordering::SeqCst), 1);
+    assert!(state.bytes.lock().unwrap().is_empty());
+    assert_eq!(queues.next_deadline(), None);
+    assert_eq!(clock.now(), Duration::from_secs(2));
+    drop((log, environment, factory, source, queues, clock, world));
+}

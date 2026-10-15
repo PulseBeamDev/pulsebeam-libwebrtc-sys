@@ -72,15 +72,13 @@ impl RtcEventLogFactoryHandle {
     }
 
     /// Create on this caller sequence, without creating an owner worker.
-    /// The stock logger cannot synchronously stop on cooperative queues and is
-    /// rejected there. A custom logger must obey the controlled-provider contract.
+    /// Active stock logging requires production queues. The SDK kill-switch
+    /// null product is also valid on cooperative queues. A custom logger must
+    /// obey the controlled-provider contract.
     pub fn create(&self, environment: &Environment) -> Result<RtcEventLogHandle, EventLogError> {
         let controlled = environment
             .cooperative_queues()
             .ok_or(EventLogError::UnqualifiedEnvironment)?;
-        if self.0.is_none() && controlled {
-            return Err(EventLogError::UnsupportedControlledLogger);
-        }
         if self.has_failed() {
             return Err(EventLogError::ProviderFailed);
         }
@@ -138,6 +136,9 @@ pub struct RtcEventLogHandle {
     _sequence: PhantomData<Rc<()>>,
 }
 impl RtcEventLogHandle {
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeRtcEventLogProduct> {
+        self.native
+    }
     pub fn log(&mut self, event: RtcEvent) -> Result<(), EventLogError> {
         status(ffi::event_log_product_log(
             self.native.pin_mut(),

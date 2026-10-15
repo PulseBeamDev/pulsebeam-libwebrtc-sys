@@ -108,11 +108,11 @@ std::unique_ptr<NativeEnvironment> test_stock_event_log_environment(const Native
 class NativeRtcEventLogProduct final {
  public:
   struct State;
-  explicit NativeRtcEventLogProduct(std::shared_ptr<State> state) noexcept;
+  explicit NativeRtcEventLogProduct(std::unique_ptr<State> state) noexcept;
   ~NativeRtcEventLogProduct();
-  const std::shared_ptr<State>& state() const noexcept;
+  const std::unique_ptr<State>& state() const noexcept;
  private:
-  std::shared_ptr<State> state_;
+  std::unique_ptr<State> state_;
 };
 std::unique_ptr<NativeRtcEventLogProduct> event_log_product_create(
     std::unique_ptr<NativeRtcEventLogFactory> factory, const NativeEnvironment& environment,
@@ -125,6 +125,7 @@ std::uint8_t event_log_product_stop(NativeRtcEventLogProduct& log) noexcept;
 std::uint8_t event_log_product_stop_async(NativeRtcEventLogProduct& log,
     rust::Box<RustEventLogProductStop> completion) noexcept;
 void event_log_product_close(NativeRtcEventLogProduct& log) noexcept;
+std::unique_ptr<webrtc::RtcEventLog> take_event_log_product(NativeRtcEventLogProduct& log, std::uint8_t& error) noexcept;
 
 // Environment's leaf takes ownership of the custom logger; it does not borrow
 // Rust registration storage or require access to the application actor.
