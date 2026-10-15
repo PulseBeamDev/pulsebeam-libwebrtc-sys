@@ -6,7 +6,7 @@ mod audio_processing;
 mod audio_processor_config;
 pub use audio_processor_config::{AudioProcessorConfig, ApmPipeline, ApmPreAmplifier, ApmCaptureLevelAdjustment, ApmAnalogMicGainEmulation, ApmHighPassFilter, ApmEchoCanceller, ApmNoiseSuppression, ApmTransientSuppression, ApmGainController1, ApmAnalogGainController, ApmClippingPredictor, ApmGainController2, ApmInputVolumeController, ApmAdaptiveDigital, ApmFixedDigital, ApmDownmixMethod, ApmNoiseSuppressionLevel, ApmGainController1Mode, ApmClippingPredictorMode};
 mod audio_processor;
-pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats};
+pub use audio_processor::{AudioProcessor, AudioProcessorError, AudioProcessingStatus, AudioProcessingStream, AudioProcessingFormatState, AudioProcessingFormats, AudioProcessingStatistics};
 mod audio_mixer;
 use audio_mixer::{RustMixerSource, mixer_source_frame, mixer_source_ssrc, mixer_source_rate, mixer_source_invalid};
 pub use audio_mixer::{AudioMixer, AudioMixerSource, AudioMixerSourceProvider, AudioMixerError, AudioMixerFailureObserver, MixerAudioFrame};
@@ -1773,6 +1773,19 @@ mod ffi {
         id: String,
     }
 
+    struct FfiApmStatistics {
+        present: u16,
+        voice_detected: bool,
+        echo_return_loss: f64,
+        echo_return_loss_enhancement: f64,
+        divergent_filter_fraction: f64,
+        delay_median_ms: i32,
+        delay_standard_deviation_ms: i32,
+        residual_echo_likelihood: f64,
+        residual_echo_likelihood_recent_max: f64,
+        delay_ms: i32,
+    }
+
     struct FfiApmFormats {
         input_rate: i32,
         input_channels: usize,
@@ -3247,8 +3260,11 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/audio_processor.h");
         type NativeAudioProcessor;
         fn audio_processor_config_equal(left: &FfiApmConfig, right: &FfiApmConfig, group: u8) -> bool;
-        fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;
+        fn audio_processor_new_config(environment: &NativeEnvironment, config: &FfiApmConfig, linear_echo: bool, error: &mut u8) -> UniquePtr<NativeAudioProcessor>;
         fn audio_processor_config_apply(processor: Pin<&mut NativeAudioProcessor>, config: &FfiApmConfig) -> u8;
+        fn audio_processor_linear_output(processor: Pin<&mut NativeAudioProcessor>, output: &mut [f32], error: &mut u8) -> bool;
+        fn audio_processor_statistics_default() -> FfiApmStatistics;
+        fn audio_processor_statistics(processor: Pin<&mut NativeAudioProcessor>, has_remote_argument: bool, has_remote_tracks: bool) -> FfiApmStatistics;
         fn audio_processor_config_default() -> FfiApmConfig;
         fn audio_processor_config_string(config: &FfiApmConfig) -> String;
         fn audio_processor_config_get(processor: &NativeAudioProcessor) -> FfiApmConfig;

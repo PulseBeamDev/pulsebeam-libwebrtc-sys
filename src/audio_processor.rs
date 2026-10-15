@@ -24,6 +24,9 @@ pub enum AudioProcessorError {
     InvalidConfiguration,
     /// Raw SDK value is preserved, but this consuming range is not yet qualified.
     UnqualifiedGainRange,
+    LinearOutputUnavailable,
+    LinearEchoNotConfigured,
+    UnqualifiedLinearOutputQuery,
 }
 impl std::fmt::Display for AudioProcessorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -110,6 +113,46 @@ pub struct AudioProcessingFormatState {
     pub reverse_channels: usize,
 }
 
+/// Exact optional SDK statistics. Pulling a snapshot preserves the native
+/// reporting queue and aggregation-window side effects.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioProcessingStatistics {
+    pub voice_detected: Option<bool>,
+    pub echo_return_loss: Option<f64>,
+    pub echo_return_loss_enhancement: Option<f64>,
+    pub divergent_filter_fraction: Option<f64>,
+    pub delay_median_ms: Option<i32>,
+    pub delay_standard_deviation_ms: Option<i32>,
+    pub residual_echo_likelihood: Option<f64>,
+    pub residual_echo_likelihood_recent_max: Option<f64>,
+    pub delay_ms: Option<i32>,
+}
+impl AudioProcessingStatistics {
+    fn from_ffi(s: ffi::FfiApmStatistics) -> Self {
+        Self {
+            voice_detected: (s.present & (1 << 0) != 0).then_some(s.voice_detected),
+            echo_return_loss: (s.present & (1 << 1) != 0).then_some(s.echo_return_loss),
+            echo_return_loss_enhancement: (s.present & (1 << 2) != 0)
+                .then_some(s.echo_return_loss_enhancement),
+            divergent_filter_fraction: (s.present & (1 << 3) != 0)
+                .then_some(s.divergent_filter_fraction),
+            delay_median_ms: (s.present & (1 << 4) != 0).then_some(s.delay_median_ms),
+            delay_standard_deviation_ms: (s.present & (1 << 5) != 0)
+                .then_some(s.delay_standard_deviation_ms),
+            residual_echo_likelihood: (s.present & (1 << 6) != 0)
+                .then_some(s.residual_echo_likelihood),
+            residual_echo_likelihood_recent_max: (s.present & (1 << 7) != 0)
+                .then_some(s.residual_echo_likelihood_recent_max),
+            delay_ms: (s.present & (1 << 8) != 0).then_some(s.delay_ms),
+        }
+    }
+}
+impl Default for AudioProcessingStatistics {
+    fn default() -> Self {
+        Self::from_ffi(ffi::audio_processor_statistics_default())
+    }
+}
+
 /// Single-sequence owning stock module. The exact environment is retained until
 /// after native module destruction. No device, worker or hidden pump is created.
 pub struct AudioProcessor {
@@ -124,18 +167,77 @@ impl AudioProcessor {
             1 => Err(AudioProcessorError::UnsafeFieldTrial),
             2 => Err(AudioProcessorError::InvalidDimensions),
             4 => Err(AudioProcessorError::UnqualifiedGainRange),
+            5 => Err(AudioProcessorError::LinearOutputUnavailable),
+            6 => Err(AudioProcessorError::BufferTooShort),
+            7 => Err(AudioProcessorError::LinearEchoNotConfigured),
+            8 => Err(AudioProcessorError::UnqualifiedLinearOutputQuery),
             _ => Err(AudioProcessorError::InvalidConfiguration),
         }
+    }
+    /// Copy the native 16-kHz linear echo output into the required channel
+    /// prefix. Extra caller rows stay untouched. Native absence is false unless
+    /// this SDK build asserts on that query, in which case it is a wrapper error.
+    pub fn linear_aec_output(
+        &mut self,
+        destination: &mut [[f32; 160]],
+    ) -> Result<bool, AudioProcessorError> {
+        let mut error = 0;
+        let available = ffi::audio_processor_linear_output(
+            self.native.pin_mut(),
+            destination.as_flattened_mut(),
+            &mut error,
+        );
+        Self::admission(error)?;
+        Ok(available)
+    }
+    /// Pull the actual native statistics snapshot.
+    pub fn statistics(&mut self) -> AudioProcessingStatistics {
+        AudioProcessingStatistics::from_ffi(ffi::audio_processor_statistics(
+            self.native.pin_mut(),
+            false,
+            false,
+        ))
+    }
+    /// Deprecated native overload, passing the remote-track argument unchanged.
+    pub fn statistics_for_remote_tracks(
+        &mut self,
+        has_remote_tracks: bool,
+    ) -> AudioProcessingStatistics {
+        AudioProcessingStatistics::from_ffi(ffi::audio_processor_statistics(
+            self.native.pin_mut(),
+            true,
+            has_remote_tracks,
+        ))
     }
     /// Drive the builtin builder with every native config member unchanged.
     pub fn builtin_with_config(
         environment: &Environment,
         config: &crate::AudioProcessorConfig,
     ) -> Result<Self, AudioProcessorError> {
+        Self::builtin_configured(environment, config, false)
+    }
+    /// Explicitly enable the AEC3 linear-output filter in both native default
+    /// mono/multichannel configs via the public builder. The separate top-level
+    /// config is passed unchanged, including its storage-export flag.
+    pub fn builtin_with_linear_echo(
+        environment: &Environment,
+        config: &crate::AudioProcessorConfig,
+    ) -> Result<Self, AudioProcessorError> {
+        Self::builtin_configured(environment, config, true)
+    }
+    fn builtin_configured(
+        environment: &Environment,
+        config: &crate::AudioProcessorConfig,
+        linear_echo: bool,
+    ) -> Result<Self, AudioProcessorError> {
         let environment = environment.clone();
         let mut error = 0;
-        let native =
-            ffi::audio_processor_new_config(environment.native(), &config.ffi(), &mut error);
+        let native = ffi::audio_processor_new_config(
+            environment.native(),
+            &config.ffi(),
+            linear_echo,
+            &mut error,
+        );
         Self::admission(error)?;
         if native.is_null() {
             return Err(AudioProcessorError::CreationFailed);

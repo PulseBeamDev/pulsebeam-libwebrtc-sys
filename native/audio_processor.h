@@ -7,6 +7,7 @@ namespace pulsebeam::webrtc_sys {
 class NativeEnvironment;
 struct FfiApmConfig;
 struct FfiApmFormats;
+struct FfiApmStatistics;
 struct FfiAudioProcessingConfig;
 struct FfiAudioProcessingFormatState;
 class NativeAudioProcessor final {
@@ -21,8 +22,11 @@ class NativeAudioProcessor final {
 };
 std::unique_ptr<NativeAudioProcessor> audio_processor_new(const NativeEnvironment&, const FfiAudioProcessingConfig&) noexcept;
 bool audio_processor_config_equal(const FfiApmConfig&, const FfiApmConfig&, std::uint8_t) noexcept;
-std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment&, const FfiApmConfig&, std::uint8_t&) noexcept;
+std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment&, const FfiApmConfig&, bool, std::uint8_t&) noexcept;
 std::uint8_t audio_processor_config_apply(NativeAudioProcessor&, const FfiApmConfig&) noexcept;
+bool audio_processor_linear_output(NativeAudioProcessor&, rust::Slice<float>, std::uint8_t&) noexcept;
+FfiApmStatistics audio_processor_statistics_default() noexcept;
+FfiApmStatistics audio_processor_statistics(NativeAudioProcessor&, bool, bool) noexcept;
 FfiApmConfig audio_processor_config_default() noexcept;
 rust::String audio_processor_config_string(const FfiApmConfig&) noexcept;
 FfiApmConfig audio_processor_config_get(const NativeAudioProcessor&) noexcept;

@@ -188,6 +188,13 @@ fn gc2_uses_actual_fp_operations_not_an_arbitrary_db_cap() {
 
 #[test]
 fn explicit_formats_drive_graph_and_refuse_unsafe_layouts_without_synthetic_status() {
+    let mut unsupported = AudioProcessorConfig::default();
+    unsupported.echo_canceller.enabled = true;
+    unsupported.echo_canceller.export_linear_aec_output = true;
+    assert!(matches!(
+        AudioProcessor::builtin_with_config(&env(), &unsupported),
+        Err(AudioProcessorError::LinearEchoNotConfigured)
+    ));
     let empty = AudioProcessingFormats::default();
     assert_eq!(empty.input, stream(0, 0));
     let mut p =

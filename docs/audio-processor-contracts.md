@@ -101,7 +101,36 @@ layout must be mono output or equal-channel; reverse conversion permits equal
 channels or a mono side. Native supported rates are not reduced to a whitelist
 of 8/16/32/48 kHz.
 
-Runtime settings/statistics/AEC dump and linear output, processing providers and
+## Native observations
+
+statistics and statistics_for_remote_tracks pull the native reporter, preserving
+all nine optional values and its cached/one-entry reporting queue semantics. The
+deprecated bool overload is dispatched with the supplied argument; in this pin
+its implementation ignores the argument and delegates to the normal getter.
+Unavailable metrics remain None rather than being replaced by zeros.
+
+linear_aec_output retrieves native normalized 16-kHz rows of 160 samples. Only
+the required channel prefix is written; extra caller rows remain untouched.
+Native absence returns false in builds that permit that query. In asserting
+builds, queries without a retained positive storage proof return
+UnqualifiedLinearOutputQuery before entry. BufferTooShort is independent of
+capability and leaves the caller buffer untouched. Conversion staging is uninitialized and copied only after native
+availability confirms the SDK wrote every sample, not to invent initialized
+output. The SDK's own ChannelBuffer allocation is initialized, so its available
+pre-capture zero output is a legitimate native result.
+
+builtin_with_linear_echo explicitly drives SetEchoCancellerConfig with the
+native default mono and multichannel configs, enabling their filter's linear
+output. The caller's separate AudioProcessorConfig remains unchanged. The pin's
+top-level export flag only allocates storage, not AEC3's framer; enabling both
+echo and export on a product without the explicit filter configuration returns
+LinearEchoNotConfigured before the otherwise unsafe capture path. Export-only
+ApplyConfig changes do not reconstruct storage; initialize explicitly when
+changing that flag on an already enabled echo controller. An asserting build's
+positive-proof tracking can conservatively refuse a valid read after a config
+transition; the release getter retains the actual native available/absent result.
+
+Runtime settings and AEC dump, processing providers and
 builders, and installation of standalone selected products remain outside this
 API surface. Existing peer processing selection is not standalone-product
 installation or proof of complete pinned AudioProcessing parity.

@@ -1,5 +1,7 @@
 #include "pulsebeam-webrtc-sys/native/audio_processor.h"
 #include <algorithm>
+#include <array>
+#include <span>
 #include <cerrno>
 #include <cctype>
 #include <cmath>
@@ -27,6 +29,8 @@ struct NativeAudioProcessor::State {
   // Destroy the module before its original environment dependencies.
   webrtc::Environment environment;
   webrtc::scoped_refptr<webrtc::AudioProcessing> module;
+  bool linear_echo_configured = false;
+  bool linear_output_guaranteed = false;
 };
 NativeAudioProcessor::NativeAudioProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeAudioProcessor::~NativeAudioProcessor() = default;
@@ -308,7 +312,8 @@ bool ValidGc2(const webrtc::AudioProcessing::Config::GainController2& g) {
       a.headroom_db >= 0 && a.max_gain_db > 0 && a.initial_gain_db >= 0 &&
       a.max_gain_change_db_per_second > 0 && a.max_output_noise_level_dbfs <= 0;
 }
-std::uint8_t AdmitConfig(const webrtc::Environment& env, const webrtc::AudioProcessing::Config& c, bool build) {
+std::uint8_t AdmitConfig(const webrtc::Environment& env, const webrtc::AudioProcessing::Config& c, bool build, bool linear_echo_configured = false) {
+  if (c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output && !linear_echo_configured) return 7;
 #if RTC_DCHECK_IS_ON
   if (c.pipeline.maximum_internal_processing_rate != 32000 &&
       c.pipeline.maximum_internal_processing_rate != 48000) return 3;
@@ -373,21 +378,34 @@ std::uint8_t AdmitConfig(const webrtc::Environment& env, const webrtc::AudioProc
   return 0;
 }
 }
-std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment& environment, const FfiApmConfig& f, std::uint8_t& error) noexcept {
+std::unique_ptr<NativeAudioProcessor> audio_processor_new_config(const NativeEnvironment& environment, const FfiApmConfig& f, bool linear_echo, std::uint8_t& error) noexcept {
   const auto env = environment.environment();
   const auto config = ConfigFromFfi(f);
-  error = AdmitConfig(env, config, true);
+  error = AdmitConfig(env, config, true, linear_echo);
   if (error) return nullptr;
-  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{env, nullptr});
-  state->module = webrtc::BuiltinAudioProcessingBuilder(config).Build(state->environment);
+  auto state = std::make_unique<NativeAudioProcessor::State>(NativeAudioProcessor::State{env, nullptr, linear_echo, config.echo_canceller.enabled && config.echo_canceller.export_linear_aec_output});
+  webrtc::BuiltinAudioProcessingBuilder builder(config);
+  if (linear_echo) {
+    webrtc::EchoCanceller3Config mono;
+    auto multi = webrtc::EchoCanceller3Config::CreateDefaultMultichannelConfig();
+    mono.filter.export_linear_aec_output = true;
+    multi.filter.export_linear_aec_output = true;
+    builder.SetEchoCancellerConfig(mono, multi);
+  }
+  state->module = builder.Build(state->environment);
   if (!state->module) return nullptr;
   return std::make_unique<NativeAudioProcessor>(std::move(state));
 }
 std::uint8_t audio_processor_config_apply(NativeAudioProcessor& p, const FfiApmConfig& f) noexcept {
   const auto config = ConfigFromFfi(f);
   if (config.echo_canceller.enabled && p.state().module->num_reverse_channels() == 0) return 2;
-  if (const auto error = AdmitConfig(p.state().environment, config, false)) return error;
+  if (const auto error = AdmitConfig(p.state().environment, config, false, p.state().linear_echo_configured)) return error;
+  const auto previous = p.state().module->GetConfig();
   p.state().module->ApplyConfig(config);
+  if (!config.echo_canceller.enabled || !config.echo_canceller.export_linear_aec_output)
+    p.state().linear_output_guaranteed = false;
+  else if (!previous.echo_canceller.enabled)
+    p.state().linear_output_guaranteed = true;
   return 0;
 }
 bool audio_processor_config_equal(const FfiApmConfig& left, const FfiApmConfig& right, std::uint8_t group) noexcept {
@@ -402,10 +420,49 @@ bool audio_processor_config_equal(const FfiApmConfig& left, const FfiApmConfig& 
     default: return false;
   }
 }
+namespace {
+FfiApmStatistics StatisticsToFfi(const webrtc::AudioProcessingStats& s) {
+  FfiApmStatistics result{};
+  if (s.voice_detected) { result.present |= std::uint16_t(1u << 0); result.voice_detected = *s.voice_detected; }
+  if (s.echo_return_loss) { result.present |= std::uint16_t(1u << 1); result.echo_return_loss = *s.echo_return_loss; }
+  if (s.echo_return_loss_enhancement) { result.present |= std::uint16_t(1u << 2); result.echo_return_loss_enhancement = *s.echo_return_loss_enhancement; }
+  if (s.divergent_filter_fraction) { result.present |= std::uint16_t(1u << 3); result.divergent_filter_fraction = *s.divergent_filter_fraction; }
+  if (s.delay_median_ms) { result.present |= std::uint16_t(1u << 4); result.delay_median_ms = *s.delay_median_ms; }
+  if (s.delay_standard_deviation_ms) { result.present |= std::uint16_t(1u << 5); result.delay_standard_deviation_ms = *s.delay_standard_deviation_ms; }
+  if (s.residual_echo_likelihood) { result.present |= std::uint16_t(1u << 6); result.residual_echo_likelihood = *s.residual_echo_likelihood; }
+  if (s.residual_echo_likelihood_recent_max) { result.present |= std::uint16_t(1u << 7); result.residual_echo_likelihood_recent_max = *s.residual_echo_likelihood_recent_max; }
+  if (s.delay_ms) { result.present |= std::uint16_t(1u << 8); result.delay_ms = *s.delay_ms; }
+  return result;
+}
+}
+bool audio_processor_linear_output(NativeAudioProcessor& p, rust::Slice<float> output, std::uint8_t& error) noexcept {
+  error = 0;
+#if RTC_DCHECK_IS_ON
+  if (!p.state().linear_output_guaranteed) { error = 8; return false; }
+#endif
+  const auto channels = p.state().module->num_proc_channels();
+  // Structural conversion only: uninitialized native array rows avoid aliasing
+  // Rust arrays as C++ std::array subobjects. Copy solely after the SDK confirms
+  // availability; its successful path writes every sample of every row.
+  auto rows = std::unique_ptr<std::array<float, 160>[]>(new std::array<float, 160>[channels]);
+  if (!p.state().module->GetLinearAecOutput(std::span<std::array<float, 160>>(rows.get(), channels))) return false;
+  if (output.size() / 160 < channels) { error = 6; return false; }
+  for (std::size_t ch = 0; ch < channels; ++ch)
+    std::copy(rows[ch].begin(), rows[ch].end(), output.data() + ch * 160);
+  return true;
+}
+FfiApmStatistics audio_processor_statistics_default() noexcept { return StatisticsToFfi(webrtc::AudioProcessingStats{}); }
+FfiApmStatistics audio_processor_statistics(NativeAudioProcessor& p, bool has_argument, bool remote) noexcept {
+  return StatisticsToFfi(has_argument ? p.state().module->GetStatistics(remote) : p.state().module->GetStatistics());
+}
 FfiApmConfig audio_processor_config_default() noexcept { return ConfigToFfi(webrtc::AudioProcessing::Config{}); }
 rust::String audio_processor_config_string(const FfiApmConfig& v) noexcept { return ConfigFromFfi(v).ToString(); }
 FfiApmConfig audio_processor_config_get(const NativeAudioProcessor& p) noexcept { return ConfigToFfi(p.state().module->GetConfig()); }
-std::int32_t audio_processor_initialize(NativeAudioProcessor& p) noexcept { return p.state().module->Initialize(); }
+std::int32_t audio_processor_initialize(NativeAudioProcessor& p) noexcept {
+  const auto status = p.state().module->Initialize();
+  if (status == 0) { const auto c = p.state().module->GetConfig(); p.state().linear_output_guaranteed = c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output; }
+  return status;
+}
 FfiApmFormats audio_processor_formats_default() noexcept {
   const webrtc::ProcessingConfig config;
   return {config.input_stream().sample_rate_hz(), config.input_stream().num_channels(), config.output_stream().sample_rate_hz(), config.output_stream().num_channels(), config.reverse_input_stream().sample_rate_hz(), config.reverse_input_stream().num_channels(), config.reverse_output_stream().sample_rate_hz(), config.reverse_output_stream().num_channels()};
@@ -432,14 +489,21 @@ std::int32_t audio_processor_initialize_formats(NativeAudioProcessor& p, const F
   config.reverse_input_stream() = webrtc::StreamConfig(f.reverse_input_rate, f.reverse_input_channels);
   config.reverse_output_stream() = webrtc::StreamConfig(f.reverse_output_rate, f.reverse_output_channels);
   admitted = true;
-  return p.state().module->Initialize(config);
+  const auto status = p.state().module->Initialize(config);
+  if (status == 0) { const auto c = p.state().module->GetConfig(); p.state().linear_output_guaranteed = c.echo_canceller.enabled && c.echo_canceller.export_linear_aec_output; }
+  return status;
 }
 std::uint8_t audio_processor_configure(NativeAudioProcessor& p, const FfiAudioProcessingConfig& selected) noexcept {
   if (selected.echo_cancellation && p.state().module->num_reverse_channels() == 0) return 2;
   auto config = p.state().module->GetConfig();
   SelectEffects(config, selected);
-  if (const auto error = AdmitConfig(p.state().environment, config, false)) return error;
+  if (const auto error = AdmitConfig(p.state().environment, config, false, p.state().linear_echo_configured)) return error;
+  const auto previous = p.state().module->GetConfig();
   p.state().module->ApplyConfig(config);
+  if (!config.echo_canceller.enabled || !config.echo_canceller.export_linear_aec_output)
+    p.state().linear_output_guaranteed = false;
+  else if (!previous.echo_canceller.enabled)
+    p.state().linear_output_guaranteed = true;
   return 0;
 }
 FfiAudioProcessingFormatState audio_processor_format(const NativeAudioProcessor& p) noexcept {
