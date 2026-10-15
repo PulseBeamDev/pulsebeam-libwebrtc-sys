@@ -1049,8 +1049,9 @@ std::unique_ptr<NativeEnvironment> create_environment(
   if (field_trials_present(*field_trials)) {
     environment_factory.Set(field_trials_adapter(std::move(field_trials)));
   }
-  if (rust_event_log_present(*event_log)) {
-    environment_factory.Set(rtc_event_log_adapter(std::move(event_log)));
+  const bool custom_log = rust_event_log_present(*event_log);
+  if (custom_log) {
+    environment_factory.Set(shared_custom_event_log(std::move(event_log)));
   }
   if (custom_clock != nullptr) {
     environment_factory.Set(clock_reference(*custom_clock));
@@ -1066,7 +1067,7 @@ std::unique_ptr<NativeEnvironment> create_environment(
     environment_factory.Set(std::make_unique<SharedTaskQueueFactory>(factory.state()));
   }
   return std::make_unique<NativeEnvironment>(
-      std::make_unique<NativeEnvironment::State>(environment_factory.Create(),
+      std::make_unique<NativeEnvironment::State>(custom_log ? environment_factory.Create() : shared_default_event_log(environment_factory.Create()),
           FfiClockTimeBounds{true, clock_minimum_us, clock_maximum_us,
               custom_clock ? custom_clock->monotonic() : clock != nullptr}));
 }

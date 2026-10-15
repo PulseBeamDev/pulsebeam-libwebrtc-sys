@@ -98,6 +98,7 @@
 #include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 #include "pulsebeam-webrtc-sys/native/audio_encoder_ana_access.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/native/event_log.h"
 
 namespace pulsebeam::webrtc_sys {
 
@@ -5825,7 +5826,7 @@ test_codec_roundtrip(const NativeVideoEncoderFactory &encoder_factory,
                      const NativeVideoDecoderFactory &decoder_factory,
                      std::uint32_t frames) noexcept {
   FfiCodecTestResult result{WEBRTC_VIDEO_CODEC_ERROR, 0, 0, 0};
-  webrtc::Environment env = webrtc::EnvironmentFactory().Create();
+  webrtc::Environment env = shared_default_event_log(webrtc::EnvironmentFactory().Create());
   webrtc::SdpVideoFormat format("H264", {{"profile-level-id", "42e01f"}});
   auto encoder = encoder_factory.factory().Create(env, format);
   auto decoder = decoder_factory.factory().Create(env, format);
@@ -5894,7 +5895,7 @@ bool test_encoder_factory_cross_thread(
     auto formats = factory.factory().GetSupportedFormats();
     if (formats.empty())
       return;
-    webrtc::Environment env = webrtc::EnvironmentFactory().Create();
+    webrtc::Environment env = shared_default_event_log(webrtc::EnvironmentFactory().Create());
     encoder = factory.factory().Create(env, formats.front());
   });
   worker.join();

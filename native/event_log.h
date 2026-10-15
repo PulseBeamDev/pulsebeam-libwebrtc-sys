@@ -58,7 +58,7 @@ class NativeRtcEventLogFactory final {
  public:
   explicit NativeRtcEventLogFactory(rust::Box<RustRtcEventLogFactory> factory) noexcept;
   ~NativeRtcEventLogFactory();
-  std::unique_ptr<webrtc::RtcEventLogFactoryInterface> CreateAdapter() const noexcept;
+  std::unique_ptr<webrtc::RtcEventLogFactoryInterface> CreateAdapter(bool installed = true) const noexcept;
  private:
   std::shared_ptr<rust::Box<RustRtcEventLogFactory>> factory_;
 };
@@ -66,6 +66,43 @@ std::unique_ptr<NativeRtcEventLogFactory> new_rtc_event_log_factory(rust::Box<Ru
 
 struct RustEventLogRetention;
 struct RustEventLogProductStop;
+
+// Scoped result propagation through SDK void/bool peer logger entry points.
+class EventLogCallScope final {
+ public:
+  EventLogCallScope() noexcept;
+  ~EventLogCallScope();
+  std::uint8_t status = 0;
+ private:
+  friend void record_event_log_status(std::uint8_t) noexcept;
+  EventLogCallScope* previous_;
+};
+std::unique_ptr<webrtc::RtcEventLog> shared_custom_event_log(rust::Box<RustRtcEventLog> logger) noexcept;
+webrtc::Environment shared_default_event_log(webrtc::Environment environment) noexcept;
+std::unique_ptr<webrtc::RtcEventLogFactoryInterface> shared_builtin_event_log_factory(
+    rust::Box<RustEventLogRetention> retention) noexcept;
+
+class NativeEventLogUtility final {
+ public:
+  struct State;
+  explicit NativeEventLogUtility(std::unique_ptr<State> state) noexcept;
+  ~NativeEventLogUtility();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeEventLogUtility> environment_event_log(const NativeEnvironment& environment) noexcept;
+std::uint8_t event_log_utility_start(NativeEventLogUtility& log,
+    std::unique_ptr<NativeEventLogOutput> output, std::int64_t period_ms) noexcept;
+std::uint8_t event_log_utility_log(NativeEventLogUtility& log, std::unique_ptr<NativeRtcEvent> event) noexcept;
+std::uint8_t event_log_utility_stop(NativeEventLogUtility& log) noexcept;
+std::uint8_t event_log_utility_stop_async(NativeEventLogUtility& log,
+    rust::Box<RustEventLogProductStop> completion, rust::Box<RustEventLogRetention> retention) noexcept;
+void event_log_utility_close(NativeEventLogUtility& log) noexcept;
+// Private fixture: exercise the SDK producer alias, not the public busy check.
+void test_event_log_sdk_dispatch(const NativeEnvironment& environment, std::unique_ptr<NativeRtcEvent> event) noexcept;
+std::unique_ptr<NativeEnvironment> test_stock_event_log_environment(const NativeEnvironment& environment,
+    rust::Box<RustEventLogRetention> retention) noexcept;
 class NativeRtcEventLogProduct final {
  public:
   struct State;

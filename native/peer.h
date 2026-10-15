@@ -62,6 +62,7 @@ class NativeDataChannel;
 class NativeEnvironment;
 class NativeEventLogOutput;
 class NativeRtcEventLogFactory;
+struct RustEventLogRetention;
 class NativeNetworkManagerProvider;
 class NativePacketSocketFactoryProvider;
 class NativeThread;
@@ -185,6 +186,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeVideoDecoderFactory *video_decoder,
     rust::Box<RustVideoFactoryEnvironment> video_creation_environment,
     bool production_system_clock, bool native_audio, const FfiNativeAudioDeviceCreation& native_audio_creation, std::unique_ptr<NativeAudioDevice> audio_device_module, bool event_logging,
+    rust::Box<RustEventLogRetention> event_log_retention,
     const NativeRtcEventLogFactory *event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome, const NativeReadiness *readiness,
@@ -261,7 +263,7 @@ std::uint8_t peer_start_event_log(const NativePeerConnection &peer,
                                   std::unique_ptr<NativeEventLogOutput> output,
                                   bool has_period,
                                   std::int64_t period_ms) noexcept;
-bool peer_stop_event_log(const NativePeerConnection &peer) noexcept;
+std::uint8_t peer_stop_event_log(const NativePeerConnection &peer) noexcept;
 bool peer_restart_ice(const NativePeerConnection &peer) noexcept;
 bool peer_should_fire_negotiation_needed(const NativePeerConnection &peer,
                                          std::uint32_t event_id) noexcept;

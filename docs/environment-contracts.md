@@ -65,6 +65,10 @@ without that ownership proof returns `UnqualifiedEnvironment`, rather than
 assuming a cooperative or production backend. All public construction and
 matching provider-creation paths supply this proof.
 
+`Environment::event_log()` returns an owning view of the exact installed SDK
+logger. SDK aliases coordinate asynchronous stop and dependent-resource
+retirement as described in [event-log contracts](event-log-contracts.md#exact-environment-utility).
+
 Clock ownership, current-time bounds, and opt-in bounded provider/simulated-clock
 behavior are documented in [clock contracts](clock-contracts.md). Environment
 bounds are durable across copies, not obtained by sampling the clock.

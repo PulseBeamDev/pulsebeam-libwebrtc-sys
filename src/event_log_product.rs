@@ -1,4 +1,4 @@
-//! Owning standalone products for the native RTC event-log interfaces.
+//! Owning native RTC event-log factories, products and installed utility views.
 use crate::{
     Environment, EventLogError, EventLogOutput, EventLogOutputPeriod, RtcEvent, RtcEventLogFactory,
     RtcEventLogger, ffi,
@@ -120,7 +120,7 @@ impl RtcEventLogFactoryHandle {
 }
 
 pub(crate) struct RustEventLogRetention {
-    _environment: Environment,
+    pub(crate) _environment: Environment,
 }
 
 /// A caller-sequence native logger owner. All operations require exclusive
@@ -184,16 +184,93 @@ impl RtcEventLogHandle {
     }
 }
 
-fn status(value: u8) -> Result<(), EventLogError> {
+pub(crate) fn status(value: u8) -> Result<(), EventLogError> {
     match value {
         0 => Ok(()),
         1 => Err(EventLogError::Closed),
         2 => Err(EventLogError::StopPending),
         3 => Err(EventLogError::WrongSequence),
         7 => Err(EventLogError::ProviderFailed),
+        8 => Err(EventLogError::Busy),
         _ => Err(EventLogError::NativeRejected),
     }
 }
+
+/// Owning view of the exact installed SDK logger, not a factory-created product.
+/// Multiple views and SDK producers coordinate async stop through the same
+/// native adapter. Closing a view releases it without stopping other owners.
+/// Stock control operations retain native sequence rules; log delivery itself
+/// is thread-safe across independently obtained views.
+///
+/// ```compile_fail
+/// fn send<T: Send>() {}
+/// send::<pulsebeam_webrtc_sys::RtcEventLogUtility>();
+/// ```
+pub struct RtcEventLogUtility {
+    native: cxx::UniquePtr<ffi::NativeEventLogUtility>,
+    environment: Option<Box<Environment>>,
+    _sequence: PhantomData<Rc<()>>,
+}
+impl RtcEventLogUtility {
+    pub(crate) fn from_environment(environment: &Environment) -> Result<Self, EventLogError> {
+        let native = ffi::environment_event_log(environment.native());
+        if native.is_null() {
+            return Err(EventLogError::NativeRejected);
+        }
+        Ok(Self {
+            native,
+            environment: Some(Box::new(environment.clone())),
+            _sequence: PhantomData,
+        })
+    }
+    pub fn start(
+        &mut self,
+        output: EventLogOutput,
+        period: EventLogOutputPeriod,
+    ) -> Result<(), EventLogError> {
+        status(ffi::event_log_utility_start(
+            self.native.pin_mut(),
+            output.into_native(),
+            period.milliseconds()?,
+        ))
+    }
+    pub fn log(&mut self, event: RtcEvent) -> Result<(), EventLogError> {
+        status(ffi::event_log_utility_log(
+            self.native.pin_mut(),
+            event.into_native(),
+        ))
+    }
+    pub fn stop(&mut self) -> Result<(), EventLogError> {
+        status(ffi::event_log_utility_stop(self.native.pin_mut()))
+    }
+    pub fn stop_async(&mut self) -> Result<RtcEventLogStopOperation, EventLogError> {
+        let environment = self.environment.as_ref().ok_or(EventLogError::Closed)?;
+        let state = Arc::new(Mutex::new(StopState {
+            result: None,
+            waker: None,
+        }));
+        status(ffi::event_log_utility_stop_async(
+            self.native.pin_mut(),
+            Box::new(RustEventLogProductStop(state.clone())),
+            Box::new(RustEventLogRetention {
+                _environment: (**environment).clone(),
+            }),
+        ))?;
+        Ok(RtcEventLogStopOperation {
+            state,
+            consumed: false,
+            _exclusive: PhantomData,
+        })
+    }
+    pub fn close(&mut self) {
+        ffi::event_log_utility_close(self.native.pin_mut());
+        self.environment = None;
+    }
+}
+
+#[cfg(test)]
+#[path = "environment_event_log_tests.rs"]
+mod utility_tests;
 
 struct StopState {
     result: Option<Result<(), EventLogError>>,

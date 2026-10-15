@@ -514,6 +514,13 @@ impl Environment {
         TaskQueueFactory::from_environment(self, selected)
     }
 
+    /// Own the exact installed SDK event logger and its dependencies. This is
+    /// an alias of the installed utility, not a newly created factory product.
+    pub fn event_log(&self) -> Result<crate::RtcEventLogUtility, crate::EventLogError> {
+        self.native.as_ref().ok_or(crate::EventLogError::Closed)?;
+        crate::RtcEventLogUtility::from_environment(self)
+    }
+
     pub(crate) fn manual_clock_source(&self) -> Option<&ManualClock> { self._clock.as_ref() }
 
     pub(crate) fn selected_clock_handle(&self) -> Option<&crate::Clock> {

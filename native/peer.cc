@@ -13,7 +13,6 @@
 #include "pulsebeam-webrtc-sys/native/network_predictor.h"
 #include "pulsebeam-webrtc-sys/native/fec.h"
 #include "pulsebeam-webrtc-sys/native/network_control.h"
-#include "api/metronome/metronome.h"
 #include "pulsebeam-webrtc-sys/native/tls.h"
 #include "pulsebeam-webrtc-sys/native/local_network_permission.h"
 
@@ -56,7 +55,6 @@
 #include "api/make_ref_counted.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtc_error.h"
-#include "api/rtc_event_log/rtc_event_log_factory.h"
 #include "api/scoped_refptr.h"
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
@@ -1406,6 +1404,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const FfiNativeAudioDeviceCreation& native_audio_creation,
     std::unique_ptr<NativeAudioDevice> audio_device_module,
     bool event_logging,
+    rust::Box<RustEventLogRetention> event_log_retention,
     const NativeRtcEventLogFactory* event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome,
@@ -1426,7 +1425,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   if (event_log_factory != nullptr) {
     dependencies.event_log_factory = event_log_factory->CreateAdapter();
   } else if (event_logging) {
-    dependencies.event_log_factory = std::make_unique<webrtc::RtcEventLogFactory>();
+    dependencies.event_log_factory = shared_builtin_event_log_factory(std::move(event_log_retention));
   }
   dependencies.network_thread = network_thread.thread();
   dependencies.worker_thread = worker_thread.thread();
@@ -2556,18 +2555,36 @@ std::uint8_t peer_start_event_log(const NativePeerConnection& peer,
     if (!output) return 2;
     auto sink = output->Take();
     if (!sink || !sink->IsActive()) return 2;
+    // Public peer handles and explicit role handles are caller-sequence bound;
+    // calls sharing this worker are serialized by that owning caller. Capture
+    // on the exact SDK worker across its nested BlockingCall, not signaling.
+    std::unique_ptr<EventLogCallScope> call;
+    state->worker_thread->BlockingCall([&] { call = std::make_unique<EventLogCallScope>(); });
     const bool accepted = has_period
         ? state->peer->StartRtcEventLog(std::move(sink), period_ms)
         : state->peer->StartRtcEventLog(std::move(sink));
+    const auto status = state->worker_thread->BlockingCall([&] {
+      const auto status = call->status;
+      call.reset();
+      return status;
+    });
+    if (status) return static_cast<std::uint8_t>(status + 16);
     return accepted ? 0 : 3;
   });
 }
-bool peer_stop_event_log(const NativePeerConnection& peer) noexcept {
+std::uint8_t peer_stop_event_log(const NativePeerConnection& peer) noexcept {
   const auto& state = peer.state();
-  return state->signaling_thread->BlockingCall([&] {
-    if (state->closed) return false;
+  return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
+    if (state->closed) return 1;
+    std::unique_ptr<EventLogCallScope> call;
+    state->worker_thread->BlockingCall([&] { call = std::make_unique<EventLogCallScope>(); });
     state->peer->StopRtcEventLog();
-    return true;
+    const auto status = state->worker_thread->BlockingCall([&] {
+      const auto status = call->status;
+      call.reset();
+      return status;
+    });
+    return status ? status + 16 : 0;
   });
 }
 

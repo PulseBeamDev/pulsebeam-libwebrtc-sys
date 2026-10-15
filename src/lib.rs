@@ -635,7 +635,7 @@ pub use event_log::{
 pub use event_log::{EventLogError, EventLogOutput, EventLogOutputPeriod, EventLogOutputSink};
 mod event_log_product;
 mod provider_panic;
-pub use event_log_product::{RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation};
+pub use event_log_product::{RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation, RtcEventLogUtility};
 pub(crate) use event_log_product::{RustEventLogRetention, RustEventLogProductStop, event_log_product_stopped};
 pub(crate) use event_log::{
     RustEventLogOutput, event_log_output_active, event_log_output_flush, event_log_output_write,
@@ -5182,6 +5182,15 @@ mod ffi {
         fn event_log_product_stop_async(log: Pin<&mut NativeRtcEventLogProduct>,
             completion: Box<RustEventLogProductStop>) -> u8;
         fn event_log_product_close(log: Pin<&mut NativeRtcEventLogProduct>);
+        type NativeEventLogUtility;
+        fn environment_event_log(environment: &NativeEnvironment) -> UniquePtr<NativeEventLogUtility>;
+        fn event_log_utility_start(log: Pin<&mut NativeEventLogUtility>, output: UniquePtr<NativeEventLogOutput>, period_ms: i64) -> u8;
+        fn event_log_utility_log(log: Pin<&mut NativeEventLogUtility>, event: UniquePtr<NativeRtcEvent>) -> u8;
+        fn event_log_utility_stop(log: Pin<&mut NativeEventLogUtility>) -> u8;
+        fn event_log_utility_stop_async(log: Pin<&mut NativeEventLogUtility>, completion: Box<RustEventLogProductStop>, retention: Box<RustEventLogRetention>) -> u8;
+        fn event_log_utility_close(log: Pin<&mut NativeEventLogUtility>);
+        fn test_event_log_sdk_dispatch(environment: &NativeEnvironment, event: UniquePtr<NativeRtcEvent>);
+        fn test_stock_event_log_environment(environment: &NativeEnvironment, retention: Box<RustEventLogRetention>) -> UniquePtr<NativeEnvironment>;
         type NativeEventLogOutput;
         fn event_log_output_native_active(output: &NativeEventLogOutput) -> bool;
         fn event_log_output_native_write(
@@ -8054,6 +8063,7 @@ mod ffi {
             native_audio_creation: &FfiNativeAudioDeviceCreation,
             audio_device_module: UniquePtr<NativeAudioDevice>,
             event_logging: bool,
+            event_log_retention: Box<RustEventLogRetention>,
             event_log_factory: *const NativeRtcEventLogFactory,
             encode_metronome: Box<RustMetronome>,
             decode_metronome: Box<RustMetronome>,
@@ -8184,7 +8194,7 @@ mod ffi {
             has_period: bool,
             period_ms: i64,
         ) -> u8;
-        fn peer_stop_event_log(peer: &NativePeerConnection) -> bool;
+        fn peer_stop_event_log(peer: &NativePeerConnection) -> u8;
         fn peer_restart_ice(peer: &NativePeerConnection) -> bool;
         fn peer_should_fire_negotiation_needed(peer: &NativePeerConnection, event_id: u32) -> bool;
         fn peer_set_local_description_auto(

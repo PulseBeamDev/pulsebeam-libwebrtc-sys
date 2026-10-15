@@ -66,6 +66,7 @@ pub enum EventLogError {
     NativeRejected,
     Closed,
     StopPending,
+    Busy,
     WrongSequence,
     UnsupportedControlledLogger,
     UnqualifiedEnvironment,
@@ -89,10 +90,11 @@ impl fmt::Display for EventLogError {
             Self::NativeRejected => "native event logger rejected the output",
             Self::Closed => "peer, session or logger is closed",
             Self::StopPending => "native event-log stop has not completed",
+            Self::Busy => "event logger is executing a callback or draining deferred native events",
             Self::WrongSequence => "event-log operation requires its creator sequence",
             Self::UnsupportedControlledLogger => "the stock event logger cannot stop on cooperative queues",
             Self::UnqualifiedEnvironment => "event-log creation requires known task-queue execution semantics",
-            Self::ProviderFailed => "the selected event-log factory failed",
+            Self::ProviderFailed => "the selected event-log logger or factory failed",
         })
     }
 }

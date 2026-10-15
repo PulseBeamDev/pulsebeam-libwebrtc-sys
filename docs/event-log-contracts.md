@@ -10,6 +10,45 @@ Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_inter
 
 `ProductionSession::builder(config)` accepts `environment_event_log`, `event_log_factory`, and the built-in `event_logging` selection without importing local handles. `start_peer_event_log` consumes an owned output and accepts either the native default period or an explicit period. `stop_peer_event_log` waits for native output shutdown. The corresponding local peer operations are `start_event_log` and `stop_event_log`. These operations marshal through the peer's native roles and can be used after moving the production actor.
 
+## Exact environment utility
+
+`Environment::event_log()` returns an owning, caller-sequence `RtcEventLogUtility`
+view of that exact SDK logger. It never asks a factory to create a replacement.
+Views retain SDK storage and Rust-only dependencies independently of the original
+environment. Closing a view only releases that view; it does not stop other
+owners. A closed environment or view reports `Closed`.
+
+Installed Rust, default no-op and stock peer loggers use one shared native
+adapter before SDK aliases are made. `start`, `log`, `stop` and `stop_async`
+forward to the wrapped logger. Native rejection and provider failure remain
+distinct. Multiple utility views and native peer control share pending-stop
+admission. Operations return `StopPending` until real native output release;
+async stop returns `Busy` if a native call is still executing, and utility calls
+also report `Busy` during deferred event delivery. No bridge mutex spans a
+provider call. Native producer events arriving during async stop remain owned
+and are forwarded after completion; new post-stop native producers may run
+concurrently with that delivery, as ordinary native log calls can. A custom
+logger retains the original event timestamp; a stock logger stamps the event
+when its actual native `Log` runs.
+
+Completion is published after deferred delivery and after provider unwind has
+latched failure. Custom controlled pending stops retain their resources without
+waiting, advancing time or creating an executor. Stock controls retain native
+sequence checks and reject synchronous control on their own output queue.
+Production close of an initiating view may wait for native completion. If the
+last SDK logger owner is released on its own output queue, stock destruction is
+retired on a one-off production thread so the native queue join cannot self-wait.
+That retirement retains creation SDK/Rust resources and production admission
+until destruction finishes. No custom or controlled logger uses this thread.
+
+An event-log factory creation context contains the SDK environment *before* its
+new product is installed. Its getter therefore returns the previous SDK logger,
+not the newly created product. Subsequent native consumers see the composed
+peer logger. SDK peer start/stop still use their native role hops and defaults;
+bridge status is captured on the worker and transported back to the caller.
+Provider callback failure is `ProviderFailed`, including peer cleanup failure,
+not a fabricated successful stop.
+
 ## Standalone factories and products
 
 `RtcEventLogFactoryHandle::builtin()` explicitly selects the pinned stock factory; `from_provider` owns a custom registration. `create(&environment)` invokes the selected native factory with that exact environment and returns a sequence-bound `RtcEventLogHandle`. The product does not borrow the factory, and retains native dependencies and Rust-only leases through final retirement. Custom factory panics latch `has_failed` and return `ProviderFailed` rather than a successful substitute product.
@@ -64,4 +103,4 @@ Linux packages default to protobuf enabled. Build with `PULSEBEAM_WEBRTC_PROTOBU
 
 ## API boundary
 
-Standalone factory creation requires known task-queue execution semantics. An SDK environment view lacking identity-matched queue metadata returns `UnqualifiedEnvironment`, not a claim that unknown queues are threaded. Provider environment views expose bound environment observations; native clock, queue-factory and event-log utility products are not yet exposed by these views.
+Standalone factory creation requires known task-queue execution semantics. An SDK environment view lacking identity-matched queue metadata returns `UnqualifiedEnvironment`, not a claim that unknown queues are threaded. Provider environment views expose owning clock, queue-factory and event-log utility products. Utility identity, not a cached selection echo, governs which SDK object is used.

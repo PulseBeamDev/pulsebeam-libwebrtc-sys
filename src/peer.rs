@@ -1148,6 +1148,7 @@ impl PeerConnectionFactoryBuilder {
                 &self.native_audio_creation,
                 audio_device_module,
                 self.event_logging,
+                Box::new(crate::RustEventLogRetention { _environment: environment.clone() }),
                 optional_ptr(
                     event_log_factory
                         .as_ref()
@@ -3040,6 +3041,7 @@ impl PeerConnection {
             0 => Ok(()),
             1 => Err(crate::EventLogError::Closed),
             2 => Err(crate::EventLogError::InactiveOutput),
+            error if error >= 16 => crate::event_log_product::status(error - 16),
             _ => Err(crate::EventLogError::NativeRejected),
         }
     }
@@ -3047,10 +3049,12 @@ impl PeerConnection {
     /// Stop and wait until native logging has released the output. Only after
     /// return is it safe to read, replace, or modify the destination file.
     pub fn stop_event_log(&self) -> Result<(), crate::EventLogError> {
-        if self.inner.closed.get() || !ffi::peer_stop_event_log(self.native()) {
-            return Err(crate::EventLogError::Closed);
+        if self.inner.closed.get() { return Err(crate::EventLogError::Closed); }
+        match ffi::peer_stop_event_log(self.native()) {
+            0 => Ok(()),
+            1 => Err(crate::EventLogError::Closed),
+            error => crate::event_log_product::status(error - 16),
         }
-        Ok(())
     }
 
     /// Apply libwebrtc's bandwidth-estimation constraints. Values are bits per

@@ -124,7 +124,10 @@ fn installed_logger_cleanup_and_factory_destruction_survive_actor_migration() {
         .unwrap();
     let observed = counts.clone();
     std::thread::spawn(move || {
-        session.stop_peer_event_log(peer).unwrap();
+        assert_eq!(
+            session.stop_peer_event_log(peer),
+            Err(EventLogError::ProviderFailed)
+        );
         assert!(observed.stops.load(Ordering::SeqCst) >= 1);
         assert_eq!(observed.sink_drops.load(Ordering::SeqCst), 1);
         // A cleanup panic latches logger failure, not a fabricated successful
@@ -138,7 +141,7 @@ fn installed_logger_cleanup_and_factory_destruction_survive_actor_migration() {
                 }),
                 Some(EventLogOutputPeriod::Immediate)
             ),
-            Err(EventLogError::NativeRejected)
+            Err(EventLogError::ProviderFailed)
         );
         assert_eq!(observed.sink_drops.load(Ordering::SeqCst), 2);
         session.shutdown().unwrap();
