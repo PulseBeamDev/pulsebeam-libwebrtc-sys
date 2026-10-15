@@ -29,6 +29,13 @@ Rust clock/queue and randomness leases. Repeated close is harmless. Independent
 environment copies and retaining products keep their own dependencies until
 closed or finally retired; closing an original handle does not revoke them.
 
+`RandomnessLease` clones retain the same exclusive process-global installation,
+without reseeding it. `ProductionSession::builder(config).randomness(&lease)`
+retains that installation in the actual factory environment. It remains alive
+through native creation callbacks, actor migration and independently retained
+creation contexts or utility views. Dropping the original lease does not revoke
+those owners. This selection does not add a controlled clock or scheduler.
+
 Field-trial configuration also works with manual-clock cooperative environments. It adds no task queues, autonomous threads, sockets, or time advancement. Provider lookup work still has the provider's own execution contract; a caller provider must not introduce autonomous work when used in controlled execution.
 
 `Environment::clock()` returns an owning `Clock` delegate to the exact SDK
@@ -72,22 +79,3 @@ retirement as described in [event-log contracts](event-log-contracts.md#exact-en
 Clock ownership, current-time bounds, and opt-in bounded provider/simulated-clock
 behavior are documented in [clock contracts](clock-contracts.md). Environment
 bounds are durable across copies, not obtained by sampling the clock.
-
-## Evidence and remaining work
-
-`tests/field_trials.rs` covers native parser validation, open values, edit/merge semantics, native prefix queries, concurrent owned snapshots, custom copy/retention/drop behavior, panic containment, actor migration/shutdown, and changed native crypto selection under cooperative execution with unchanged native thread count. The native `WebRTC-EnableDtlsPqc` trial changes `KeyExchangeGroups::update` output, demonstrating a real consumer effect rather than setter readback.
-
-`tests/environment_task_queue.rs` covers SDK factory delegates, retained provider
-and randomness resources, byte-exact names and priorities, provider rejection,
-reinstallation, production admission/exclusion and final release, original
-cooperative creator identity and shared deadlines,
-explicit pumping, lifecycle-yield isolation, default threaded execution, and an
-actual installed peer event-log creation context. The execution unit regression
-also exercises self-reposting public work across an explicit native lifecycle
-yield through a reinstalled utility. Matching Linux x86-64 qualification passed:
-75 integration tests and 5 execution unit tests on core, 45 integration tests on
-native, and 50 integration tests plus 5 execution unit tests under ASan with leak
-detection. These gates qualify the named utility/lifecycle paths, not the full
-provider slice.
-
-Event-log utilities and caller factories are now in-progress adapter work, documented in `docs/event-log-contracts.md`. They are not yet qualified. Remaining creation/provider dependencies and full environment/application-facing parity are incomplete.

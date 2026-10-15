@@ -471,6 +471,7 @@ pub struct ProductionSessionBuilder {
     environment_event_log: Option<Box<dyn crate::RtcEventLogger>>,
     clock: Option<crate::Clock>,
     task_queue_factory: Option<crate::TaskQueueFactory>,
+    randomness: Option<crate::RandomnessLease>,
 }
 
 impl ProductionSessionBuilder {
@@ -629,6 +630,14 @@ impl ProductionSessionBuilder {
         self.clock_handle(&crate::Clock::from_provider(provider))
     }
 
+    /// Retain the selected process-global installation through native creation,
+    /// actor migration and final dependent-resource release. This does not
+    /// reseed randomness or install a controlled clock/scheduler.
+    pub fn randomness(mut self, lease: &crate::RandomnessLease) -> Self {
+        self.randomness = Some(lease.clone());
+        self
+    }
+
     /// Register an owned monitor factory with native network-thread callbacks.
     pub fn network_monitor_factory(mut self, factory: impl crate::NetworkMonitorFactory) -> Self {
         self.network_monitor_factory = Some(Arc::new(factory));
@@ -699,6 +708,7 @@ impl ProductionSession {
     pub fn builder(config: ProductionSessionConfig) -> ProductionSessionBuilder {
         ProductionSessionBuilder {
             config,
+            randomness: None,
             audio_encoder_factory: None,
             audio_decoder_factory: None,
             pcm_audio: false,
@@ -838,7 +848,9 @@ impl ProductionSession {
 
     fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
         cleanup::prepare()?;
+        // Keep the lease until error-path provider cleanup has finished.
         let ProductionSessionBuilder {
+            randomness,
             config,
             audio_encoder_factory,
             audio_decoder_factory,
@@ -963,6 +975,7 @@ impl ProductionSession {
             || environment_event_log.is_some()
             || clock.is_some()
             || task_queue_factory.is_some()
+            || randomness.is_some()
         {
             let mut environment = crate::Environment::builder();
             if let Some(factory) = task_queue_factory {
@@ -976,6 +989,9 @@ impl ProductionSession {
             }
             if let Some(logger) = environment_event_log {
                 environment = environment.owned_event_log(logger);
+            }
+            if let Some(lease) = randomness {
+                environment = environment.randomness(&lease);
             }
             let environment = environment
                 .build()

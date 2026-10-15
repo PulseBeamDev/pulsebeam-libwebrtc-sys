@@ -1,12 +1,15 @@
 use pulsebeam_webrtc_sys::{
     Environment, EventLogEnvironment, EventLogOutput, EventLogOutputPeriod, FieldTrials,
-    ManualClock, PeerConfiguration, PeerConnectionFactory, RandomnessLease, RandomnessLeaseError,
-    RtcEvent, RtcEventLogFactory, RtcEventLogger,
+    ManualClock, PeerConfiguration, PeerConnectionFactory, ProductionSession,
+    ProductionSessionConfig, RandomnessLease, RandomnessLeaseError, RtcEvent, RtcEventLogFactory,
+    RtcEventLogger,
 };
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+static RANDOMNESS: Mutex<()> = Mutex::new(());
 
 struct Factory(Arc<Mutex<Vec<EventLogEnvironment>>>);
 struct Logger;
@@ -26,6 +29,7 @@ impl RtcEventLogger for Logger {
 
 #[test]
 fn installed_creation_context_retains_rust_leases_after_native_peer_retirement() {
+    let _exclusive = RANDOMNESS.lock().unwrap();
     let seed = 404;
     let lease = RandomnessLease::acquire(seed).unwrap();
     let clock = ManualClock::new(Duration::from_secs(10)).unwrap();
@@ -81,5 +85,48 @@ fn installed_creation_context_retains_rust_leases_after_native_peer_retirement()
     .unwrap();
     // Only the final context/Environment alias, not clock metadata or a hidden
     // global registry, keeps the exclusive lease installed.
+    drop(RandomnessLease::acquire(seed).unwrap());
+}
+
+#[test]
+fn actor_selection_retains_randomness_through_migration_and_final_utility_release() {
+    let _exclusive = RANDOMNESS.lock().unwrap();
+    let seed = 405;
+    let lease = RandomnessLease::acquire(seed).unwrap();
+    let contexts = Arc::new(Mutex::new(Vec::new()));
+    let builder = ProductionSession::builder(ProductionSessionConfig::default())
+        .randomness(&lease)
+        .event_log_factory(Factory(contexts.clone()));
+    drop(lease);
+    assert_eq!(
+        RandomnessLease::acquire(seed).err(),
+        Some(RandomnessLeaseError::AlreadyAcquired)
+    );
+    // Build from owned registration inputs, then migrate the native actor graph.
+    let mut actor = std::thread::spawn(move || {
+        let mut actor = builder.build().unwrap();
+        actor.create_peer(PeerConfiguration::default()).unwrap();
+        actor
+    })
+    .join()
+    .unwrap();
+    actor.create_peer(PeerConfiguration::default()).unwrap();
+    actor.shutdown().unwrap();
+    drop(actor);
+
+    let mut captured = std::mem::take(&mut *contexts.lock().unwrap());
+    assert_eq!(
+        captured.len(),
+        2,
+        "both peers must invoke the actual selected native factory"
+    );
+    let mut utility = captured.pop().unwrap().environment().event_log().unwrap();
+    drop(captured);
+    assert_eq!(
+        RandomnessLease::acquire(seed).err(),
+        Some(RandomnessLeaseError::AlreadyAcquired)
+    );
+    utility.stop().unwrap();
+    utility.close();
     drop(RandomnessLease::acquire(seed).unwrap());
 }

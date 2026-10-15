@@ -780,6 +780,8 @@ fn native_delay_result(code: u8) -> Result<bool, BuildEnvironmentError> {
 }
 
 /// Exclusive process-global installation of deterministic WebRTC randomness.
+/// Clones retain the same installation without reseeding the generator.
+#[derive(Clone)]
 pub struct RandomnessLease(Arc<RandomnessState>);
 
 struct RandomnessState {
