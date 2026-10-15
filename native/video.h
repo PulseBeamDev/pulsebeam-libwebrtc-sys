@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "api/scoped_refptr.h"
 #include "rust/cxx.h"
@@ -354,6 +355,21 @@ bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept;
 std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
     webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner = nullptr) noexcept;
+class NativeRtpEndpoints final {
+ public:
+  NativeRtpEndpoints();
+  ~NativeRtpEndpoints();
+  bool unified = false;
+  std::vector<webrtc::scoped_refptr<webrtc::RtpSenderInterface>> senders;
+  std::vector<webrtc::scoped_refptr<webrtc::RtpReceiverInterface>> receivers;
+  std::vector<webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> transceivers;
+};
+std::unique_ptr<NativeRtpEndpoints> peer_endpoints(const NativePeerConnection&) noexcept;
+std::size_t endpoint_list_len(const NativeRtpEndpoints&, std::uint8_t kind) noexcept;
+bool endpoint_list_unified(const NativeRtpEndpoints&) noexcept;
+std::unique_ptr<NativeRtpSender> endpoint_list_sender(const NativeRtpEndpoints&, std::size_t) noexcept;
+std::unique_ptr<NativeRtpReceiver> endpoint_list_receiver(const NativeRtpEndpoints&, std::size_t) noexcept;
+std::unique_ptr<NativeRtpTransceiver> endpoint_list_transceiver(const NativeRtpEndpoints&, std::size_t) noexcept;
 std::unique_ptr<NativeRtpSender> rtp_transceiver_sender(
     const NativeRtpTransceiver& transceiver) noexcept;
 std::unique_ptr<NativeRtpReceiver> rtp_transceiver_receiver(

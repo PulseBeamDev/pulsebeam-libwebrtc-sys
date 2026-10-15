@@ -517,16 +517,21 @@ impl VideoTrack {
             .as_ref()
             .unwrap_or_else(|| &self.inner._peer.as_ref().unwrap()._factory)
     }
-    pub fn as_media_track(&self) -> crate::MediaTrack {
-        let owner = match &self.inner._peer {
+    pub(crate) fn media_track_owner(&self) -> crate::media_track::MediaTrackOwner {
+        match &self.inner._peer {
             Some(peer) => crate::media_track::MediaTrackOwner::Factory {
                 _factory: peer._factory.clone(),
             },
             None => crate::media_track::MediaTrackOwner::Video {
                 _track: self.clone(),
             },
-        };
-        crate::MediaTrack::from_native(ffi::video_track_reference(self.native()), owner)
+        }
+    }
+    pub fn as_media_track(&self) -> crate::MediaTrack {
+        crate::MediaTrack::from_native(
+            ffi::video_track_reference(self.native()),
+            self.media_track_owner(),
+        )
     }
     pub(crate) fn local(
         native: cxx::UniquePtr<ffi::NativeVideoTrack>,
@@ -845,6 +850,50 @@ impl MediaType {
     }
 }
 
+impl crate::PeerConnection {
+    /// A single native owning GetSenders snapshot, including Plan B senders.
+    pub fn senders(&self) -> Vec<RtpSender> {
+        self.inner.sender_snapshot()
+    }
+    /// A single native owning GetReceivers snapshot, not a transceiver-derived approximation.
+    pub fn receivers(&self) -> Vec<RtpReceiver> {
+        let list = ffi::peer_endpoints(self.inner.native());
+        (0..ffi::endpoint_list_len(&list, 1))
+            .map(|i| {
+                RtpReceiver::from_native(ffi::endpoint_list_receiver(&list, i), self.inner.clone())
+            })
+            .collect()
+    }
+    pub fn transceivers(&self) -> Result<Vec<RtpTransceiver>, PeerError> {
+        let list = ffi::peer_endpoints(self.inner.native());
+        if !ffi::endpoint_list_unified(&list) {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "GetTransceivers requires Unified Plan semantics".into(),
+            });
+        }
+        Ok((0..ffi::endpoint_list_len(&list, 2))
+            .map(|i| {
+                RtpTransceiver::from_native(
+                    ffi::endpoint_list_transceiver(&list, i),
+                    self.inner.clone(),
+                )
+            })
+            .collect())
+    }
+}
+impl PeerInner {
+    pub(crate) fn sender_snapshot(self: &Rc<Self>) -> Vec<RtpSender> {
+        let list = ffi::peer_endpoints(self.native());
+        (0..ffi::endpoint_list_len(&list, 0))
+            .map(|i| RtpSender {
+                native: ffi::endpoint_list_sender(&list, i),
+                peer: self.clone(),
+            })
+            .collect()
+    }
+}
+
 impl RtpSender {
     /// SDK creation can change the owning transceiver and request negotiation
     /// even when it returns an error. The selected stock SDK does not implement
@@ -939,10 +988,13 @@ impl RtpSender {
             return None;
         }
         let key = self.resource_key();
-        let owner = if let Some(lease) = self.peer.sender_tracks.borrow().get(&key) {
-            crate::media_track::MediaTrackOwner::Video {
-                _track: lease.track.clone(),
+        if let Some(lease) = self.peer.stream_inputs.borrow().get(&key) {
+            if ffi::media_track_same_resource(&native, lease.track.native()) {
+                return Some(lease.track.clone());
             }
+        }
+        let owner = if let Some(lease) = self.peer.sender_tracks.borrow().get(&key) {
+            lease.track.media_track_owner()
         } else if let Some(lease) = self.peer.audio_sender_tracks.borrow().get(&key) {
             crate::media_track::MediaTrackOwner::Audio {
                 _track: lease.track.clone(),
@@ -1045,6 +1097,8 @@ impl RtpSender {
                 retained.remove(&self.resource_key());
             }
         }
+        drop(retained);
+        self.peer.refresh_stream_inputs();
         Ok(())
     }
 

@@ -421,25 +421,145 @@ impl MediaTrack {
         }
     }
 }
+#[cfg(test)]
+mod stream_lease_tests {
+    use super::*;
+    #[test]
+    fn retired_consumers_and_id_removed_track_leases_do_not_accumulate() {
+        let factory = crate::PeerConnectionFactory::builder().build().unwrap();
+        let stream = factory.create_local_media_stream(b"reused-stream").unwrap();
+        for _ in 0..4 {
+            let mut config = crate::RtcConfiguration::default();
+            config.options.sdp_semantics = crate::SdpSemantics::PlanB;
+            let peer = factory
+                .create_peer_connection_with_configuration(config)
+                .unwrap();
+            assert!(peer.add_stream(&stream).unwrap());
+            assert_eq!(stream.0.peers.borrow().len(), 1);
+        }
+        let source = factory.create_audio_source().unwrap();
+        let first = factory
+            .create_audio_track("same-id", &source)
+            .unwrap()
+            .as_media_track();
+        let second = factory
+            .create_audio_track("same-id", &source)
+            .unwrap()
+            .as_media_track();
+        assert!(!first.same_resource(&second));
+        for _ in 0..4 {
+            assert!(stream.add_track(&first).unwrap());
+            assert!(stream.remove_track(&second));
+            assert!(stream.0.tracks.borrow().is_empty());
+        }
+    }
+}
 struct StreamInner {
     native: cxx::UniquePtr<ffi::NativeMediaStream>,
     factory: Rc<FactoryInner>,
+    // Original source owners, not parent-stream edges that can form Rc cycles.
+    tracks: std::cell::RefCell<Vec<MediaTrack>>,
+    peers: std::cell::RefCell<Vec<std::rc::Weak<crate::peer::PeerInner>>>,
 }
 #[derive(Clone)]
 pub struct MediaStream(Rc<StreamInner>);
+impl std::fmt::Debug for MediaStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaStream")
+            .field("id", &self.id())
+            .finish_non_exhaustive()
+    }
+}
 impl MediaStream {
     pub(crate) fn from_native(
         native: cxx::UniquePtr<ffi::NativeMediaStream>,
         factory: Rc<FactoryInner>,
     ) -> Self {
         assert!(!native.is_null());
-        Self(Rc::new(StreamInner { native, factory }))
+        Self(Rc::new(StreamInner {
+            native,
+            factory,
+            tracks: Default::default(),
+            peers: Default::default(),
+        }))
     }
-    fn native(&self) -> &ffi::NativeMediaStream {
+    pub(crate) fn factory(&self) -> &Rc<FactoryInner> {
+        &self.0.factory
+    }
+    pub(crate) fn native(&self) -> &ffi::NativeMediaStream {
         self.0.native.as_ref().unwrap()
     }
     pub fn id(&self) -> Vec<u8> {
         ffi::media_stream_id(self.native())
+    }
+    pub(crate) fn register_peer(&self, peer: &Rc<crate::peer::PeerInner>) {
+        let mut peers = self.0.peers.borrow_mut();
+        peers.retain(|peer| peer.strong_count() != 0);
+        if !peers.iter().any(|p| p.ptr_eq(&Rc::downgrade(peer))) {
+            peers.push(Rc::downgrade(peer));
+        }
+    }
+    pub(crate) fn source_leases(&self) -> Vec<MediaTrack> {
+        self.0.tracks.borrow().clone()
+    }
+    fn refresh_peers(&self) {
+        self.0
+            .peers
+            .borrow_mut()
+            .retain(|peer| peer.strong_count() != 0);
+        let peers: Vec<_> = self
+            .0
+            .peers
+            .borrow()
+            .iter()
+            .filter_map(|p| p.upgrade())
+            .collect();
+        for peer in peers {
+            peer.refresh_stream_inputs();
+        }
+    }
+    /// Native AddTrack result. The source owner is retained only on acceptance.
+    pub fn add_track(&self, track: &MediaTrack) -> Result<bool, crate::PeerError> {
+        if !Rc::ptr_eq(self.factory(), track.factory()) {
+            return Err(crate::PeerError {
+                kind: crate::PeerErrorKind::InvalidParameter,
+                message: "stream and track must belong to the same peer factory".into(),
+            });
+        }
+        let accepted = ffi::media_stream_mutate_track(self.native(), track.native(), false);
+        if accepted {
+            self.0.tracks.borrow_mut().push(track.clone());
+            self.refresh_peers();
+        }
+        Ok(accepted)
+    }
+    /// Native RemoveTrack result. This pin removes by track ID, even when the
+    /// argument is a distinct SDK track. Source leases follow actual remaining
+    /// SDK objects, not a guessed identity match against the argument.
+    pub fn remove_track(&self, track: &MediaTrack) -> bool {
+        let removed = ffi::media_stream_mutate_track(self.native(), track.native(), true);
+        if removed {
+            self.refresh_peers();
+            let active: Vec<_> = self
+                .audio_tracks()
+                .into_iter()
+                .chain(self.video_tracks())
+                .collect();
+            self.0
+                .tracks
+                .borrow_mut()
+                .retain(|lease| active.iter().any(|value| value.same_resource(lease)));
+        }
+        removed
+    }
+    fn preserve_track_owner(&self, value: MediaTrack) -> MediaTrack {
+        self.0
+            .tracks
+            .borrow()
+            .iter()
+            .find(|track| track.same_resource(&value))
+            .cloned()
+            .unwrap_or(value)
     }
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::media_stream_same_resource(self.native(), other.native())
@@ -448,12 +568,12 @@ impl MediaStream {
         let list = ffi::media_stream_tracks(self.native(), video);
         (0..ffi::media_tracks_len(&list))
             .map(|i| {
-                MediaTrack::from_native(
+                self.preserve_track_owner(MediaTrack::from_native(
                     ffi::media_tracks_get(&list, i),
                     MediaTrackOwner::Factory {
                         _factory: self.0.factory.clone(),
                     },
-                )
+                ))
             })
             .collect()
     }
@@ -466,12 +586,12 @@ impl MediaStream {
     fn find(&self, video: bool, id: &[u8]) -> Option<MediaTrack> {
         let native = ffi::media_stream_find(self.native(), video, id);
         (!native.is_null()).then(|| {
-            MediaTrack::from_native(
+            self.preserve_track_owner(MediaTrack::from_native(
                 native,
                 MediaTrackOwner::Factory {
                     _factory: self.0.factory.clone(),
                 },
-            )
+            ))
         })
     }
     pub fn find_audio_track(&self, id: &[u8]) -> Option<MediaTrack> {

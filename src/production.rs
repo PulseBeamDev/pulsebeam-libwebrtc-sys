@@ -175,6 +175,16 @@ pub enum SessionEvent {
     TrackRemoved {
         receiver: SessionReceiverId,
     },
+    StreamAdded {
+        stream: SessionMediaStreamId,
+    },
+    StreamRemoved {
+        stream: SessionMediaStreamId,
+    },
+    TrackAdded {
+        receiver: SessionReceiverId,
+        streams: Vec<SessionMediaStreamId>,
+    },
     Closed,
 }
 
@@ -882,6 +892,26 @@ impl ProductionSession {
     ) -> Result<OperationId, PeerError> {
         self.operation(peer, PeerConnection::set_local_description_auto)
     }
+    pub fn set_local_description_auto_legacy(
+        &mut self,
+        peer: SessionPeerId,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, PeerConnection::set_local_description_auto_legacy)
+    }
+    pub fn set_local_description_legacy(
+        &mut self,
+        peer: SessionPeerId,
+        description: impl Into<crate::SessionDescriptionBytes>,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, |p| p.set_local_description_legacy(description))
+    }
+    pub fn set_remote_description_legacy(
+        &mut self,
+        peer: SessionPeerId,
+        description: impl Into<crate::SessionDescriptionBytes>,
+    ) -> Result<OperationId, PeerError> {
+        self.operation(peer, |p| p.set_remote_description_legacy(description))
+    }
     pub fn add_ice_candidate_sync(
         &mut self,
         peer: SessionPeerId,
@@ -1289,6 +1319,20 @@ impl ProductionSession {
             PeerConnectionEvent::TrackRemoved(value) => {
                 let receiver = self.insert_receiver(peer, value)?;
                 SessionEvent::TrackRemoved { receiver }
+            }
+            PeerConnectionEvent::StreamAdded(value) => SessionEvent::StreamAdded {
+                stream: self.insert_media_stream(peer, value)?,
+            },
+            PeerConnectionEvent::StreamRemoved(value) => SessionEvent::StreamRemoved {
+                stream: self.insert_media_stream(peer, value)?,
+            },
+            PeerConnectionEvent::TrackAdded { receiver, streams } => {
+                let receiver = self.insert_receiver(peer, receiver)?;
+                let streams = streams
+                    .into_iter()
+                    .map(|s| self.insert_media_stream(peer, s))
+                    .collect::<Result<_, _>>()?;
+                SessionEvent::TrackAdded { receiver, streams }
             }
             PeerConnectionEvent::Closed => SessionEvent::Closed,
         };
@@ -1702,6 +1746,35 @@ impl ProductionSession {
         Ok(source.take_encoder_error())
     }
 
+    /// Construct a baseline owning track without implicitly adding a transceiver.
+    pub fn create_opus_track(
+        &mut self,
+        peer: SessionPeerId,
+        source: SessionSourceId,
+        track_id: &str,
+    ) -> Result<SessionMediaTrackId, PeerError> {
+        self.check_open()?;
+        self.peers.get(&peer).ok_or_else(missing)?;
+        let Some(Source::Opus(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        let track = self.factory.create_encoded_audio_track(track_id, source)?;
+        self.insert_media_track(peer, track.as_media_track())
+    }
+    pub fn create_video_track(
+        &mut self,
+        peer: SessionPeerId,
+        source: SessionSourceId,
+        track_id: &str,
+    ) -> Result<SessionMediaTrackId, PeerError> {
+        self.check_open()?;
+        self.peers.get(&peer).ok_or_else(missing)?;
+        let Some(Source::Video(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        let track = source.create_track(&self.factory, track_id)?;
+        self.insert_media_track(peer, track.as_media_track())
+    }
     pub fn publish_opus(
         &mut self,
         peer: SessionPeerId,

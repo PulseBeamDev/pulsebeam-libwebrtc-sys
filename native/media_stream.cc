@@ -21,6 +21,17 @@ FfiOptionalF64 Optional(std::optional<double> x) { return {x.has_value(), x.valu
 webrtc::AudioTrackInterface* Audio(const NativeMediaTrack& t) { return t.track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind ? static_cast<webrtc::AudioTrackInterface*>(t.track().get()) : nullptr; }
 webrtc::VideoTrackInterface* Video(const NativeMediaTrack& t) { return t.track()->kind() == webrtc::MediaStreamTrackInterface::kVideoKind ? static_cast<webrtc::VideoTrackInterface*>(t.track().get()) : nullptr; }
 }
+bool media_stream_mutate_track(const NativeMediaStream& stream, const NativeMediaTrack& track, bool remove) noexcept {
+  if (auto* audio = Audio(track)) {
+    webrtc::scoped_refptr<webrtc::AudioTrackInterface> value(audio);
+    return remove ? stream.stream()->RemoveTrack(value) : stream.stream()->AddTrack(value);
+  }
+  if (auto* video = Video(track)) {
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> value(video);
+    return remove ? stream.stream()->RemoveTrack(value) : stream.stream()->AddTrack(value);
+  }
+  return false;
+}
 struct NativeTrackSource::State {
   webrtc::scoped_refptr<webrtc::AudioSourceInterface> audio;
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> video;

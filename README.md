@@ -673,6 +673,29 @@ candidate previously existed. All these operations also have owned-ID
 `ProductionSession` counterparts and retain native sequencing after actor
 migration.
 
+The deprecated description observer overloads are available as
+`set_local_description_legacy()`, `set_remote_description_legacy()` and
+`set_local_description_auto_legacy()`. They invoke the SDK's delayed observer
+path and share the same bounded admission and exactly-one terminal result
+contract. A completion can describe an earlier state; use current description
+snapshots for current state.
+
+Factories can create owning byte-ID `MediaStream` values. Native track
+add/remove results remain distinct from peer `add_stream()` acceptance and the
+void `remove_stream()` invocation. The latter operations and local/remote peer
+collections require Plan B semantics; Unified Plan is rejected before the SDK's
+fatal precondition. Source leases survive aliases, stream getters and accepted
+peer retention without peer-retaining track cycles. `StreamAdded`,
+`StreamRemoved` and `TrackAdded { receiver, streams }` preserve actual callback
+references, including the deprecated callbacks alongside `Track`. Arrivals
+share the existing bounded queue; oversized stream-association vectors are
+dropped observably rather than truncated. Actor counterparts retain IDs for the
+same native objects, and baseline Opus/video track constructors do not require
+implicitly publishing an auxiliary transceiver. `senders()`, `receivers()`
+and `transceivers()` copy one actual native collection snapshot; the latter
+requires Unified Plan. Stream source leases follow native collection and sender
+identity, including the SDK's ID-based track removal semantics.
+
 Retained ICE access is revocable: `IceTransportInternal` reacquires the internal
 transport inside each network-role call. It exposes actual configuration,
 credentials/role/gathering controls, candidate mutation, candidate-pair and

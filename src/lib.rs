@@ -2332,6 +2332,10 @@ mod ffi {
         estimated_disconnected_time_ms: i64,
         retained_bytes: usize,
     }
+    struct FfiTrackArrival {
+        receiver: UniquePtr<NativeRtpReceiver>,
+        streams: UniquePtr<NativeMediaStreams>,
+    }
     struct FfiPeerEvent {
         pair_change: FfiIcePairChange,
         ice_state: i32,
@@ -3692,6 +3696,27 @@ mod ffi {
             streams: &NativeMediaStreams,
             index: usize,
         ) -> UniquePtr<NativeMediaStream>;
+        fn peer_take_stream_event(
+            peer: &NativePeerConnection,
+            id: u64,
+        ) -> UniquePtr<NativeMediaStream>;
+        fn peer_take_track_event(peer: &NativePeerConnection, id: u64) -> FfiTrackArrival;
+        fn peer_factory_create_stream(
+            factory: &NativePeerConnectionFactory,
+            id: &[u8],
+        ) -> UniquePtr<NativeMediaStream>;
+        fn peer_mutate_stream(
+            peer: &NativePeerConnection,
+            stream: &NativeMediaStream,
+            remove: bool,
+        ) -> u8;
+        fn peer_streams(peer: &NativePeerConnection, remote: bool)
+        -> UniquePtr<NativeMediaStreams>;
+        fn media_stream_mutate_track(
+            stream: &NativeMediaStream,
+            track: &NativeMediaTrack,
+            remove: bool,
+        ) -> bool;
         fn media_stream_id(stream: &NativeMediaStream) -> Vec<u8>;
         fn media_stream_same_resource(a: &NativeMediaStream, b: &NativeMediaStream) -> bool;
         fn media_stream_tracks(
@@ -5253,6 +5278,22 @@ mod ffi {
             transport: &NativeIceTransport,
             field: u8,
         ) -> FfiIceInternalValue;
+        type NativeRtpEndpoints;
+        fn peer_endpoints(peer: &NativePeerConnection) -> UniquePtr<NativeRtpEndpoints>;
+        fn endpoint_list_len(list: &NativeRtpEndpoints, kind: u8) -> usize;
+        fn endpoint_list_unified(list: &NativeRtpEndpoints) -> bool;
+        fn endpoint_list_sender(
+            list: &NativeRtpEndpoints,
+            index: usize,
+        ) -> UniquePtr<NativeRtpSender>;
+        fn endpoint_list_receiver(
+            list: &NativeRtpEndpoints,
+            index: usize,
+        ) -> UniquePtr<NativeRtpReceiver>;
+        fn endpoint_list_transceiver(
+            list: &NativeRtpEndpoints,
+            index: usize,
+        ) -> UniquePtr<NativeRtpTransceiver>;
         type NativeRtpSender;
         type NativeRtpSenderObserver;
         fn rtp_sender_observer(value: &NativeRtpSender) -> UniquePtr<NativeRtpSenderObserver>;
@@ -5985,6 +6026,7 @@ mod ffi {
             peer: &NativePeerConnection,
             operation_id: u64,
             allow_media: bool,
+            legacy: bool,
         ) -> u8;
         fn peer_modify_ice_candidate(
             peer: &NativePeerConnection,
@@ -6041,12 +6083,14 @@ mod ffi {
             operation_id: u64,
             sdp_type: u8,
             sdp: &[u8],
+            legacy: bool,
         ) -> u8;
         fn peer_set_remote_description(
             peer: &NativePeerConnection,
             operation_id: u64,
             sdp_type: u8,
             sdp: &[u8],
+            legacy: bool,
         ) -> u8;
         fn peer_reject_controlled_media(peer: &NativePeerConnection, operation_id: u64) -> u8;
         fn peer_add_ice_candidate(

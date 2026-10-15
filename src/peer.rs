@@ -494,6 +494,12 @@ pub enum PeerConnectionEvent {
     DataChannel(DataChannel),
     Track(RtpTransceiver),
     TrackRemoved(RtpReceiver),
+    StreamAdded(crate::MediaStream),
+    StreamRemoved(crate::MediaStream),
+    TrackAdded {
+        receiver: RtpReceiver,
+        streams: Vec<crate::MediaStream>,
+    },
     Closed,
 }
 
@@ -1314,6 +1320,8 @@ impl PeerConnectionFactory {
                     controlled_id,
                     closed: Cell::new(false),
                     pending_legacy_selector: RefCell::new(None),
+                    local_streams: RefCell::new(Vec::new()),
+                    stream_inputs: RefCell::new(HashMap::new()),
                     sender_tracks: RefCell::new(HashMap::new()),
                     audio_sender_tracks: RefCell::new(HashMap::new()),
                     sender_observers: RefCell::new(HashMap::new()),
@@ -1336,6 +1344,15 @@ impl PeerConnectionFactory {
             ._video_encoder
             .as_ref()
             .is_some_and(|selected| selected.same_provider(encoder))
+    }
+
+    /// Create a real SDK stream. IDs preserve bytes, including embedded NUL.
+    pub fn create_local_media_stream(&self, id: &[u8]) -> Result<crate::MediaStream, PeerError> {
+        let native = ffi::peer_factory_create_stream(self.0.native(), id);
+        if native.is_null() {
+            return Err(native_build_error("failed to create media stream"));
+        }
+        Ok(crate::MediaStream::from_native(native, self.0.clone()))
     }
 
     pub fn create_audio_source(&self) -> Result<AudioSource, PeerError> {
@@ -1646,6 +1663,8 @@ pub(crate) struct PeerInner {
     pub(crate) controlled_id: Option<u64>,
     pub(crate) closed: Cell<bool>,
     pending_legacy_selector: RefCell<Option<(OperationId, crate::MediaTrack)>>,
+    local_streams: RefCell<Vec<crate::MediaStream>>,
+    pub(crate) stream_inputs: RefCell<HashMap<usize, SenderTrackLease<crate::MediaTrack>>>,
     pub(crate) sender_tracks: RefCell<HashMap<usize, SenderTrackLease<VideoTrack>>>,
     pub(crate) audio_sender_tracks: RefCell<HashMap<usize, SenderTrackLease<AudioTrack>>>,
     pub(crate) sender_observers:
@@ -1658,6 +1677,84 @@ pub(crate) struct PeerInner {
 }
 
 impl PeerConnection {
+    fn stream_mutation(
+        &self,
+        stream: &crate::MediaStream,
+        remove: bool,
+    ) -> Result<bool, PeerError> {
+        if !Rc::ptr_eq(stream.factory(), &self.inner._factory) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "stream must belong to this peer factory".into(),
+            });
+        }
+        match ffi::peer_mutate_stream(self.native(), stream.native(), remove) {
+            0 => {
+                if !remove {
+                    stream.register_peer(&self.inner);
+                    self.inner.local_streams.borrow_mut().push(stream.clone());
+                }
+                self.inner.refresh_stream_inputs();
+                if remove {
+                    let actual = self.local_streams()?;
+                    self.inner
+                        .local_streams
+                        .borrow_mut()
+                        .retain(|s| actual.iter().any(|v| v.same_resource(s)));
+                }
+                Ok(true)
+            }
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }),
+            2 => Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "legacy stream operations require native Plan B semantics".into(),
+            }),
+            3 => Ok(false),
+            _ => unreachable!("native stream mutation status"),
+        }
+    }
+    /// Native Plan B AddStream acceptance, not proof of negotiation or media.
+    pub fn add_stream(&self, stream: &crate::MediaStream) -> Result<bool, PeerError> {
+        self.stream_mutation(stream, false)
+    }
+    /// Invoke native Plan B RemoveStream. The SDK has no removal result.
+    pub fn remove_stream(&self, stream: &crate::MediaStream) -> Result<(), PeerError> {
+        self.stream_mutation(stream, true).map(|_| ())
+    }
+    fn streams(&self, remote: bool) -> Result<Vec<crate::MediaStream>, PeerError> {
+        let list = ffi::peer_streams(self.native(), remote);
+        if list.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "legacy stream collections require native Plan B semantics".into(),
+            });
+        }
+        Ok((0..ffi::media_streams_len(&list))
+            .map(|i| {
+                let stream = crate::MediaStream::from_native(
+                    ffi::media_streams_get(&list, i),
+                    self.inner._factory.clone(),
+                );
+                self.inner
+                    .local_streams
+                    .borrow()
+                    .iter()
+                    .find(|s| s.same_resource(&stream))
+                    .cloned()
+                    .unwrap_or(stream)
+            })
+            .collect())
+    }
+    pub fn local_streams(&self) -> Result<Vec<crate::MediaStream>, PeerError> {
+        self.streams(false)
+    }
+    pub fn remote_streams(&self) -> Result<Vec<crate::MediaStream>, PeerError> {
+        self.streams(true)
+    }
+
     /// Native owning SCTP transport, absent before one is created. Repeated
     /// getters and its DTLS associations share native observer registrations.
     /// Native MID lookup. No transport is guessed from a sender or SDP parse.
@@ -1790,24 +1887,11 @@ impl PeerConnection {
                 message: "peer is closed".into(),
             });
         }
-        let list = ffi::peer_video_transceivers(self.native());
-        let list = list.as_ref().ok_or_else(|| PeerError {
-            kind: PeerErrorKind::InvalidState,
-            message: "video transceivers are unavailable".into(),
-        })?;
-        (0..ffi::transceiver_list_len(list))
-            .map(|index| {
-                let native = ffi::transceiver_list_at(list, index);
-                if native.is_null() {
-                    Err(PeerError {
-                        kind: PeerErrorKind::Internal,
-                        message: "invalid video transceiver snapshot".into(),
-                    })
-                } else {
-                    Ok(RtpTransceiver::from_native(native, self.inner.clone()))
-                }
-            })
-            .collect()
+        Ok(self
+            .transceivers()?
+            .into_iter()
+            .filter(|v| v.media_type() == crate::MediaType::Video)
+            .collect())
     }
 
     /// Returns video sender handles for the current transceiver snapshot.
@@ -1827,24 +1911,11 @@ impl PeerConnection {
                 message: "peer is closed".into(),
             });
         }
-        let list = ffi::peer_audio_transceivers(self.native());
-        let list = list.as_ref().ok_or_else(|| PeerError {
-            kind: PeerErrorKind::InvalidState,
-            message: "audio transceivers are unavailable".into(),
-        })?;
-        (0..ffi::transceiver_list_len(list))
-            .map(|index| {
-                let native = ffi::transceiver_list_at(list, index);
-                if native.is_null() {
-                    Err(PeerError {
-                        kind: PeerErrorKind::Internal,
-                        message: "invalid audio transceiver snapshot".into(),
-                    })
-                } else {
-                    Ok(RtpTransceiver::from_native(native, self.inner.clone()))
-                }
-            })
-            .collect()
+        Ok(self
+            .transceivers()?
+            .into_iter()
+            .filter(|v| v.media_type() == crate::MediaType::Audio)
+            .collect())
     }
 
     /// Returns audio receiver handles for the current transceiver snapshot.
@@ -2024,6 +2095,7 @@ impl PeerConnection {
                 .audio_sender_tracks
                 .borrow_mut()
                 .remove(&sender.resource_key());
+            self.inner.refresh_stream_inputs();
             Ok(())
         } else {
             Err(PeerError {
@@ -2220,12 +2292,19 @@ impl PeerConnection {
     /// but remains owned until the corresponding event is consumed. Read
     /// `descriptions()` after success to obtain the resulting SDP.
     pub fn set_local_description_auto(&self) -> Result<OperationId, PeerError> {
+        self.set_local_description_auto_impl(false)
+    }
+    /// Deprecated SDK observer overload. The SDK posts its completion later.
+    pub fn set_local_description_auto_legacy(&self) -> Result<OperationId, PeerError> {
+        self.set_local_description_auto_impl(true)
+    }
+    fn set_local_description_auto_impl(&self, legacy: bool) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         let allow_media = self.inner._factory._controlled_driver.is_none()
             || self.inner._factory.controlled_media;
         Self::operation_admission(
             id,
-            ffi::peer_set_local_description_auto(self.native(), id.0, allow_media),
+            ffi::peer_set_local_description_auto(self.native(), id.0, allow_media, legacy),
         )
     }
 
@@ -2239,6 +2318,21 @@ impl PeerConnection {
         &self,
         description: SessionDescriptionBytes,
     ) -> Result<OperationId, PeerError> {
+        self.set_local_description_impl(description, false)
+    }
+    /// Use the pinned deprecated SetSessionDescriptionObserver overload.
+    /// Completion is delayed by native code, not synthesized by this wrapper.
+    pub fn set_local_description_legacy(
+        &self,
+        description: impl Into<SessionDescriptionBytes>,
+    ) -> Result<OperationId, PeerError> {
+        self.set_local_description_impl(description.into(), true)
+    }
+    fn set_local_description_impl(
+        &self,
+        description: SessionDescriptionBytes,
+        legacy: bool,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         let status = if self.controlled_media_sdp(&description) {
             ffi::peer_reject_controlled_media(self.native(), id.0)
@@ -2248,6 +2342,7 @@ impl PeerConnection {
                 id.0,
                 description.kind as u8,
                 &description.sdp,
+                legacy,
             )
         };
         Self::operation_admission(id, status)
@@ -2263,6 +2358,20 @@ impl PeerConnection {
         &self,
         description: SessionDescriptionBytes,
     ) -> Result<OperationId, PeerError> {
+        self.set_remote_description_impl(description, false)
+    }
+    /// Use the pinned deprecated remote-description observer overload.
+    pub fn set_remote_description_legacy(
+        &self,
+        description: impl Into<SessionDescriptionBytes>,
+    ) -> Result<OperationId, PeerError> {
+        self.set_remote_description_impl(description.into(), true)
+    }
+    fn set_remote_description_impl(
+        &self,
+        description: SessionDescriptionBytes,
+        legacy: bool,
+    ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
         let status = if self.controlled_media_sdp(&description) {
             ffi::peer_reject_controlled_media(self.native(), id.0)
@@ -2272,6 +2381,7 @@ impl PeerConnection {
                 id.0,
                 description.kind as u8,
                 &description.sdp,
+                legacy,
             )
         };
         Self::operation_admission(id, status)
@@ -2604,6 +2714,8 @@ impl PeerConnection {
             self.inner.pending_legacy_selector.borrow_mut().take();
             self.inner.sender_tracks.borrow_mut().clear();
             self.inner.audio_sender_tracks.borrow_mut().clear();
+            self.inner.local_streams.borrow_mut().clear();
+            self.inner.stream_inputs.borrow_mut().clear();
             Ok(())
         } else {
             Err(PeerError {
@@ -2635,6 +2747,42 @@ impl PeerConnection {
 }
 
 impl PeerInner {
+    pub(crate) fn refresh_stream_inputs(self: &Rc<Self>) {
+        if self.closed.get()
+            || (self.local_streams.borrow().is_empty() && self.stream_inputs.borrow().is_empty())
+        {
+            return;
+        }
+        let mut sources: Vec<_> = self
+            .stream_inputs
+            .borrow()
+            .values()
+            .map(|v| v.track.clone())
+            .collect();
+        for stream in self.local_streams.borrow().iter() {
+            sources.extend(stream.source_leases());
+        }
+        let mut inputs = HashMap::new();
+        for sender in self.sender_snapshot() {
+            let native = ffi::rtp_sender_track_reference(sender.native());
+            if native.is_null() {
+                continue;
+            }
+            let actual = crate::MediaTrack::from_native(
+                native,
+                crate::media_track::MediaTrackOwner::Factory {
+                    _factory: self._factory.clone(),
+                },
+            );
+            if let Some(source) = sources.iter().find(|source| source.same_resource(&actual)) {
+                inputs.insert(
+                    sender.resource_key(),
+                    SenderTrackLease::new(&sender, source.clone()),
+                );
+            }
+        }
+        *self.stream_inputs.borrow_mut() = inputs;
+    }
     pub(crate) fn controlled_time(&self) -> Option<std::time::Duration> {
         self._factory
             ._controlled_driver
@@ -2916,6 +3064,35 @@ fn event_from_ffi(event: ffi::FfiPeerEvent, peer: &Rc<PeerInner>) -> Option<Peer
                 native,
                 peer.clone(),
             )))
+        }
+        18 | 19 => {
+            let native = ffi::peer_take_stream_event(peer.native(), event.operation_id);
+            assert!(!native.is_null(), "native adapter lost a stream arrival");
+            let stream = crate::MediaStream::from_native(native, peer._factory.clone());
+            Some(if event.kind == 18 {
+                PeerConnectionEvent::StreamAdded(stream)
+            } else {
+                PeerConnectionEvent::StreamRemoved(stream)
+            })
+        }
+        20 => {
+            let value = ffi::peer_take_track_event(peer.native(), event.operation_id);
+            assert!(
+                !value.receiver.is_null() && !value.streams.is_null(),
+                "native adapter lost a track arrival"
+            );
+            let streams = (0..ffi::media_streams_len(&value.streams))
+                .map(|i| {
+                    crate::MediaStream::from_native(
+                        ffi::media_streams_get(&value.streams, i),
+                        peer._factory.clone(),
+                    )
+                })
+                .collect();
+            Some(PeerConnectionEvent::TrackAdded {
+                receiver: RtpReceiver::from_native(value.receiver, peer.clone()),
+                streams,
+            })
         }
         _ => unreachable!("native adapter returned an invalid peer event"),
     }

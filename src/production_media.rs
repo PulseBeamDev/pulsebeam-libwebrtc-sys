@@ -2,6 +2,142 @@
 use super::*;
 
 impl ProductionSession {
+    pub fn senders(&mut self, peer: SessionPeerId) -> Result<Vec<SessionSenderId>, PeerError> {
+        self.check_open()?;
+        let values = self.peers.get(&peer).ok_or_else(missing)?.value.senders();
+        values
+            .into_iter()
+            .map(|v| self.insert_sender(peer, v))
+            .collect()
+    }
+    pub fn receivers(&mut self, peer: SessionPeerId) -> Result<Vec<SessionReceiverId>, PeerError> {
+        self.check_open()?;
+        let values = self.peers.get(&peer).ok_or_else(missing)?.value.receivers();
+        values
+            .into_iter()
+            .map(|v| self.insert_receiver(peer, v))
+            .collect()
+    }
+    pub fn transceivers(
+        &mut self,
+        peer: SessionPeerId,
+    ) -> Result<Vec<SessionTransceiverId>, PeerError> {
+        self.check_open()?;
+        let values = self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .transceivers()?;
+        values
+            .into_iter()
+            .map(|v| self.insert_transceiver(peer, v))
+            .collect()
+    }
+    pub fn create_local_media_stream(
+        &mut self,
+        peer: SessionPeerId,
+        id: &[u8],
+    ) -> Result<SessionMediaStreamId, PeerError> {
+        self.check_open()?;
+        self.peers.get(&peer).ok_or_else(missing)?;
+        let stream = self.factory.create_local_media_stream(id)?;
+        self.insert_media_stream(peer, stream)
+    }
+    pub fn add_media_stream_track(
+        &mut self,
+        stream: SessionMediaStreamId,
+        track: SessionMediaTrackId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        self.media_streams
+            .get(&stream)
+            .ok_or_else(missing)?
+            .value
+            .add_track(&self.media_tracks.get(&track).ok_or_else(missing)?.value)
+    }
+    pub fn remove_media_stream_track(
+        &mut self,
+        stream: SessionMediaStreamId,
+        track: SessionMediaTrackId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .media_streams
+            .get(&stream)
+            .ok_or_else(missing)?
+            .value
+            .remove_track(&self.media_tracks.get(&track).ok_or_else(missing)?.value))
+    }
+    pub fn add_stream(
+        &mut self,
+        peer: SessionPeerId,
+        stream: SessionMediaStreamId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_stream(&self.media_streams.get(&stream).ok_or_else(missing)?.value)
+    }
+    pub fn remove_stream(
+        &mut self,
+        peer: SessionPeerId,
+        stream: SessionMediaStreamId,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .remove_stream(&self.media_streams.get(&stream).ok_or_else(missing)?.value)
+    }
+    fn peer_streams(
+        &mut self,
+        peer: SessionPeerId,
+        remote: bool,
+    ) -> Result<Vec<SessionMediaStreamId>, PeerError> {
+        self.check_open()?;
+        let peer_value = &self.peers.get(&peer).ok_or_else(missing)?.value;
+        let streams = if remote {
+            peer_value.remote_streams()?
+        } else {
+            peer_value.local_streams()?
+        };
+        streams
+            .into_iter()
+            .map(|value| self.insert_media_stream(peer, value))
+            .collect()
+    }
+    pub fn local_streams(
+        &mut self,
+        peer: SessionPeerId,
+    ) -> Result<Vec<SessionMediaStreamId>, PeerError> {
+        self.peer_streams(peer, false)
+    }
+    pub fn remote_streams(
+        &mut self,
+        peer: SessionPeerId,
+    ) -> Result<Vec<SessionMediaStreamId>, PeerError> {
+        self.peer_streams(peer, true)
+    }
+    pub(super) fn insert_media_stream(
+        &mut self,
+        peer: SessionPeerId,
+        value: crate::MediaStream,
+    ) -> Result<SessionMediaStreamId, PeerError> {
+        if let Some((&id, _)) = self
+            .media_streams
+            .iter()
+            .find(|(_, r)| r.value.same_resource(&value))
+        {
+            return Ok(id);
+        }
+        let id = SessionMediaStreamId(next_id()?);
+        self.media_streams.insert(id, Resource { peer, value });
+        Ok(id)
+    }
     pub fn set_media_track_volume(
         &mut self,
         track: SessionMediaTrackId,
@@ -117,18 +253,7 @@ impl ProductionSession {
         let streams = r.value.streams();
         streams
             .into_iter()
-            .map(|value| {
-                if let Some((&id, _)) = self
-                    .media_streams
-                    .iter()
-                    .find(|(_, r)| r.value.same_resource(&value))
-                {
-                    return Ok(id);
-                }
-                let id = SessionMediaStreamId(next_id()?);
-                self.media_streams.insert(id, Resource { peer, value });
-                Ok(id)
-            })
+            .map(|value| self.insert_media_stream(peer, value))
             .collect()
     }
     pub fn media_stream_id(&mut self, stream: SessionMediaStreamId) -> Result<Vec<u8>, PeerError> {

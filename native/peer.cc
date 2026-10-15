@@ -1,4 +1,5 @@
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/metronome.h"
 #include "pulsebeam-webrtc-sys/native/certificate_generator.h"
@@ -96,6 +97,7 @@ enum EventKind : std::uint8_t {
   kIceCandidateRemoved = 15,
   kLegacyStatsReport = 16,
   kIceSelectedCandidatePairChanged = 17,
+  kStreamAdded = 18, kStreamRemoved = 19, kTrackAdded = 20,
 };
 
 constexpr std::uint8_t kClosedError = 255;
@@ -183,6 +185,11 @@ struct EventState {
   struct ReceiverArrival {
     webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver;
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner;
+  };
+  struct LegacyArrival {
+    webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver;
+    webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner;
+    std::vector<webrtc::scoped_refptr<webrtc::MediaStreamInterface>> streams;
   };
   explicit EventState(std::shared_ptr<ReadinessSignal> signal)
       : readiness(std::move(signal)) {}
@@ -277,7 +284,7 @@ struct EventState {
     if (!closed) PushControlLocked(std::move(event));
   }
   bool AdmitArrivalLocked(FfiPeerEvent event) {
-    if (data_channels.size() + transceivers.size() + receivers.size() >= 128) {
+    if (data_channels.size() + transceivers.size() + receivers.size() + legacy_arrivals.size() >= 128) {
       ++dropped_controls;
       return false;
     }
@@ -396,8 +403,27 @@ struct EventState {
     return receiver;
   }
 
+  void AddLegacy(std::uint8_t kind, webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
+      std::vector<webrtc::scoped_refptr<webrtc::MediaStreamInterface>> streams,
+      webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner = nullptr) {
+    NotifyOnExit notify{readiness};
+    std::lock_guard lock(mutex);
+    if (closed) return;
+    if (streams.size() > 128) { ++dropped_controls; return; }
+    const auto id = next_media_id++;
+    FfiPeerEvent event{}; event.kind = kind; event.operation_id = id;
+    if (AdmitArrivalLocked(std::move(event)))
+      legacy_arrivals.emplace(id, LegacyArrival{std::move(receiver), std::move(owner), std::move(streams)});
+  }
+  LegacyArrival TakeLegacy(std::uint64_t id) {
+    std::lock_guard lock(mutex);
+    auto it = legacy_arrivals.find(id);
+    if (it == legacy_arrivals.end()) return {};
+    auto value = std::move(it->second); legacy_arrivals.erase(it); return value;
+  }
   void Close() {
     NotifyOnExit notify{readiness};
+    std::unordered_map<std::uint64_t, LegacyArrival> abandoned_legacy;
     std::unordered_map<
         std::uint64_t,
         webrtc::scoped_refptr<webrtc::DataChannelInterface>> abandoned_channels;
@@ -434,6 +460,7 @@ struct EventState {
       abandoned_channels.swap(data_channels);
       abandoned_transceivers.swap(transceivers);
       abandoned_receivers.swap(receivers);
+      abandoned_legacy.swap(legacy_arrivals);
       FfiPeerEvent event;
       event.kind = kClosed;
       events.push_back(std::move(event));
@@ -460,6 +487,7 @@ struct EventState {
       std::uint64_t,
       webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> transceivers;
   std::unordered_map<std::uint64_t, ReceiverArrival> receivers;
+  std::unordered_map<std::uint64_t, LegacyArrival> legacy_arrivals;
   std::uint64_t next_media_id = 1;
   bool closed = false;
 };
@@ -486,6 +514,21 @@ class PeerObserver final : public webrtc::PeerConnectionObserver {
     state_->AddDataChannel(std::move(channel));
   }
 
+  void OnAddStream(webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override {
+    state_->AddLegacy(kStreamAdded, nullptr, {std::move(stream)});
+  }
+  void OnRemoveStream(webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override {
+    state_->AddLegacy(kStreamRemoved, nullptr, {std::move(stream)});
+  }
+  void OnAddTrack(webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver,
+      const std::vector<webrtc::scoped_refptr<webrtc::MediaStreamInterface>>& streams) override {
+    webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> owner;
+    if (peer_ && peer_->GetConfiguration().sdp_semantics == webrtc::SdpSemantics::kUnifiedPlan) {
+      for (const auto& candidate : peer_->GetTransceivers())
+        if (candidate->receiver() == receiver) { owner = candidate; break; }
+    }
+    state_->AddLegacy(kTrackAdded, std::move(receiver), streams, std::move(owner));
+  }
   void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>
                    transceiver) override {
     state_->AddTransceiver(std::move(transceiver));
@@ -632,6 +675,22 @@ class CreateDescriptionObserver
  private:
   std::shared_ptr<EventState> state_;
   std::uint64_t operation_id_;
+};
+
+class LegacySetObserver : public webrtc::SetSessionDescriptionObserver {
+ public:
+  LegacySetObserver(std::shared_ptr<EventState> state, std::uint64_t id)
+      : state_(std::move(state)), id_(id) {}
+  void OnSuccess() override {
+    FfiPeerEvent event{}; event.kind = kOperationComplete; event.operation_id = id_;
+    state_->Complete(std::move(event));
+  }
+  void OnFailure(webrtc::RTCError error) override {
+    state_->Complete(ErrorEvent(id_, error.type(), error.message()));
+  }
+ private:
+  std::shared_ptr<EventState> state_;
+  std::uint64_t id_;
 };
 
 class SetLocalObserver
@@ -2274,8 +2333,38 @@ bool peer_should_fire_negotiation_needed(const NativePeerConnection& peer,
   return peer.state()->peer->ShouldFireNegotiationNeededEvent(event_id);
 }
 
+std::unique_ptr<NativeMediaStream> peer_factory_create_stream(
+    const NativePeerConnectionFactory& factory, rust::Slice<const std::uint8_t> id) noexcept {
+  auto stream = factory.factory()->CreateLocalMediaStream(
+      std::string(reinterpret_cast<const char*>(id.data()), id.size()));
+  return stream ? std::make_unique<NativeMediaStream>(std::move(stream)) : nullptr;
+}
+std::uint8_t peer_mutate_stream(const NativePeerConnection& peer,
+    const NativeMediaStream& stream, bool remove) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&]() -> std::uint8_t {
+    if (state->closed) return 1;
+    if (state->peer->GetConfiguration().sdp_semantics != webrtc::SdpSemantics::kPlanB_DEPRECATED)
+      return 2; // These SDK entrypoints abort under Unified Plan.
+    if (remove) { state->peer->RemoveStream(stream.stream().get()); return 0; }
+    return state->peer->AddStream(stream.stream().get()) ? 0 : 3;
+  });
+}
+std::unique_ptr<NativeMediaStreams> peer_streams(const NativePeerConnection& peer, bool remote) noexcept {
+  const auto& state = peer.state();
+  return state->signaling_thread->BlockingCall([&]() -> std::unique_ptr<NativeMediaStreams> {
+    if (state->peer->GetConfiguration().sdp_semantics != webrtc::SdpSemantics::kPlanB_DEPRECATED)
+      return nullptr;
+    auto collection = remote ? state->peer->remote_streams() : state->peer->local_streams();
+    std::vector<webrtc::scoped_refptr<webrtc::MediaStreamInterface>> streams;
+    for (std::size_t i = 0; collection && i < collection->count(); ++i)
+      streams.emplace_back(collection->at(i));
+    return std::make_unique<NativeMediaStreams>(std::move(streams));
+  });
+}
+
 std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
-    std::uint64_t operation_id, bool allow_media) noexcept {
+    std::uint64_t operation_id, bool allow_media, bool legacy) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
@@ -2287,8 +2376,13 @@ std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
           "controlled audio/video requires admitted cooperative media dependencies"));
       return;
     }
-    state->peer->SetLocalDescription(
-        webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+    if (legacy) {
+      auto observer = webrtc::make_ref_counted<LegacySetObserver>(state->events, operation_id);
+      state->peer->SetLocalDescription(observer.get());
+    } else {
+      state->peer->SetLocalDescription(
+          webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+    }
   });
   return 0;
 }
@@ -2316,7 +2410,7 @@ std::uint8_t peer_modify_ice_candidate(const NativePeerConnection& peer,
 std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
                                 std::uint64_t operation_id,
                                 std::uint8_t sdp_type,
-                                rust::Slice<const std::uint8_t> sdp) noexcept {
+                                rust::Slice<const std::uint8_t> sdp, bool legacy) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
@@ -2331,9 +2425,13 @@ std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
   // This overload bypasses the upstream proxy. Keep initiation as well as
   // completion on the retained signaling sequence after caller migration.
   state->signaling_thread->BlockingCall([&] {
-    state->peer->SetLocalDescription(
-        std::move(description),
-        webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+    if (legacy) {
+      auto observer = webrtc::make_ref_counted<LegacySetObserver>(state->events, operation_id);
+      state->peer->SetLocalDescription(observer.get(), description.release());
+    } else {
+      state->peer->SetLocalDescription(std::move(description),
+          webrtc::make_ref_counted<SetLocalObserver>(state->events, operation_id));
+    }
   });
   return 0;
 }
@@ -2341,7 +2439,7 @@ std::uint8_t peer_set_local_description(const NativePeerConnection& peer,
 std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
                                  std::uint64_t operation_id,
                                  std::uint8_t sdp_type,
-                                 rust::Slice<const std::uint8_t> sdp) noexcept {
+                                 rust::Slice<const std::uint8_t> sdp, bool legacy) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
@@ -2354,9 +2452,13 @@ std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
     return 0;
   }
   state->signaling_thread->BlockingCall([&] {
-    state->peer->SetRemoteDescription(
-        std::move(description),
-        webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
+    if (legacy) {
+      auto observer = webrtc::make_ref_counted<LegacySetObserver>(state->events, operation_id);
+      state->peer->SetRemoteDescription(observer.get(), description.release());
+    } else {
+      state->peer->SetRemoteDescription(std::move(description),
+          webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
+    }
   });
   return 0;
 }
@@ -2477,6 +2579,17 @@ std::unique_ptr<NativeRtpReceiver> peer_take_receiver(
     const NativePeerConnection& peer, std::uint64_t arrival_id) noexcept {
   auto arrival = peer.state()->events->TakeReceiver(arrival_id);
   return wrap_rtp_receiver(std::move(arrival.receiver), std::move(arrival.owner));
+}
+
+std::unique_ptr<NativeMediaStream> peer_take_stream_event(const NativePeerConnection& peer, std::uint64_t id) noexcept {
+  auto arrival = peer.state()->events->TakeLegacy(id);
+  if (arrival.streams.empty()) return nullptr;
+  return std::make_unique<NativeMediaStream>(std::move(arrival.streams.front()));
+}
+FfiTrackArrival peer_take_track_event(const NativePeerConnection& peer, std::uint64_t id) noexcept {
+  auto arrival = peer.state()->events->TakeLegacy(id);
+  return {wrap_rtp_receiver(std::move(arrival.receiver), std::move(arrival.owner)),
+      std::make_unique<NativeMediaStreams>(std::move(arrival.streams))};
 }
 
 bool peer_set_native_audio_enabled(const NativePeerConnection& peer,

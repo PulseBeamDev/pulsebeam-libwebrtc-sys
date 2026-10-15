@@ -246,7 +246,7 @@ bool peer_should_fire_negotiation_needed(const NativePeerConnection &peer,
                                          std::uint32_t event_id) noexcept;
 std::uint8_t peer_set_local_description_auto(const NativePeerConnection &peer,
                                              std::uint64_t operation_id,
-                                             bool allow_media) noexcept;
+                                             bool allow_media, bool legacy) noexcept;
 std::uint8_t peer_modify_ice_candidate(const NativePeerConnection &peer,
                                        bool remove, rust::Slice<const std::uint8_t> sdp_mid,
                                        std::int32_t sdp_mline_index,
@@ -266,11 +266,11 @@ peer_descriptions(const NativePeerConnection &peer,
 std::uint8_t peer_set_local_description(const NativePeerConnection &peer,
                                         std::uint64_t operation_id,
                                         std::uint8_t sdp_type,
-                                        rust::Slice<const std::uint8_t> sdp) noexcept;
+                                        rust::Slice<const std::uint8_t> sdp, bool legacy) noexcept;
 std::uint8_t peer_set_remote_description(const NativePeerConnection &peer,
                                          std::uint64_t operation_id,
                                          std::uint8_t sdp_type,
-                                         rust::Slice<const std::uint8_t> sdp) noexcept;
+                                         rust::Slice<const std::uint8_t> sdp, bool legacy) noexcept;
 // Complete a controlled-mode video operation without entering upstream's
 // synchronous receive-stream recreation (which waits on a cooperative queue).
 std::uint8_t peer_reject_controlled_media(const NativePeerConnection &peer,
@@ -284,6 +284,14 @@ std::uint8_t peer_request_sender_stats(const NativePeerConnection&, const Native
 std::uint8_t peer_request_receiver_stats(const NativePeerConnection&, const NativeRtpReceiver&, std::uint64_t) noexcept;
 std::uint8_t peer_request_stats_with_empty_selector(const NativePeerConnection&, bool, std::uint64_t) noexcept;
 class NativeMediaTrack;
+class NativeMediaStream;
+class NativeMediaStreams;
+struct FfiTrackArrival;
+std::unique_ptr<NativeMediaStream> peer_take_stream_event(const NativePeerConnection&, std::uint64_t) noexcept;
+FfiTrackArrival peer_take_track_event(const NativePeerConnection&, std::uint64_t) noexcept;
+std::unique_ptr<NativeMediaStream> peer_factory_create_stream(const NativePeerConnectionFactory&, rust::Slice<const std::uint8_t>) noexcept;
+std::uint8_t peer_mutate_stream(const NativePeerConnection&, const NativeMediaStream&, bool remove) noexcept;
+std::unique_ptr<NativeMediaStreams> peer_streams(const NativePeerConnection&, bool remote) noexcept;
 std::uint8_t peer_request_legacy_stats(const NativePeerConnection&, std::uint8_t, std::uint64_t) noexcept;
 std::uint8_t peer_request_legacy_stats_with_track(const NativePeerConnection&, const NativeMediaTrack&, std::uint8_t, std::uint64_t) noexcept;
 void peer_clear_stats_cache(const NativePeerConnection&) noexcept;

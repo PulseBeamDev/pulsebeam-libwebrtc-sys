@@ -1556,6 +1556,43 @@ bool peer_remove_track(const NativePeerConnection& peer,
   return true;
 }
 
+NativeRtpEndpoints::NativeRtpEndpoints() = default;
+NativeRtpEndpoints::~NativeRtpEndpoints() = default;
+std::unique_ptr<NativeRtpEndpoints> peer_endpoints(const NativePeerConnection& peer) noexcept {
+  auto value = std::make_unique<NativeRtpEndpoints>();
+  peer.signaling_thread()->BlockingCall([&] {
+    value->senders = peer.peer()->GetSenders();
+    value->receivers = peer.peer()->GetReceivers();
+    value->unified = peer.peer()->GetConfiguration().sdp_semantics == webrtc::SdpSemantics::kUnifiedPlan;
+    if (value->unified) value->transceivers = peer.peer()->GetTransceivers();
+  });
+  return value;
+}
+std::size_t endpoint_list_len(const NativeRtpEndpoints& v, std::uint8_t kind) noexcept {
+  return kind == 0 ? v.senders.size() : kind == 1 ? v.receivers.size() : v.transceivers.size();
+}
+bool endpoint_list_unified(const NativeRtpEndpoints& v) noexcept { return v.unified; }
+std::unique_ptr<NativeRtpSender> endpoint_list_sender(const NativeRtpEndpoints& v, std::size_t i) noexcept {
+  if (i >= v.senders.size()) return nullptr;
+  auto state = std::make_unique<NativeRtpSender::State>();
+  state->sender = v.senders[i];
+  for (const auto& owner : v.transceivers)
+    if (owner->sender() == state->sender) { state->owner = owner; break; }
+  return std::make_unique<NativeRtpSender>(std::move(state));
+}
+std::unique_ptr<NativeRtpReceiver> endpoint_list_receiver(const NativeRtpEndpoints& v, std::size_t i) noexcept {
+  if (i >= v.receivers.size()) return nullptr;
+  webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> parent;
+  for (const auto& owner : v.transceivers)
+    if (owner->receiver() == v.receivers[i]) { parent = owner; break; }
+  return wrap_rtp_receiver(v.receivers[i], std::move(parent));
+}
+std::unique_ptr<NativeRtpTransceiver> endpoint_list_transceiver(const NativeRtpEndpoints& v, std::size_t i) noexcept {
+  if (i >= v.transceivers.size()) return nullptr;
+  auto state = std::make_unique<NativeRtpTransceiver::State>();
+  state->transceiver = v.transceivers[i];
+  return std::make_unique<NativeRtpTransceiver>(std::move(state));
+}
 std::unique_ptr<NativeRtpSender> rtp_transceiver_sender(
     const NativeRtpTransceiver& transceiver) noexcept {
   auto state = std::make_unique<NativeRtpSender::State>();

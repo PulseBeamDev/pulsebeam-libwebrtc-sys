@@ -88,6 +88,7 @@ FfiAudioProcessorStats audio_processor_stats(const NativeAudioProcessor&, bool h
 bool audio_processor_same_resource(const NativeAudioProcessor&, const NativeAudioProcessor&) noexcept;
 
 std::unique_ptr<NativeMediaStreams> rtp_receiver_streams(const NativeRtpReceiver&) noexcept;
+bool media_stream_mutate_track(const NativeMediaStream&, const NativeMediaTrack&, bool remove) noexcept;
 std::size_t media_streams_len(const NativeMediaStreams&) noexcept;
 std::unique_ptr<NativeMediaStream> media_streams_get(const NativeMediaStreams&, std::size_t) noexcept;
 rust::Vec<std::uint8_t> media_stream_id(const NativeMediaStream&) noexcept;

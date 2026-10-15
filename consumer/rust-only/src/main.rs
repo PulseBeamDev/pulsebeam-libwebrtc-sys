@@ -52,9 +52,15 @@ fn main() {
             .video_decoder_factory(decoder)
             .build()
             .unwrap();
+        let stream = factory.create_local_media_stream(b"cold-stream\0\xff").unwrap();
+        assert_eq!(stream.id(), b"cold-stream\0\xff");
+        assert!(stream.audio_tracks().is_empty());
         let mut peer = factory
             .create_peer_connection(pulsebeam_webrtc_sys::PeerConfiguration::default())
             .unwrap();
+        assert!(peer.senders().is_empty());
+        assert!(peer.receivers().is_empty());
+        assert!(peer.transceivers().unwrap().is_empty());
         assert!(
             peer.video_sender_capabilities()
                 .unwrap()
