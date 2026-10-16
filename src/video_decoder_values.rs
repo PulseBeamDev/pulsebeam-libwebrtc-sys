@@ -56,6 +56,11 @@ impl fmt::Debug for OwnedVideoDecoderSettings {
     }
 }
 impl OwnedVideoDecoderSettings {
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeVideoDecoderSettings>,
+    ) -> Option<Self> {
+        (!native.is_null()).then_some(Self { native })
+    }
     pub(crate) fn native(&self) -> &ffi::NativeVideoDecoderSettings {
         self.native.as_ref().unwrap()
     }
@@ -136,6 +141,9 @@ impl fmt::Debug for OwnedVideoDecoderInfo {
     }
 }
 impl OwnedVideoDecoderInfo {
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeVideoDecoderInfo> {
+        self.native
+    }
     pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeVideoDecoderInfo>) -> Self {
         assert!(!native.is_null());
         Self { native }

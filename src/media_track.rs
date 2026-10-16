@@ -50,9 +50,7 @@ impl MediaTrack {
     pub(crate) fn source_owner(&self) -> MediaTrackOwner {
         match &self.0._owner {
             MediaTrackOwner::Video { _track } => _track.media_track_owner(),
-            MediaTrackOwner::Audio { _track } => MediaTrackOwner::Audio {
-                _track: _track.clone(),
-            },
+            MediaTrackOwner::Audio { _track } => _track.media_track_owner(),
             MediaTrackOwner::Factory { _factory } => MediaTrackOwner::Factory {
                 _factory: _factory.clone(),
             },

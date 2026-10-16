@@ -12,6 +12,7 @@
 #include "api/video/video_sink_interface.h"
 #include "api/video_track_source_constraints.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
+#include "pulsebeam-webrtc-sys/native/raw_video_frame.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -28,10 +29,7 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
       Lost();
       return;
     }
-    const std::uint64_t width = static_cast<std::uint64_t>(frame.width());
-    const std::uint64_t height = static_cast<std::uint64_t>(frame.height());
-    const std::uint64_t bytes = width * height +
-                                2 * ((width + 1) / 2) * ((height + 1) / 2);
+    const auto bytes = raw_buffer_queue_bytes(*frame.video_frame_buffer(), kMaxBytes);
     if (bytes > kMaxBytes) {
       Lost();
       return;
@@ -41,7 +39,7 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
       frames_.pop_front();
       Lost();
     }
-    frames_.push_back({wrap_video_frame(frame), static_cast<std::size_t>(bytes)});
+    frames_.push_back({std::make_unique<NativeRawVideoFrame>(frame), static_cast<std::size_t>(bytes)});
     queued_bytes_ += static_cast<std::size_t>(bytes);
   }
 
@@ -69,6 +67,11 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   }
 
   std::unique_ptr<NativeVideoFrame> Take() {
+    auto frame = TakeNative();
+    return frame ? raw_frame_legacy(*frame) : nullptr;
+  }
+
+  std::unique_ptr<NativeRawVideoFrame> TakeNative() {
     std::lock_guard lock(mutex_);
     if (frames_.empty()) return nullptr;
     auto frame = std::move(frames_.front());
@@ -121,7 +124,7 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   }
 
   struct QueuedFrame {
-    std::unique_ptr<NativeVideoFrame> frame;
+    std::unique_ptr<NativeRawVideoFrame> frame;
     std::size_t bytes;
   };
   static constexpr std::size_t kMaxFrames = 4;

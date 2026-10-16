@@ -51,6 +51,7 @@ pub struct EncodedVideoAccessUnit {
 
 #[derive(Default)]
 struct SourceFeedback {
+    retired: AtomicBool,
     keyframe_requested: AtomicBool,
     encoding_keyframes: AtomicU8,
     rates: Mutex<Option<VideoRateControl>>,
@@ -67,9 +68,16 @@ impl SourceFeedback {
         }
     }
 
+    fn retire(&self) {
+        let _rates = self.rates.lock().unwrap_or_else(|error| error.into_inner());
+        self.retired.store(true, Ordering::Release);
+    }
     fn set_rates(&self, rates: VideoRateControl) {
         let changed = {
             let mut previous = self.rates.lock().unwrap_or_else(|error| error.into_inner());
+            if self.retired.load(Ordering::Acquire) {
+                return;
+            }
             let changed = *previous != Some(rates);
             *previous = Some(rates);
             changed
@@ -80,12 +88,18 @@ impl SourceFeedback {
     }
 
     fn request_keyframe(&self) {
+        if self.retired.load(Ordering::Acquire) {
+            return;
+        }
         if !self.keyframe_requested.swap(true, Ordering::AcqRel) {
             self.notify();
         }
     }
 
     fn request_encoding_keyframe(&self, index: usize) {
+        if self.retired.load(Ordering::Acquire) {
+            return;
+        }
         let bit = 1 << index;
         let changed = self.encoding_keyframes.fetch_or(bit, Ordering::AcqRel) & bit == 0;
         self.request_keyframe();
@@ -200,12 +214,23 @@ impl Broker {
 /// `new()` advertises constrained-baseline H.264, level 3.1, packetization
 /// mode 1. `new_for_format` accepts VP8, VP9, AV1 or H265, without supplying
 /// a decoder. The caller must provide a frame matching its advertised format.
+/// A source's declared native initialization profile, never inferred from
+/// capture geometry, SSRC, queue order or the first encoded access unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum H264SourceProfile {
+    L1T1,
+    L1T3,
+    SimulcastL1T1,
+}
+
 #[derive(Clone)]
 pub struct EncodedH264Input {
     broker: Arc<Mutex<Broker>>,
     encoder: VideoEncoderFactoryHandle,
     format: VideoCodecFormat,
     codec: crate::video::DirectEncodedVideo,
+    temporal_fps: Option<[u8; 3]>,
+    simulcast: bool,
 }
 
 impl EncodedH264Input {
@@ -250,11 +275,21 @@ impl EncodedH264Input {
         Self::build(format, Some(fps), false)
     }
 
-    /// Direct three-rung H264 simulcast. Submit complete capture batches with
-    /// ordered indexes 0, 1, 2 and increasing, distinct rung dimensions. Configure
-    /// exactly three native sender RIDs and their matching scaling settings.
-    /// Native callbacks publish each image separately, not atomically on wire.
-    /// Stock libwebrtc receivers do not receive all simulcast rungs concurrently.
+    /// One installed factory supporting distinct L1T1, L1T3 and three-rung
+    /// sources. L1T3 sources share these declared cumulative FPS capabilities.
+    pub fn new_h264_profiles(fps: [u8; 3]) -> Result<Self, CodecError> {
+        Self::new_h264_profiles_for_format(format(), fps)
+    }
+    pub(crate) fn new_h264_profiles_for_format(
+        format: VideoCodecFormat,
+        fps: [u8; 3],
+    ) -> Result<Self, CodecError> {
+        let input = Self::new_l1t3_for_format(format, fps)?;
+        Self::build(input.format, Some(fps), true)
+    }
+    /// Direct three-rung H264 simulcast. Submit ordered, distinct rung batches.
+    /// Native publication is not atomic. Stock receivers do not receive all
+    /// simulcast rungs concurrently; native initialization must retain all three.
     pub fn new_simulcast() -> Result<Self, CodecError> {
         Self::new_simulcast_for_format(format())
     }
@@ -320,6 +355,8 @@ impl EncodedH264Input {
             encoder,
             format,
             codec,
+            temporal_fps,
+            simulcast,
         })
     }
 
@@ -335,6 +372,35 @@ impl EncodedH264Input {
         crate::VideoDecoderFactoryHandle::encoded_receive(self.format.clone())
     }
 
+    pub fn create_source_with_profile(
+        &self,
+        factory: &PeerConnectionFactory,
+        profile: H264SourceProfile,
+    ) -> Result<EncodedH264Source, PeerError> {
+        self.create_profile_source_with_readiness(factory, profile, None)
+    }
+    pub(crate) fn create_profile_source_with_readiness(
+        &self,
+        factory: &PeerConnectionFactory,
+        profile: H264SourceProfile,
+        readiness: Option<Arc<crate::readiness::Readiness>>,
+    ) -> Result<EncodedH264Source, PeerError> {
+        use crate::video::DirectEncodedVideo;
+        let codec = match profile {
+            H264SourceProfile::L1T1 if self.format.name == "H264" => DirectEncodedVideo::H264,
+            H264SourceProfile::L1T3 if self.temporal_fps.is_some() => DirectEncodedVideo::H264L1T3,
+            H264SourceProfile::SimulcastL1T1 if self.simulcast => DirectEncodedVideo::H264Simulcast,
+            _ => {
+                return Err(PeerError {
+                    kind: PeerErrorKind::UnsupportedParameter,
+                    message: "profile is not supported by this installed input factory".into(),
+                });
+            }
+        };
+        let mut source = self.create_source_with_readiness(factory, readiness)?;
+        source.codec = codec;
+        Ok(source)
+    }
     pub fn create_source(
         &self,
         factory: &PeerConnectionFactory,
@@ -612,6 +678,7 @@ impl EncodedH264Source {
             return Ok(());
         }
         self.closed = true;
+        self.feedback.retire();
         self.broker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -755,6 +822,7 @@ struct InputEncoder {
 }
 impl VideoEncoder for InputEncoder {
     fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
+        self.released = false;
         self.configuration = Some(settings);
         Ok(())
     }
@@ -783,7 +851,22 @@ impl VideoEncoder for InputEncoder {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take(token)
             .ok_or(CodecError::InvalidFrame)?;
-        if self.temporal_fps.is_some()
+        let temporal = self.configuration.as_ref().is_some_and(|settings| {
+            settings
+                .scalability_mode
+                .as_ref()
+                .map(crate::VideoScalabilityMode::as_str)
+                == Some("L1T3")
+        });
+        if (temporal && self.temporal_fps.is_none())
+            || pending
+                .frames
+                .iter()
+                .any(|frame| frame.metadata.temporal_index.is_some() != temporal)
+        {
+            return Err(pending.reject(CodecError::InvalidConfiguration));
+        }
+        if temporal
             && !self.configuration.as_ref().is_some_and(|settings| {
                 settings
                     .scalability_mode
@@ -801,7 +884,11 @@ impl VideoEncoder for InputEncoder {
             .as_ref()
             .ok_or_else(|| pending.reject(CodecError::InvalidConfiguration))?;
         let mut selected = vec![true; pending.frames.len()];
-        if self.simulcast {
+        let simulcast = self.simulcast && settings.simulcast_streams.len() == 3;
+        if self.simulcast && pending.frames.len() == 3 && !simulcast {
+            return Err(pending.reject(CodecError::InvalidConfiguration));
+        }
+        if simulcast {
             if pending.frames.len() != 3 || settings.h264_temporal_layers != Some(1) {
                 return Err(pending.reject(CodecError::InvalidConfiguration));
             }
@@ -906,8 +993,20 @@ impl VideoEncoder for InputEncoder {
             hardware_accelerated: false,
             supports_native_handle: false,
             supports_simulcast: self.simulcast,
-            fps_allocation: if self.simulcast {
+            fps_allocation: if self
+                .configuration
+                .as_ref()
+                .is_some_and(|settings| settings.simulcast_streams.len() == 3)
+            {
                 Some([vec![255], vec![255], vec![255], vec![], vec![]])
+            } else if self.configuration.as_ref().is_some_and(|settings| {
+                settings
+                    .scalability_mode
+                    .as_ref()
+                    .map(crate::VideoScalabilityMode::as_str)
+                    != Some("L1T3")
+            }) {
+                Some([vec![255], vec![], vec![], vec![], vec![]])
             } else {
                 self.temporal_fps
                     .map(|fps| [fps.to_vec(), vec![], vec![], vec![], vec![]])

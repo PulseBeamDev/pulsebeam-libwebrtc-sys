@@ -1,4 +1,5 @@
-use crate::ffi;
+use crate::{AudioTrack, ffi};
+use std::rc::Rc;
 
 /// Exact optional APM observations, including the deprecated voice-detection
 /// value. Missing observations are not replaced with zero or false.
@@ -50,12 +51,61 @@ impl AudioProcessorStatistics {
 }
 impl Default for AudioProcessorStatistics {
     fn default() -> Self {
-        Self::from_native(ffi::audio_processor_statistics_default())
+        Self::from_native(ffi::audio_track_processor_statistics_default())
     }
 }
 impl Default for AudioProcessingStats {
     fn default() -> Self {
         AudioProcessorStatistics::default().apm_statistics
+    }
+}
+
+/// Owning alias of a processor actually returned by a native audio track.
+/// Stock tracks at this pin normally return `None`; a processor is never
+/// created or inferred from source processing options or peer statistics.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pulsebeam_webrtc_sys::AudioTrackProcessor>();
+/// ```
+#[derive(Clone)]
+pub struct AudioTrackProcessor {
+    inner: Rc<ProcessorInner>,
+}
+struct ProcessorInner {
+    native: cxx::UniquePtr<ffi::NativeAudioTrackProcessor>,
+    _track: AudioTrack,
+}
+impl AudioTrackProcessor {
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeAudioTrackProcessor>,
+        track: AudioTrack,
+    ) -> Option<Self> {
+        if native.is_null() {
+            None
+        } else {
+            Some(Self {
+                inner: Rc::new(ProcessorInner {
+                    native,
+                    _track: track,
+                }),
+            })
+        }
+    }
+    pub fn same_resource(&self, other: &Self) -> bool {
+        ffi::audio_track_processors_same(self.native(), other.native())
+    }
+    /// Calls the installed processor's GetStats with the caller's actual
+    /// remote-track condition. Native sampling/aggregation side effects remain
+    /// processor-owned; this method does not cache observations.
+    pub fn stats(&self, has_remote_tracks: bool) -> AudioProcessorStatistics {
+        AudioProcessorStatistics::from_native(ffi::audio_track_processor_stats(
+            self.native(),
+            has_remote_tracks,
+        ))
+    }
+    fn native(&self) -> &ffi::NativeAudioTrackProcessor {
+        self.inner.native.as_ref().expect("owning native processor")
     }
 }
 
@@ -66,7 +116,7 @@ mod tests {
     #[test]
     fn typed_projection_keeps_presence_false_zero_and_float_bits() {
         // This is a DTO projection test, not evidence of an installed processor.
-        let mut raw = ffi::audio_processor_statistics_default();
+        let mut raw = ffi::audio_track_processor_statistics_default();
         raw.typing_noise_detected = true;
         raw.has_voice_detected = true;
         raw.voice_detected = false;

@@ -143,6 +143,7 @@ private:
 
 bool factory_requires_deferred_teardown(const NativePeerConnectionFactory&) noexcept;
 
+class NativeFrameTransformerHosts;
 class NativePeerConnection final {
 public:
   struct State;
@@ -159,6 +160,7 @@ public:
   webrtc::Thread *worker_thread() const noexcept;
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
   opus_transformer() const noexcept;
+  NativeFrameTransformerHosts& frame_transformer_hosts() const noexcept;
   std::shared_ptr<ReadinessSignal> readiness() const noexcept;
   bool reserve_encoded_receiver(const std::string &id) const noexcept;
   bool reserve_audio_receiver(const std::string &id) const noexcept;

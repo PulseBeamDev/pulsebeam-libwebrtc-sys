@@ -146,8 +146,20 @@ fn sdk_void_controls_keep_actual_opus_guards_and_first_failure_after_retirement(
 }
 
 #[test]
-fn missing_clock_is_not_silent_sdk_loss_or_ana_success() {
-    let env = Environment::builder().build().unwrap();
+fn missing_clock_and_pending_ana_admission_are_not_silent_sdk_success() {
+    // A default system environment now retains its actual safe clock proof.
+    // Use an explicitly unbounded, non-monotonic provider for this refusal.
+    struct UnprovenClock;
+    impl crate::ClockProvider for UnprovenClock {
+        fn current_time(&self) -> crate::FiniteTimestamp {
+            crate::FiniteTimestamp::from_microseconds(0).unwrap()
+        }
+        fn convert_timestamp_to_ntp_time(&self, _: crate::Timestamp) -> crate::NtpTime {
+            crate::NtpTime::from_raw(0)
+        }
+    }
+    let clock = crate::Clock::from_provider(UnprovenClock);
+    let env = Environment::builder().clock_handle(&clock).build().unwrap();
     let factory = AudioEncoderFactory::builtin().unwrap();
     let format = SdpAudioFormat::new(b"opus".to_vec(), 48000, 2);
     let loss = forward(create(&factory, &env, &format, 111));

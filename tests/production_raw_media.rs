@@ -192,7 +192,10 @@ fn drive_pcm_tones(
                 let (opposite, half_energy) = correlation(period / 2);
                 if energy > 1_000_000 && dot > energy / 2 && opposite < -half_energy / 2 {
                     let typed = frame.interleaved_view().unwrap();
-                    assert_eq!((typed.num_channels(), typed.samples_per_channel()), (1, 480));
+                    assert_eq!(
+                        (typed.num_channels(), typed.samples_per_channel()),
+                        (1, 480)
+                    );
                     assert_eq!(&*typed, &frame.samples);
                     assert_eq!(
                         (
@@ -239,6 +242,7 @@ fn source_options_reconfigure_active_bidirectional_pcm_without_false_volume_gain
             sources[0],
             "tone-0",
             RtpTransceiverDirection::SendReceive,
+            None,
         )
         .unwrap();
     let first_sender = session.sender(transceiver).unwrap();
@@ -314,15 +318,28 @@ fn source_options_reconfigure_active_bidirectional_pcm_without_false_volume_gain
             // live track. Reattach through SetTrack so SetSend genuinely reads
             // the new options on the actual send channel.
             if index == 0 {
-                session.replace_audio_source(senders[index], Some(sources[index]), "retuned-0").unwrap();
+                session
+                    .replace_audio_source(senders[index], Some(sources[index]), "retuned-0")
+                    .unwrap();
             } else {
                 let stream = session.create_media_stream("retuning").unwrap();
-                let original = session.create_source_track(sources[index], "retuned-1").unwrap();
-                assert!(session.add_media_stream_track(stream, original).unwrap());
-                let alias = session.find_media_stream_audio_track(stream, "retuned-1").unwrap().unwrap();
+                let original = session
+                    .create_source_track(sources[index], "retuned-1")
+                    .unwrap();
+                assert!(
+                    session
+                        .local_add_media_stream_track(stream, original)
+                        .unwrap()
+                );
+                let alias = session
+                    .find_media_stream_audio_track(stream, "retuned-1")
+                    .unwrap()
+                    .unwrap();
                 session.release_media_stream_track(original);
-                session.release_media_stream(stream);
-                session.replace_sender_track(senders[index], Some(alias)).unwrap();
+                session.local_release_media_stream(stream);
+                session
+                    .replace_sender_track(senders[index], Some(alias))
+                    .unwrap();
                 let installed = session.sender_track(senders[index]).unwrap().unwrap();
                 assert!(session.media_stream_tracks_same(alias, installed).unwrap());
                 session.release_media_stream_track(alias);
@@ -387,6 +404,7 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
             sources[0],
             "observed-0",
             RtpTransceiverDirection::SendReceive,
+            None,
         )
         .unwrap();
     let sender = session.sender(transceiver).unwrap();
@@ -418,12 +436,24 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         let installed = session.sender_audio_source_view(sender).unwrap().unwrap();
         assert!(session.audio_source_views_same(local, installed).unwrap());
         assert!(!session.audio_source_views_same(local, remote).unwrap());
-        let stream = session.create_media_stream("active-received-audio").unwrap();
-        let stream_observer = session.observe_media_stream(stream, std::num::NonZeroUsize::new(2).unwrap()).unwrap();
+        let stream = session
+            .create_media_stream("active-received-audio")
+            .unwrap();
+        let stream_observer = session
+            .observe_media_stream(stream, std::num::NonZeroUsize::new(2).unwrap())
+            .unwrap();
         let original_track = session.receiver_track(receiver).unwrap().unwrap();
-        assert!(session.add_media_stream_track(stream, original_track).unwrap());
-        let retained_track = session.media_stream_audio_tracks(stream).unwrap()[0];
-        assert!(session.media_stream_tracks_same(original_track, retained_track).unwrap());
+        assert!(
+            session
+                .local_add_media_stream_track(stream, original_track)
+                .unwrap()
+        );
+        let retained_track = session.local_stream_audio_tracks(stream).unwrap()[0];
+        assert!(
+            session
+                .media_stream_tracks_same(original_track, retained_track)
+                .unwrap()
+        );
         session.release_media_stream_track(original_track);
         let cap = std::num::NonZeroUsize::new(2).unwrap();
         let volume = session.observe_audio_source_volume(remote, cap).unwrap();
@@ -435,7 +465,18 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         (
             session,
             call,
-            (alias, installed, volume, state, track, producer, receiver, stream, stream_observer, retained_track),
+            (
+                alias,
+                installed,
+                volume,
+                state,
+                track,
+                producer,
+                receiver,
+                stream,
+                stream_observer,
+                retained_track,
+            ),
             warm,
         )
     })
@@ -443,16 +484,48 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
     .unwrap();
     let (session, later) = thread::spawn(move || {
         let mut session = session;
-        let (alias, installed, volume, _, track, producer, receiver, stream, stream_observer, retained_track) = retained;
+        let (
+            alias,
+            installed,
+            volume,
+            _,
+            track,
+            producer,
+            receiver,
+            stream,
+            stream_observer,
+            retained_track,
+        ) = retained;
         let fresh_track = session.receiver_track(receiver).unwrap().unwrap();
-        assert!(session.media_stream_tracks_same(fresh_track, retained_track).unwrap());
-        assert!(!session.add_media_stream_track(stream, fresh_track).unwrap());
-        assert!(session.remove_media_stream_track(stream, fresh_track).unwrap());
-        assert!(session.add_media_stream_track(stream, retained_track).unwrap());
-        assert_eq!(session.take_media_stream_dropped(stream_observer).unwrap(), 1);
-        session.close_media_stream_observer(stream_observer).unwrap();
+        assert!(
+            session
+                .media_stream_tracks_same(fresh_track, retained_track)
+                .unwrap()
+        );
+        assert!(
+            !session
+                .local_add_media_stream_track(stream, fresh_track)
+                .unwrap()
+        );
+        assert!(
+            session
+                .local_remove_media_stream_track(stream, fresh_track)
+                .unwrap()
+        );
+        assert!(
+            session
+                .local_add_media_stream_track(stream, retained_track)
+                .unwrap()
+        );
+        assert_eq!(
+            session.take_media_stream_dropped(stream_observer).unwrap(),
+            1
+        );
+        session
+            .close_media_stream_observer(stream_observer)
+            .unwrap();
         session.release_media_stream_track(fresh_track);
-        session.release_media_stream(stream);
+        session.local_release_media_stream(stream);
         assert_eq!(session.sender_audio_processor(sender).unwrap(), None);
         assert_eq!(session.receiver_audio_processor(receiver).unwrap(), None);
         for value in [0.0, 0.25, 0.5] {
@@ -501,12 +574,22 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
     .unwrap();
     thread::spawn(move || {
         let mut session = session;
-        let (_, _, volume, state, track, producer, _, _, stream_observer, retained_track) = retained;
+        let (_, _, volume, state, track, producer, _, _, stream_observer, retained_track) =
+            retained;
         for _ in 0..2 {
-            assert_eq!(session.try_media_stream_event(stream_observer).unwrap(), Some(MediaStreamEvent::Changed));
+            assert_eq!(
+                session.try_media_stream_event(stream_observer).unwrap(),
+                Some(MediaStreamEvent::Changed)
+            );
         }
-        assert_eq!(session.try_media_stream_event(stream_observer).unwrap(), None);
-        assert_eq!(session.media_stream_track_kind(retained_track).unwrap(), MediaType::Audio);
+        assert_eq!(
+            session.try_media_stream_event(stream_observer).unwrap(),
+            None
+        );
+        assert_eq!(
+            session.media_stream_track_kind(retained_track).unwrap(),
+            MediaType::Audio
+        );
         assert_eq!(
             session.try_audio_observer_event(volume).unwrap(),
             Some(AudioObserverEvent::Volume(0.25))
@@ -536,7 +619,12 @@ fn remote_audio_views_and_observers_survive_identifier_retirement_and_migration(
         session.close_peer(peers[1]).unwrap();
         // Stream ID retirement precedes actual continued media work, source
         // retirement, migration and native peer close on this candidate.
-        assert!(!session.media_stream_track_id(retained_track).unwrap().is_empty());
+        assert!(
+            !session
+                .media_stream_track_id(retained_track)
+                .unwrap()
+                .is_empty()
+        );
         session.release_media_stream_observer(stream_observer);
         session.release_media_stream_track(retained_track);
         session.close_audio_observer(state).unwrap();
@@ -857,7 +945,13 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
     let pcm = session.create_pcm_source().unwrap();
     let raw = session.create_raw_video_source().unwrap();
     let audio_transceiver = session
-        .publish_pcm(peers[0], pcm, "pcm", RtpTransceiverDirection::SendOnly)
+        .publish_pcm(
+            peers[0],
+            pcm,
+            "pcm",
+            RtpTransceiverDirection::SendOnly,
+            None,
+        )
         .unwrap();
     let audio_sender = session.sender(audio_transceiver).unwrap();
     let transceiver = session
@@ -868,7 +962,13 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
     assert!(session.push_raw_video(pcm, &video(40, 0)).is_err());
     assert!(
         session
-            .publish_pcm(peers[0], raw, "wrong", RtpTransceiverDirection::SendOnly)
+            .publish_pcm(
+                peers[0],
+                raw,
+                "wrong",
+                RtpTransceiverDirection::SendOnly,
+                None
+            )
             .is_err()
     );
 
@@ -882,44 +982,147 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         assert!(session.attach_encoded_video(call.video.unwrap()).is_err());
         let local = session.video_source_view(raw).unwrap();
         let local_track = session.sender_track(sender).unwrap().unwrap();
-        let installed = session.video_track_source_view(local_track).unwrap().unwrap();
-        let installed_alias = session.video_track_source_view(local_track).unwrap().unwrap();
-        assert!(session.video_source_views_same_interface(installed, installed_alias).unwrap());
+        let installed = session
+            .video_track_source_view(local_track)
+            .unwrap()
+            .unwrap();
+        let installed_alias = session
+            .video_track_source_view(local_track)
+            .unwrap()
+            .unwrap();
+        assert!(
+            session
+                .video_source_views_same_interface(installed, installed_alias)
+                .unwrap()
+        );
         session.release_video_source_view(installed_alias);
-        let remote_track = session.receiver_track(call.video.unwrap()).unwrap().unwrap();
-        let remote = session.video_track_source_view(remote_track).unwrap().unwrap();
+        let remote_track = session
+            .receiver_track(call.video.unwrap())
+            .unwrap()
+            .unwrap();
+        let remote = session
+            .video_track_source_view(remote_track)
+            .unwrap()
+            .unwrap();
+        let defaults = pulsebeam_webrtc_sys::VideoSinkWants::default();
+        let mut receiver_wants = defaults.clone();
+        receiver_wants.resolution_alignment = 6;
+        receiver_wants.black_frames = true;
+        session
+            .update_raw_video_sink_wants(call.video.unwrap(), &receiver_wants)
+            .unwrap();
+        receiver_wants.black_frames = false; // SDK track override.
+        assert_eq!(
+            session.raw_video_sink_wants(call.video.unwrap()).unwrap(),
+            Some(receiver_wants)
+        );
+        let direct_wants = pulsebeam_webrtc_sys::VideoSinkWants {
+            resolution_alignment: 10,
+            target_pixel_count: Some(0),
+            ..defaults.clone()
+        };
+        let remote_sink = session
+            .attach_video_source_sink_with_wants(remote, &direct_wants)
+            .unwrap();
+        let remote_sink_alias = session.alias_video_sink(remote_sink).unwrap();
+        session.release_video_sink(remote_sink);
+        assert_eq!(
+            session.video_sink_wants(remote_sink_alias).unwrap(),
+            Some(direct_wants.clone())
+        );
+        let bad = pulsebeam_webrtc_sys::VideoSinkWants {
+            resolution_alignment: i32::MAX,
+            ..defaults.clone()
+        };
+        assert_eq!(
+            session
+                .update_video_sink_wants(remote_sink_alias, &bad)
+                .unwrap_err()
+                .kind,
+            PeerErrorKind::InvalidParameter
+        );
+        assert_eq!(
+            session.video_sink_wants(remote_sink_alias).unwrap(),
+            Some(direct_wants.clone())
+        );
+        let local_sink = session
+            .attach_video_source_sink_with_wants(local, &direct_wants)
+            .unwrap();
+        let track_sink = session.attach_video_track_sink(local_track).unwrap();
         let local_status = session.video_source_status(local).unwrap();
         let remote_status = session.video_source_status(remote).unwrap();
         assert!(!local_status.remote && !local_status.supports_encoded_output);
         assert!(remote_status.remote && remote_status.supports_encoded_output);
-        assert_eq!(session.video_source_rejected_sink_requests(local).unwrap(), Some(0));
-        assert_eq!(session.video_source_rejected_sink_requests(remote).unwrap(), None);
+        assert_eq!(
+            session.video_source_rejected_sink_requests(local).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            session.video_source_rejected_sink_requests(remote).unwrap(),
+            None
+        );
         for status in [local_status, remote_status] {
             assert!(!status.is_screencast);
             assert_eq!(status.needs_denoising, None);
             assert_eq!(status.stats, None);
         }
         let cap = std::num::NonZeroUsize::new(2).unwrap();
-        let source_events = session.observe_video_source_changes(installed, cap).unwrap();
-        let track_events = session.observe_video_track_changes(local_track, cap).unwrap();
+        let source_events = session
+            .observe_video_source_changes(installed, cap)
+            .unwrap();
+        let track_events = session
+            .observe_video_track_changes(local_track, cap)
+            .unwrap();
         let remote_events = session.observe_video_source_changes(remote, cap).unwrap();
-        let receive_events = session.observe_video_track_changes(remote_track, cap).unwrap();
-        session.set_video_track_content_hint(local_track, VideoContentHint::Fluid).unwrap();
-        session.set_video_track_content_hint(local_track, VideoContentHint::Fluid).unwrap();
-        session.set_video_track_should_receive(local_track, false).unwrap();
-        session.set_video_track_should_receive(local_track, false).unwrap();
+        let receive_events = session
+            .observe_video_track_changes(remote_track, cap)
+            .unwrap();
+        session
+            .set_video_track_content_hint(local_track, VideoContentHint::Fluid)
+            .unwrap();
+        session
+            .set_video_track_content_hint(local_track, VideoContentHint::Fluid)
+            .unwrap();
+        session
+            .set_video_track_should_receive(local_track, false)
+            .unwrap();
+        session
+            .set_video_track_should_receive(local_track, false)
+            .unwrap();
         let status = session.video_track_status(local_track).unwrap();
         assert_eq!(status.kind, "video");
         assert!(!status.should_receive);
         assert_eq!(status.content_hint, VideoContentHint::Fluid);
         // Exercise the actual receiver stop/restart control before native media.
-        session.set_video_track_should_receive(remote_track, false).unwrap();
-        session.set_video_track_should_receive(remote_track, true).unwrap();
-        assert!(session.video_track_status(remote_track).unwrap().should_receive);
+        session
+            .set_video_track_should_receive(remote_track, false)
+            .unwrap();
+        session
+            .set_video_track_should_receive(remote_track, true)
+            .unwrap();
+        assert!(
+            session
+                .video_track_status(remote_track)
+                .unwrap()
+                .should_receive
+        );
         session.close_video_observer(receive_events).unwrap();
         session.release_media_stream_track(local_track);
         session.release_media_stream_track(remote_track);
-        (session, call, (local, installed, remote, source_events, track_events, remote_events, receive_events))
+        (
+            session,
+            call,
+            (
+                local,
+                installed,
+                remote,
+                source_events,
+                track_events,
+                remote_events,
+                receive_events,
+                (local_sink, remote_sink_alias, track_sink),
+            ),
+        )
     })
     .join()
     .unwrap();
@@ -972,17 +1175,58 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         let image = image.unwrap();
         // Stock sources have not issued either control callback on this call.
         // Frame receipt must not synthesize discarded/constraint notifications.
-        assert_eq!(session.try_raw_video_sink_event(call.video.unwrap()).unwrap(), None);
-        assert_eq!(session.dropped_raw_video_sink_events(call.video.unwrap()).unwrap(), 0);
-        let (local, installed_view, remote, source_events, track_events, _, _) = retained_video;
+        assert_eq!(
+            session
+                .try_raw_video_sink_event(call.video.unwrap())
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            session
+                .dropped_raw_video_sink_events(call.video.unwrap())
+                .unwrap(),
+            0
+        );
+        let (
+            local,
+            installed_view,
+            remote,
+            source_events,
+            track_events,
+            _,
+            _,
+            (local_sink, remote_sink, track_sink),
+        ) = retained_video;
+        for sink in [local_sink, track_sink] {
+            let frame = session
+                .try_video_sink_frame(sink)
+                .unwrap()
+                .expect("retained native local frame");
+            assert_eq!((frame.width, frame.height), (64, 48));
+            assert_eq!(frame.buffer.as_bytes()[0], 40);
+            assert_eq!(session.try_video_sink_event(sink).unwrap(), None);
+            assert_eq!(session.video_sink_dropped_events(sink).unwrap(), 0);
+        }
+        let direct_remote = session
+            .try_video_sink_frame(remote_sink)
+            .unwrap()
+            .expect("native decoded source frame");
+        assert_eq!((direct_remote.width, direct_remote.height), (64, 48));
+        assert!((35..=45).contains(&direct_remote.buffer.as_bytes()[0]));
         for view in [local, installed_view, remote] {
             // Exercise actual local/no-op and remote worker-proxied requests
             // during the same live call, without claiming dispatch is delivery.
             session.request_video_source_refresh(view).unwrap();
             session.generate_video_source_key_frame(view).unwrap();
-            session.process_video_source_constraints(view, VideoSourceConstraints {
-                min_fps: Some(0.0), max_fps: None,
-            }).unwrap();
+            session
+                .process_video_source_constraints(
+                    view,
+                    VideoSourceConstraints {
+                        min_fps: Some(0.0),
+                        max_fps: None,
+                    },
+                )
+                .unwrap();
             let status = session.video_source_status(view).unwrap();
             assert_eq!(status.state, VideoSourceState::Live);
             assert_eq!(status.stats, None); // Actual frames do not invent GetStats.
@@ -1003,11 +1247,17 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
             .replace_video_source(sender, Some(replacement), "replacement")
             .unwrap();
         let stream = session.create_media_stream("video-replacement").unwrap();
-        let original = session.create_source_track(replacement, "container-replacement").unwrap();
-        assert!(session.add_media_stream_track(stream, original).unwrap());
-        let alias = session.media_stream_video_tracks(stream).unwrap()[0];
+        let original = session
+            .create_source_track(replacement, "container-replacement")
+            .unwrap();
+        assert!(
+            session
+                .local_add_media_stream_track(stream, original)
+                .unwrap()
+        );
+        let alias = session.local_stream_video_tracks(stream).unwrap()[0];
         session.release_media_stream_track(original);
-        session.release_media_stream(stream);
+        session.local_release_media_stream(stream);
         session.replace_sender_track(sender, Some(alias)).unwrap();
         let installed = session.sender_track(sender).unwrap().unwrap();
         assert!(session.media_stream_tracks_same(alias, installed).unwrap());
@@ -1039,9 +1289,18 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
         session.close_source(pcm).unwrap();
         assert!(session.push_pcm(pcm, &pcm_frame).is_err());
         session.close_source(raw).unwrap();
-        assert_eq!(session.video_source_status(installed_view).unwrap().state, VideoSourceState::Ended);
-        assert_eq!(session.video_source_status(local).unwrap().state, VideoSourceState::Ended);
-        assert_eq!(session.take_video_observer_dropped(track_events).unwrap(), 1);
+        assert_eq!(
+            session.video_source_status(installed_view).unwrap().state,
+            VideoSourceState::Ended
+        );
+        assert_eq!(
+            session.video_source_status(local).unwrap().state,
+            VideoSourceState::Ended
+        );
+        assert_eq!(
+            session.take_video_observer_dropped(track_events).unwrap(),
+            1
+        );
         session.close_video_observer(source_events).unwrap();
         session.close_video_observer(track_events).unwrap();
         session.release_video_source_view(local);
@@ -1121,19 +1380,45 @@ fn raw_media_crosses_native_call_and_retains_owned_output_after_replacement_and_
     .unwrap();
     thread::spawn(move || {
         let mut session = session;
-        let (_, _, remote, source_events, track_events, remote_events, receive_events) = retained_video;
+        let (
+            _,
+            _,
+            remote,
+            source_events,
+            track_events,
+            remote_events,
+            receive_events,
+            (local_sink, remote_sink, track_sink),
+        ) = retained_video;
+        for sink in [local_sink, remote_sink, track_sink] {
+            assert!(session.video_sink_wants(sink).unwrap().is_some());
+            session.close_video_sink(sink).unwrap();
+            assert_eq!(session.video_sink_wants(sink).unwrap(), None);
+            session.release_video_sink(sink);
+        }
         session.close_peer(peers[0]).unwrap();
         session.close_peer(peers[1]).unwrap();
-        assert_eq!(session.video_source_status(remote).unwrap().state, VideoSourceState::Ended);
+        assert_eq!(
+            session.video_source_status(remote).unwrap().state,
+            VideoSourceState::Ended
+        );
         session.close_video_observer(remote_events).unwrap();
         session.release_video_source_view(remote);
         for observer in [source_events, remote_events] {
-            assert_eq!(session.try_video_observer_event(observer).unwrap(), Some(VideoObserverEvent::Changed));
+            assert_eq!(
+                session.try_video_observer_event(observer).unwrap(),
+                Some(VideoObserverEvent::Changed)
+            );
             assert_eq!(session.try_video_observer_event(observer).unwrap(), None);
             session.release_video_observer(observer);
         }
         for observer in [track_events, receive_events] {
-            for _ in 0..2 { assert_eq!(session.try_video_observer_event(observer).unwrap(), Some(VideoObserverEvent::Changed)); }
+            for _ in 0..2 {
+                assert_eq!(
+                    session.try_video_observer_event(observer).unwrap(),
+                    Some(VideoObserverEvent::Changed)
+                );
+            }
             assert_eq!(session.try_video_observer_event(observer).unwrap(), None);
             session.release_video_observer(observer);
         }

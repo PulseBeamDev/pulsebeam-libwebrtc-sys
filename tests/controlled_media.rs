@@ -1,4 +1,6 @@
 //! Safe-public-API qualification of the controlled encoded-input media path.
+#[path = "support/mixed_h264.rs"]
+mod mixed_h264;
 use pulsebeam_webrtc_sys::*;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -2734,21 +2736,28 @@ fn controlled_peer_admission_and_pending_close_preserve_exact_outcomes() {
         );
         #[cfg(target_os = "linux")]
         let threads_before: std::collections::BTreeSet<_> = std::fs::read_dir("/proc/self/task")
-            .unwrap().map(|entry| entry.unwrap().file_name()).collect();
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
         let source = factory.create_video_source().unwrap();
-        let track = factory.create_video_track("controlled-source-controls", &source).unwrap();
+        let track = factory
+            .create_video_track("controlled-source-controls", &source)
+            .unwrap();
         for view in [source.as_view(), track.source().unwrap()] {
             view.request_refresh_frame();
             view.generate_key_frame();
             view.process_constraints(VideoSourceConstraints {
-                min_fps: Some(0.0), max_fps: None,
+                min_fps: Some(0.0),
+                max_fps: None,
             });
         }
         track.request_refresh_frame();
         #[cfg(target_os = "linux")]
         {
             let threads_after: std::collections::BTreeSet<_> = std::fs::read_dir("/proc/self/task")
-                .unwrap().map(|entry| entry.unwrap().file_name()).collect();
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
             assert_eq!(threads_before, threads_after);
         }
         // Real callbacks were pending before these source operations. They

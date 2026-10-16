@@ -1,8 +1,13 @@
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
+#include "pulsebeam-webrtc-sys/native/live_frame_transformer.h"
 #include "pulsebeam-webrtc-sys/native/video_sink_queue.h"
 #include "pulsebeam-webrtc-sys/native/video_source_controls.h"
 #include "pulsebeam-webrtc-sys/native/raw_video_source.h"
+#include "pulsebeam-webrtc-sys/native/video_sink_wants.h"
+#include "pulsebeam-webrtc-sys/native/source_encoded_video.h"
+#include "pc/video_rtp_track_source.h"
+#include "pc/video_track_source_proxy.h"
 #include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
@@ -11,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <climits>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -23,6 +29,7 @@
 
 #include "api/dtmf_sender_interface.h"
 #include "api/crypto/frame_encryptor_interface.h"
+#include "pulsebeam-webrtc-sys/native/video_encoder_selector.h"
 #include "api/crypto/frame_decryptor_interface.h"
 #include "api/frame_transformer_interface.h"
 #include "pulsebeam-webrtc-sys/native/frame_callback_slot.h"
@@ -172,6 +179,12 @@ FfiFrameCryptoOutput frame_decryptor_decrypt(const NativeFrameDecryptor& value, 
   FfiFrameCryptoOutput converted{static_cast<std::int32_t>(result.status), result.bytes_written, {}};
   for (std::size_t i = 0; i < result.bytes_written; ++i) converted.bytes.push_back(output[i]);
   return converted;
+}
+void rtp_sender_set_encoder_selector(const NativeRtpSender& sender, const NativeVideoEncoderSelector* selector) noexcept {
+  sender.sender()->SetEncoderSelector(selector ? selector->value() : nullptr);
+}
+void rtp_sender_set_owned_encoder_selector(const NativeRtpSender& sender, std::unique_ptr<NativeOwnedVideoEncoderSelector> selector) noexcept {
+  sender.sender()->SetEncoderSelector(selector ? selector->Take() : nullptr);
 }
 void rtp_sender_set_frame_encryptor(const NativeRtpSender& sender, const NativeFrameEncryptor* value) noexcept {
   sender.sender()->SetFrameEncryptor(value ? value->state()->value : nullptr);
@@ -637,6 +650,8 @@ struct NativeVideoTrack::State {
 
 struct NativeVideoSourceView::State {
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::scoped_refptr<PushVideoSource> producer;
+  webrtc::VideoBroadcaster* remote_broadcaster = nullptr;
   webrtc::Thread* signaling = nullptr;
   webrtc::Thread* worker = nullptr;
 };
@@ -661,7 +676,10 @@ struct NativeVideoObserver::State final : webrtc::ObserverInterface {
 };
 NativeVideoSourceView::NativeVideoSourceView(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeVideoSourceView::~NativeVideoSourceView() {
-  state_->signaling->BlockingCall([&] { state_->source = nullptr; });
+  state_->signaling->BlockingCall([&] {
+    state_->producer = nullptr;
+    state_->source = nullptr;
+  });
 }
 const std::unique_ptr<NativeVideoSourceView::State>& NativeVideoSourceView::state() const noexcept { return state_; }
 std::uint64_t video_source_rejected_sink_requests(const NativeVideoSource& source) noexcept {
@@ -671,17 +689,90 @@ std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSou
   auto state = std::make_unique<NativeVideoSourceView::State>();
   state->signaling = source.state()->signaling_thread;
   state->worker = source.state()->worker_thread;
-  state->signaling->BlockingCall([&] { state->source = source.state()->source; });
+  state->signaling->BlockingCall([&] {
+    state->source = source.state()->source;
+    state->producer = source.state()->source;
+  });
   return std::make_unique<NativeVideoSourceView>(std::move(state));
 }
 std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept {
   auto state = std::make_unique<NativeVideoSourceView::State>();
   state->signaling = factory.signaling_thread();
   state->worker = factory.worker_thread();
-  state->signaling->BlockingCall([&] { state->source = track.state()->track->GetSource(); });
+  state->signaling->BlockingCall([&] {
+    state->source = track.state()->track->GetSource();
+    if (!state->source) return;
+    // Closed safe-Rust construction: all tracks are SDK VideoTrack objects,
+    // whose GetSource returns this exact proxy specialization. Its immutable
+    // internal source is either our Push source or SDK VideoRtpTrackSource.
+    // No user SourceInterface/TrackInterface injection exists in this graph.
+    auto* internal = static_cast<webrtc::VideoTrackSourceProxyWithInternal<
+        webrtc::VideoTrackSourceInterface>*>(state->source.get())->internal();
+    if (internal->remote()) {
+      state->remote_broadcaster = static_cast<webrtc::VideoBroadcaster*>(
+          static_cast<webrtc::VideoRtpTrackSource*>(internal)->source());
+    } else {
+      state->producer = static_cast<PushVideoSource*>(internal);
+    }
+  });
   if (!state->source) return nullptr;
   return std::make_unique<NativeVideoSourceView>(std::move(state));
 }
+std::unique_ptr<NativeVideoSourceView> video_track_source_from_producer(
+    const NativeVideoTrack& track, const NativePeerConnectionFactory& factory,
+    const NativeVideoSource& source) noexcept {
+  auto view = video_track_source(track, factory);
+  if (view && view->state()->producer.get() != source.state()->source.get()) return nullptr;
+  return view;
+}
+bool video_source_view_rejected_sink_requests(
+    const NativeVideoSourceView& source, std::uint64_t& count) noexcept {
+  if (!source.state()->producer) return false;
+  count = source.state()->producer->broadcaster().RejectedRequests();
+  return true;
+}
+struct NativeVideoSourceEncodedSink::State {
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::Thread* worker = nullptr;
+  SourceEncodedFrameSink sink;
+  bool closed = false;
+};
+NativeVideoSourceEncodedSink::NativeVideoSourceEncodedSink(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeVideoSourceEncodedSink::~NativeVideoSourceEncodedSink() { video_source_encoded_close(*this); }
+const std::unique_ptr<NativeVideoSourceEncodedSink::State>&
+NativeVideoSourceEncodedSink::state() const noexcept { return state_; }
+std::unique_ptr<NativeVideoSourceEncodedSink> video_source_attach_encoded_output(
+    const NativeVideoSourceView& source) noexcept {
+  if (!source.state()->signaling->BlockingCall([&] {
+        return source.state()->source->SupportsEncodedOutput();
+      })) return nullptr;
+  auto state = std::make_unique<NativeVideoSourceEncodedSink::State>();
+  state->source = source.state()->source;
+  state->worker = source.state()->worker;
+  state->worker->BlockingCall([&] { state->source->AddEncodedSink(&state->sink); });
+  return std::make_unique<NativeVideoSourceEncodedSink>(std::move(state));
+}
+FfiRecordableVideoFrame video_source_encoded_take_frame(const NativeVideoSourceEncodedSink& sink) noexcept {
+  return sink.state()->sink.Take();
+}
+FfiVideoSinkEvent video_source_encoded_take_event(const NativeVideoSourceEncodedSink& sink) noexcept {
+  return sink.state()->sink.TakeEvent();
+}
+std::uint64_t video_source_encoded_dropped_frames(const NativeVideoSourceEncodedSink& sink) noexcept {
+  return sink.state()->sink.DroppedFrames();
+}
+std::uint64_t video_source_encoded_dropped_events(const NativeVideoSourceEncodedSink& sink) noexcept {
+  return sink.state()->sink.DroppedEvents();
+}
+void video_source_encoded_close(const NativeVideoSourceEncodedSink& sink) noexcept {
+  auto& state = *sink.state();
+  if (state.closed) return;
+  state.closed = true;
+  state.sink.Deactivate();
+  state.worker->BlockingCall([&] { state.source->RemoveEncodedSink(&state.sink); });
+}
+
 void video_source_view_request_refresh(const NativeVideoSourceView& view) noexcept {
   RequestVideoSourceRefresh(*view.state()->source, *view.state()->worker);
 }
@@ -782,11 +873,11 @@ void video_observer_close(const NativeVideoObserver& observer) noexcept {
   });
 }
 
-struct NativeMediaStream::State {
+struct NativeLocalMediaStream::State {
   webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream;
   webrtc::Thread* signaling = nullptr;
 };
-struct NativeMediaStreamObserver::State final : webrtc::ObserverInterface {
+struct NativeLocalMediaStreamObserver::State final : webrtc::ObserverInterface {
   webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream;
   webrtc::Thread* signaling = nullptr;
   bool registered = false;  // signaling only
@@ -800,23 +891,23 @@ struct NativeMediaStreamObserver::State final : webrtc::ObserverInterface {
     else if (dropped != UINT64_MAX) ++dropped;
   }
 };
-NativeMediaStream::NativeMediaStream(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
-NativeMediaStream::~NativeMediaStream() {
+NativeLocalMediaStream::NativeLocalMediaStream(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeLocalMediaStream::~NativeLocalMediaStream() {
   state_->signaling->BlockingCall([&] { state_->stream = nullptr; });
 }
-const std::unique_ptr<NativeMediaStream::State>& NativeMediaStream::state() const noexcept { return state_; }
-std::unique_ptr<NativeMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
-  auto state = std::make_unique<NativeMediaStream::State>();
+const std::unique_ptr<NativeLocalMediaStream::State>& NativeLocalMediaStream::state() const noexcept { return state_; }
+std::unique_ptr<NativeLocalMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept {
+  auto state = std::make_unique<NativeLocalMediaStream::State>();
   state->signaling = factory.signaling_thread();
   if (!state->signaling) return nullptr;
   state->signaling->BlockingCall([&] { state->stream = factory.factory()->CreateLocalMediaStream(std::string(id)); });
   if (!state->stream) return nullptr;
-  return std::make_unique<NativeMediaStream>(std::move(state));
+  return std::make_unique<NativeLocalMediaStream>(std::move(state));
 }
-rust::String media_stream_id(const NativeMediaStream& stream) noexcept {
+rust::String local_media_stream_id(const NativeLocalMediaStream& stream) noexcept {
   return stream.state()->signaling->BlockingCall([&] { return rust::String(stream.state()->stream->id()); });
 }
-rust::Vec<std::size_t> media_stream_track_keys(const NativeMediaStream& stream, bool audio) noexcept {
+rust::Vec<std::size_t> local_media_stream_track_keys(const NativeLocalMediaStream& stream, bool audio) noexcept {
   return stream.state()->signaling->BlockingCall([&] {
     rust::Vec<std::size_t> keys;
     if (audio) {
@@ -827,7 +918,7 @@ rust::Vec<std::size_t> media_stream_track_keys(const NativeMediaStream& stream, 
     return keys;
   });
 }
-std::size_t media_stream_find_track(const NativeMediaStream& stream, bool audio, rust::Str id) noexcept {
+std::size_t local_media_stream_find_track(const NativeLocalMediaStream& stream, bool audio, rust::Str id) noexcept {
   return stream.state()->signaling->BlockingCall([&] {
     const auto name = std::string(id);
     return audio ? reinterpret_cast<std::size_t>(stream.state()->stream->FindAudioTrack(name).get())
@@ -837,26 +928,26 @@ std::size_t media_stream_find_track(const NativeMediaStream& stream, bool audio,
 std::size_t video_track_identity(const NativeVideoTrack& track) noexcept {
   return reinterpret_cast<std::size_t>(track.state()->track.get());
 }
-bool media_stream_audio_track(const NativeMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept {
+bool local_media_stream_audio_track(const NativeLocalMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept {
   return stream.state()->signaling->BlockingCall([&] {
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> value(audio_track_sdk_handle(track));
     return add ? stream.state()->stream->AddTrack(value) : stream.state()->stream->RemoveTrack(value);
   });
 }
-bool media_stream_video_track(const NativeMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept {
+bool local_media_stream_video_track(const NativeLocalMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept {
   return stream.state()->signaling->BlockingCall([&] {
     return add ? stream.state()->stream->AddTrack(track.state()->track) : stream.state()->stream->RemoveTrack(track.state()->track);
   });
 }
-NativeMediaStreamObserver::NativeMediaStreamObserver(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
-NativeMediaStreamObserver::~NativeMediaStreamObserver() {
-  media_stream_observer_close(*this);
+NativeLocalMediaStreamObserver::NativeLocalMediaStreamObserver(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeLocalMediaStreamObserver::~NativeLocalMediaStreamObserver() {
+  local_media_stream_observer_close(*this);
   state_->signaling->BlockingCall([&] { state_->stream = nullptr; });
 }
-const std::unique_ptr<NativeMediaStreamObserver::State>& NativeMediaStreamObserver::state() const noexcept { return state_; }
-std::unique_ptr<NativeMediaStreamObserver> media_stream_observe(const NativeMediaStream& stream, std::size_t capacity) noexcept {
+const std::unique_ptr<NativeLocalMediaStreamObserver::State>& NativeLocalMediaStreamObserver::state() const noexcept { return state_; }
+std::unique_ptr<NativeLocalMediaStreamObserver> local_media_stream_observe(const NativeLocalMediaStream& stream, std::size_t capacity) noexcept {
   if (!capacity) return nullptr;
-  auto state = std::make_unique<NativeMediaStreamObserver::State>();
+  auto state = std::make_unique<NativeLocalMediaStreamObserver::State>();
   state->signaling = stream.state()->signaling;
   state->capacity = capacity;
   state->signaling->BlockingCall([&] {
@@ -864,21 +955,21 @@ std::unique_ptr<NativeMediaStreamObserver> media_stream_observe(const NativeMedi
     state->stream->RegisterObserver(state.get());
     state->registered = true;
   });
-  return std::make_unique<NativeMediaStreamObserver>(std::move(state));
+  return std::make_unique<NativeLocalMediaStreamObserver>(std::move(state));
 }
-bool media_stream_observer_take(const NativeMediaStreamObserver& observer) noexcept {
+bool local_media_stream_observer_take(const NativeLocalMediaStreamObserver& observer) noexcept {
   auto& state = *observer.state();
   std::lock_guard lock(state.mutex);
   if (!state.pending) return false;
   --state.pending;
   return true;
 }
-std::uint64_t media_stream_observer_take_dropped(const NativeMediaStreamObserver& observer) noexcept {
+std::uint64_t local_media_stream_observer_take_dropped(const NativeLocalMediaStreamObserver& observer) noexcept {
   auto& state = *observer.state();
   std::lock_guard lock(state.mutex);
   return std::exchange(state.dropped, 0);
 }
-void media_stream_observer_close(const NativeMediaStreamObserver& observer) noexcept {
+void local_media_stream_observer_close(const NativeLocalMediaStreamObserver& observer) noexcept {
   auto& state = *observer.state();
   state.signaling->BlockingCall([&] {
     if (!state.registered) return;
@@ -892,6 +983,10 @@ struct NativeEncodedVideoSink::State {
 };
 
 struct NativeVideoSink::State {
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::scoped_refptr<PushVideoSource> producer;
+  webrtc::VideoBroadcaster* remote_broadcaster = nullptr;
+  webrtc::Thread* worker = nullptr;
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
   std::unique_ptr<FrameSink> sink;
   std::atomic<bool> closed{false};
@@ -1464,6 +1559,7 @@ bool video_source_push_frame(const NativeVideoSource& source,
                              std::uint16_t rotation) noexcept {
   const auto allocation_size = video_source_i420_allocation_size(width, height);
   if (source.state()->closed.load() || allocation_size == 0 ||
+      timestamp_us == INT64_MIN || timestamp_us == INT64_MAX ||
       data.size() != allocation_size ||
       (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) {
     return false;
@@ -1485,6 +1581,14 @@ bool video_source_push_frame(const NativeVideoSource& source,
           .set_rtp_timestamp(rtp_timestamp)
           .set_rotation(static_cast<webrtc::VideoRotation>(rotation))
           .build());
+  return true;
+}
+
+bool video_source_push_native_frame(const NativeVideoSource& source, const NativeRawVideoFrame& frame) noexcept {
+  if (source.state()->closed.load() || frame.value().width() <= 0 || frame.value().height() <= 0 ||
+      frame.value().timestamp_us() == INT64_MIN || frame.value().timestamp_us() == INT64_MAX ||
+      video_source_i420_allocation_size(frame.value().width(), frame.value().height()) == 0) return false;
+  source.state()->source->Push(frame.value());
   return true;
 }
 
@@ -1555,13 +1659,78 @@ void video_track_set_content_hint(const NativeVideoTrack& track, std::uint8_t hi
   track.state()->track->set_content_hint(static_cast<webrtc::VideoTrackInterface::ContentHint>(hint));
 }
 
-std::unique_ptr<NativeVideoSink> video_track_attach_sink(
-    const NativeVideoTrack& track) noexcept {
+namespace {
+// Binding outcomes, not invented SDK errors: 0 invoked, 1 closed, 2 unsafe
+// alignment, 3 invalid target. The complete scope runs on the existing worker.
+std::uint8_t ApplySinkWants(NativeVideoSink::State& state,
+                            const webrtc::VideoSinkWants& wants) {
+  if (state.closed.load()) return 1;
+  auto apply = [&] {
+    if (state.track) state.track->AddOrUpdateSink(state.sink.get(), wants);
+    else state.source->AddOrUpdateSink(state.sink.get(), wants);
+  };
+  if (state.producer) {
+    return state.producer->broadcaster().AdmitAndApply(state.sink.get(), wants, apply) ? 0 : 2;
+  }
+  // Closed remote construction has only app raw sinks; both this preflight and
+  // application run on the same worker as every other raw mutation/replay.
+  if (!state.remote_broadcaster) return 3;
+  if (!RemoteBroadcasterObservation::Admits(*state.remote_broadcaster, state.sink.get(), wants)) return 2;
+  apply();
+  return 0;
+}
+std::unique_ptr<NativeVideoSink> AttachVideoSink(
+    const NativeVideoSourceView& view,
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
+    const FfiVideoSinkWants& input, std::uint8_t& status) {
   auto state = std::make_unique<NativeVideoSink::State>();
-  state->track = track.state()->track;
+  state->source = view.state()->source;
+  state->producer = view.state()->producer;
+  state->remote_broadcaster = view.state()->remote_broadcaster;
+  state->worker = view.state()->worker;
+  state->track = std::move(track);
+  if (state->track && state->track->GetSource() != state->source.get()) {
+    status = 3;
+    return nullptr;
+  }
   state->sink = std::make_unique<FrameSink>();
-  state->track->AddOrUpdateSink(state->sink.get(), webrtc::VideoSinkWants{});
+  const auto wants = ToVideoSinkWants(input);
+  status = state->worker->BlockingCall([&] { return ApplySinkWants(*state, wants); });
+  if (status != 0) return nullptr;
   return std::make_unique<NativeVideoSink>(std::move(state));
+}
+}  // namespace
+FfiVideoSinkWants video_sink_default_wants() noexcept {
+  return FromVideoSinkWants(webrtc::VideoSinkWants{});
+}
+std::unique_ptr<NativeVideoSink> video_track_attach_sink(
+    const NativeVideoTrack& track, const NativeVideoSourceView& source,
+    const FfiVideoSinkWants& wants, std::uint8_t& status) noexcept {
+  return AttachVideoSink(source, track.state()->track, wants, status);
+}
+std::unique_ptr<NativeVideoSink> video_source_attach_sink(
+    const NativeVideoSourceView& source, const FfiVideoSinkWants& wants,
+    std::uint8_t& status) noexcept {
+  return AttachVideoSink(source, nullptr, wants, status);
+}
+std::uint8_t video_sink_update_wants(const NativeVideoSink& sink,
+                                     const FfiVideoSinkWants& input) noexcept {
+  const auto wants = ToVideoSinkWants(input);
+  return sink.state()->worker->BlockingCall([&] { return ApplySinkWants(*sink.state(), wants); });
+}
+FfiVideoSinkWants video_sink_wants(const NativeVideoSink& sink) noexcept {
+  auto& state = *sink.state();
+  return state.worker->BlockingCall([&]() -> FfiVideoSinkWants {
+    if (state.closed.load()) return {};
+    auto wants = state.producer
+        ? state.producer->broadcaster().WantsForSink(state.sink.get())
+        : RemoteBroadcasterObservation::WantsForSink(*state.remote_broadcaster, state.sink.get());
+    return wants ? FromVideoSinkWants(*wants) : FfiVideoSinkWants{};
+  });
+}
+
+std::unique_ptr<NativeRawVideoFrame> video_sink_take_native_frame(const NativeVideoSink& sink) noexcept {
+  return sink.state()->sink ? sink.state()->sink->TakeNative() : nullptr;
 }
 
 std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
@@ -1586,11 +1755,12 @@ bool close_video_sink(const NativeVideoSink& sink) noexcept {
   if (state.closed.exchange(true)) {
     return true;
   }
-  if (!state.track || !state.sink) {
-    return false;
-  }
+  if (!state.source || !state.sink) return false;
   state.sink->Deactivate();
-  state.track->RemoveSink(state.sink.get());
+  state.worker->BlockingCall([&] {
+    if (state.track) state.track->RemoveSink(state.sink.get());
+    else state.source->RemoveSink(state.sink.get());
+  });
   return true;
 }
 
@@ -1698,7 +1868,7 @@ std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
   auto state = std::make_unique<NativeEncodedVideoSink::State>();
   state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(peer.readiness());
   peer.worker_thread()->BlockingCall([&] {
-    receiver.state()->receiver->SetFrameTransformer(state->collector);
+    peer.frame_transformer_hosts().Receiver(peer, receiver.state()->receiver)->SetCollector(state->collector);
   });
   return std::make_unique<NativeEncodedVideoSink>(std::move(state));
 }
@@ -1728,6 +1898,17 @@ std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
   return std::make_unique<NativeRtpReceiver>(std::move(state));
 }
 
+namespace { bool VideoParameterConsumptionSafe(const std::vector<webrtc::RtpEncodingParameters>&); }
+std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value(
+    const NativePeerConnection& peer, const NativeVideoTrack& track, const NativeRtpTransceiverInit& init,
+    bool& valid, std::unique_ptr<NativeRtcError>& error) noexcept {
+  const auto direction = static_cast<int>(init.value().direction);
+  valid = direction >= 0 && direction <= 4 && VideoParameterConsumptionSafe(init.value().send_encodings);
+  if (!valid) return nullptr;
+  auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());
+  if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }
+  return wrap_rtp_transceiver(result.MoveValue());
+}
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
     const NativePeerConnection& peer, const NativeVideoTrack& track,
     std::uint8_t direction, rust::Slice<const rust::String> rids,
@@ -1916,7 +2097,6 @@ std::unique_ptr<NativeRtcError> rtp_transceiver_set_codec_preferences_value(
   auto result = transceiver.state()->transceiver->SetCodecPreferences(requested);
   return std::make_unique<NativeRtcError>(std::move(result));
 }
-
 std::unique_ptr<NativeRtcError> rtp_transceiver_set_header_capabilities_value(
     const NativeRtpTransceiver& transceiver,
     const NativeRtpCapabilities& values) noexcept {
@@ -2213,6 +2393,49 @@ std::unique_ptr<NativeRtpEncodingList> rtp_sender_initial_encodings(const Native
   // The sender proxy executes this getter on signaling and returns SDK value
   // copies. Subsequent list/value ownership has no engine origin affinity.
   return std::make_unique<NativeRtpEncodingList>(sender.state()->sender->init_send_encodings());
+}
+namespace {
+bool VideoParameterConsumptionSafe(const std::vector<webrtc::RtpEncodingParameters>& encodings) {
+  for (const auto& encoding : encodings) {
+    if (encoding.max_framerate && (!std::isfinite(*encoding.max_framerate) || *encoding.max_framerate >= static_cast<double>(INT_MAX) + 1.0)) return false;
+    if (encoding.scale_resolution_down_by && !std::isfinite(*encoding.scale_resolution_down_by)) return false;
+    if (encoding.scale_resolution_down_to) {
+      const auto resolution = *encoding.scale_resolution_down_to;
+      const auto pixels = static_cast<std::int64_t>(resolution.width) * resolution.height;
+      if (pixels > INT_MAX || pixels < INT_MIN) return false;
+    }
+  }
+  return true;
+}
+bool SenderParameterConsumptionSafe(const NativeRtpSender& sender, const webrtc::RtpParameters& value) {
+  return sender.sender()->media_type() != webrtc::MediaType::VIDEO || VideoParameterConsumptionSafe(value.encodings);
+}
+}  // namespace
+struct NativeSetParametersOperation::State {
+  std::mutex mutex;
+  bool completed = false;
+  std::unique_ptr<NativeRtcError> result;
+};
+bool set_parameters_operation_ready(const NativeSetParametersOperation& operation) noexcept {
+  std::lock_guard lock(operation.state()->mutex); return operation.state()->completed;
+}
+std::unique_ptr<NativeRtcError> set_parameters_operation_take(const NativeSetParametersOperation& operation) noexcept {
+  std::lock_guard lock(operation.state()->mutex); return std::move(operation.state()->result);
+}
+std::unique_ptr<NativeRtcError> rtp_sender_set_parameters_value(const NativeRtpSender& sender, const NativeRtpParameters& parameters, bool& valid) noexcept {
+  valid = SenderParameterConsumptionSafe(sender, parameters.value());
+  if (!valid) return nullptr;
+  return std::make_unique<NativeRtcError>(sender.sender()->SetParameters(parameters.value()));
+}
+std::shared_ptr<NativeSetParametersOperation> rtp_sender_set_parameters_async(const NativeRtpSender& sender, const NativeRtpParameters& parameters, bool& valid) noexcept {
+  valid = SenderParameterConsumptionSafe(sender, parameters.value());
+  if (!valid) return nullptr;
+  auto state = std::make_shared<NativeSetParametersOperation::State>();
+  sender.sender()->SetParametersAsync(parameters.value(), [state](webrtc::RTCError error) {
+    std::lock_guard lock(state->mutex);
+    state->result = std::make_unique<NativeRtcError>(std::move(error)); state->completed = true;
+  });
+  return std::make_shared<NativeSetParametersOperation>(std::move(state));
 }
 std::unique_ptr<NativeRtpParameters> rtp_sender_parameters_value(const NativeRtpSender& sender) noexcept {
   // NativeRtpSender holds the stock signaling-thread proxy; the blocking

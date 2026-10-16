@@ -1,4 +1,5 @@
 //! Owning built-in track sources, receiver streams and explicit SDK notifiers.
+use crate::{AudioSourceOptions, VideoContentHint, VideoSourceStats};
 use crate::{MediaTrack, MediaTrackKind, ffi, media_track::MediaTrackOwner, peer::FactoryInner};
 use std::{num::NonZeroUsize, rc::Rc};
 
@@ -9,144 +10,7 @@ pub enum MediaSourceState {
     Ended,
     Muted,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VideoContentHint {
-    None,
-    Fluid,
-    Detailed,
-    Text,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AudioProcessingMode {
-    Automatic,
-    Platform,
-    Software,
-}
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct AudioSourceOptions {
-    pub echo_cancellation: Option<bool>,
-    pub auto_gain_control: Option<bool>,
-    pub noise_suppression: Option<bool>,
-    pub highpass_filter: Option<bool>,
-    pub stereo_swapping: Option<bool>,
-    pub audio_jitter_buffer_fast_accelerate: Option<bool>,
-    pub audio_network_adaptor: Option<bool>,
-    pub init_recording_on_send: Option<bool>,
-    pub echo_cancellation_mode: Option<AudioProcessingMode>,
-    pub auto_gain_control_mode: Option<AudioProcessingMode>,
-    pub noise_suppression_mode: Option<AudioProcessingMode>,
-    pub highpass_filter_mode: Option<AudioProcessingMode>,
-    pub audio_jitter_buffer_max_packets: Option<i32>,
-    pub audio_jitter_buffer_min_delay_ms: Option<i32>,
-    pub audio_network_adaptor_config: Option<Vec<u8>>,
-}
-fn boolean(x: i8) -> Option<bool> {
-    match x {
-        -1 => None,
-        0 => Some(false),
-        1 => Some(true),
-        _ => unreachable!("native optional bool"),
-    }
-}
-fn mode(x: i8) -> Option<AudioProcessingMode> {
-    match x {
-        -1 => None,
-        0 => Some(AudioProcessingMode::Automatic),
-        1 => Some(AudioProcessingMode::Platform),
-        2 => Some(AudioProcessingMode::Software),
-        _ => unreachable!("pinned audio mode"),
-    }
-}
-impl AudioSourceOptions {
-    fn ffi(&self) -> ffi::FfiAudioSourceOptions {
-        let boolean = |x: Option<bool>| x.map_or(-1, i8::from);
-        let mode = |x: Option<AudioProcessingMode>| x.map_or(-1, |x| x as i8);
-        ffi::FfiAudioSourceOptions {
-            echo_cancellation: boolean(self.echo_cancellation),
-            auto_gain_control: boolean(self.auto_gain_control),
-            noise_suppression: boolean(self.noise_suppression),
-            highpass_filter: boolean(self.highpass_filter),
-            stereo_swapping: boolean(self.stereo_swapping),
-            audio_jitter_buffer_fast_accelerate: boolean(self.audio_jitter_buffer_fast_accelerate),
-            audio_network_adaptor: boolean(self.audio_network_adaptor),
-            init_recording_on_send: boolean(self.init_recording_on_send),
-            echo_cancellation_mode: mode(self.echo_cancellation_mode),
-            auto_gain_control_mode: mode(self.auto_gain_control_mode),
-            noise_suppression_mode: mode(self.noise_suppression_mode),
-            highpass_filter_mode: mode(self.highpass_filter_mode),
-            audio_jitter_buffer_max_packets: ffi::FfiOptionalI32 {
-                present: self.audio_jitter_buffer_max_packets.is_some(),
-                value: self.audio_jitter_buffer_max_packets.unwrap_or_default(),
-            },
-            audio_jitter_buffer_min_delay_ms: ffi::FfiOptionalI32 {
-                present: self.audio_jitter_buffer_min_delay_ms.is_some(),
-                value: self.audio_jitter_buffer_min_delay_ms.unwrap_or_default(),
-            },
-            has_audio_network_adaptor_config: self.audio_network_adaptor_config.is_some(),
-            audio_network_adaptor_config: self
-                .audio_network_adaptor_config
-                .clone()
-                .unwrap_or_default(),
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TrackAudioOptionsCode {
-    Applied,
-    Stored,
-    RejectedRemoteTrack,
-    RejectedInvalidCombination,
-    RejectedPlatformUnavailable,
-    ApplyFailed,
-    Other(i32),
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TrackAudioOptionsResult {
-    pub code: TrackAudioOptionsCode,
-    pub message: Vec<u8>,
-}
-impl TrackAudioOptionsResult {
-    pub fn ok(&self) -> bool {
-        matches!(
-            self.code,
-            TrackAudioOptionsCode::Applied | TrackAudioOptionsCode::Stored
-        )
-    }
-}
-impl From<ffi::FfiAudioSourceOptions> for AudioSourceOptions {
-    fn from(x: ffi::FfiAudioSourceOptions) -> Self {
-        Self {
-            echo_cancellation: boolean(x.echo_cancellation),
-            auto_gain_control: boolean(x.auto_gain_control),
-            noise_suppression: boolean(x.noise_suppression),
-            highpass_filter: boolean(x.highpass_filter),
-            stereo_swapping: boolean(x.stereo_swapping),
-            audio_jitter_buffer_fast_accelerate: boolean(x.audio_jitter_buffer_fast_accelerate),
-            audio_network_adaptor: boolean(x.audio_network_adaptor),
-            init_recording_on_send: boolean(x.init_recording_on_send),
-            echo_cancellation_mode: mode(x.echo_cancellation_mode),
-            auto_gain_control_mode: mode(x.auto_gain_control_mode),
-            noise_suppression_mode: mode(x.noise_suppression_mode),
-            highpass_filter_mode: mode(x.highpass_filter_mode),
-            audio_jitter_buffer_max_packets: x
-                .audio_jitter_buffer_max_packets
-                .present
-                .then_some(x.audio_jitter_buffer_max_packets.value),
-            audio_jitter_buffer_min_delay_ms: x
-                .audio_jitter_buffer_min_delay_ms
-                .present
-                .then_some(x.audio_jitter_buffer_min_delay_ms.value),
-            audio_network_adaptor_config: x
-                .has_audio_network_adaptor_config
-                .then_some(x.audio_network_adaptor_config),
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VideoSourceStats {
-    pub input_width: i32,
-    pub input_height: i32,
-}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VideoSourceInfo {
     pub is_screencast: bool,
@@ -195,7 +59,7 @@ source_reads!(AudioTrackSource);
 source_reads!(VideoTrackSource);
 impl AudioTrackSource {
     pub fn options(&self) -> AudioSourceOptions {
-        ffi::track_source_audio_options(self.native()).into()
+        AudioSourceOptions::from_native(ffi::track_source_audio_options(self.native()))
     }
 }
 impl VideoTrackSource {
@@ -297,6 +161,37 @@ impl AudioProcessor {
                 .then_some(x.delay_standard_deviation_ms.value),
             delay_ms: x.delay_ms.present.then_some(x.delay_ms.value),
         }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackAudioOptionsCode {
+    Applied,
+    Stored,
+    RejectedRemoteTrack,
+    RejectedInvalidCombination,
+    RejectedPlatformUnavailable,
+    ApplyFailed,
+    Other(i32),
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackAudioOptionsResult {
+    pub code: TrackAudioOptionsCode,
+    pub message: Vec<u8>,
+}
+impl TrackAudioOptionsResult {
+    pub fn ok(&self) -> bool {
+        matches!(
+            self.code,
+            TrackAudioOptionsCode::Applied | TrackAudioOptionsCode::Stored
+        )
+    }
+}
+
+fn boolean(x: i8) -> Option<bool> {
+    match x {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
     }
 }
 impl MediaTrack {
@@ -424,6 +319,53 @@ impl MediaTrack {
 #[cfg(test)]
 mod stream_lease_tests {
     use super::*;
+    #[test]
+    fn generic_and_typed_audio_senders_share_source_leases_without_peer_cycles() {
+        let factory = crate::PeerConnectionFactory::builder()
+            .audio_encoder_factory(crate::AudioEncoderFactory::builtin().unwrap())
+            .audio_decoder_factory(crate::AudioDecoderFactory::builtin_opus().unwrap())
+            .build()
+            .unwrap();
+        let mut peer = factory.create_peer_connection(Default::default()).unwrap();
+        let source = factory.create_audio_source().unwrap();
+        let track = factory.create_audio_track("audio-source", &source).unwrap();
+        let tx = peer
+            .add_audio_transceiver(&track, crate::RtpTransceiverDirection::SendOnly)
+            .unwrap();
+        let sender = tx.sender();
+        assert!(
+            sender
+                .set_media_track(Some(&track.as_media_track()))
+                .unwrap()
+        );
+        let alias = sender.audio_track().unwrap();
+        assert!(
+            alias
+                .as_media_track()
+                .same_resource(&track.as_media_track())
+        );
+        // A generic sender's known local source is not mistaken for a received
+        // alias of this same peer, which would reject this idempotent operation.
+        sender.set_audio_track(Some(&alias)).unwrap();
+        let replacement_source = factory.create_audio_source().unwrap();
+        let replacement = factory
+            .create_audio_track("replacement", &replacement_source)
+            .unwrap();
+        sender.set_audio_track(Some(&replacement)).unwrap();
+        assert!(
+            !peer
+                .inner
+                .stream_inputs
+                .borrow()
+                .contains_key(&sender.resource_key())
+        );
+        let received = crate::AudioTrack::received(
+            ffi::rtp_sender_audio_track(peer.inner.native(), sender.native()),
+            peer.inner.clone(),
+        );
+        assert!(received.as_media_track().local_audio().is_none());
+        peer.close().unwrap();
+    }
     #[test]
     fn generic_sender_video_alias_retains_original_source_without_a_peer_cycle() {
         let factory = crate::PeerConnectionFactory::builder().build().unwrap();
@@ -676,34 +618,5 @@ impl MediaObserver {
     }
     pub fn take_dropped_events(&self) -> u64 {
         ffi::media_observer_take_dropped(self.native.as_ref().unwrap())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MediaStreamEvent {
-    Changed,
-}
-/// Bounded native change notifications. Closing synchronously unregisters;
-/// accepted events and overflow counts remain consumable after close.
-#[derive(Clone)]
-pub struct MediaStreamObserver {
-    inner: Rc<ObserverInner>,
-}
-struct ObserverInner {
-    native: cxx::UniquePtr<ffi::NativeMediaStreamObserver>,
-    _stream: MediaStream,
-}
-impl MediaStreamObserver {
-    pub fn try_next_event(&self) -> Option<MediaStreamEvent> {
-        ffi::media_stream_observer_take(self.native()).then_some(MediaStreamEvent::Changed)
-    }
-    pub fn take_dropped_events(&self) -> u64 {
-        ffi::media_stream_observer_take_dropped(self.native())
-    }
-    pub fn close(&self) {
-        ffi::media_stream_observer_close(self.native());
-    }
-    fn native(&self) -> &ffi::NativeMediaStreamObserver {
-        self.inner.native.as_ref().expect("owning stream observer")
     }
 }

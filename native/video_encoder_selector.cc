@@ -24,6 +24,7 @@ class RustSelector final
 public:
   explicit RustSelector(rust::Box<RustVideoEncoderSelector> provider)
       : provider_(std::move(provider)) {}
+  rust::Box<RustVideoEncoderSelectorObserver> Observer() const { return video_selector_provider_observer(*provider_); }
   void OnCurrentEncoder(const webrtc::SdpVideoFormat &format) override {
     video_selector_provider_current(
         *provider_, std::make_unique<NativeSdpVideoFormat>(format));
@@ -49,6 +50,11 @@ private:
   rust::Box<RustVideoEncoderSelector> provider_;
 };
 } // namespace
+rust::Box<RustVideoEncoderSelectorObserver> video_selector_owned_observer(const NativeOwnedVideoEncoderSelector& value) noexcept {
+  // Closed producer graph: SDK builtin factories return no selector; every
+  // non-null factory/owned product is our RustSelector with its own observer.
+  return static_cast<const RustSelector&>(value.value()).Observer();
+}
 std::unique_ptr<NativeOwnedVideoEncoderSelector> video_selector_owned_new(
     rust::Box<RustVideoEncoderSelector> provider) noexcept {
   return std::make_unique<NativeOwnedVideoEncoderSelector>(

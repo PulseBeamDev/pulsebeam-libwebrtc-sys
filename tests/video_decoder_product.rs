@@ -43,6 +43,10 @@ impl VideoDecoderFactoryProvider for Factory {
 }
 struct Decoder(Arc<AtomicUsize>);
 impl VideoDecoder for Decoder {
+    fn release_value(&mut self) -> Result<i32, CodecError> {
+        self.release()?;
+        Ok(29)
+    }
     fn configure(&mut self, _: VideoDecoderSettings) -> Result<(), CodecError> {
         Ok(())
     }
@@ -83,15 +87,22 @@ fn standalone_decoder_owns_selected_registration_and_exact_creation_context() {
     drop(format);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(contexts.lock().unwrap()[0].format.fields(), fields);
-    let info = decoder.info();
+    let info = decoder.info().unwrap();
     assert_eq!(info.fields().implementation_name, b"provider\0info");
     // The deprecated SDK default is a distinct method from GetDecoderInfo.
-    assert_eq!(decoder.implementation_name_bytes(), b"unknown");
-    assert_eq!(decoder.release(), 0);
-    assert_eq!(releases.load(Ordering::SeqCst), 1);
+    assert_eq!(decoder.implementation_name_bytes().unwrap(), b"unknown");
+    assert_eq!(decoder.release(), 29);
+    assert_eq!(decoder.release(), 29); // Explicit calls are not cached success.
+    assert_eq!(releases.load(Ordering::SeqCst), 2);
+    assert!(decoder.configure(&OwnedVideoDecoderSettings::default()));
+    assert_eq!(
+        decoder.info().unwrap().fields().implementation_name,
+        b"provider\0info"
+    );
+    assert_eq!(decoder.release(), 29);
     drop(decoder);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
-    assert_eq!(releases.load(Ordering::SeqCst), 1);
+    assert_eq!(releases.load(Ordering::SeqCst), 3);
     assert_eq!(info.fields().implementation_name, b"provider\0info");
     assert!(
         contexts.lock().unwrap()[0]
@@ -130,7 +141,7 @@ fn observed_builtin_vp8_product_uses_real_sdk_creation_and_info() {
         .create_decoder(&environment, &SdpVideoFormat::new("VP8"))
         .unwrap();
     assert_eq!(factory.decoder_statistics().unwrap().decoder_creations, 1);
-    let info = decoder.info();
+    let info = decoder.info().unwrap();
     assert!(!info.fields().implementation_name.is_empty());
     assert!(!info.fields().is_hardware_accelerated);
     assert_eq!(decoder.release(), 0);

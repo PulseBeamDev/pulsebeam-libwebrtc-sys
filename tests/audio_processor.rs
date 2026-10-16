@@ -282,7 +282,6 @@ fn aec_numeric_parser_representations_are_guarded_before_native_scan() {
     }
 }
 
-
 #[test]
 fn native_statistics_defaults_preserve_absent_observations() {
     let value = AudioProcessorStatistics::default();

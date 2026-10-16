@@ -34,7 +34,7 @@ impl RtpTransceiverInit {
         assert!(!native.is_null());
         Self { native }
     }
-    fn native(&self) -> &ffi::NativeRtpTransceiverInit {
+    pub(crate) fn native(&self) -> &ffi::NativeRtpTransceiverInit {
         self.native.as_ref().unwrap()
     }
     pub fn direction(&self) -> RtpTransceiverDirectionValue {

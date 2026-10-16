@@ -23,6 +23,9 @@ class IosBridgeShellTests(unittest.TestCase):
             for target, (sdk, minimum) in self.targets.items():
                 with self.subTest(flavor=flavor, target=target):
                     calls, stage = self._run_bridge(flavor, target)
+                    expected_sources = [path.name for path in (ROOT / "native").glob("*.cc")]
+                    expected_sources.extend(["lib.rs.cc", "cxx.cc"])
+                    self.assertCountEqual([Path(call[-3]).name for call in calls], expected_sources)
                     expected_prefix = [
                         "-arch", "arm64", "-isysroot", "/fake SDK path", minimum,
                         "-std=c++20", "-fno-exceptions", "-fno-rtti",

@@ -774,6 +774,8 @@ fn native_header_extension_typed_streams_match_sdk_stringify() {
     builder.append_rtp_extension(&extension);
     builder.append_rtp_extension_ref(&loan);
     assert_eq!(builder.as_bytes(), expected);
+    // Native RTCError exposes its message as a C string, unlike the builder.
+    let message = &expected[..expected.iter().position(|byte| *byte == 0).unwrap()];
     let mut error = RtcError::new(RtcErrorType::InvalidState);
     {
         let mut stream = error.string_builder();

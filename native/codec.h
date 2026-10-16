@@ -159,7 +159,17 @@ private:
   std::shared_ptr<State> state_;
 };
 
+class NativeRawVideoFrame;
+struct FfiDecodedCallbackResult;
+FfiDecodedCallbackResult decoded_callback_frame(const NativeDecodedImageCallback&, NativeRawVideoFrame&, std::uint8_t overload, std::int64_t time_ms, bool has_time, std::int32_t optional_time_ms, bool has_qp, std::uint8_t qp) noexcept;
+bool encoded_callback_retired(const NativeEncodedImageCallback&) noexcept;
+bool encoded_callback_same(const NativeEncodedImageCallback&, const NativeEncodedImageCallback&) noexcept;
+bool decoded_callback_retired(const NativeDecodedImageCallback&) noexcept;
+bool decoded_callback_same(const NativeDecodedImageCallback&, const NativeDecodedImageCallback&) noexcept;
+
+class NativeVideoDecoderSettings;
 class NativeVideoDecoderInfo;
+class NativeVideoEncoderInfo;
 class NativeSdpVideoFormat;
 struct RustVideoFactoryEnvironment;
 class NativeVideoDecoderProduct final {
@@ -172,7 +182,54 @@ public:
 private:
   std::unique_ptr<State> state_;
 };
+class NativeVideoEncoderProduct final {
+public:
+  struct State;
+  explicit NativeVideoEncoderProduct(std::unique_ptr<State> state) noexcept;
+  ~NativeVideoEncoderProduct();
+  const State &state() const noexcept;
+  State &state() noexcept;
+private:
+  std::unique_ptr<State> state_;
+};
+class NativeVideoEncoderFactory;
+class NativeOwnedVideoEncoderSelector;
+std::unique_ptr<NativeOwnedVideoEncoderSelector> video_encoder_factory_selector(const NativeVideoEncoderFactory&, bool&) noexcept;
 class NativeVideoDecoderFactory;
+class NativePeerConnectionFactory;
+std::unique_ptr<NativeVideoEncoderProduct> video_encoder_create_actor_product(const NativePeerConnectionFactory&, const NativeVideoEncoderFactory&, const NativeEnvironment&, rust::Box<RustVideoFactoryEnvironment>, const NativeSdpVideoFormat&) noexcept;
+std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_actor_product(const NativePeerConnectionFactory&, const NativeVideoDecoderFactory&, const NativeEnvironment&, rust::Box<RustVideoFactoryEnvironment>, const NativeSdpVideoFormat&, std::int32_t&) noexcept;
+std::unique_ptr<NativeVideoEncoderProduct> video_encoder_create_product(
+    const NativeVideoEncoderFactory &, const NativeEnvironment &,
+    rust::Box<RustVideoFactoryEnvironment>, const NativeSdpVideoFormat &) noexcept;
+class NativeVideoCodec;
+class NativeEncodedImageSink;
+class NativeEncodedImage;
+class NativeFecOverride;
+void video_encoder_product_fec(NativeVideoEncoderProduct&, std::shared_ptr<NativeFecOverride>) noexcept;
+class NativeCodecSpecificInfo;
+struct FfiEncodedCallbackResult;
+std::int32_t video_encoder_product_register_callback(NativeVideoEncoderProduct&, const NativeEncodedImageSink*) noexcept;
+FfiEncodedCallbackResult encoded_callback_frame(const NativeEncodedImageCallback&, const NativeEncodedImage&, const NativeCodecSpecificInfo*) noexcept;
+bool encoded_callback_dropped(const NativeEncodedImageCallback&, std::uint32_t, std::int32_t, bool) noexcept;
+class NativeVideoRateControl;
+class NativeRawVideoFrame;
+struct FfiOwnedEncoderSettings;
+std::int32_t video_encoder_product_initialize(NativeVideoEncoderProduct&, const NativeVideoCodec&, FfiOwnedEncoderSettings, bool) noexcept;
+std::int32_t video_encoder_product_encode(NativeVideoEncoderProduct&, const NativeRawVideoFrame&, bool, rust::Slice<const std::int32_t>) noexcept;
+void video_encoder_product_rates(NativeVideoEncoderProduct&, const NativeVideoRateControl&) noexcept;
+std::unique_ptr<NativeVideoEncoderInfo> video_encoder_product_info(const NativeVideoEncoderProduct &) noexcept;
+rust::Vec<std::uint8_t> video_encoder_product_name(const NativeVideoEncoderProduct &, bool& valid) noexcept;
+struct FfiVideoEncoderLossNotification;
+void video_encoder_product_packet_loss(NativeVideoEncoderProduct&, float) noexcept;
+void video_encoder_product_rtt(NativeVideoEncoderProduct&, std::int64_t) noexcept;
+void video_encoder_product_loss_notification(NativeVideoEncoderProduct&, FfiVideoEncoderLossNotification) noexcept;
+std::int32_t video_encoder_product_release(NativeVideoEncoderProduct &) noexcept;
+class NativeVideoDecoderFactory;
+class NativeDecodedImageSink;
+class NativeEncodedImage;
+std::int32_t video_decoder_product_register_callback(NativeVideoDecoderProduct&, const NativeDecodedImageSink*) noexcept;
+std::int32_t video_decoder_product_decode(NativeVideoDecoderProduct&, const NativeEncodedImage&, bool missing_overload, bool missing, std::int64_t render_time_ms, bool& valid) noexcept;
 std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_product(
     const NativeVideoDecoderFactory &, const NativeEnvironment &,
     rust::Box<RustVideoFactoryEnvironment>, const NativeSdpVideoFormat &,
@@ -180,7 +237,8 @@ std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_product(
 std::unique_ptr<NativeVideoDecoderInfo> video_decoder_product_info(
     const NativeVideoDecoderProduct &) noexcept;
 rust::Vec<std::uint8_t> video_decoder_product_implementation_name(
-    const NativeVideoDecoderProduct &) noexcept;
+    const NativeVideoDecoderProduct &, bool &valid) noexcept;
+bool video_decoder_product_configure(NativeVideoDecoderProduct &, const NativeVideoDecoderSettings &) noexcept;
 std::int32_t video_decoder_product_release(NativeVideoDecoderProduct &) noexcept;
 
 class NativeVideoEncoderFactory final {
@@ -192,7 +250,7 @@ public:
   webrtc::VideoEncoderFactory &factory() const noexcept;
   bool rust_factory() const noexcept { return rust_factory_; }
   std::unique_ptr<webrtc::VideoEncoderFactory> CreateAdapter(
-      std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>) const;
+      std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>, bool installed = true) const;
 
 private:
   std::unique_ptr<webrtc::VideoEncoderFactory> factory_;
@@ -209,7 +267,7 @@ public:
   webrtc::VideoDecoderFactory &factory() const noexcept;
   bool rust_factory() const noexcept { return rust_factory_; }
   std::unique_ptr<webrtc::VideoDecoderFactory> CreateAdapter(
-      std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>) const;
+      std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>, bool installed = true) const;
   const std::shared_ptr<CodecDecoderObservations> &
   observations() const noexcept;
 
@@ -804,11 +862,11 @@ std::uint64_t native_codec_thread_token() noexcept;
 
 FfiVideoFactorySupport video_encoder_query_value(
     const NativeVideoEncoderFactory &, const NativeSdpVideoFormat &, bool,
-    rust::Slice<const std::uint8_t>, const NativeRtpResolution *) noexcept;
+    rust::Slice<const std::uint8_t>, const NativeRtpResolution *, bool) noexcept;
 FfiVideoFactorySupport
 video_decoder_query_value(const NativeVideoDecoderFactory &,
                           const NativeSdpVideoFormat &, bool,
-                          const NativeRtpResolution *) noexcept;
+                          const NativeRtpResolution *, bool) noexcept;
 class NativeSdpVideoFormatList;
 std::unique_ptr<NativeSdpVideoFormatList>
 video_encoder_formats_value(const NativeVideoEncoderFactory &) noexcept;

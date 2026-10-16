@@ -32,6 +32,9 @@ mod connectivity;
 mod media;
 pub use connectivity::{SessionDtmfError, SessionSctpTransportInformation, SessionTransportError};
 
+#[path = "production_codec.rs"]
+mod codec;
+
 macro_rules! resource_id {
     ($($name:ident),+ $(,)?) => {$ (
         /// An opaque session-owned identity. Copying it does not share access
@@ -42,20 +45,37 @@ macro_rules! resource_id {
     )+ };
 }
 resource_id!(
+    SessionVideoEncoderId,
+    SessionVideoDecoderId,
+    SessionEncodedImageId,
+    SessionEncodedVideoBufferId,
+    SessionWritableEncodedBufferId,
+    SessionEncodedImageCallbackId,
+    SessionDecodedImageCallbackId,
+    SessionFecOverrideId,
+    SessionVideoEncoderSelectorId,
+    SessionSenderParametersOperationId,
     SessionPeerId,
     SessionChannelId,
     SessionSourceId,
-    SessionMediaStreamId,
+    SessionLocalMediaStreamId,
     SessionTrackId,
     SessionMediaStreamObserverId,
     SessionVideoSourceViewId,
+    SessionVideoSinkId,
+    SessionRawVideoFrameId,
+    SessionRawVideoBufferId,
+    SessionWritableI420BufferId,
+    SessionVideoBufferPreparationId,
+    SessionVideoSourceEncodedSinkId,
     SessionVideoObserverId,
     SessionAudioSourceViewId,
-    SessionAudioProcessorId,
+    SessionAudioTrackProcessorId,
     SessionAudioObserverId,
     SessionTransceiverId,
     SessionSenderId,
     SessionReceiverId,
+    SessionFrameTransformerId,
     SessionFrameEncryptorId,
     SessionFrameDecryptorId,
     SessionSframeEncrypterId,
@@ -201,6 +221,62 @@ impl MediaSink {
     }
 }
 
+#[derive(Clone)]
+enum OwnedVideoSink {
+    Track(crate::VideoSink),
+    Source(crate::VideoSourceSink),
+}
+impl OwnedVideoSink {
+    fn wants(&self) -> Option<crate::VideoSinkWants> {
+        match self {
+            Self::Track(s) => s.wants(),
+            Self::Source(s) => s.wants(),
+        }
+    }
+    fn update_wants(&self, wants: &crate::VideoSinkWants) -> Result<(), PeerError> {
+        match self {
+            Self::Track(s) => s.update_wants(wants),
+            Self::Source(s) => s.update_wants(wants),
+        }
+    }
+    fn frame(&self) -> Option<crate::VideoFrame> {
+        match self {
+            Self::Track(s) => s.try_next_frame(),
+            Self::Source(s) => s.try_next_frame(),
+        }
+    }
+    fn native_frame(&self) -> Option<crate::RawVideoFrame> {
+        match self {
+            Self::Track(s) => s.try_next_native_frame(),
+            Self::Source(s) => s.try_next_native_frame(),
+        }
+    }
+    fn event(&self) -> Option<crate::VideoSinkEvent> {
+        match self {
+            Self::Track(s) => s.try_next_event(),
+            Self::Source(s) => s.try_next_event(),
+        }
+    }
+    fn dropped_frames(&self) -> u64 {
+        match self {
+            Self::Track(s) => s.dropped_frames(),
+            Self::Source(s) => s.dropped_frames(),
+        }
+    }
+    fn dropped_events(&self) -> u64 {
+        match self {
+            Self::Track(s) => s.dropped_events(),
+            Self::Source(s) => s.dropped_events(),
+        }
+    }
+    fn close(&mut self) -> Result<(), PeerError> {
+        match self {
+            Self::Track(s) => s.close(),
+            Self::Source(s) => s.close(),
+        }
+    }
+}
+
 /// Owned peer notifications. Resource arrivals contain IDs, not local handles.
 #[derive(Debug)]
 pub enum SessionEvent {
@@ -293,14 +369,35 @@ pub struct ProductionSession {
     // Observers/transports retire before endpoints, peers and role threads.
     connectivity: connectivity::ConnectivityResources,
     local_stream_observers: HashMap<SessionMediaStreamObserverId, crate::MediaStreamObserver>,
+    video_encoders: HashMap<SessionVideoEncoderId, crate::OwnedVideoEncoder>,
+    video_decoders: HashMap<SessionVideoDecoderId, crate::OwnedVideoDecoder>,
+    encoded_images: HashMap<SessionEncodedImageId, crate::EncodedImage>,
+    encoded_buffers: HashMap<SessionEncodedVideoBufferId, crate::EncodedVideoBuffer>,
+    encoded_writers: HashMap<SessionWritableEncodedBufferId, crate::WritableEncodedVideoBuffer>,
+    encoded_callbacks: HashMap<SessionEncodedImageCallbackId, crate::EncodedImageCallbackSink>,
+    decoded_callbacks: HashMap<SessionDecodedImageCallbackId, crate::DecodedImageCallbackSink>,
+    fec_overrides: HashMap<SessionFecOverrideId, crate::FecControllerOverride>,
+    video_selectors: HashMap<SessionVideoEncoderSelectorId, crate::VideoEncoderSelector>,
+    sender_parameter_operations:
+        HashMap<SessionSenderParametersOperationId, crate::SenderParametersOperation>,
+    video_buffer_preparations:
+        HashMap<SessionVideoBufferPreparationId, crate::VideoBufferPreparation>,
+    raw_video_frames: HashMap<SessionRawVideoFrameId, crate::RawVideoFrame>,
+    raw_video_buffers: HashMap<SessionRawVideoBufferId, crate::RawVideoBuffer>,
+    writable_i420_buffers: HashMap<SessionWritableI420BufferId, crate::WritableI420Buffer>,
+    video_sinks: HashMap<SessionVideoSinkId, OwnedVideoSink>,
+    video_source_encoded_sinks:
+        HashMap<SessionVideoSourceEncodedSinkId, crate::VideoSourceEncodedSink>,
     video_observers: HashMap<SessionVideoObserverId, crate::VideoObserver>,
     video_source_views: HashMap<SessionVideoSourceViewId, crate::VideoSourceView>,
-    streams: HashMap<SessionMediaStreamId, crate::MediaStream>,
+    streams: HashMap<SessionLocalMediaStreamId, crate::LocalMediaStream>,
     stream_tracks: HashMap<SessionTrackId, StreamTrack>,
+    audio_track_processors: HashMap<SessionAudioTrackProcessorId, crate::AudioTrackProcessor>,
     audio_observers: HashMap<SessionAudioObserverId, crate::AudioObserver>,
     audio_source_views: HashMap<SessionAudioSourceViewId, crate::AudioSourceView>,
     sframe_encrypters: HashMap<SessionSframeEncrypterId, Resource<crate::SframeEncrypter>>,
     sframe_decrypters: HashMap<SessionSframeDecrypterId, Resource<crate::SframeDecrypter>>,
+    frame_transformers: HashMap<SessionFrameTransformerId, crate::FrameTransformer>,
     frame_encryptors: HashMap<SessionFrameEncryptorId, crate::FrameEncryptor>,
     frame_decryptors: HashMap<SessionFrameDecryptorId, Resource<crate::FrameDecryptor>>,
     sender_observers: HashMap<SessionSenderId, Resource<crate::RtpSenderObserver>>,
@@ -337,6 +434,10 @@ pub struct ProductionSession {
 // callback threads. Drop tears down all dependents before the role threads.
 // If the final owner is released by an SDK-thread Waker, the entire graph moves
 // once to the cleanup caller; no Rc alias remains in the emptied old owner.
+// Owning CPU video frames keep independent metadata and atomically refcounted
+// immutable SDK buffers. Mutable I420 storage has exclusive captive ownership
+// until freeze; native preparation callbacks retain only synchronized C++ state,
+// never the Rc graph. No opaque/custom texture producer is admitted here.
 // This rationale does NOT apply to any individual legacy/local handle.
 unsafe impl Send for ProductionSession {}
 
@@ -560,6 +661,13 @@ impl ProductionSessionBuilder {
     pub fn l1t3_input(mut self, fractions: [u8; 3]) -> Self {
         self.temporal_fps = Some(fractions);
         self.simulcast = false;
+        self
+    }
+
+    /// Mixed source profiles with one declared L1T3 FPS allocation.
+    pub fn h264_profiles(mut self, fractions: [u8; 3]) -> Self {
+        self.temporal_fps = Some(fractions);
+        self.simulcast = true;
         self
     }
 
@@ -875,6 +983,9 @@ impl ProductionSession {
                     None if simulcast => {
                         EncodedVideoInput::new_simulcast_for_format(format.clone())
                     }
+                    Some(fps) if simulcast => {
+                        EncodedVideoInput::new_h264_profiles_for_format(format.clone(), fps)
+                    }
                     Some(fps) => EncodedVideoInput::new_l1t3_for_format(format.clone(), fps),
                     None => EncodedVideoInput::new_for_format(format.clone()),
                 }
@@ -891,17 +1002,38 @@ impl ProductionSession {
         } else {
             None
         };
+        // Retain the actual selected registrations, including explicit native
+        // defaults, for standalone actor discovery/Create dispatch as well.
         if let Some(factory) = video_encoder_factory {
             builder = builder.video_encoder_factory(factory);
+        } else if input.is_none() {
+            builder = builder.video_encoder_factory(
+                crate::VideoEncoderFactoryHandle::builtin().map_err(codec_error)?,
+            );
         }
         if let Some(factory) = video_decoder_factory {
             builder = builder.video_decoder_factory(factory);
+        } else if input.is_none() {
+            builder = builder.video_decoder_factory(
+                crate::VideoDecoderFactoryHandle::builtin().map_err(codec_error)?,
+            );
         }
         let factory = builder.build()?;
         Ok(Self {
             connectivity: connectivity::ConnectivityResources::default(),
+            video_encoders: HashMap::new(),
+            video_decoders: HashMap::new(),
+            encoded_images: HashMap::new(),
+            encoded_buffers: HashMap::new(),
+            encoded_writers: HashMap::new(),
+            encoded_callbacks: HashMap::new(),
+            decoded_callbacks: HashMap::new(),
+            fec_overrides: HashMap::new(),
+            video_selectors: HashMap::new(),
+            sender_parameter_operations: HashMap::new(),
             sframe_encrypters: HashMap::new(),
             sframe_decrypters: HashMap::new(),
+            frame_transformers: HashMap::new(),
             frame_encryptors: HashMap::new(),
             frame_decryptors: HashMap::new(),
             sender_observers: HashMap::new(),
@@ -912,14 +1044,20 @@ impl ProductionSession {
             senders: HashMap::new(),
             receivers: HashMap::new(),
             track_observers: HashMap::new(),
-            stream_observers: HashMap::new(),
+            local_stream_observers: HashMap::new(),
             media_streams: HashMap::new(),
             track_sources: HashMap::new(),
-            audio_processors: HashMap::new(),
+            audio_track_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
             video_observers: HashMap::new(),
             video_source_views: HashMap::new(),
+            video_buffer_preparations: HashMap::new(),
+            raw_video_frames: HashMap::new(),
+            raw_video_buffers: HashMap::new(),
+            writable_i420_buffers: HashMap::new(),
+            video_sinks: HashMap::new(),
+            video_source_encoded_sinks: HashMap::new(),
             stream_observers: HashMap::new(),
             streams: HashMap::new(),
             stream_tracks: HashMap::new(),
@@ -1659,7 +1797,6 @@ impl ProductionSession {
             .value
             .counters())
     }
-
     pub fn channel_configuration(
         &mut self,
         channel: SessionChannelId,
@@ -1848,10 +1985,13 @@ impl ProductionSession {
     }
 
     /// Native container creation does not change SDP or synchronize receivers.
-    pub fn create_media_stream(&mut self, name: &str) -> Result<SessionMediaStreamId, PeerError> {
+    pub fn create_media_stream(
+        &mut self,
+        name: &str,
+    ) -> Result<SessionLocalMediaStreamId, PeerError> {
         self.check_open()?;
         let stream = self.factory.create_media_stream(name)?;
-        let id = SessionMediaStreamId(next_id()?);
+        let id = SessionLocalMediaStreamId(next_id()?);
         self.streams.insert(id, stream);
         Ok(id)
     }
@@ -1905,12 +2045,12 @@ impl ProductionSession {
             .map(|track| self.retain_stream_track(track))
             .transpose()
     }
-    pub fn media_stream_id(&mut self, id: SessionMediaStreamId) -> Result<String, PeerError> {
+    pub fn local_stream_id(&mut self, id: SessionLocalMediaStreamId) -> Result<String, PeerError> {
         Ok(self.streams.get(&id).ok_or_else(missing)?.id())
     }
-    pub fn media_stream_audio_tracks(
+    pub fn local_stream_audio_tracks(
         &mut self,
-        id: SessionMediaStreamId,
+        id: SessionLocalMediaStreamId,
     ) -> Result<Vec<SessionTrackId>, PeerError> {
         let tracks = self.streams.get(&id).ok_or_else(missing)?.audio_tracks();
         tracks
@@ -1918,9 +2058,9 @@ impl ProductionSession {
             .map(|track| self.retain_stream_track(StreamTrack::Audio(track)))
             .collect()
     }
-    pub fn media_stream_video_tracks(
+    pub fn local_stream_video_tracks(
         &mut self,
-        id: SessionMediaStreamId,
+        id: SessionLocalMediaStreamId,
     ) -> Result<Vec<SessionTrackId>, PeerError> {
         let tracks = self.streams.get(&id).ok_or_else(missing)?.video_tracks();
         tracks
@@ -1930,7 +2070,7 @@ impl ProductionSession {
     }
     pub fn find_media_stream_audio_track(
         &mut self,
-        id: SessionMediaStreamId,
+        id: SessionLocalMediaStreamId,
         name: &str,
     ) -> Result<Option<SessionTrackId>, PeerError> {
         let track = self
@@ -1944,7 +2084,7 @@ impl ProductionSession {
     }
     pub fn find_media_stream_video_track(
         &mut self,
-        id: SessionMediaStreamId,
+        id: SessionLocalMediaStreamId,
         name: &str,
     ) -> Result<Option<SessionTrackId>, PeerError> {
         let track = self
@@ -1956,9 +2096,9 @@ impl ProductionSession {
             .map(|track| self.retain_stream_track(StreamTrack::Video(track)))
             .transpose()
     }
-    pub fn add_media_stream_track(
+    pub fn local_add_media_stream_track(
         &mut self,
-        stream: SessionMediaStreamId,
+        stream: SessionLocalMediaStreamId,
         track: SessionTrackId,
     ) -> Result<bool, PeerError> {
         self.check_open()?;
@@ -1968,9 +2108,9 @@ impl ProductionSession {
             StreamTrack::Video(track) => stream.add_video_track(track),
         })
     }
-    pub fn remove_media_stream_track(
+    pub fn local_remove_media_stream_track(
         &mut self,
-        stream: SessionMediaStreamId,
+        stream: SessionLocalMediaStreamId,
         track: SessionTrackId,
     ) -> Result<bool, PeerError> {
         self.check_open()?;
@@ -2048,7 +2188,7 @@ impl ProductionSession {
     }
     pub fn observe_media_stream(
         &mut self,
-        stream: SessionMediaStreamId,
+        stream: SessionLocalMediaStreamId,
         capacity: std::num::NonZeroUsize,
     ) -> Result<SessionMediaStreamObserverId, PeerError> {
         self.check_open()?;
@@ -2058,7 +2198,7 @@ impl ProductionSession {
             .ok_or_else(missing)?
             .observe_changes(capacity)?;
         let id = SessionMediaStreamObserverId(next_id()?);
-        self.stream_observers.insert(id, observer);
+        self.local_stream_observers.insert(id, observer);
         Ok(id)
     }
     pub fn try_media_stream_event(
@@ -2066,7 +2206,7 @@ impl ProductionSession {
         id: SessionMediaStreamObserverId,
     ) -> Result<Option<crate::MediaStreamEvent>, PeerError> {
         Ok(self
-            .stream_observers
+            .local_stream_observers
             .get(&id)
             .ok_or_else(missing)?
             .try_next_event())
@@ -2076,7 +2216,7 @@ impl ProductionSession {
         id: SessionMediaStreamObserverId,
     ) -> Result<u64, PeerError> {
         Ok(self
-            .stream_observers
+            .local_stream_observers
             .get(&id)
             .ok_or_else(missing)?
             .take_dropped_events())
@@ -2085,16 +2225,19 @@ impl ProductionSession {
         &mut self,
         id: SessionMediaStreamObserverId,
     ) -> Result<(), PeerError> {
-        self.stream_observers.get(&id).ok_or_else(missing)?.close();
+        self.local_stream_observers
+            .get(&id)
+            .ok_or_else(missing)?
+            .close();
         Ok(())
     }
     pub fn release_media_stream_observer(&mut self, id: SessionMediaStreamObserverId) {
-        self.stream_observers.remove(&id);
+        self.local_stream_observers.remove(&id);
     }
     pub fn release_media_stream_track(&mut self, id: SessionTrackId) {
         self.stream_tracks.remove(&id);
     }
-    pub fn release_media_stream(&mut self, id: SessionMediaStreamId) {
+    pub fn local_release_media_stream(&mut self, id: SessionLocalMediaStreamId) {
         self.streams.remove(&id);
     }
     fn video_track_handle(&self, id: SessionTrackId) -> Result<&crate::VideoTrack, PeerError> {
@@ -2142,8 +2285,15 @@ impl ProductionSession {
             .status())
     }
     /// Adapter admission refusals, distinct from native source statistics.
-    pub fn video_source_rejected_sink_requests(&mut self, view: SessionVideoSourceViewId) -> Result<Option<u64>, PeerError> {
-        Ok(self.video_source_views.get(&view).ok_or_else(missing)?.rejected_sink_requests())
+    pub fn video_source_rejected_sink_requests(
+        &mut self,
+        view: SessionVideoSourceViewId,
+    ) -> Result<Option<u64>, PeerError> {
+        Ok(self
+            .video_source_views
+            .get(&view)
+            .ok_or_else(missing)?
+            .rejected_sink_requests())
     }
     /// Actual SDK interface equality; distinct proxies may share a producer.
     pub fn video_source_views_same_interface(
@@ -2278,6 +2428,210 @@ impl ProductionSession {
         self.video_source_views.remove(&id);
     }
 
+    pub fn attach_video_track_sink(
+        &mut self,
+        track: SessionTrackId,
+    ) -> Result<SessionVideoSinkId, PeerError> {
+        self.attach_video_track_sink_with_wants(track, &crate::VideoSinkWants::default())
+    }
+    pub fn attach_video_track_sink_with_wants(
+        &mut self,
+        track: SessionTrackId,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<SessionVideoSinkId, PeerError> {
+        self.check_open()?;
+        let id = SessionVideoSinkId(next_id()?);
+        let sink = self
+            .video_track_handle(track)?
+            .attach_sink_with_wants(wants)?;
+        self.video_sinks.insert(id, OwnedVideoSink::Track(sink));
+        Ok(id)
+    }
+    pub fn attach_video_source_sink(
+        &mut self,
+        source: SessionVideoSourceViewId,
+    ) -> Result<SessionVideoSinkId, PeerError> {
+        self.attach_video_source_sink_with_wants(source, &crate::VideoSinkWants::default())
+    }
+    /// A direct source registration, independent of receiver receive-mode
+    /// selection. Retains the source after its outer ID is released.
+    pub fn attach_video_source_sink_with_wants(
+        &mut self,
+        source: SessionVideoSourceViewId,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<SessionVideoSinkId, PeerError> {
+        self.check_open()?;
+        let id = SessionVideoSinkId(next_id()?);
+        let sink = self
+            .video_source_views
+            .get(&source)
+            .ok_or_else(missing)?
+            .attach_sink_with_wants(wants)?;
+        self.video_sinks.insert(id, OwnedVideoSink::Source(sink));
+        Ok(id)
+    }
+    /// Another owner of the same registration, not a second SDK attachment.
+    pub fn alias_video_sink(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<SessionVideoSinkId, PeerError> {
+        self.check_open()?;
+        let value = self.video_sinks.get(&sink).ok_or_else(missing)?.clone();
+        let id = SessionVideoSinkId(next_id()?);
+        self.video_sinks.insert(id, value);
+        Ok(id)
+    }
+    pub fn video_sink_wants(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<Option<crate::VideoSinkWants>, PeerError> {
+        Ok(self.video_sinks.get(&sink).ok_or_else(missing)?.wants())
+    }
+    pub fn update_video_sink_wants(
+        &mut self,
+        sink: SessionVideoSinkId,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.video_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .update_wants(wants)
+    }
+    pub fn try_video_sink_native_frame(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<Option<SessionRawVideoFrameId>, PeerError> {
+        let frame = self
+            .video_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .native_frame();
+        frame
+            .map(|frame| self.retain_raw_video_frame(frame))
+            .transpose()
+    }
+    pub fn try_video_sink_frame(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<Option<crate::VideoFrame>, PeerError> {
+        Ok(self.video_sinks.get(&sink).ok_or_else(missing)?.frame())
+    }
+    pub fn try_video_sink_event(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<Option<crate::VideoSinkEvent>, PeerError> {
+        Ok(self.video_sinks.get(&sink).ok_or_else(missing)?.event())
+    }
+    pub fn video_sink_dropped_frames(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .video_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .dropped_frames())
+    }
+    pub fn video_sink_dropped_events(
+        &mut self,
+        sink: SessionVideoSinkId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .video_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .dropped_events())
+    }
+    pub fn close_video_sink(&mut self, sink: SessionVideoSinkId) -> Result<(), PeerError> {
+        self.video_sinks.get_mut(&sink).ok_or_else(missing)?.close()
+    }
+    pub fn release_video_sink(&mut self, sink: SessionVideoSinkId) {
+        self.video_sinks.remove(&sink);
+    }
+
+    pub fn attach_video_source_encoded_output(
+        &mut self,
+        source: SessionVideoSourceViewId,
+    ) -> Result<SessionVideoSourceEncodedSinkId, PeerError> {
+        self.check_open()?;
+        let id = SessionVideoSourceEncodedSinkId(next_id()?);
+        let sink = self
+            .video_source_views
+            .get(&source)
+            .ok_or_else(missing)?
+            .attach_encoded_output()?;
+        self.video_source_encoded_sinks.insert(id, sink);
+        Ok(id)
+    }
+    pub fn alias_video_source_encoded_sink(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<SessionVideoSourceEncodedSinkId, PeerError> {
+        self.check_open()?;
+        let value = self
+            .video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .clone();
+        let id = SessionVideoSourceEncodedSinkId(next_id()?);
+        self.video_source_encoded_sinks.insert(id, value);
+        Ok(id)
+    }
+    pub fn try_video_source_encoded_frame(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<Option<crate::RecordableVideoFrame>, PeerError> {
+        Ok(self
+            .video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .try_next_frame())
+    }
+    pub fn try_video_source_encoded_event(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<Option<crate::VideoSinkEvent>, PeerError> {
+        Ok(self
+            .video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .try_next_event())
+    }
+    pub fn video_source_encoded_dropped_frames(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .dropped_frames())
+    }
+    pub fn video_source_encoded_dropped_events(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<u64, PeerError> {
+        Ok(self
+            .video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .dropped_events())
+    }
+    pub fn close_video_source_encoded_sink(
+        &mut self,
+        sink: SessionVideoSourceEncodedSinkId,
+    ) -> Result<(), PeerError> {
+        self.video_source_encoded_sinks
+            .get(&sink)
+            .ok_or_else(missing)?
+            .close();
+        Ok(())
+    }
+    pub fn release_video_source_encoded_sink(&mut self, sink: SessionVideoSourceEncodedSinkId) {
+        self.video_source_encoded_sinks.remove(&sink);
+    }
+
     /// Capture an owning interface alias without creating another producer.
     pub fn audio_source_view(
         &mut self,
@@ -2340,7 +2694,7 @@ impl ProductionSession {
     pub fn sender_audio_processor(
         &mut self,
         sender: SessionSenderId,
-    ) -> Result<Option<SessionAudioProcessorId>, PeerError> {
+    ) -> Result<Option<SessionAudioTrackProcessorId>, PeerError> {
         self.check_open()?;
         let Some(track) = self
             .senders
@@ -2354,14 +2708,14 @@ impl ProductionSession {
         let Some(processor) = track.processor() else {
             return Ok(None);
         };
-        let id = SessionAudioProcessorId(next_id()?);
-        self.audio_processors.insert(id, processor);
+        let id = SessionAudioTrackProcessorId(next_id()?);
+        self.audio_track_processors.insert(id, processor);
         Ok(Some(id))
     }
     pub fn receiver_audio_processor(
         &mut self,
         receiver: SessionReceiverId,
-    ) -> Result<Option<SessionAudioProcessorId>, PeerError> {
+    ) -> Result<Option<SessionAudioTrackProcessorId>, PeerError> {
         self.check_open()?;
         let Some(track) = self
             .receivers
@@ -2375,34 +2729,34 @@ impl ProductionSession {
         let Some(processor) = track.processor() else {
             return Ok(None);
         };
-        let id = SessionAudioProcessorId(next_id()?);
-        self.audio_processors.insert(id, processor);
+        let id = SessionAudioTrackProcessorId(next_id()?);
+        self.audio_track_processors.insert(id, processor);
         Ok(Some(id))
     }
     pub fn audio_processor_statistics(
         &mut self,
-        id: SessionAudioProcessorId,
+        id: SessionAudioTrackProcessorId,
         has_remote_tracks: bool,
     ) -> Result<crate::AudioProcessorStatistics, PeerError> {
         Ok(self
-            .audio_processors
+            .audio_track_processors
             .get(&id)
             .ok_or_else(missing)?
             .stats(has_remote_tracks))
     }
     pub fn audio_processors_same(
         &mut self,
-        a: SessionAudioProcessorId,
-        b: SessionAudioProcessorId,
+        a: SessionAudioTrackProcessorId,
+        b: SessionAudioTrackProcessorId,
     ) -> Result<bool, PeerError> {
         Ok(self
-            .audio_processors
+            .audio_track_processors
             .get(&a)
             .ok_or_else(missing)?
-            .same_resource(self.audio_processors.get(&b).ok_or_else(missing)?))
+            .same_resource(self.audio_track_processors.get(&b).ok_or_else(missing)?))
     }
-    pub fn release_audio_processor(&mut self, id: SessionAudioProcessorId) {
-        self.audio_processors.remove(&id);
+    pub fn release_audio_track_processor(&mut self, id: SessionAudioTrackProcessorId) {
+        self.audio_track_processors.remove(&id);
     }
 
     pub fn audio_source_views_same(
@@ -2706,6 +3060,521 @@ impl ProductionSession {
             .map_err(|e| error(PeerErrorKind::InvalidParameter, &e.to_string()))
     }
 
+    fn raw_video_error(value: crate::RawVideoError) -> PeerError {
+        error(PeerErrorKind::InvalidParameter, &value.to_string())
+    }
+    fn retain_raw_video_frame(
+        &mut self,
+        frame: crate::RawVideoFrame,
+    ) -> Result<SessionRawVideoFrameId, PeerError> {
+        let id = SessionRawVideoFrameId(next_id()?);
+        self.raw_video_frames.insert(id, frame);
+        Ok(id)
+    }
+    fn retain_raw_video_buffer(
+        &mut self,
+        buffer: crate::RawVideoBuffer,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let id = SessionRawVideoBufferId(next_id()?);
+        self.raw_video_buffers.insert(id, buffer);
+        Ok(id)
+    }
+    fn retain_writable_i420(
+        &mut self,
+        buffer: crate::WritableI420Buffer,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        let id = SessionWritableI420BufferId(next_id()?);
+        self.writable_i420_buffers.insert(id, buffer);
+        Ok(id)
+    }
+    /// Construct captive SDK ownership from an ordinary owned packed-I420 value.
+    pub fn create_native_video_frame(
+        &mut self,
+        value: &crate::VideoFrame,
+    ) -> Result<SessionRawVideoFrameId, PeerError> {
+        self.check_open()?;
+        self.retain_raw_video_frame(
+            crate::RawVideoFrame::from_legacy(value).map_err(Self::raw_video_error)?,
+        )
+    }
+    pub fn native_video_frame_from_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<SessionRawVideoFrameId, PeerError> {
+        self.check_open()?;
+        let frame = crate::RawVideoFrame::from_buffer(
+            self.raw_video_buffers.get(&buffer).ok_or_else(missing)?,
+        );
+        self.retain_raw_video_frame(frame)
+    }
+    pub fn native_video_frame_from_render_time_ms(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        rtp_timestamp: u32,
+        milliseconds: i64,
+        rotation: crate::VideoRotation,
+    ) -> Result<SessionRawVideoFrameId, PeerError> {
+        self.check_open()?;
+        let frame = crate::RawVideoFrame::from_render_time_ms(
+            self.raw_video_buffers.get(&buffer).ok_or_else(missing)?,
+            rtp_timestamp,
+            milliseconds,
+            rotation,
+        )
+        .map_err(Self::raw_video_error)?;
+        self.retain_raw_video_frame(frame)
+    }
+    /// SDK copy: metadata is independent; immutable buffer ownership is shared.
+    pub fn copy_native_video_frame(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<SessionRawVideoFrameId, PeerError> {
+        let frame = self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .clone();
+        self.retain_raw_video_frame(frame)
+    }
+    pub fn native_video_frame_metadata(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<crate::RawVideoFrameMetadata, PeerError> {
+        Ok(self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .metadata())
+    }
+    pub fn set_native_video_frame_metadata(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+        value: &crate::RawVideoFrameMetadata,
+    ) -> Result<(), PeerError> {
+        self.raw_video_frames
+            .get_mut(&frame)
+            .ok_or_else(missing)?
+            .set_metadata(value)
+            .map_err(Self::raw_video_error)
+    }
+    pub fn native_video_frame_buffer(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let buffer = self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .buffer();
+        self.retain_raw_video_buffer(buffer)
+    }
+    pub fn set_native_video_frame_buffer(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<(), PeerError> {
+        self.raw_video_frames
+            .get_mut(&frame)
+            .ok_or_else(missing)?
+            .set_buffer(self.raw_video_buffers.get(&buffer).ok_or_else(missing)?)
+            .map_err(Self::raw_video_error)
+    }
+    pub fn native_video_frame_to_legacy(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<crate::VideoFrame, PeerError> {
+        self.raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .to_legacy()
+            .map_err(Self::raw_video_error)
+    }
+    pub fn native_video_frame_is_texture(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .is_texture())
+    }
+    pub fn native_video_frame_size(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<u32, PeerError> {
+        Ok(self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .size())
+    }
+    pub fn native_video_frame_render_time_ms(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<i64, PeerError> {
+        Ok(self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .render_time_ms())
+    }
+    pub fn native_video_frame_update_rect(
+        &mut self,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<crate::VideoUpdateRect, PeerError> {
+        Ok(self
+            .raw_video_frames
+            .get(&frame)
+            .ok_or_else(missing)?
+            .update_rect())
+    }
+    pub fn release_native_video_frame(&mut self, frame: SessionRawVideoFrameId) {
+        self.raw_video_frames.remove(&frame);
+    }
+    pub fn alias_native_video_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .clone();
+        self.retain_raw_video_buffer(buffer)
+    }
+    pub fn native_video_buffer_info(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<crate::RawVideoBufferInfo, PeerError> {
+        Ok(self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .info())
+    }
+    pub fn native_video_buffer_storage_bytes(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<Vec<u8>, PeerError> {
+        Ok(self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .storage_representation_bytes())
+    }
+    pub fn native_video_buffer_plane(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        plane: crate::RawVideoPlaneKind,
+    ) -> Result<crate::RawVideoPlane, PeerError> {
+        self.raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .plane(plane)
+            .map_err(Self::raw_video_error)
+    }
+    pub fn native_video_buffer_to_i420(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .to_i420()
+            .map_err(Self::raw_video_error)?;
+        self.retain_raw_video_buffer(buffer)
+    }
+    pub fn native_video_buffer_get_i420(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<Option<SessionRawVideoBufferId>, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .get_i420();
+        buffer.map(|b| self.retain_raw_video_buffer(b)).transpose()
+    }
+    pub fn crop_and_scale_native_video_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        crop: crate::VideoUpdateRect,
+        width: i32,
+        height: i32,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .crop_and_scale(crop, width, height)
+            .map_err(Self::raw_video_error)?;
+        self.retain_raw_video_buffer(buffer)
+    }
+    pub fn scale_native_video_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        width: i32,
+        height: i32,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .scale(width, height)
+            .map_err(Self::raw_video_error)?;
+        self.retain_raw_video_buffer(buffer)
+    }
+    pub fn mapped_native_video_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        types: &[crate::RawVideoBufferType],
+    ) -> Result<Option<SessionRawVideoBufferId>, PeerError> {
+        let buffer = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .mapped_buffer(types)
+            .map_err(Self::raw_video_error)?;
+        buffer.map(|b| self.retain_raw_video_buffer(b)).transpose()
+    }
+    pub fn prepare_native_video_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        width: usize,
+        height: usize,
+        identifier: usize,
+    ) -> Result<SessionVideoBufferPreparationId, PeerError> {
+        let request = self
+            .raw_video_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .prepare_mapped_buffer(width, height, identifier);
+        let id = SessionVideoBufferPreparationId(next_id()?);
+        self.video_buffer_preparations.insert(id, request);
+        Ok(id)
+    }
+    pub fn try_native_video_buffer_prepared(
+        &mut self,
+        request: SessionVideoBufferPreparationId,
+    ) -> Result<Option<usize>, PeerError> {
+        Ok(self
+            .video_buffer_preparations
+            .get(&request)
+            .ok_or_else(missing)?
+            .try_next_prepared())
+    }
+    pub fn close_native_video_buffer_preparation(
+        &mut self,
+        request: SessionVideoBufferPreparationId,
+    ) -> Result<(), PeerError> {
+        self.video_buffer_preparations
+            .get(&request)
+            .ok_or_else(missing)?
+            .close();
+        Ok(())
+    }
+    pub fn release_native_video_buffer_preparation(
+        &mut self,
+        request: SessionVideoBufferPreparationId,
+    ) {
+        self.video_buffer_preparations.remove(&request);
+    }
+    pub fn release_native_video_buffer(&mut self, buffer: SessionRawVideoBufferId) {
+        self.raw_video_buffers.remove(&buffer);
+    }
+    pub fn create_writable_i420_buffer(
+        &mut self,
+        width: i32,
+        height: i32,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        self.check_open()?;
+        self.retain_writable_i420(
+            crate::WritableI420Buffer::new(width, height).map_err(Self::raw_video_error)?,
+        )
+    }
+    pub fn create_writable_i420_buffer_with_strides(
+        &mut self,
+        width: i32,
+        height: i32,
+        y: i32,
+        u: i32,
+        v: i32,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        self.check_open()?;
+        self.retain_writable_i420(
+            crate::WritableI420Buffer::with_strides(width, height, y, u, v)
+                .map_err(Self::raw_video_error)?,
+        )
+    }
+    pub fn copy_writable_i420_buffer_from_planes(
+        &mut self,
+        width: i32,
+        height: i32,
+        y: &crate::VideoPlane,
+        u: &crate::VideoPlane,
+        v: &crate::VideoPlane,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        self.check_open()?;
+        let buffer = crate::WritableI420Buffer::copy_from_planes(width, height, y, u, v)
+            .map_err(Self::raw_video_error)?;
+        self.retain_writable_i420(buffer)
+    }
+    pub fn copy_writable_i420_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        let buffer = crate::WritableI420Buffer::copy_from(
+            self.raw_video_buffers.get(&buffer).ok_or_else(missing)?,
+        )
+        .map_err(Self::raw_video_error)?;
+        self.retain_writable_i420(buffer)
+    }
+    pub fn rotate_writable_i420_buffer(
+        &mut self,
+        buffer: SessionRawVideoBufferId,
+        rotation: crate::VideoRotation,
+    ) -> Result<SessionWritableI420BufferId, PeerError> {
+        let buffer = crate::WritableI420Buffer::rotated(
+            self.raw_video_buffers.get(&buffer).ok_or_else(missing)?,
+            rotation,
+        )
+        .map_err(Self::raw_video_error)?;
+        self.retain_writable_i420(buffer)
+    }
+    pub fn writable_i420_buffer_info(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+    ) -> Result<crate::RawVideoBufferInfo, PeerError> {
+        Ok(self
+            .writable_i420_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .info())
+    }
+    pub fn writable_i420_buffer_initialized(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .writable_i420_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .is_initialized())
+    }
+    pub fn writable_i420_buffer_plane(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+        plane: crate::RawVideoPlaneKind,
+    ) -> Result<crate::RawVideoPlane, PeerError> {
+        self.writable_i420_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .plane(plane)
+            .map_err(Self::raw_video_error)
+    }
+    pub fn write_i420_buffer_plane(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+        plane: crate::RawVideoPlaneKind,
+        data: &[u8],
+        stride: i32,
+    ) -> Result<(), PeerError> {
+        self.writable_i420_buffers
+            .get_mut(&buffer)
+            .ok_or_else(missing)?
+            .write_plane(plane, data, stride)
+            .map_err(Self::raw_video_error)
+    }
+    pub fn initialize_i420_buffer(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+        black: bool,
+    ) -> Result<(), PeerError> {
+        let buffer = self
+            .writable_i420_buffers
+            .get_mut(&buffer)
+            .ok_or_else(missing)?;
+        if black {
+            buffer.set_black();
+        } else {
+            buffer.initialize_data();
+        }
+        Ok(())
+    }
+    pub fn crop_and_scale_i420_buffer_from(
+        &mut self,
+        target: SessionWritableI420BufferId,
+        source: SessionRawVideoBufferId,
+        crop: crate::VideoUpdateRect,
+    ) -> Result<(), PeerError> {
+        self.writable_i420_buffers
+            .get_mut(&target)
+            .ok_or_else(missing)?
+            .crop_and_scale_from(
+                self.raw_video_buffers.get(&source).ok_or_else(missing)?,
+                crop,
+            )
+            .map_err(Self::raw_video_error)
+    }
+    pub fn scale_i420_buffer_from(
+        &mut self,
+        target: SessionWritableI420BufferId,
+        source: SessionRawVideoBufferId,
+        center_crop: bool,
+    ) -> Result<(), PeerError> {
+        let source = self.raw_video_buffers.get(&source).ok_or_else(missing)?;
+        let target = self
+            .writable_i420_buffers
+            .get_mut(&target)
+            .ok_or_else(missing)?;
+        if center_crop {
+            target.center_crop_and_scale_from(source)
+        } else {
+            target.scale_from(source)
+        }
+        .map_err(Self::raw_video_error)
+    }
+    pub fn freeze_i420_buffer(
+        &mut self,
+        buffer: SessionWritableI420BufferId,
+    ) -> Result<SessionRawVideoBufferId, PeerError> {
+        if !self
+            .writable_i420_buffers
+            .get(&buffer)
+            .ok_or_else(missing)?
+            .is_initialized()
+        {
+            return Err(Self::raw_video_error(crate::RawVideoError::Uninitialized));
+        }
+        let id = SessionRawVideoBufferId(next_id()?);
+        let buffer = self
+            .writable_i420_buffers
+            .remove(&buffer)
+            .expect("validated exclusive buffer")
+            .freeze()
+            .map_err(Self::raw_video_error)?;
+        self.raw_video_buffers.insert(id, buffer);
+        Ok(id)
+    }
+    pub fn release_writable_i420_buffer(&mut self, buffer: SessionWritableI420BufferId) {
+        self.writable_i420_buffers.remove(&buffer);
+    }
+    pub fn push_native_video_frame(
+        &mut self,
+        source: SessionSourceId,
+        frame: SessionRawVideoFrameId,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(Source::RawVideo(source)) = self.sources.get(&source) else {
+            return Err(missing());
+        };
+        source
+            .push_native_frame(self.raw_video_frames.get(&frame).ok_or_else(missing)?)
+            .map_err(codec_error)
+    }
+
     /// Submit a raw frame with capture time in the native clock's timeline.
     /// The engine retains its own frame-dropping and RTP timestamp semantics.
     pub fn push_raw_video(
@@ -2725,6 +3594,40 @@ impl ProductionSession {
         let id = SessionSourceId(next_id()?);
         let source = self.factory.create_encoded_audio_source(channels)?;
         self.sources.insert(id, Source::Opus(source));
+        Ok(id)
+    }
+    pub fn create_h264_source_with_profile(
+        &mut self,
+        profile: crate::H264SourceProfile,
+    ) -> Result<SessionSourceId, PeerError> {
+        self.check_open()?;
+        let source = self
+            .input
+            .as_ref()
+            .ok_or_else(missing)?
+            .create_profile_source_with_readiness(
+                &self.factory,
+                profile,
+                Some(self.readiness.clone()),
+            )?;
+        let id = SessionSourceId(next_id()?);
+        self.sources.insert(id, Source::Video(source));
+        Ok(id)
+    }
+    pub fn create_video_source(&mut self) -> Result<SessionSourceId, PeerError> {
+        self.check_open()?;
+        let id = SessionSourceId(next_id()?);
+        let source = self
+            .input
+            .as_ref()
+            .ok_or_else(|| {
+                error(
+                    PeerErrorKind::InvalidState,
+                    "session has no encoded video format",
+                )
+            })?
+            .create_source_with_readiness(&self.factory, Some(self.readiness.clone()))?;
+        self.sources.insert(id, Source::Video(source));
         Ok(id)
     }
 
@@ -3299,7 +4202,6 @@ impl ProductionSession {
         self.check_open()?;
         self.factory.audio_devices(recording)
     }
-
     #[cfg(feature = "native")]
     pub fn select_audio_device(&mut self, recording: bool, index: u16) -> Result<(), PeerError> {
         self.check_open()?;
@@ -3352,29 +4254,6 @@ impl ProductionSession {
         })
     }
 
-    pub fn create_opus_source(&mut self, channels: u8) -> Result<SessionSourceId, PeerError> {
-        self.check_open()?;
-        let id = SessionSourceId(next_id()?);
-        let source = self.factory.create_encoded_audio_source(channels)?;
-        self.sources.insert(id, Source::Opus(source));
-        Ok(id)
-    }
-    pub fn create_video_source(&mut self) -> Result<SessionSourceId, PeerError> {
-        self.check_open()?;
-        let id = SessionSourceId(next_id()?);
-        let source = self
-            .input
-            .as_ref()
-            .ok_or_else(|| {
-                error(
-                    PeerErrorKind::InvalidState,
-                    "session has no encoded video format",
-                )
-            })?
-            .create_source_with_readiness(&self.factory, Some(self.readiness.clone()))?;
-        self.sources.insert(id, Source::Video(source));
-        Ok(id)
-    }
     /// Read one producer's native system-clock capture timeline. This does not
     /// claim that the current enqueue instant was the actual capture instant.
     pub fn opus_capture_time_now(
@@ -3627,6 +4506,27 @@ impl ProductionSession {
             .add_audio_transceiver(&track, direction)?;
         self.insert_transceiver(peer, value)
     }
+    pub fn publish_video_with_init(
+        &mut self,
+        peer: SessionPeerId,
+        source: SessionSourceId,
+        track_id: &str,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<SessionTransceiverId, crate::RtpSenderOperationError> {
+        self.check_open()?;
+        let track = self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .video_track(&self.factory, track_id)?;
+        let value = self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_video_transceiver_with_init(&track, init)?;
+        Ok(self.insert_transceiver(peer, value)?)
+    }
     pub fn publish_video(
         &mut self,
         peer: SessionPeerId,
@@ -3830,18 +4730,6 @@ impl ProductionSession {
             .set_enabled(enabled))
     }
     /// Media kind from the actual native receiver, independent of track IDs.
-    pub fn receiver_media_type(
-        &mut self,
-        receiver: SessionReceiverId,
-    ) -> Result<crate::MediaType, PeerError> {
-        self.check_open()?;
-        Ok(self
-            .receivers
-            .get(&receiver)
-            .ok_or_else(missing)?
-            .value
-            .media_type())
-    }
 
     /// Register the actual SDK sender slot with explicit bounded polling.
     pub fn register_sender_packet_observer(
@@ -4246,6 +5134,107 @@ impl ProductionSession {
     }
     /// Release this application identity. An installed SDK reference remains
     /// alive until replaced/cleared or its sender/receiver is destroyed.
+    pub fn create_frame_transformer(
+        &mut self,
+        provider: Arc<dyn crate::FrameTransformerProvider>,
+        maximum_in_flight: usize,
+    ) -> Result<SessionFrameTransformerId, PeerError> {
+        self.check_open()?;
+        let id = SessionFrameTransformerId(next_id()?);
+        self.frame_transformers.insert(
+            id,
+            crate::FrameTransformer::from_shared(provider, maximum_in_flight),
+        );
+        Ok(id)
+    }
+    pub fn alias_frame_transformer(
+        &mut self,
+        transformer: SessionFrameTransformerId,
+    ) -> Result<SessionFrameTransformerId, PeerError> {
+        let value = self
+            .frame_transformers
+            .get(&transformer)
+            .ok_or_else(missing)?
+            .clone();
+        let id = SessionFrameTransformerId(next_id()?);
+        self.frame_transformers.insert(id, value);
+        Ok(id)
+    }
+    pub fn set_sender_frame_transformer(
+        &mut self,
+        sender: SessionSenderId,
+        transformer: Option<SessionFrameTransformerId>,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let value = transformer
+            .map(|id| self.frame_transformers.get(&id).ok_or_else(missing))
+            .transpose()?;
+        self.senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .set_frame_transformer(value)
+    }
+    pub fn set_receiver_frame_transformer(
+        &mut self,
+        receiver: SessionReceiverId,
+        transformer: Option<SessionFrameTransformerId>,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let value = transformer
+            .map(|id| self.frame_transformers.get(&id).ok_or_else(missing))
+            .transpose()?;
+        self.receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .set_frame_transformer(value)
+    }
+    pub fn frame_transformer_statistics(
+        &mut self,
+        transformer: SessionFrameTransformerId,
+    ) -> Result<crate::FrameTransformerStatistics, PeerError> {
+        Ok(self
+            .frame_transformers
+            .get(&transformer)
+            .ok_or_else(missing)?
+            .statistics())
+    }
+    /// Counter-only evidence can outlive IDs, native hosts and callback userdata.
+    pub fn frame_transformer_failure_observer(
+        &mut self,
+        transformer: SessionFrameTransformerId,
+    ) -> Result<crate::FrameTransformerFailureObserver, PeerError> {
+        Ok(self
+            .frame_transformers
+            .get(&transformer)
+            .ok_or_else(missing)?
+            .failure_observer())
+    }
+    pub fn close_frame_transformer(
+        &mut self,
+        transformer: SessionFrameTransformerId,
+    ) -> Result<(), PeerError> {
+        self.frame_transformers
+            .get(&transformer)
+            .ok_or_else(missing)?
+            .close();
+        Ok(())
+    }
+    pub fn frame_transformer_closed(
+        &mut self,
+        transformer: SessionFrameTransformerId,
+    ) -> Result<bool, PeerError> {
+        Ok(self
+            .frame_transformers
+            .get(&transformer)
+            .ok_or_else(missing)?
+            .is_closed())
+    }
+    pub fn release_frame_transformer(&mut self, transformer: SessionFrameTransformerId) {
+        self.frame_transformers.remove(&transformer);
+    }
+
     pub fn release_frame_encryptor(
         &mut self,
         encryptor: SessionFrameEncryptorId,
@@ -4368,6 +5357,66 @@ impl ProductionSession {
             .get_parameters())
     }
 
+    pub fn set_sender_parameters_value(
+        &mut self,
+        sender: SessionSenderId,
+        parameters: &crate::RtpParameters,
+    ) -> Result<crate::RtcError, PeerError> {
+        self.check_open()?;
+        self.senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .set_parameters_value(parameters)
+    }
+    pub fn set_sender_parameters_async(
+        &mut self,
+        sender: SessionSenderId,
+        parameters: &crate::RtpParameters,
+    ) -> Result<SessionSenderParametersOperationId, PeerError> {
+        self.check_open()?;
+        let value = self
+            .senders
+            .get(&sender)
+            .ok_or_else(missing)?
+            .value
+            .set_parameters_async(parameters)?;
+        let id = SessionSenderParametersOperationId(next_id()?);
+        self.sender_parameter_operations.insert(id, value);
+        Ok(id)
+    }
+    pub fn sender_parameters_operation_ready(
+        &mut self,
+        operation: SessionSenderParametersOperationId,
+    ) -> Result<bool, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sender_parameter_operations
+            .get(&operation)
+            .ok_or_else(missing)?
+            .is_ready())
+    }
+    pub fn take_sender_parameters_result(
+        &mut self,
+        operation: SessionSenderParametersOperationId,
+    ) -> Result<Option<crate::RtcError>, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .sender_parameter_operations
+            .get(&operation)
+            .ok_or_else(missing)?
+            .take_result())
+    }
+    pub fn release_sender_parameters_operation(
+        &mut self,
+        operation: SessionSenderParametersOperationId,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        self.sender_parameter_operations
+            .remove(&operation)
+            .ok_or_else(missing)?;
+        Ok(())
+    }
     /// Native SSRC/CSRC observations copied through the receiver worker proxy.
     pub fn receiver_sources(
         &mut self,
@@ -4755,11 +5804,29 @@ impl ProductionSession {
         self.attach_pcm(receiver)
     }
 
+    /// Detach either selected audio receive mode without changing video sinks.
+    pub fn detach_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        if self
+            .receivers
+            .get(&receiver)
+            .ok_or_else(missing)?
+            .value
+            .media_type()
+            != crate::MediaType::Audio
+        {
+            return Err(error(
+                PeerErrorKind::InvalidParameter,
+                "receiver is not audio",
+            ));
+        }
+        self.close_media_sink(receiver)
+    }
+
     /// Caller-paced headless playout, sharing the exclusive receiver mode.
     pub fn try_pcm_audio_frame(
         &mut self,
         receiver: SessionReceiverId,
-    ) -> Result<Option<crate::AudioPcmFrame>, PeerError> {
+    ) -> Result<Option<crate::DecodedAudioFrame>, PeerError> {
         self.try_pcm_frame(receiver)
     }
 
@@ -4786,13 +5853,41 @@ impl ProductionSession {
     }
 
     pub fn attach_raw_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
+        self.attach_raw_video_with_wants(receiver, &crate::VideoSinkWants::default())
+    }
+    pub fn attach_raw_video_with_wants(
+        &mut self,
+        receiver: SessionReceiverId,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<(), PeerError> {
         let track = self
             .receiver_without_sink(receiver)?
             .track()
             .ok_or_else(missing)?;
-        let sink = track.attach_sink()?;
+        let sink = track.attach_sink_with_wants(wants)?;
         self.media_sinks.insert(receiver, MediaSink::RawVideo(sink));
         Ok(())
+    }
+
+    pub fn raw_video_sink_wants(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<crate::VideoSinkWants>, PeerError> {
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        Ok(sink.wants())
+    }
+    pub fn update_raw_video_sink_wants(
+        &mut self,
+        receiver: SessionReceiverId,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<(), PeerError> {
+        self.check_open()?;
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        sink.update_wants(wants)
     }
 
     pub fn attach_encoded_audio(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
@@ -4833,6 +5928,18 @@ impl ProductionSession {
             return Err(missing());
         };
         Ok(sink.try_next_frame())
+    }
+    pub fn try_raw_video_native_frame(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<Option<SessionRawVideoFrameId>, PeerError> {
+        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
+            return Err(missing());
+        };
+        let frame = sink.try_next_native_frame();
+        frame
+            .map(|frame| self.retain_raw_video_frame(frame))
+            .transpose()
     }
     pub fn try_raw_video_frame(
         &mut self,
@@ -4932,21 +6039,34 @@ impl ProductionSession {
         if self.closed {
             return Ok(());
         }
+        for encoder in self.video_encoders.values_mut() {
+            let _ = encoder.release();
+        }
+        for decoder in self.video_decoders.values_mut() {
+            let _ = decoder.release();
+        }
         for peer in self.peers.keys().copied().collect::<Vec<_>>() {
             self.close_peer(peer)?;
         }
         for source in self.sources.values_mut() {
             source.close()?;
         }
+        for sink in self.video_sinks.values_mut() {
+            sink.close()?;
+        }
+        for sink in self.video_source_encoded_sinks.values() {
+            sink.close();
+        }
         for observer in self.video_observers.values() {
             observer.close();
         }
-        for observer in self.stream_observers.values() {
+        for observer in self.local_stream_observers.values() {
             observer.close();
         }
         for observer in self.audio_observers.values() {
             observer.close();
         }
+        self.sender_parameter_operations.clear();
         self.audio_observers.clear();
         self.audio_source_views.clear();
         self.sources.clear();

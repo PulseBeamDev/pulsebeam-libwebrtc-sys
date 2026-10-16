@@ -456,6 +456,7 @@ impl Environment {
 
     pub fn close(&mut self) {
         drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
+        // Native teardown precedes the Rust capability owners it can call.
         self._task_queue_factory = None;
         self._clock = None;
         self._randomness = None;
@@ -1079,8 +1080,25 @@ mod tests {
             .build()
             .unwrap();
         let other = Environment::builder().build().unwrap();
-        let copied =
-            Environment::from_sdk(ffi::clone_environment(selected.native()), Some(&selected));
+        let native_copy = ffi::clone_environment(selected.native());
+        let actual = native_copy.as_ref().unwrap();
+        assert!(
+            ffi::environment_clock_identity_matches(actual, selected.native()),
+            "SDK clock component identity"
+        );
+        assert!(
+            ffi::environment_queue_factory_identity_matches(actual, selected.native()),
+            "SDK queue component identity"
+        );
+        assert!(
+            queues.is_cooperative() && queues.check_current().is_ok(),
+            "selected cooperative queue thread"
+        );
+        assert!(
+            ffi::task_queue_factory_uses_clock(queues.native(), clock.native()),
+            "selected cooperative queue clock identity"
+        );
+        let copied = Environment::from_sdk(native_copy, Some(&selected));
         assert!(copied.uses_controlled_clock(&clock));
         let mismatched =
             Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));

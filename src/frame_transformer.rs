@@ -52,6 +52,8 @@ pub enum TransformableFrameError {
     CodecVariantAssociation,
     ReceiverMetadataAssertion,
     ReceiverMetadataEqualityConsumption,
+    /// The pinned SDK exposes no causal current GFD/DD consumer context.
+    UnsupportedInstalledDependencyMutation,
 }
 impl fmt::Display for TransformableFrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,6 +74,7 @@ impl fmt::Display for TransformableFrameError {
             Self::ReceiverMetadataAssertion => {
                 "the compiled receiver setter permits only frame ID and dependency changes"
             }
+            Self::UnsupportedInstalledDependencyMutation => "installed dependency metadata rewriting requires an unavailable native consumer-context hook",
             Self::ReceiverMetadataEqualityConsumption => {
                 "receiver metadata assertion would read beyond native codec storage"
             }
@@ -88,6 +91,7 @@ fn status(value: i32) -> Result<(), TransformableFrameError> {
         4 => Err(TransformableFrameError::CodecVariantAssociation),
         5 => Err(TransformableFrameError::ReceiverMetadataAssertion),
         6 => Err(TransformableFrameError::ReceiverMetadataEqualityConsumption),
+        7 => Err(TransformableFrameError::UnsupportedInstalledDependencyMutation),
         _ => unreachable!("closed frame bridge status"),
     }
 }
@@ -103,10 +107,12 @@ pub struct TransformableFrame {
     pub(crate) native: cxx::UniquePtr<ffi::NativeTransformableFrame>,
     _not_sync: PhantomData<Cell<()>>,
 }
-// SAFETY: the closed producer graph contains stock owning Buffer/value frames
-// and refcounted encoded buffers. No callback/queue/endpoint owner is retained.
-// Received-video provenance is a comparison-only pointer, never dereferenced
-// by frame methods or destruction. Exclusive ownership serializes mutation.
+// SAFETY: stock frames own their values/refcounted encoded buffers. Live
+// provenance additionally retains a synchronized unregister-barrier slot:
+// SDK unregister releases its callback on the owning role, so late frame
+// destruction cannot release a live callback or borrowed queue on this thread.
+// Received-video producer pointers are comparison-only, never dereferenced by
+// frame methods/destruction. Exclusive ownership serializes mutation.
 unsafe impl Send for TransformableFrame {}
 impl TransformableFrame {
     fn native(&self) -> &ffi::NativeTransformableFrame {
@@ -218,6 +224,9 @@ pub enum TransformableMediaFrame {
     Video(TransformableVideoFrame),
 }
 impl TransformableMediaFrame {
+    pub(crate) fn into_native(mut self) -> cxx::UniquePtr<ffi::NativeTransformableFrame> {
+        std::mem::replace(&mut self.native, cxx::UniquePtr::null())
+    }
     pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeTransformableFrame>) -> Self {
         let audio =
             ffi::transformable_frame_is_audio(native.as_ref().expect("stock frame producer"));
@@ -341,6 +350,8 @@ impl TransformableVideoFrame {
         }
     }
     /// Native mutation only. Success does not certify packetization/delivery.
+    /// Installed frames retain native-generated dependency fields: this SDK
+    /// cannot safely certify arbitrary current GFD/DD dependency rewrites.
     /// Receiver frames update header ID/dependencies but retain their cached
     /// Metadata value, as the stock SDK does. Assertion-only restrictions depend
     /// on the compiled artifact, not on a binding-wide convenience policy.

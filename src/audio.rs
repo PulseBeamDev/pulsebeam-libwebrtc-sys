@@ -834,12 +834,24 @@ impl AudioTrack {
     pub(crate) fn factory_context(&self) -> &Rc<FactoryInner> {
         &self.inner._factory
     }
+    pub(crate) fn media_track_owner(&self) -> crate::media_track::MediaTrackOwner {
+        // General SDK track references retain source/factory roles, never a
+        // received PeerInner that could create a selecting/sending peer cycle.
+        // Typed AudioTrack aliases continue to retain their received origin.
+        if self.inner._peer.is_some() {
+            crate::media_track::MediaTrackOwner::Factory {
+                _factory: self.inner._factory.clone(),
+            }
+        } else {
+            crate::media_track::MediaTrackOwner::Audio {
+                _track: self.clone(),
+            }
+        }
+    }
     pub fn as_media_track(&self) -> crate::MediaTrack {
         crate::MediaTrack::from_native(
             ffi::audio_track_reference(self.native()),
-            crate::media_track::MediaTrackOwner::Audio {
-                _track: self.clone(),
-            },
+            self.media_track_owner(),
         )
     }
     pub(crate) fn local(
@@ -962,8 +974,11 @@ impl AudioTrack {
         crate::AudioTrackState::from_native(ffi::audio_track_state(self.native()))
     }
     /// The actual native per-track processor, including a native null result.
-    pub fn processor(&self) -> Option<crate::AudioProcessor> {
-        crate::AudioProcessor::from_native(ffi::audio_track_processor(self.native()), self.clone())
+    pub fn processor(&self) -> Option<crate::AudioTrackProcessor> {
+        crate::AudioTrackProcessor::from_native(
+            ffi::audio_track_processor(self.native()),
+            self.clone(),
+        )
     }
     pub fn signal_level(&self) -> Option<i32> {
         let value = ffi::audio_track_signal_level(self.native());
@@ -1009,6 +1024,7 @@ impl AudioTrack {
             }
             peer.audio_sender_tracks.borrow().values().any(|track| {
                 track
+                    .track
                     .inner
                     ._peer
                     .as_ref()
@@ -1047,10 +1063,27 @@ impl crate::RtpSender {
         if native.is_null() {
             return None;
         }
-        if let Some(track) = self.peer.audio_sender_tracks.borrow().get(&self.id()) {
-            if ffi::audio_tracks_same(track.native(), native.as_ref().expect("native audio track"))
-            {
-                return Some(track.clone());
+        if let Some(track) = self
+            .peer
+            .audio_sender_tracks
+            .borrow()
+            .get(&self.resource_key())
+        {
+            if ffi::audio_tracks_same(
+                track.track.native(),
+                native.as_ref().expect("native audio track"),
+            ) {
+                return Some(track.track.clone());
+            }
+        }
+        if let Some(lease) = self.peer.stream_inputs.borrow().get(&self.resource_key()) {
+            if let Some(track) = lease.track.local_audio() {
+                if ffi::audio_tracks_same(
+                    track.native(),
+                    native.as_ref().expect("native audio track"),
+                ) {
+                    return Some(track.clone());
+                }
             }
         }
         Some(AudioTrack::received(native, self.peer.clone()))
@@ -1101,12 +1134,17 @@ impl crate::RtpSender {
         let mut retained = self.peer.audio_sender_tracks.borrow_mut();
         match track {
             Some(track) => {
-                retained.insert(self.id(), track.clone());
+                retained.insert(
+                    self.resource_key(),
+                    crate::peer::SenderTrackLease::new(self, track.clone()),
+                );
             }
             None => {
-                retained.remove(&self.id());
+                retained.remove(&self.resource_key());
             }
         }
+        drop(retained);
+        self.peer.refresh_stream_inputs();
         Ok(())
     }
 }

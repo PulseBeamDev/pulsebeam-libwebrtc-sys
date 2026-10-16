@@ -1,3 +1,4 @@
+#include "pulsebeam-webrtc-sys/native/audio.h"
 #include "pulsebeam-webrtc-sys/native/media_stream.h"
 #include "api/media_stream_interface.h"
 #include "api/audio_options.h"
@@ -55,26 +56,7 @@ std::int32_t track_source_state(const NativeTrackSource& s) noexcept { std::int3
 bool track_source_remote(const NativeTrackSource& s) noexcept { bool out = false; s.state()->signaling->BlockingCall([&]{ out = s.state()->source()->remote(); }); return out; }
 bool track_source_same_resource(const NativeTrackSource& a, const NativeTrackSource& b) noexcept { return a.state()->source() == b.state()->source(); }
 FfiAudioSourceOptions track_source_audio_options(const NativeTrackSource& s) noexcept {
-  FfiAudioSourceOptions out;
-  s.state()->signaling->BlockingCall([&] {
-    const auto& o = s.state()->audio->options();
-    out.echo_cancellation = Choice(o.echo_cancellation);
-    out.auto_gain_control = Choice(o.auto_gain_control);
-    out.noise_suppression = Choice(o.noise_suppression);
-    out.highpass_filter = Choice(o.highpass_filter);
-    out.stereo_swapping = Choice(o.stereo_swapping);
-    out.audio_jitter_buffer_fast_accelerate = Choice(o.audio_jitter_buffer_fast_accelerate);
-    out.audio_network_adaptor = Choice(o.audio_network_adaptor);
-    out.init_recording_on_send = Choice(o.init_recording_on_send);
-    out.echo_cancellation_mode = Choice(o.echo_cancellation_mode);
-    out.auto_gain_control_mode = Choice(o.auto_gain_control_mode);
-    out.noise_suppression_mode = Choice(o.noise_suppression_mode);
-    out.highpass_filter_mode = Choice(o.highpass_filter_mode);
-    out.audio_jitter_buffer_max_packets = Optional(o.audio_jitter_buffer_max_packets);
-    out.audio_jitter_buffer_min_delay_ms = Optional(o.audio_jitter_buffer_min_delay_ms);
-    out.has_audio_network_adaptor_config = o.audio_network_adaptor_config.has_value();
-    if (o.audio_network_adaptor_config) out.audio_network_adaptor_config = Bytes(*o.audio_network_adaptor_config);
-  }); return out;
+ return s.state()->signaling->BlockingCall([&] { return media_audio_options_write(s.state()->audio->options()); });
 }
 FfiVideoSourceInfo track_source_video_info(const NativeTrackSource& s) noexcept {
   FfiVideoSourceInfo out;
@@ -89,24 +71,8 @@ void media_track_set_volume(const NativeMediaTrack& t, double volume) noexcept {
 void media_track_set_should_receive(const NativeMediaTrack& t, bool receive) noexcept { Video(t)->set_should_receive(receive); }
 void media_track_set_content_hint(const NativeMediaTrack& t, std::int32_t hint) noexcept { Video(t)->set_content_hint(static_cast<webrtc::VideoTrackInterface::ContentHint>(hint)); }
 FfiTrackAudioOptionsResult media_track_set_audio_options(const NativeMediaTrack& t, const FfiAudioSourceOptions& x) noexcept {
-  webrtc::AudioOptions o;
-  const auto boolean = [](std::int8_t value) -> std::optional<bool> { if (value < 0) return std::nullopt; return value != 0; };
-  const auto mode = [](std::int8_t value) -> std::optional<webrtc::AudioProcessingMode> { if (value < 0) return std::nullopt; return static_cast<webrtc::AudioProcessingMode>(value); };
-  o.echo_cancellation = boolean(x.echo_cancellation);
-  o.auto_gain_control = boolean(x.auto_gain_control);
-  o.noise_suppression = boolean(x.noise_suppression);
-  o.highpass_filter = boolean(x.highpass_filter);
-  o.stereo_swapping = boolean(x.stereo_swapping);
-  o.audio_jitter_buffer_fast_accelerate = boolean(x.audio_jitter_buffer_fast_accelerate);
-  o.audio_network_adaptor = boolean(x.audio_network_adaptor);
-  o.init_recording_on_send = boolean(x.init_recording_on_send);
-  o.echo_cancellation_mode = mode(x.echo_cancellation_mode);
-  o.auto_gain_control_mode = mode(x.auto_gain_control_mode);
-  o.noise_suppression_mode = mode(x.noise_suppression_mode);
-  o.highpass_filter_mode = mode(x.highpass_filter_mode);
-  if (x.audio_jitter_buffer_max_packets.present) o.audio_jitter_buffer_max_packets = x.audio_jitter_buffer_max_packets.value;
-  if (x.audio_jitter_buffer_min_delay_ms.present) o.audio_jitter_buffer_min_delay_ms = x.audio_jitter_buffer_min_delay_ms.value;
-  if (x.has_audio_network_adaptor_config) o.audio_network_adaptor_config = std::string(reinterpret_cast<const char*>(x.audio_network_adaptor_config.data()), x.audio_network_adaptor_config.size());
+  if (media_audio_options_check(x)) { FfiTrackAudioOptionsResult out; out.code = -1; out.message = Bytes("binding admission: invalid audio processing mode"); return out; }
+  const auto o = media_audio_options_read(x);
   const auto result = Audio(t)->SetAudioProcessingOptions(o);
   FfiTrackAudioOptionsResult out; out.code = static_cast<std::int32_t>(result.code); out.message = Bytes(result.message); return out;
 }

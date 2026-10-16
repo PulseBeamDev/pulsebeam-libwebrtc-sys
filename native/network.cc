@@ -1497,5 +1497,4 @@ rust::Vec<std::uint8_t> received_packet_payload(
     const NativeReceivedPacket& packet) noexcept {
   return FromBytes(packet.state()->packet.payload);
 }
-
 }  // namespace pulsebeam::webrtc_sys

@@ -1,6 +1,14 @@
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/video_codec_values.h"
+#include "pulsebeam-webrtc-sys/native/video_encoder_selector.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
+#include "pulsebeam-webrtc-sys/native/encoded_image.h"
+#include "pulsebeam-webrtc-sys/native/video_codec_callbacks.h"
+#include "pulsebeam-webrtc-sys/native/raw_video_frame.h"
+#include "pulsebeam-webrtc-sys/native/video.h"
+#include "pulsebeam-webrtc-sys/native/peer.h"
+#include "rtc_base/thread.h"
+#include <condition_variable>
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +20,7 @@
 #endif
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -739,14 +748,101 @@ struct NativeEncodedImageCallback::State {
   std::mutex mutex;
   webrtc::EncodedImageCallback *callback = nullptr;
   bool active = false;
+  bool engine = false;
+  std::size_t configured_streams = 0;
+  bool AdmitEncoded(const webrtc::EncodedImage& image, const webrtc::CodecSpecificInfo* info) const {
+    if (!engine) return true;  // Caller-owned local callback has no packetizer.
+    const auto stream = image.SimulcastIndex().value_or(0);
+    if (!configured_streams || stream < 0 || static_cast<std::size_t>(stream) >= configured_streams) return false;
+    if (image.SpatialIndex() && (*image.SpatialIndex() < 0 || *image.SpatialIndex() >= static_cast<int>(webrtc::kMaxSpatialLayers))) return false;
+    if (!info) return true;
+    if (info->codecType != codec_type) return false;
+    if (info->codecType == webrtc::kVideoCodecVP9) {
+      const auto& v = info->codecSpecific.VP9;
+      if (v.num_ref_pics > std::size(v.p_diff)) return false;
+      if (v.inter_pic_predicted && v.flexible_mode && v.num_ref_pics == 0) return false;
+      if (v.ss_data_available) {
+        if (v.num_spatial_layers == 0 || v.num_spatial_layers > std::size(v.width) ||
+            v.gof.num_frames_in_gof > std::size(v.gof.temporal_idx)) return false;
+        for (std::size_t i = 0; i < v.gof.num_frames_in_gof; ++i)
+          if (v.gof.num_ref_pics[i] > std::size(v.gof.pid_diff[i])) return false;
+      }
+      const auto spatial = v.num_spatial_layers > 1 ? image.SpatialIndex().value_or(255) : 255;
+      if (spatial >= static_cast<int>(v.num_spatial_layers) - 1 && !info->end_of_picture) return false;
+    }
+    return true;
+  }
   webrtc::VideoCodecType codec_type = webrtc::kVideoCodecGeneric;
   webrtc::H264PacketizationMode h264_packetization_mode =
       webrtc::H264PacketizationMode::NonInterleaved;
+  std::condition_variable idle;
+  std::size_t in_flight = 0;
+  void Retire() {
+    std::unique_lock lock(mutex); active = false;
+    idle.wait(lock, [&] { return in_flight == 0; });
+    callback = nullptr;
+  }
+  template <typename Operation>
+  std::optional<webrtc::EncodedImageCallback::Result> Invoke(Operation operation,
+      const webrtc::EncodedImage* image = nullptr, const webrtc::CodecSpecificInfo* info = nullptr) {
+    webrtc::EncodedImageCallback* target;
+    {
+      std::lock_guard lock(mutex);
+      if (!active || !callback || (image && !AdmitEncoded(*image, info))) return std::nullopt;
+      ++in_flight; target = callback;
+    }
+    struct Exit {
+      State& state;
+      ~Exit() { std::lock_guard lock(state.mutex); if (--state.in_flight == 0) state.idle.notify_all(); }
+    } exit{*this};
+    return operation(*target);
+  }
 };
 struct NativeDecodedImageCallback::State {
+  std::shared_ptr<NativeEnvironment> engine_environment;
+  bool AdmitTime(std::uint8_t overload, std::int64_t milliseconds, bool present, std::int32_t optional_ms) const {
+    if (!engine_environment) return true;  // Local caller callbacks have no VCM arithmetic.
+    const auto bounds = environment_clock_time_bounds(*engine_environment);
+    if (!bounds.known || !bounds.monotonic || bounds.minimum_us == INT64_MIN || bounds.maximum_us == INT64_MAX) return false;
+    const auto now = engine_environment->environment().clock().CurrentTime();
+    if (!now.IsFinite() || now.us() < bounds.minimum_us || now.us() > bounds.maximum_us) return false;
+    if (overload == 1) {
+      present = milliseconds >= 0;
+      optional_ms = static_cast<std::int32_t>(milliseconds); // Preserve native narrowing.
+    }
+    if (!present || overload == 0)
+      return static_cast<__int128>(bounds.maximum_us) - bounds.minimum_us < INT64_MAX;
+    const auto delta = static_cast<std::int64_t>(optional_ms) * 1000;
+    // The exact retained monotonic clock proves every native decode_start is
+    // between its promised minimum and this sampled time, even for late output.
+    return static_cast<__int128>(bounds.minimum_us) + delta > INT64_MIN &&
+        static_cast<__int128>(now.us()) + delta < INT64_MAX;
+  }
   std::mutex mutex;
+  std::condition_variable idle;
   webrtc::DecodedImageCallback *callback = nullptr;
   bool active = false;
+  std::size_t in_flight = 0;
+  void Retire() {
+    std::unique_lock lock(mutex);
+    active = false;
+    idle.wait(lock, [&] { return in_flight == 0; });
+    callback = nullptr;
+  }
+  template <typename Operation>
+  FfiDecodedCallbackResult Invoke(Operation operation) {
+    webrtc::DecodedImageCallback* target;
+    {
+      std::lock_guard lock(mutex);
+      if (!active || !callback) return {false, WEBRTC_VIDEO_CODEC_UNINITIALIZED};
+      ++in_flight; target = callback;
+    }
+    struct Exit {
+      State& state;
+      ~Exit() { std::lock_guard lock(state.mutex); if (--state.in_flight == 0) state.idle.notify_all(); }
+    } exit{*this};
+    return {true, operation(*target)};
+  }
 };
 struct NativeAudioEncoderFactory::State {
   bool selected_builtin = false;  // Proven at creation, never inferred from SDP.
@@ -888,15 +984,57 @@ std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> CreationRetention(
       source ? video_factory_environment_clone(**source)
              : video_factory_environment_from_sdk(retain_environment_from_sdk(environment)));
 }
+// One actual SDK simulcast product's info operation evidence. It retains no
+// codec or Rust userdata, and is not a cache of caller capability values.
+struct EncoderInfoInvocation {
+  std::atomic<bool> failed{false};
+  bool installed = false;
+  bool leaf_multistream_initialized = false;
+  bool adapter_initialized = false;
+  void Fail() { failed.store(true, std::memory_order_release); }
+  // Accessed only by the admitted synchronous SDK call and its leaf queries.
+  bool aggregating = false;
+  std::uint32_t alignment = 1;
+  std::uint32_t trial_alignment = 1;
+  void Begin() { failed.store(false, std::memory_order_release); aggregating = true; alignment = trial_alignment; }
+  void End() { aggregating = false; }
+  bool AdmitAlignment(std::uint32_t next, bool captured_for_context) {
+    if (!aggregating && !captured_for_context) return true;
+    const auto prior = aggregating ? alignment : trial_alignment;
+    const std::uint64_t product = prior == 0 || next == 0 ? 0 : static_cast<std::uint64_t>(prior / std::gcd(prior, next)) * next;
+    if (product > std::numeric_limits<std::uint32_t>::max()) return false;
+    if (aggregating) alignment = static_cast<std::uint32_t>(product);
+    return true;
+  }
+  bool Succeeded() const { return !failed.load(std::memory_order_acquire); }
+};
 class RustEncoder final : public webrtc::VideoEncoder {
+  class Call final {
+   public:
+    explicit Call(const RustEncoder& owner, bool allow_released = false) : owner_(owner) {
+      std::lock_guard lock(owner_.mutex_);
+      if (owner_.call_active_ || (!allow_released && owner_.released_)) return;
+      owner_.call_active_ = true; entered_ = true;
+    }
+    ~Call() { if (entered_) { std::lock_guard lock(owner_.mutex_); owner_.call_active_ = false; } }
+    explicit operator bool() const { return entered_; }
+    Call(const Call&) = delete; Call& operator=(const Call&) = delete;
+   private:
+    const RustEncoder& owner_;
+    bool entered_ = false;
+  };
 public:
   RustEncoder(rust::Box<RustVideoEncoder> encoder,
               const webrtc::SdpVideoFormat &format,
-              std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention) noexcept
-      : retention_(std::move(retention)), encoder_(std::move(encoder)),
+              std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention,
+              rust::Box<RustVideoEncoderFactory> factory,
+              std::shared_ptr<EncoderInfoInvocation> info_invocation) noexcept
+      : retention_(std::move(retention)), factory_(std::move(factory)),
+        info_invocation_(std::move(info_invocation)), encoder_(std::move(encoder)),
         callback_(std::make_shared<NativeEncodedImageCallback>(
             std::make_shared<NativeEncodedImageCallback::State>())),
         failed_(!encoder_is_valid(*encoder_)) {
+    callback_->state()->engine = info_invocation_->installed;
     if (format.name == "H264") callback_->state()->codec_type = webrtc::kVideoCodecH264;
     else if (format.name == "VP8") callback_->state()->codec_type = webrtc::kVideoCodecVP8;
     else if (format.name == "VP9") callback_->state()->codec_type = webrtc::kVideoCodecVP9;
@@ -910,47 +1048,33 @@ public:
           webrtc::H264PacketizationMode::SingleNalUnit;
     }
   }
-  ~RustEncoder() override { Release(); }
+  ~RustEncoder() override { if (!released_) Release(); }
+  void SetFecControllerOverride(webrtc::FecControllerOverride* target) override {
+    Call call(*this);
+    if (!call) { encoder_factory_report_feedback_failure(*factory_); return; }
+    if (fec_override_) RetireFecOverride(*fec_override_);
+    fec_override_ = BorrowFecOverride(target);
+    if (encoder_set_fec_override(*encoder_, fec_override_) != WEBRTC_VIDEO_CODEC_OK) encoder_factory_report_feedback_failure(*factory_);
+  }
 
-  int InitEncode(const webrtc::VideoCodec *codec,
-                 const Settings &settings) override {
-    if (codec == nullptr || released_)
-      return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
-    std::lock_guard lock(mutex_);
-    // Keep the failed sentinel alive through WebRTC's encoder lifecycle. An
-    // InitEncode error requests no format while default fallback is disabled,
-    // which hits a DCHECK in this pinned revision. Encode can fail safely.
-    if (failed_)
-      return WEBRTC_VIDEO_CODEC_OK;
-    FfiEncoderSettings observed{};
-    observed.width = codec->width;
-    observed.height = codec->height;
-    observed.start_bitrate_bps = codec->startBitrate * 1000;
-    observed.max_bitrate_bps = codec->maxBitrate * 1000;
-    observed.min_bitrate_bps = codec->minBitrate * 1000;
-    observed.max_framerate = codec->maxFramerate;
-    observed.cores = settings.number_of_cores;
-    observed.max_payload_size = settings.max_payload_size;
-    if (const auto mode = codec->GetScalabilityMode()) {
-      observed.has_scalability_mode = true;
-      observed.scalability_mode =
-          std::string(webrtc::ScalabilityModeToString(*mode));
+  int32_t InitEncode(const webrtc::VideoCodec* codec, std::int32_t cores, std::size_t payload) override {
+    return InitEncode(codec, Settings(Capabilities(false), cores, payload));
+  }
+  int InitEncode(const webrtc::VideoCodec *codec, const Settings &settings) override {
+    Call call(*this, true); if (!call || failed_) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    if (!codec) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+    released_ = false;
+    {
+      auto& state = *callback_->state();
+      std::lock_guard lock(state.mutex);
+      if (state.in_flight) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+      state.configured_streams = std::max<unsigned>(codec->numberOfSimulcastStreams, 1);
     }
-    if (codec->codecType == webrtc::kVideoCodecH264) {
-      observed.has_h264_temporal_layers = true;
-      observed.h264_temporal_layers = codec->H264().numberOfTemporalLayers;
-    }
-    for (std::size_t i = 0; i < codec->numberOfSimulcastStreams; ++i) {
-      const auto& stream = codec->simulcastStream[i];
-      observed.simulcast_temporal_layers.push_back(stream.numberOfTemporalLayers);
-      FfiSimulcastStream projected{};
-      projected.width = stream.width;
-      projected.height = stream.height;
-      projected.active = stream.active;
-      projected.temporal_layers = stream.numberOfTemporalLayers;
-      observed.simulcast_streams.push_back(projected);
-    }
-    return encoder_init(*encoder_, std::move(observed));
+    FfiOwnedEncoderSettings value{settings.capabilities.loss_notification, settings.number_of_cores,
+        settings.max_payload_size, settings.encoder_thread_limit.has_value(), settings.encoder_thread_limit.value_or(0)};
+    const auto result = encoder_init_value(*encoder_, std::make_unique<NativeVideoCodec>(*codec), value);
+    if (result >= 0 && codec->numberOfSimulcastStreams > 1) info_invocation_->leaf_multistream_initialized = true;
+    return result;
   }
 
   int32_t RegisterEncodeCompleteCallback(
@@ -958,138 +1082,158 @@ public:
 
   int32_t Release() override;
 
-  int32_t
-  Encode(const webrtc::VideoFrame &frame,
-         const std::vector<webrtc::VideoFrameType> *frame_types) override {
-    std::lock_guard lock(mutex_);
-    if (released_ || failed_)
-      return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-    auto state = std::make_unique<NativeVideoFrame::State>();
-    state->width = static_cast<std::uint32_t>(frame.width());
-    state->height = static_cast<std::uint32_t>(frame.height());
-    state->timestamp_us = frame.timestamp_us();
-    state->rtp_timestamp = frame.rtp_timestamp();
-    state->rotation = static_cast<std::uint16_t>(frame.rotation());
-    state->i420 = CopyI420(frame);
-    std::vector<std::uint8_t> types;
-    if (frame_types != nullptr) {
-      for (auto type : *frame_types)
-        types.push_back(static_cast<std::uint8_t>(type));
-    }
-    const auto presentation = frame.presentation_timestamp();
-    return encoder_encode(
-        *encoder_, std::make_unique<NativeVideoFrame>(std::move(state)),
-        rust::Slice<const std::uint8_t>(types.data(), types.size()),
-        presentation ? presentation->us() : 0, callback_);
+  int32_t Encode(const webrtc::VideoFrame &frame,
+      const std::vector<webrtc::VideoFrameType> *frame_types) override {
+    Call call(*this); if (!call || failed_) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    rust::Vec<std::int32_t> types;
+    if (frame_types) for (auto type : *frame_types) types.push_back(static_cast<std::int32_t>(type));
+    return encoder_encode_value(*encoder_, std::make_unique<NativeRawVideoFrame>(frame),
+        frame_types != nullptr, std::move(types), callback_);
   }
-
   void SetRates(const RateControlParameters &parameters) override {
-    std::lock_guard lock(mutex_);
-    if (!released_ && !failed_) {
-      static_assert(webrtc::kMaxSpatialLayers == 5 && webrtc::kMaxTemporalStreams == 4,
-                    "update the rate-control bridge for native allocation dimensions");
-      FfiRateControl rates{};
-      rates.bitrate_bps = parameters.bitrate.get_sum_bps();
-      rates.target_bitrate_bps = parameters.target_bitrate.get_sum_bps();
-      rates.framerate_fps = parameters.framerate_fps;
-      rates.bandwidth_bps = static_cast<std::uint64_t>(parameters.bandwidth_allocation.bps());
-      rates.bandwidth_limited = parameters.bitrate.is_bw_limited();
-      rates.target_bandwidth_limited = parameters.target_bitrate.is_bw_limited();
-      for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
-        for (std::size_t temporal = 0; temporal < webrtc::kMaxTemporalStreams; ++temporal) {
-          rates.has_layer_bitrate[spatial][temporal] = parameters.bitrate.HasBitrate(spatial, temporal);
-          rates.layer_bitrates_bps[spatial][temporal] = parameters.bitrate.GetBitrate(spatial, temporal);
-          rates.has_target_layer_bitrate[spatial][temporal] = parameters.target_bitrate.HasBitrate(spatial, temporal);
-          rates.target_layer_bitrates_bps[spatial][temporal] = parameters.target_bitrate.GetBitrate(spatial, temporal);
-        }
-      }
-      encoder_set_rates(*encoder_, rates);
-    }
+    Call call(*this);
+    if (!call || failed_ || encoder_set_rates_value(*encoder_, std::make_unique<NativeVideoRateControl>(parameters)) != WEBRTC_VIDEO_CODEC_OK)
+      encoder_factory_report_feedback_failure(*factory_);
   }
 
+  void OnPacketLossRateUpdate(float rate) override {
+    Call call(*this);
+    if (!call || encoder_packet_loss(*encoder_, rate) != WEBRTC_VIDEO_CODEC_OK) encoder_factory_report_feedback_failure(*factory_);
+  }
+  void OnRttUpdate(std::int64_t rtt) override {
+    Call call(*this);
+    if (!call || encoder_rtt(*encoder_, rtt) != WEBRTC_VIDEO_CODEC_OK) encoder_factory_report_feedback_failure(*factory_);
+  }
+  void OnLossNotification(const LossNotification& loss) override {
+    Call call(*this);
+    FfiVideoEncoderLossNotification value{loss.timestamp_of_last_decodable, loss.timestamp_of_last_received,
+        loss.dependencies_of_last_received_decodable.has_value(), loss.dependencies_of_last_received_decodable.value_or(false),
+        loss.last_received_decodable.has_value(), loss.last_received_decodable.value_or(false)};
+    if (!call || encoder_loss_notification(*encoder_, value) != WEBRTC_VIDEO_CODEC_OK) encoder_factory_report_feedback_failure(*factory_);
+  }
   EncoderInfo GetEncoderInfo() const override {
-    std::lock_guard lock(mutex_);
-    const auto info = encoder_get_info(*encoder_);
-    EncoderInfo result;
-    result.implementation_name = std::string(info.implementation_name);
-    result.is_hardware_accelerated = info.hardware_accelerated;
-    result.supports_native_handle = info.supports_native_handle;
-    result.supports_simulcast = info.supports_simulcast;
-    static_assert(webrtc::kMaxSpatialLayers == 5,
-                  "Rust EncoderInfo must match native spatial capacity");
-    // Rust represents either no override or the exact native array shape.
-    // Preserve the constructor defaults when no capability was supplied.
-    if (!info.fps_allocation.empty()) {
-      for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
-        const auto& fractions = info.fps_allocation[spatial].fractions;
-        result.fps_allocation[spatial].assign(fractions.begin(), fractions.end());
-      }
-    }
-    return result;
+    Call call(*this, true);
+    const auto info = call ? encoder_get_info_value(*encoder_) : nullptr;
+    // In an active multi-stream query the SDK folds these exact results with
+    // uint32 lcm. Reject only a reached nonrepresentable fold; the plain value
+    // and independent getters continue to admit every uint32 alignment.
+    // FetchOrCreateEncoderContext snapshots the first info result as both
+    // PrimaryInfo and FallbackInfo (this factory has no fallback). Check its
+    // later override fold before it enters that private SDK cache as well.
+    const bool captured_for_context = call && first_info_;
+    if (call) first_info_ = false;
+    if (info && info_invocation_->AdmitAlignment(info->value().requested_resolution_alignment, captured_for_context)) return info->value();
+    info_invocation_->Fail();
+    encoder_factory_report_codec_info_failure(*factory_);
+    // The native value-only ABI cannot return an error. Keep the failure
+    // separate from its mandatory default value, never invent a caller name.
+    return EncoderInfo{};
   }
 
 private:
   mutable std::mutex mutex_;
+  mutable bool call_active_ = false;
+  mutable bool first_info_ = true;
   std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention_;
+  rust::Box<RustVideoEncoderFactory> factory_;
+  std::shared_ptr<EncoderInfoInvocation> info_invocation_;
   rust::Box<RustVideoEncoder> encoder_;
   std::shared_ptr<NativeEncodedImageCallback> callback_;
+  std::shared_ptr<NativeFecOverride> fec_override_;
   bool released_ = false;
   const bool failed_;
 };
 
 class RustDecoder final : public webrtc::VideoDecoder {
+  // Exclusive Rust codec borrows cannot overlap. Admission is synchronized,
+  // but no bridge mutex spans caller code, downstream SDK or scheduling hooks.
+  // Unsupported concurrent/reentrant operations fail rather than block/reenter.
+  class Call final {
+   public:
+    explicit Call(const RustDecoder& owner, bool allow_released = false) : owner_(owner) {
+      std::lock_guard lock(owner_.mutex_);
+      if (owner_.call_active_ || (!allow_released && owner_.released_)) return;
+      owner_.call_active_ = true; entered_ = true;
+    }
+    ~Call() { if (entered_) { std::lock_guard lock(owner_.mutex_); owner_.call_active_ = false; } }
+    explicit operator bool() const { return entered_; }
+    Call(const Call&) = delete;
+    Call& operator=(const Call&) = delete;
+   private:
+    const RustDecoder& owner_;
+    bool entered_ = false;
+  };
 public:
   RustDecoder(rust::Box<RustVideoDecoder> decoder,
-              std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention) noexcept
+              std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention,
+              std::unique_ptr<NativeEnvironment> engine_environment) noexcept
       : retention_(std::move(retention)), decoder_(std::move(decoder)),
         callback_(std::make_shared<NativeDecodedImageCallback>(
-            std::make_shared<NativeDecodedImageCallback::State>())) {}
-  ~RustDecoder() override { Release(); }
+            std::make_shared<NativeDecodedImageCallback::State>())) {
+    callback_->state()->engine_environment = std::move(engine_environment);
+  }
+  ~RustDecoder() override { if (!released_) Release(); }
 
   bool Configure(const Settings &settings) override {
-    std::lock_guard lock(mutex_);
-    if (released_)
-      return false;
-    const auto max = settings.max_render_resolution();
-    return decoder_configure(
-        *decoder_, FfiDecoderSettings{
-                       static_cast<std::uint32_t>(settings.number_of_cores()),
-                       static_cast<std::uint32_t>(std::max(0, max.Width())),
-                       static_cast<std::uint32_t>(std::max(0, max.Height()))});
+    Call call(*this, true); if (!call) return false;
+    released_ = false;
+    return decoder_configure_value(*decoder_, std::make_unique<NativeVideoDecoderSettings>(settings));
   }
 
+  std::unique_ptr<NativeVideoDecoderInfo> InfoValue() const {
+    Call call(*this, true); if (!call) return nullptr;
+    auto info = decoder_get_info_value(*decoder_);
+    info_valid_ = info != nullptr;
+    return info;
+  }
+  bool InfoSucceeded() const { Call call(*this, true); return call && info_valid_; }
   int32_t RegisterDecodeCompleteCallback(
       webrtc::DecodedImageCallback *callback) override;
   int32_t Release() override;
 
-  int32_t Decode(const webrtc::EncodedImage &image, int64_t) override {
-    std::lock_guard lock(mutex_);
-    if (released_)
-      return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-    auto state = std::make_unique<NativeEncodedVideoFrame::State>();
-    state->width = image._encodedWidth;
-    state->height = image._encodedHeight;
-    state->rtp_timestamp = image.RtpTimestamp();
-    state->key_frame =
-        image.FrameType() == webrtc::VideoFrameType::kVideoFrameKey;
-    state->qp = image.qp_;
-    state->data.assign(image.data(), image.data() + image.size());
-    return decoder_decode(
-        *decoder_, std::make_unique<NativeEncodedVideoFrame>(std::move(state)),
-        callback_);
+  int32_t Decode(const webrtc::EncodedImage &image, int64_t render_time_ms) override {
+    return DecodeValue(image, false, false, render_time_ms);
+  }
+  int32_t Decode(const webrtc::EncodedImage &image, bool missing, int64_t render_time_ms) override {
+    return DecodeValue(image, true, missing, render_time_ms);
+  }
+  int32_t DecodeValue(const webrtc::EncodedImage& image, bool overload, bool missing, int64_t render_time_ms) {
+    Call call(*this); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    const auto buffer = image.GetEncodedData();
+    if (image.size() && (!buffer || !image.data() || image.size() > buffer->size())) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+    return decoder_decode_value(*decoder_, std::make_unique<NativeEncodedImage>(image), overload, missing, render_time_ms, callback_);
+  }
+  bool CallbackMatches(webrtc::DecodedImageCallback* callback) const {
+    Call call(*this, true); if (!call) return false;
+    const auto state = callback_->state();
+    std::lock_guard slot_lock(state->mutex);
+    return state->callback == callback && (callback == nullptr || state->active);
   }
 
+  const char* ImplementationName() const override {
+    Call call(*this, true); if (!call) return "";
+    const auto bytes = decoder_implementation_name(*decoder_, name_valid_);
+    name_.assign(bytes.begin(), bytes.end());
+    return name_.c_str();
+  }
+  bool NameSucceeded() const {
+    Call call(*this, true); return call && name_valid_;
+  }
   DecoderInfo GetDecoderInfo() const override {
-    std::lock_guard lock(mutex_);
-    const auto info = decoder_get_info(*decoder_);
-    return DecoderInfo{std::string(info.implementation_name),
-                       info.hardware_accelerated};
+    const auto info = InfoValue();
+    // The SDK value-returning ABI has no error arm. Public owning info drivers
+    // preserve this failure as null; the engine receives no cached caller info.
+    return info ? info->value() : DecoderInfo{};
   }
 
 private:
   mutable std::mutex mutex_;
   std::unique_ptr<rust::Box<RustVideoFactoryEnvironment>> retention_;
   rust::Box<RustVideoDecoder> decoder_;
+  mutable bool call_active_ = false;
+  mutable std::string name_;
+  mutable bool name_valid_ = false;
+  mutable bool info_valid_ = false;
   std::shared_ptr<NativeDecodedImageCallback> callback_;
   bool released_ = false;
 };
@@ -1097,8 +1241,21 @@ private:
 class RustPlainEncoderFactory final : public webrtc::VideoEncoderFactory {
 public:
   explicit RustPlainEncoderFactory(rust::Box<RustVideoEncoderFactory> factory,
-      VideoCreationRetention retention = nullptr)
-      : retention_(std::move(retention)), factory_(std::move(factory)) {}
+      VideoCreationRetention retention = nullptr,
+      std::shared_ptr<EncoderInfoInvocation> info_invocation = std::make_shared<EncoderInfoInvocation>())
+      : retention_(std::move(retention)), info_invocation_(std::move(info_invocation)), factory_(std::move(factory)) {}
+  std::shared_ptr<RustPlainEncoderFactory> WithInfoInvocation(std::shared_ptr<EncoderInfoInvocation> invocation) const {
+    return std::make_shared<RustPlainEncoderFactory>(encoder_factory_clone(*factory_), retention_, std::move(invocation));
+  }
+  std::unique_ptr<EncoderSelectorInterface> SelectorValue(bool& valid) const {
+    auto selected = encoder_factory_selector(*factory_, valid);
+    return selected ? selected->Take() : nullptr;
+  }
+  std::unique_ptr<EncoderSelectorInterface> GetEncoderSelector() const override { bool valid; return SelectorValue(valid); }
+  std::unique_ptr<NativeSdpVideoFormatList> FormatsValue() const { return encoder_factory_formats(*factory_); }
+  std::unique_ptr<NativeSdpVideoFormatList> ImplementationsValue() const { return encoder_factory_implementations(*factory_); }
+  void ReportInfoFailure() const { encoder_factory_report_codec_info_failure(*factory_); }
+  void ReportFeedbackFailure() const { encoder_factory_report_feedback_failure(*factory_); }
   std::shared_ptr<RustPlainEncoderFactory> WithRetention(VideoCreationRetention retention) const {
     return std::make_shared<RustPlainEncoderFactory>(
         encoder_factory_clone(*factory_), std::move(retention));
@@ -1114,12 +1271,16 @@ public:
   FfiVideoFactorySupport QueryValue(
       const webrtc::SdpVideoFormat &format,
       std::optional<std::string> mode,
-      std::optional<webrtc::Resolution> resolution) const {
+      std::optional<webrtc::Resolution> resolution, bool legacy = false) const {
     const std::string bytes = mode.value_or("");
     return encoder_factory_query(*factory_,
         std::make_unique<NativeSdpVideoFormat>(format), mode.has_value(),
         rust::Slice<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()),
-        resolution ? std::make_unique<NativeRtpResolution>(*resolution) : nullptr);
+        resolution ? std::make_unique<NativeRtpResolution>(*resolution) : nullptr, legacy);
+  }
+  CodecSupport QueryCodecSupport(const webrtc::SdpVideoFormat& format, std::optional<std::string> mode) const override {
+    const auto result = QueryValue(format, std::move(mode), std::nullopt, true);
+    return {result.support.supported, result.support.power_efficient};
   }
   CodecSupport QueryCodecSupport(
       const webrtc::SdpVideoFormat &format,
@@ -1136,11 +1297,13 @@ public:
     auto encoder = encoder_factory_create(*factory_,
         retain_environment_from_sdk(environment, selected.get()), **retention,
         std::make_unique<NativeSdpVideoFormat>(format));
-    return std::make_unique<RustEncoder>(std::move(encoder), format, std::move(retention));
+    if (!encoder_is_valid(*encoder)) return nullptr;
+    return std::make_unique<RustEncoder>(std::move(encoder), format, std::move(retention), encoder_factory_clone(*factory_), info_invocation_);
   }
 
 private:
   VideoCreationRetention retention_;
+  std::shared_ptr<EncoderInfoInvocation> info_invocation_;
   rust::Box<RustVideoEncoderFactory> factory_;
 };
 
@@ -1148,50 +1311,157 @@ private:
 // storage and the exact private factory outlive the adapter's deferred Create,
 // Release, and destructor. No bridge lock is held across delegated SDK calls.
 class RetainedSimulcastEncoder final : public webrtc::VideoEncoder {
+  class Call final {
+   public:
+    explicit Call(const RetainedSimulcastEncoder& owner) : owner_(owner) {
+      std::lock_guard lock(owner_.mutex_);
+      if (!owner_.call_active_) { owner_.call_active_ = true; entered_ = true; }
+    }
+    ~Call() { if (entered_) { std::lock_guard lock(owner_.mutex_); owner_.call_active_ = false; } }
+    explicit operator bool() const { return entered_; }
+    Call(const Call&) = delete; Call& operator=(const Call&) = delete;
+   private:
+    const RetainedSimulcastEncoder& owner_;
+    bool entered_ = false;
+  };
  public:
   RetainedSimulcastEncoder(const webrtc::Environment &environment,
       std::shared_ptr<RustPlainEncoderFactory> factory,
-      const webrtc::SdpVideoFormat &format)
-      : environment_(environment), factory_(std::move(factory)),
+      const webrtc::SdpVideoFormat &format, bool installed)
+      : environment_(environment), info_invocation_(std::make_shared<EncoderInfoInvocation>()),
+        factory_(factory->WithInfoInvocation(info_invocation_)),
         encoder_(std::make_unique<webrtc::SimulcastEncoderAdapter>(
-            environment_, factory_.get(), nullptr, format)) {}
+            environment_, factory_.get(), nullptr, format)),
+        info_override_(environment_.field_trials()) {
+    // FieldTrialsView promises immutable values. Parse with the actual public
+    // SDK settings type, after the adapter has read these same keys. The Rust
+    // view shares its winning first-value cache, so these immutable SDK reads
+    // invoke no additional Rust provider callbacks or substitutions. Default
+    // native trials obey the same SDK immutability contract.
+    info_invocation_->trial_alignment = info_override_.requested_resolution_alignment().value_or(1);
+    info_invocation_->installed = installed;
+  }
   void SetFecControllerOverride(webrtc::FecControllerOverride *value) override {
-    encoder_->SetFecControllerOverride(value);
+    Call call(*this); if (call) encoder_->SetFecControllerOverride(value);
+  }
+  template<class Operation> int Initialize(const webrtc::VideoCodec* codec, Operation operation) {
+    info_invocation_->leaf_multistream_initialized = false;
+    const int result = operation();
+    if (result >= 0 && codec) {
+      info_invocation_->adapter_initialized = true;
+      std::uint32_t sum = codec->numberOfSimulcastStreams == 0 ? codec->maxBitrate : 0;
+      for (std::size_t i = 0; i < codec->numberOfSimulcastStreams; ++i) sum += codec->simulcastStream[i].maxBitrate;
+      const auto total = sum == 0 ? 1u : std::max<unsigned>(codec->numberOfSimulcastStreams, 1);
+      bypass_ = total == 1 || info_invocation_->leaf_multistream_initialized;
+      frame_type_count_ = std::max<unsigned>(codec->numberOfSimulcastStreams, 1);
+      active_indices_.clear();
+      for (std::size_t i = 0; i < total; ++i)
+        if (codec->numberOfSimulcastStreams == 0 || codec->simulcastStream[i].active) active_indices_.push_back(i);
+    }
+    return result;
   }
   int InitEncode(const webrtc::VideoCodec *codec, int32_t cores, size_t size) override {
-    return encoder_->InitEncode(codec, cores, size);
+    Call call(*this); return call ? Initialize(codec, [&] { return encoder_->InitEncode(codec, cores, size); }) : WEBRTC_VIDEO_CODEC_UNINITIALIZED;
   }
   int InitEncode(const webrtc::VideoCodec *codec, const Settings &settings) override {
-    return encoder_->InitEncode(codec, settings);
+    Call call(*this); return call ? Initialize(codec, [&] { return encoder_->InitEncode(codec, settings); }) : WEBRTC_VIDEO_CODEC_UNINITIALIZED;
   }
   int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback *callback) override {
-    return encoder_->RegisterEncodeCompleteCallback(callback);
+    Call call(*this); return call ? encoder_->RegisterEncodeCompleteCallback(callback) : WEBRTC_VIDEO_CODEC_UNINITIALIZED;
   }
-  int32_t Release() override { return encoder_->Release(); }
+  int32_t Release() override {
+    Call call(*this); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    const auto result = encoder_->Release(); info_invocation_->adapter_initialized = false; return result;
+  }
   int32_t Encode(const webrtc::VideoFrame &frame,
       const std::vector<webrtc::VideoFrameType> *types) override {
+    Call call(*this); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    if (info_invocation_->adapter_initialized && types) {
+#if RTC_DCHECK_IS_ON
+      if (bypass_ && types->size() != frame_type_count_) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+#endif
+      if (!bypass_) for (auto index : active_indices_)
+        if (types->size() <= index) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+    }
     return encoder_->Encode(frame, types);
   }
-  void SetRates(const RateControlParameters &rates) override { encoder_->SetRates(rates); }
-  void OnPacketLossRateUpdate(float rate) override { encoder_->OnPacketLossRateUpdate(rate); }
-  void OnRttUpdate(int64_t rtt) override { encoder_->OnRttUpdate(rtt); }
-  void OnLossNotification(const LossNotification &loss) override { encoder_->OnLossNotification(loss); }
-  EncoderInfo GetEncoderInfo() const override { return encoder_->GetEncoderInfo(); }
+  void SetRates(const RateControlParameters &rates) override {
+    Call call(*this); if (!call) { factory_->ReportFeedbackFailure(); return; }
+    if (info_invocation_->adapter_initialized && !(rates.framerate_fps < 1.0)) {
+      const auto rounded = rates.framerate_fps + 0.5;
+      bool safe = std::isfinite(rounded) && rounded >= 0 && rounded < 4294967296.0;
+      if (!bypass_ && !active_indices_.empty() && rates.bitrate.get_sum_bps() && !rates.bandwidth_allocation.IsZero()) {
+        safe = safe && rates.bandwidth_allocation.IsFinite();
+        if (safe) for (auto index : active_indices_) {
+          const __int128 numerator = static_cast<__int128>(rates.bandwidth_allocation.bps()) * rates.bitrate.GetSpatialLayerSum(index);
+          safe = safe && numerator >= INT64_MIN && numerator <= INT64_MAX;
+#if RTC_DCHECK_IS_ON
+          safe = safe && numerator / rates.bitrate.get_sum_bps() >= 0;
+#endif
+        }
+      }
+      if (!safe) { factory_->ReportFeedbackFailure(); return; }
+    }
+    encoder_->SetRates(rates);
+  }
+  void OnPacketLossRateUpdate(float rate) override { Call call(*this); if (call) encoder_->OnPacketLossRateUpdate(rate); else factory_->ReportFeedbackFailure(); }
+  void OnRttUpdate(int64_t rtt) override { Call call(*this); if (call) encoder_->OnRttUpdate(rtt); else factory_->ReportFeedbackFailure(); }
+  void OnLossNotification(const LossNotification &loss) override { Call call(*this); if (call) encoder_->OnLossNotification(loss); else factory_->ReportFeedbackFailure(); }
+  EncoderInfo GetEncoderInfo() const override {
+    Call call(*this);
+    if (!call) { info_valid_.store(false, std::memory_order_release); factory_->ReportInfoFailure(); return EncoderInfo{}; }
+    info_invocation_->Begin();
+    auto info = encoder_->GetEncoderInfo();
+    if (info_invocation_->installed) {
+      // Current scaling configuration is private in this SDK. Until a native
+      // consumer hook exists, installed alignment must be representable for
+      // every supported rung. Plain owning metadata remains unrestricted.
+      const auto multiplier = info.apply_alignment_to_all_simulcast_layers
+          ? (1u << (webrtc::kMaxSimulcastStreams - 1)) : 1u;
+      bool safe = info.requested_resolution_alignment != 0 &&
+          info.requested_resolution_alignment <= static_cast<std::uint32_t>(INT_MAX) / multiplier;
+      for (auto pixel : info.preferred_pixel_formats)
+        safe = safe && static_cast<int>(pixel) >= 0 && static_cast<int>(pixel) <= 8;
+      bool valid, found;
+      video_encoder_info_limits(NativeVideoEncoderInfo(info), INT_MAX, valid, found);
+      safe = safe && valid;
+      if (!safe) {
+        info_invocation_->Fail(); factory_->ReportInfoFailure();
+        info = EncoderInfo{};
+      }
+    }
+    info_valid_.store(info_invocation_->Succeeded(), std::memory_order_release);
+    info_invocation_->End();
+    return info;
+  }
+  bool InfoSucceeded() const { return info_valid_.load(std::memory_order_acquire); }
  private:
+  mutable std::mutex mutex_;
+  mutable bool call_active_ = false;
+  mutable std::atomic<bool> info_valid_{false};
   webrtc::Environment environment_;
+  std::shared_ptr<EncoderInfoInvocation> info_invocation_;
   std::shared_ptr<RustPlainEncoderFactory> factory_;
   std::unique_ptr<webrtc::VideoEncoder> encoder_;
+  const webrtc::SimulcastEncoderAdapterEncoderInfoSettings info_override_;
+  bool bypass_ = false;
+  std::size_t frame_type_count_ = 0;
+  std::vector<std::size_t> active_indices_;
 };
 
 class RustEncoderFactory final : public webrtc::VideoEncoderFactory {
 public:
   explicit RustEncoderFactory(rust::Box<RustVideoEncoderFactory> factory)
       : plain_(std::make_shared<RustPlainEncoderFactory>(std::move(factory))) {}
-  explicit RustEncoderFactory(std::shared_ptr<RustPlainEncoderFactory> plain)
-      : plain_(std::move(plain)) {}
-  std::unique_ptr<webrtc::VideoEncoderFactory> WithRetention(VideoCreationRetention retention) const {
-    return std::make_unique<RustEncoderFactory>(plain_->WithRetention(std::move(retention)));
+  std::unique_ptr<NativeSdpVideoFormatList> FormatsValue() const { return plain_->FormatsValue(); }
+  std::unique_ptr<NativeSdpVideoFormatList> ImplementationsValue() const { return plain_->ImplementationsValue(); }
+  explicit RustEncoderFactory(std::shared_ptr<RustPlainEncoderFactory> plain, bool installed)
+      : plain_(std::move(plain)), installed_(installed) {}
+  std::unique_ptr<webrtc::VideoEncoderFactory> WithRetention(VideoCreationRetention retention, bool installed) const {
+    return std::make_unique<RustEncoderFactory>(plain_->WithRetention(std::move(retention)), installed);
   }
+  std::unique_ptr<EncoderSelectorInterface> SelectorValue(bool& valid) const { return plain_->SelectorValue(valid); }
+  std::unique_ptr<EncoderSelectorInterface> GetEncoderSelector() const override { return plain_->GetEncoderSelector(); }
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
     return plain_->GetSupportedFormats();
   }
@@ -1200,8 +1470,11 @@ public:
   }
   FfiVideoFactorySupport QueryValue(
       const webrtc::SdpVideoFormat &format, std::optional<std::string> mode,
-      std::optional<webrtc::Resolution> resolution) const {
-    return plain_->QueryValue(format, std::move(mode), resolution);
+      std::optional<webrtc::Resolution> resolution, bool legacy = false) const {
+    return plain_->QueryValue(format, std::move(mode), resolution, legacy);
+  }
+  CodecSupport QueryCodecSupport(const webrtc::SdpVideoFormat& format, std::optional<std::string> mode) const override {
+    return plain_->QueryCodecSupport(format, std::move(mode));
   }
   CodecSupport QueryCodecSupport(
       const webrtc::SdpVideoFormat &format,
@@ -1212,21 +1485,23 @@ public:
   std::unique_ptr<webrtc::VideoEncoder> Create(
       const webrtc::Environment &env,
       const webrtc::SdpVideoFormat &format) override {
-    return std::make_unique<RetainedSimulcastEncoder>(env, plain_, format);
+    return std::make_unique<RetainedSimulcastEncoder>(env, plain_, format, installed_);
   }
 
 private:
   std::shared_ptr<RustPlainEncoderFactory> plain_;
+  const bool installed_ = false;
 };
 
 class RustDecoderFactory final : public webrtc::VideoDecoderFactory {
 public:
+  std::unique_ptr<NativeSdpVideoFormatList> FormatsValue() const { return decoder_factory_formats(*factory_); }
   explicit RustDecoderFactory(rust::Box<RustVideoDecoderFactory> factory,
-      VideoCreationRetention retention = nullptr)
-      : retention_(std::move(retention)), factory_(std::move(factory)) {}
-  std::unique_ptr<webrtc::VideoDecoderFactory> WithRetention(VideoCreationRetention retention) const {
+      VideoCreationRetention retention = nullptr, bool installed = false)
+      : retention_(std::move(retention)), factory_(std::move(factory)), installed_(installed) {}
+  std::unique_ptr<webrtc::VideoDecoderFactory> WithRetention(VideoCreationRetention retention, bool installed) const {
     return std::make_unique<RustDecoderFactory>(
-        decoder_factory_clone(*factory_), std::move(retention));
+        decoder_factory_clone(*factory_), std::move(retention), installed);
   }
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
     auto result = decoder_factory_formats(*factory_);
@@ -1234,10 +1509,14 @@ public:
   }
   FfiVideoFactorySupport QueryValue(
       const webrtc::SdpVideoFormat &format, bool reference_scaling,
-      std::optional<webrtc::Resolution> resolution) const {
+      std::optional<webrtc::Resolution> resolution, bool legacy = false) const {
     return decoder_factory_query(*factory_,
         std::make_unique<NativeSdpVideoFormat>(format), reference_scaling,
-        resolution ? std::make_unique<NativeRtpResolution>(*resolution) : nullptr);
+        resolution ? std::make_unique<NativeRtpResolution>(*resolution) : nullptr, legacy);
+  }
+  CodecSupport QueryCodecSupport(const webrtc::SdpVideoFormat& format, bool reference_scaling) const override {
+    const auto result = QueryValue(format, reference_scaling, std::nullopt, true);
+    return {result.support.supported, result.support.power_efficient};
   }
   CodecSupport QueryCodecSupport(
       const webrtc::SdpVideoFormat &format, bool reference_scaling,
@@ -1255,12 +1534,14 @@ public:
         std::make_unique<NativeSdpVideoFormat>(format));
     if (!decoder_is_valid(*decoder))
       return nullptr;
-    return std::make_unique<RustDecoder>(std::move(decoder), std::move(retention));
+    auto callback_environment = installed_ ? retain_environment_from_sdk(environment, selected.get()) : nullptr;
+    return std::make_unique<RustDecoder>(std::move(decoder), std::move(retention), std::move(callback_environment));
   }
 
 private:
   VideoCreationRetention retention_;
   rust::Box<RustVideoDecoderFactory> factory_;
+  const bool installed_;
 };
 
 class EncodedCollector final : public webrtc::EncodedImageCallback {
@@ -1332,68 +1613,183 @@ NativeDecodedImageCallback::state() const noexcept {
 
 int32_t RustEncoder::RegisterEncodeCompleteCallback(
     webrtc::EncodedImageCallback *callback) {
-  std::lock_guard lock(mutex_);
-  if (released_)
-    return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-  {
-    std::lock_guard callback_lock(callback_->state()->mutex);
-    callback_->state()->callback = callback;
-    callback_->state()->active = callback != nullptr;
-  }
-  return failed_ ? WEBRTC_VIDEO_CODEC_OK : encoder_register_callback(*encoder_);
+  Call call(*this, true); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  auto old = callback_->state(); old->Retire();
+  auto state = std::make_shared<NativeEncodedImageCallback::State>();
+  state->codec_type = old->codec_type; state->h264_packetization_mode = old->h264_packetization_mode;
+  state->engine = old->engine; state->configured_streams = old->configured_streams;
+  state->callback = callback; state->active = callback != nullptr;
+  callback_ = std::make_shared<NativeEncodedImageCallback>(std::move(state));
+  return failed_ ? WEBRTC_VIDEO_CODEC_UNINITIALIZED : encoder_register_callback_value(*encoder_, callback ? callback_ : nullptr);
 }
 int32_t RustEncoder::Release() {
-  std::lock_guard lock(mutex_);
-  if (released_)
-    return WEBRTC_VIDEO_CODEC_OK;
-  {
-    std::lock_guard callback_lock(callback_->state()->mutex);
-    callback_->state()->active = false;
-    callback_->state()->callback = nullptr;
-  }
+  Call call(*this, true); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  callback_->state()->Retire();
+  info_invocation_->adapter_initialized = false;
+  if (fec_override_) RetireFecOverride(*fec_override_);
   released_ = true;
   return failed_ ? WEBRTC_VIDEO_CODEC_OK : encoder_release(*encoder_);
 }
 int32_t RustDecoder::RegisterDecodeCompleteCallback(
     webrtc::DecodedImageCallback *callback) {
-  std::lock_guard lock(mutex_);
-  if (released_)
-    return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-  {
-    std::lock_guard callback_lock(callback_->state()->mutex);
-    callback_->state()->callback = callback;
-    callback_->state()->active = callback != nullptr;
-  }
-  return decoder_register_callback(*decoder_);
+  Call call(*this, true); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  callback_->state()->Retire();
+  auto state = std::make_shared<NativeDecodedImageCallback::State>();
+  state->engine_environment = callback_->state()->engine_environment;
+  state->callback = callback; state->active = callback != nullptr;
+  callback_ = std::make_shared<NativeDecodedImageCallback>(std::move(state));
+  return decoder_register_callback_value(*decoder_, callback ? callback_ : nullptr);
 }
 int32_t RustDecoder::Release() {
-  std::lock_guard lock(mutex_);
-  if (released_)
-    return WEBRTC_VIDEO_CODEC_OK;
-  {
-    std::lock_guard callback_lock(callback_->state()->mutex);
-    callback_->state()->active = false;
-    callback_->state()->callback = nullptr;
-  }
+  Call call(*this, true); if (!call) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  callback_->state()->Retire();
   released_ = true;
   return decoder_release(*decoder_);
 }
 
+struct NativeVideoEncoderProduct::State {
+  webrtc::Thread* sequence = nullptr;
+  // Native encoder and private adapter must die before either environment lease.
+  VideoCreationRetention retention;
+  std::unique_ptr<NativeEnvironment> environment_owner;
+  webrtc::Environment environment;
+  std::unique_ptr<webrtc::VideoEncoderFactory> adapter;
+  std::unique_ptr<NativeEncodedImageSink> output_callback;
+  std::shared_ptr<NativeFecOverride> fec_override;
+  std::unique_ptr<webrtc::VideoEncoder> encoder;
+  bool rust_product = false;
+  State(VideoCreationRetention retained, std::unique_ptr<NativeEnvironment> owner)
+      : retention(std::move(retained)), environment_owner(std::move(owner)),
+        environment(environment_owner->environment()) {}
+};
+NativeVideoEncoderProduct::NativeVideoEncoderProduct(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeVideoEncoderProduct::~NativeVideoEncoderProduct() {
+  if (auto* sequence = state_->sequence; sequence && !sequence->IsCurrent()) sequence->BlockingCall([&] { state_.reset(); });
+}
+const NativeVideoEncoderProduct::State& NativeVideoEncoderProduct::state() const noexcept { return *state_; }
+NativeVideoEncoderProduct::State& NativeVideoEncoderProduct::state() noexcept { return *state_; }
+std::unique_ptr<NativeVideoEncoderProduct> video_encoder_create_product(
+    const NativeVideoEncoderFactory& factory, const NativeEnvironment& environment,
+    rust::Box<RustVideoFactoryEnvironment> retained, const NativeSdpVideoFormat& format) noexcept {
+  auto retention = std::make_shared<rust::Box<RustVideoFactoryEnvironment>>(std::move(retained));
+  auto state = std::make_unique<NativeVideoEncoderProduct::State>(retention, clone_environment(environment));
+  auto* selected = &factory.factory();
+  if (factory.rust_factory()) {
+    state->adapter = factory.CreateAdapter(retention, false);
+    selected = state->adapter.get();
+  }
+  // The builtin Create checks codec membership and constructs its adapter.
+  // Unlike Query/Init, it does not invoke FuzzyMatch's format diagnostics.
+  state->encoder = selected->Create(state->environment, format.value());
+  state->rust_product = factory.rust_factory();
+  if (!state->encoder) return nullptr;
+  return std::make_unique<NativeVideoEncoderProduct>(std::move(state));
+}
+std::unique_ptr<NativeVideoEncoderProduct> video_encoder_create_actor_product(const NativePeerConnectionFactory& owner,
+    const NativeVideoEncoderFactory& factory, const NativeEnvironment& environment,
+    rust::Box<RustVideoFactoryEnvironment> retained, const NativeSdpVideoFormat& format) noexcept {
+  return owner.worker_thread()->BlockingCall([&] {
+    auto product = video_encoder_create_product(factory, environment, std::move(retained), format);
+    if (product) product->state().sequence = owner.worker_thread();
+    return product;
+  });
+}
+void video_encoder_product_fec(NativeVideoEncoderProduct& product, std::shared_ptr<NativeFecOverride> value) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_fec(product, std::move(value)); });
+
+  auto& state = product.state();
+  state.encoder->SetFecControllerOverride(value ? value->callback() : nullptr);
+  state.fec_override = std::move(value);
+}
+std::int32_t video_encoder_product_register_callback(NativeVideoEncoderProduct& product, const NativeEncodedImageSink* sink) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_register_callback(product, sink); });
+
+  auto candidate = sink ? encoded_sink_clone(*sink) : nullptr;
+  auto& state = product.state();
+  const auto status = state.encoder->RegisterEncodeCompleteCallback(candidate ? candidate->callback() : nullptr);
+  // SimulcastEncoderAdapter always installs its pointer, independently of
+  // leaf callback statuses. Stock encoders likewise store this exact pointer.
+  state.output_callback = std::move(candidate);
+  return status;
+}
+std::int32_t video_encoder_product_initialize(NativeVideoEncoderProduct& product, const NativeVideoCodec& codec, FfiOwnedEncoderSettings fields, bool legacy) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_initialize(product, codec, fields, legacy); });
+
+  const auto& value = codec.value();
+  // The selected SDK simulcast adapter traverses this prefix during InitEncode.
+  if (value.numberOfSimulcastStreams > webrtc::kMaxSimulcastStreams) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+  webrtc::VideoEncoder::Settings settings(webrtc::VideoEncoder::Capabilities(fields.loss_notification), fields.number_of_cores, fields.max_payload_size);
+  if (fields.has_thread_limit) settings.encoder_thread_limit = fields.thread_limit;
+  return legacy ? product.state().encoder->InitEncode(&value, fields.number_of_cores, fields.max_payload_size)
+                : product.state().encoder->InitEncode(&value, settings);
+}
+std::int32_t video_encoder_product_encode(NativeVideoEncoderProduct& product, const NativeRawVideoFrame& frame, bool has_types, rust::Slice<const std::int32_t> input) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_encode(product, frame, has_types, input); });
+
+  std::vector<webrtc::VideoFrameType> types;
+  for (auto type : input) {
+    // VideoFrameType is a non-fixed enum. Preserve all representable values.
+    if (type < 0 || type > 7) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+    types.push_back(static_cast<webrtc::VideoFrameType>(type));
+  }
+  return product.state().encoder->Encode(frame.value(), has_types ? &types : nullptr);
+}
+void video_encoder_product_rates(NativeVideoEncoderProduct& product, const NativeVideoRateControl& rates) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_rates(product, rates); });
+ product.state().encoder->SetRates(rates.value()); }
+std::unique_ptr<NativeVideoEncoderInfo> video_encoder_product_info(const NativeVideoEncoderProduct& product) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_info(product); });
+
+  auto info = product.state().encoder->GetEncoderInfo();
+  if (product.state().rust_product && !static_cast<const RetainedSimulcastEncoder&>(*product.state().encoder).InfoSucceeded()) return nullptr;
+  return std::make_unique<NativeVideoEncoderInfo>(std::move(info));
+}
+rust::Vec<std::uint8_t> video_encoder_product_name(const NativeVideoEncoderProduct& product, bool& valid) noexcept {
+  const auto info = video_encoder_product_info(product); valid = info != nullptr;
+  rust::Vec<std::uint8_t> result;
+  if (info) for (const unsigned char value : info->value().implementation_name) result.push_back(value);
+  return result;
+}
+void video_encoder_product_packet_loss(NativeVideoEncoderProduct& product, float rate) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_packet_loss(product, rate); });
+ product.state().encoder->OnPacketLossRateUpdate(rate); }
+void video_encoder_product_rtt(NativeVideoEncoderProduct& product, std::int64_t rtt) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_rtt(product, rtt); });
+ product.state().encoder->OnRttUpdate(rtt); }
+void video_encoder_product_loss_notification(NativeVideoEncoderProduct& product, FfiVideoEncoderLossNotification value) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_loss_notification(product, value); });
+
+  webrtc::VideoEncoder::LossNotification loss{value.last_decodable, value.last_received,
+      value.has_dependencies_decodable ? std::optional<bool>(value.dependencies_decodable) : std::nullopt,
+      value.has_received_decodable ? std::optional<bool>(value.received_decodable) : std::nullopt};
+  product.state().encoder->OnLossNotification(loss);
+}
+std::int32_t video_encoder_product_release(NativeVideoEncoderProduct& product) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_encoder_product_release(product); });
+ return product.state().encoder->Release(); }
+
 struct NativeVideoDecoderProduct::State {
+  webrtc::Thread* sequence = nullptr;
   // Reverse destruction order: decoder, private factory adapter, actual copied
   // SDK Environment and its independent Rust-only dependency retention.
   VideoCreationRetention retention;
   std::unique_ptr<NativeEnvironment> environment_owner;
   webrtc::Environment environment;
   std::unique_ptr<webrtc::VideoDecoderFactory> adapter;
+  // The borrowed callback must outlive Release and actual decoder destruction.
+  std::unique_ptr<NativeDecodedImageSink> output_callback;
   std::unique_ptr<webrtc::VideoDecoder> decoder;
+  bool rust_product = false;
+  bool builtin_av1 = false;
   State(VideoCreationRetention retained, std::unique_ptr<NativeEnvironment> owner)
       : retention(std::move(retained)), environment_owner(std::move(owner)),
         environment(environment_owner->environment()) {}
 };
 NativeVideoDecoderProduct::NativeVideoDecoderProduct(std::unique_ptr<State> state) noexcept
     : state_(std::move(state)) {}
-NativeVideoDecoderProduct::~NativeVideoDecoderProduct() = default;
+NativeVideoDecoderProduct::~NativeVideoDecoderProduct() {
+  if (auto* sequence = state_->sequence; sequence && !sequence->IsCurrent()) sequence->BlockingCall([&] { state_.reset(); });
+}
 const NativeVideoDecoderProduct::State &NativeVideoDecoderProduct::state() const noexcept { return *state_; }
 NativeVideoDecoderProduct::State &NativeVideoDecoderProduct::state() noexcept { return *state_; }
 std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_product(
@@ -1414,35 +1810,94 @@ std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_product(
   auto state = std::make_unique<NativeVideoDecoderProduct::State>(retention, clone_environment(environment));
   auto *selected = &factory.factory();
   if (factory.rust_factory()) {
-    state->adapter = factory.CreateAdapter(retention);
+    state->adapter = factory.CreateAdapter(retention, false);
     selected = state->adapter.get();
   }
   state->decoder = selected->Create(state->environment, format.value());
+  state->rust_product = factory.rust_factory();
+  state->builtin_av1 = !state->rust_product && absl::EqualsIgnoreCase(format.value().name, "AV1");
   if (!state->decoder) return nullptr;
   return std::make_unique<NativeVideoDecoderProduct>(std::move(state));
 }
-std::unique_ptr<NativeVideoDecoderInfo> video_decoder_product_info(const NativeVideoDecoderProduct &product) noexcept {
-  return std::make_unique<NativeVideoDecoderInfo>(product.state().decoder->GetDecoderInfo());
+std::unique_ptr<NativeVideoDecoderProduct> video_decoder_create_actor_product(const NativePeerConnectionFactory& owner,
+    const NativeVideoDecoderFactory& factory, const NativeEnvironment& environment,
+    rust::Box<RustVideoFactoryEnvironment> retained, const NativeSdpVideoFormat& format, std::int32_t& status) noexcept {
+  return owner.worker_thread()->BlockingCall([&] {
+    auto product = video_decoder_create_product(factory, environment, std::move(retained), format, status);
+    if (product) product->state().sequence = owner.worker_thread();
+    return product;
+  });
 }
-rust::Vec<std::uint8_t> video_decoder_product_implementation_name(const NativeVideoDecoderProduct &product) noexcept {
+std::int32_t video_decoder_product_register_callback(NativeVideoDecoderProduct& product, const NativeDecodedImageSink* sink) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_register_callback(product, sink); });
+
+  auto candidate = sink ? decoded_sink_clone(*sink) : nullptr;
+  auto* target = candidate ? candidate->callback() : nullptr;
+  auto& state = product.state();
+  const auto status = state.decoder->RegisterDecodeCompleteCallback(target);
+  // Every admitted stock CPU decoder installs the argument. Rust's adapter can
+  // return a caller registration error after storing it, or reject after Release.
+  // Use its actual slot witness, not the sign of the native status.
+  const bool installed = !state.rust_product || static_cast<const RustDecoder&>(*state.decoder).CallbackMatches(target);
+  if (installed) state.output_callback = std::move(candidate);
+  return status;
+}
+std::int32_t video_decoder_product_decode(NativeVideoDecoderProduct& product, const NativeEncodedImage& image,
+    bool missing_overload, bool missing, std::int64_t render_time_ms, bool& valid) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_decode(product, image, missing_overload, missing, render_time_ms, valid); });
+
+  const auto& value = image.value(); const auto buffer = value.GetEncodedData();
+  valid = value.size() == 0 || (buffer && value.data() && value.size() <= buffer->size());
+  // dav1d_data_wrap validates a non-null pointer even for an empty image; the
+  // pinned wrapper ignores its error before SendData. VP8/VP9 concealment must
+  // retain their distinct zero-size/null behavior. No integer size clamp is
+  // applied to the native libvpx unsigned narrowing or H264's own error path.
+  if (product.state().builtin_av1 && !value.data()) valid = false;
+  if (!valid) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+  return missing_overload ? product.state().decoder->Decode(value, missing, render_time_ms)
+                          : product.state().decoder->Decode(value, render_time_ms);
+}
+std::unique_ptr<NativeVideoDecoderInfo> video_decoder_product_info(const NativeVideoDecoderProduct &product) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_info(product); });
+
+  auto info = product.state().decoder->GetDecoderInfo();
+  if (product.state().rust_product && !static_cast<const RustDecoder&>(*product.state().decoder).InfoSucceeded()) return nullptr;
+  return std::make_unique<NativeVideoDecoderInfo>(std::move(info));
+}
+rust::Vec<std::uint8_t> video_decoder_product_implementation_name(const NativeVideoDecoderProduct &product, bool& valid) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_implementation_name(product, valid); });
+
   const auto *name = product.state().decoder->ImplementationName();
+  valid = name != nullptr;
+  if (product.state().rust_product) valid = static_cast<const RustDecoder&>(*product.state().decoder).NameSucceeded();
   rust::Vec<std::uint8_t> bytes;
-  // Every selected stock/Rust adapter has a non-null native implementation name.
-  for (const auto *value = name; *value; ++value) bytes.push_back(static_cast<std::uint8_t>(*value));
+  if (valid) for (const auto *value = name; *value; ++value) bytes.push_back(static_cast<std::uint8_t>(*value));
   return bytes;
 }
+bool video_decoder_product_configure(NativeVideoDecoderProduct& product, const NativeVideoDecoderSettings& settings) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_configure(product, settings); });
+
+  return product.state().decoder->Configure(settings.value());
+}
 std::int32_t video_decoder_product_release(NativeVideoDecoderProduct &product) noexcept {
+  if (auto* sequence = product.state().sequence; sequence && !sequence->IsCurrent()) return sequence->BlockingCall([&] { return video_decoder_product_release(product); });
+
   return product.state().decoder->Release();
 }
 
+std::unique_ptr<NativeOwnedVideoEncoderSelector> video_encoder_factory_selector(const NativeVideoEncoderFactory& factory, bool& valid) noexcept {
+  valid = true;
+  auto value = factory.rust_factory() ? static_cast<RustEncoderFactory&>(factory.factory()).SelectorValue(valid) : factory.factory().GetEncoderSelector();
+  return value ? std::make_unique<NativeOwnedVideoEncoderSelector>(std::move(value)) : nullptr;
+}
 NativeVideoEncoderFactory::NativeVideoEncoderFactory(
     std::unique_ptr<webrtc::VideoEncoderFactory> factory, bool rust_factory) noexcept
     : factory_(std::move(factory)), rust_factory_(rust_factory) {}
 NativeVideoEncoderFactory::~NativeVideoEncoderFactory() = default;
 std::unique_ptr<webrtc::VideoEncoderFactory> NativeVideoEncoderFactory::CreateAdapter(
-    VideoCreationRetention retention) const {
+    VideoCreationRetention retention, bool installed) const {
   // Closed producer tag, set only by the RustEncoderFactory constructor.
-  return static_cast<RustEncoderFactory &>(*factory_).WithRetention(std::move(retention));
+  return static_cast<RustEncoderFactory &>(*factory_).WithRetention(std::move(retention), installed);
 }
 webrtc::VideoEncoderFactory &
 NativeVideoEncoderFactory::factory() const noexcept {
@@ -1454,8 +1909,8 @@ NativeVideoDecoderFactory::NativeVideoDecoderFactory(
     : factory_(std::move(factory)), observations_(std::move(observations)), rust_factory_(rust_factory) {}
 NativeVideoDecoderFactory::~NativeVideoDecoderFactory() = default;
 std::unique_ptr<webrtc::VideoDecoderFactory> NativeVideoDecoderFactory::CreateAdapter(
-    VideoCreationRetention retention) const {
-  return static_cast<RustDecoderFactory &>(*factory_).WithRetention(std::move(retention));
+    VideoCreationRetention retention, bool installed) const {
+  return static_cast<RustDecoderFactory &>(*factory_).WithRetention(std::move(retention), installed);
 }
 webrtc::VideoDecoderFactory &
 NativeVideoDecoderFactory::factory() const noexcept {
@@ -5100,18 +5555,21 @@ bool video_scalability_mode_valid(rust::Str name) noexcept {
 }
 
 std::unique_ptr<NativeSdpVideoFormatList> video_encoder_formats_value(const NativeVideoEncoderFactory& factory) noexcept {
+  if (factory.rust_factory()) return static_cast<RustEncoderFactory&>(factory.factory()).FormatsValue();
   auto result = std::make_unique<NativeSdpVideoFormatList>(); result->values = factory.factory().GetSupportedFormats(); return result;
 }
 std::unique_ptr<NativeSdpVideoFormatList> video_encoder_implementations_value(const NativeVideoEncoderFactory& factory) noexcept {
+  if (factory.rust_factory()) return static_cast<RustEncoderFactory&>(factory.factory()).ImplementationsValue();
   auto result = std::make_unique<NativeSdpVideoFormatList>(); result->values = factory.factory().GetImplementations(); return result;
 }
 std::unique_ptr<NativeSdpVideoFormatList> video_decoder_formats_value(const NativeVideoDecoderFactory& factory) noexcept {
+  if (factory.rust_factory()) return static_cast<RustDecoderFactory&>(factory.factory()).FormatsValue();
   auto result = std::make_unique<NativeSdpVideoFormatList>(); result->values = factory.factory().GetSupportedFormats(); return result;
 }
 FfiVideoFactorySupport video_encoder_query_value(
     const NativeVideoEncoderFactory &factory, const NativeSdpVideoFormat &format,
     bool has_mode, rust::Slice<const std::uint8_t> mode,
-    const NativeRtpResolution *resolution) noexcept {
+    const NativeRtpResolution *resolution, bool legacy) noexcept {
   auto optional_resolution = resolution ? std::optional<webrtc::Resolution>(resolution->value()) : std::nullopt;
   auto optional_mode = has_mode ? std::optional<std::string>(
       std::string(reinterpret_cast<const char *>(mode.data()), mode.size())) : std::nullopt;
@@ -5119,7 +5577,7 @@ FfiVideoFactorySupport video_encoder_query_value(
     // Closed producer graph: only new_video_encoder_factory sets this tag,
     // and it creates exactly RustEncoderFactory (no RTTI/foreign cast).
     return static_cast<RustEncoderFactory &>(factory.factory()).QueryValue(
-        format.value(), std::move(optional_mode), optional_resolution);
+        format.value(), std::move(optional_mode), optional_resolution, legacy);
   }
   // Actual selected builtin's query uses this same pure supported-format list.
   // Guard its reached fuzzy-match arithmetic/diagnostic sinks without invoking
@@ -5127,20 +5585,20 @@ FfiVideoFactorySupport video_encoder_query_value(
   const auto status = SdpVideoFormatFuzzyMatchStatus(
       factory.factory().GetSupportedFormats(), format.value());
   if (status != 0) return {{false, false}, static_cast<std::uint8_t>(status == 1 ? 7 : 8)};
-  auto support = factory.factory().QueryCodecSupport(
-      format.value(), std::move(optional_mode), optional_resolution);
+  auto support = legacy ? factory.factory().QueryCodecSupport(format.value(), std::move(optional_mode))
+                        : factory.factory().QueryCodecSupport(format.value(), std::move(optional_mode), optional_resolution);
   return {{support.is_supported, support.is_power_efficient}, 0};
 }
 FfiVideoFactorySupport video_decoder_query_value(
     const NativeVideoDecoderFactory &factory, const NativeSdpVideoFormat &format,
-    bool reference_scaling, const NativeRtpResolution *resolution) noexcept {
+    bool reference_scaling, const NativeRtpResolution *resolution, bool legacy) noexcept {
   auto optional_resolution = resolution ? std::optional<webrtc::Resolution>(resolution->value()) : std::nullopt;
   if (factory.rust_factory()) {
     return static_cast<RustDecoderFactory &>(factory.factory()).QueryValue(
-        format.value(), reference_scaling, optional_resolution);
+        format.value(), reference_scaling, optional_resolution, legacy);
   }
-  auto support = factory.factory().QueryCodecSupport(
-      format.value(), reference_scaling, optional_resolution);
+  auto support = legacy ? factory.factory().QueryCodecSupport(format.value(), reference_scaling)
+                        : factory.factory().QueryCodecSupport(format.value(), reference_scaling, optional_resolution);
   return {{support.is_supported, support.is_power_efficient}, 0};
 }
 rust::Vec<FfiCodecFormat>
@@ -5230,10 +5688,8 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
                            std::uint32_t rtp_timestamp, bool key_frame,
                            std::int32_t qp,
                            const FfiEncodedVideoMetadata &metadata) noexcept {
+  if (encoded_callback_retired(callback)) return false;
   auto state = callback.state();
-  std::lock_guard lock(state->mutex);
-  if (!state->active || state->callback == nullptr)
-    return false;
   webrtc::EncodedImage image;
   image.SetEncodedData(
       webrtc::EncodedImageBuffer::Create(data.data(), data.size()));
@@ -5300,26 +5756,57 @@ bool encoded_callback_emit(const NativeEncodedImageCallback &callback,
       vp9.height[0] = height;
     }
   }
-  return state->callback->OnEncodedImage(
-             image, codec_specific ? &*codec_specific : nullptr).error ==
-         webrtc::EncodedImageCallback::Result::OK;
+  const auto result = state->Invoke([&](webrtc::EncodedImageCallback& target) {
+    return target.OnEncodedImage(image, codec_specific ? &*codec_specific : nullptr);
+  });
+  return result && result->error == webrtc::EncodedImageCallback::Result::OK;
 }
+FfiEncodedCallbackResult encoded_callback_frame(const NativeEncodedImageCallback& callback, const NativeEncodedImage& image, const NativeCodecSpecificInfo* info) noexcept {
+  const auto data = image.value().GetEncodedData();
+  if (image.value().size() && (!data || !image.value().data() || image.value().size() > data->size())) return {false, 1, 0, false};
+  const auto value = callback.state()->Invoke([&](webrtc::EncodedImageCallback& target) { return target.OnEncodedImage(image.value(), info ? &info->value() : nullptr); }, &image.value(), info ? &info->value() : nullptr);
+  if (!value) return {false, 1, 0, false};
+  return {true, static_cast<std::int32_t>(value->error), value->frame_id, value->drop_next_frame};
+}
+bool encoded_callback_dropped(const NativeEncodedImageCallback& callback, std::uint32_t timestamp, std::int32_t spatial_id, bool end) noexcept {
+  return callback.state()->Invoke([&](webrtc::EncodedImageCallback& target) {
+    target.OnFrameDropped(timestamp, spatial_id, end);
+    return webrtc::EncodedImageCallback::Result(webrtc::EncodedImageCallback::Result::OK);
+  }).has_value();
+}
+bool encoded_callback_retired(const NativeEncodedImageCallback& callback) noexcept {
+  std::lock_guard lock(callback.state()->mutex); return !callback.state()->active;
+}
+bool encoded_callback_same(const NativeEncodedImageCallback& a, const NativeEncodedImageCallback& b) noexcept { return a.state() == b.state(); }
+FfiDecodedCallbackResult decoded_callback_frame(const NativeDecodedImageCallback& callback, NativeRawVideoFrame& frame,
+    std::uint8_t overload, std::int64_t time_ms, bool has_time, std::int32_t optional_time_ms, bool has_qp, std::uint8_t qp) noexcept {
+  if (!callback.state()->AdmitTime(overload, time_ms, has_time, optional_time_ms)) return {false, WEBRTC_VIDEO_CODEC_ERR_PARAMETER};
+  return callback.state()->Invoke([&](webrtc::DecodedImageCallback& target) -> std::int32_t {
+    if (overload == 0) return target.Decoded(frame.value());
+    if (overload == 1) return target.Decoded(frame.value(), time_ms);
+    target.Decoded(frame.value(), has_time ? std::optional<std::int32_t>(optional_time_ms) : std::nullopt,
+                   has_qp ? std::optional<std::uint8_t>(qp) : std::nullopt);
+    return 0;  // The optional overload has no native return value.
+  });
+}
+bool decoded_callback_retired(const NativeDecodedImageCallback& callback) noexcept {
+  std::lock_guard lock(callback.state()->mutex); return !callback.state()->active;
+}
+bool decoded_callback_same(const NativeDecodedImageCallback& a, const NativeDecodedImageCallback& b) noexcept { return a.state() == b.state(); }
 bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                            rust::Slice<const std::uint8_t> data,
                            std::uint32_t width, std::uint32_t height,
                            std::int64_t timestamp_us,
                            std::uint32_t rtp_timestamp,
                            std::uint16_t rotation) noexcept {
+  if (decoded_callback_retired(callback) || !callback.state()->AdmitTime(0, 0, false, 0)) return false;
   const std::size_t y = static_cast<std::size_t>(width) * height;
   const std::uint32_t cw = (width + 1) / 2, ch = (height + 1) / 2;
   const std::size_t c = static_cast<std::size_t>(cw) * ch;
   if (width == 0 || height == 0 || data.size() != y + 2 * c ||
       (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270))
     return false;
-  auto state = callback.state();
-  std::lock_guard lock(state->mutex);
-  if (!state->active || state->callback == nullptr)
-    return false;
+  if (video_source_i420_allocation_size(width, height) == 0) return false;
   auto buffer =
       webrtc::I420Buffer::Copy(width, height, data.data(), width,
                                data.data() + y, cw, data.data() + y + c, cw);
@@ -5329,7 +5816,8 @@ bool decoded_callback_emit(const NativeDecodedImageCallback &callback,
                    .set_rtp_timestamp(rtp_timestamp)
                    .set_rotation(static_cast<webrtc::VideoRotation>(rotation))
                    .build();
-  return state->callback->Decoded(frame) == 0;
+  const auto result = callback.state()->Invoke([&](webrtc::DecodedImageCallback& target) { return target.Decoded(frame); });
+  return result.invoked && result.status == 0;
 }
 
 FfiCodecTestResult

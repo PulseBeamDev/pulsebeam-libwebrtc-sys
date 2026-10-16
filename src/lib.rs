@@ -241,10 +241,12 @@ mod rtp_sources;
 pub use rtp_sources::{RtpSource, RtpSourceExtensions, RtpSourceType};
 mod rtp_packet_values;
 pub use rtp_packet_values::{AbsoluteCaptureTime, RtpReceivedPacketInfo, RtpReceivedPacketInfos};
-mod media_stream;
-pub use media_stream::{MediaStream, MediaStreamEvent, MediaStreamObserver};
-mod audio_processor;
-pub use audio_processor::{AudioProcessingStats, AudioProcessor, AudioProcessorStatistics};
+mod local_media_stream;
+pub use local_media_stream::{LocalMediaStream, MediaStreamEvent, MediaStreamObserver};
+mod audio_track_processor;
+pub use audio_track_processor::{
+    AudioProcessingStats, AudioProcessorStatistics, AudioTrackProcessor,
+};
 mod pcm_view;
 pub use pcm_view::{
     DeinterleavedPcm, DeinterleavedPcmMut, InterleavedPcm, InterleavedPcmMut, MonoPcm, MonoPcmMut,
@@ -383,17 +385,44 @@ pub use sframe::{
     SframeMode,
 };
 mod video_encoder_selector;
+pub use codec::VideoEncoderLossNotification;
 pub use video_encoder_selector::{
     OwnedVideoEncoderSelector, VideoEncoderSelector, VideoEncoderSelectorFailure,
     VideoEncoderSelectorFailureObserver, VideoEncoderSelectorInputError,
     VideoEncoderSelectorProvider,
 };
 pub(crate) use video_encoder_selector::{
-    RustVideoEncoderSelector, video_selector_provider_bitrate, video_selector_provider_broken,
-    video_selector_provider_current, video_selector_provider_resolution,
+    RustVideoEncoderSelector, RustVideoEncoderSelectorObserver, video_selector_provider_bitrate,
+    video_selector_provider_broken, video_selector_provider_current,
+    video_selector_provider_observer, video_selector_provider_resolution,
 };
+mod video_encoder_product;
+pub use video_encoder_product::{OwnedVideoEncoder, VideoEncoderCreationError};
+mod video_codec_callbacks;
 mod video_decoder_product;
+pub use video_codec_callbacks::{
+    DecodedImageCallbackProvider, DecodedImageCallbackSink, EncodedImageCallbackProvider,
+    EncodedImageCallbackSink, FecControllerOverride, FecControllerOverrideProvider,
+    VideoCodecCallbackFailureObserver,
+};
+pub(crate) use video_codec_callbacks::{
+    RustDecodedImageSink, RustEncodedImageSink, RustFecOverride, decoded_sink_provider_invoke,
+    encoded_sink_provider_dropped, encoded_sink_provider_frame, fec_override_provider_allowed,
+};
 pub use video_decoder_product::{OwnedVideoDecoder, VideoDecoderCreationError};
+mod codec_specific_info;
+mod video_encoder_values;
+pub use codec_specific_info::{
+    CodecBufferUsage, CodecDependencyStructure, CodecDependencyTemplate, CodecSpecificInfoFields,
+    CodecSpecificParameters, EncodedImageCallbackError, EncodedImageCallbackResult,
+    GenericCodecFrameInfo, OwnedCodecSpecificInfo,
+};
+pub use video_encoder_values::{
+    OwnedVideoBitrateAllocation, OwnedVideoCodec, OwnedVideoEncoderInfo, OwnedVideoRateControl,
+    VideoEncoderInfoFields, VideoEncoderInfoValueError, VideoEncoderMappedResolution,
+    VideoEncoderPixelFormat, VideoEncoderQpThresholds, VideoEncoderScalingSettings,
+    VideoEncoderSettingsValue, VideoRateControlFields, VideoResolutionBitrateLimits,
+};
 mod video_decoder_values;
 pub use video_decoder_values::{
     OwnedVideoDecoderInfo, OwnedVideoDecoderSettings, VideoDecoderInfoFields,
@@ -403,6 +432,16 @@ mod video_codec_values;
 pub use video_codec_values::{
     RenderResolution, SdpVideoFormat, SdpVideoFormatError, SdpVideoFormatFields,
     WellKnownSdpVideoFormat,
+};
+mod live_frame_transformer;
+pub use live_frame_transformer::{
+    FrameTransformBinding, FrameTransformCallback, FrameTransformCompletion,
+    FrameTransformCompletionError, FrameTransformCompletionOutcome, FrameTransformer,
+    FrameTransformerFailureObserver, FrameTransformerProvider, FrameTransformerStatistics,
+};
+pub(crate) use live_frame_transformer::{
+    RustFrameTransformerProvider, frame_transformer_provider_binding,
+    frame_transformer_provider_panics, frame_transformer_provider_transform,
 };
 mod frame_transformer;
 pub use frame_transformer::{
@@ -500,10 +539,9 @@ mod media_track;
 pub use media_track::{MediaTrack, MediaTrackKind, MediaTrackState};
 mod media_stream;
 pub use media_stream::{
-    AudioProcessingMode, AudioProcessor, AudioProcessorStats, AudioSourceOptions, AudioTrackSource,
-    MediaChange, MediaObserver, MediaSourceState, MediaStream, MediaTrackSource,
-    TrackAudioOptionsCode, TrackAudioOptionsResult, VideoContentHint, VideoSourceInfo,
-    VideoSourceStats, VideoTrackSource,
+    AudioProcessor, AudioProcessorStats, AudioTrackSource, MediaChange, MediaObserver,
+    MediaSourceState, MediaStream, MediaTrackSource, TrackAudioOptionsCode,
+    TrackAudioOptionsResult, VideoSourceInfo, VideoTrackSource,
 };
 mod legacy_stats;
 pub use legacy_stats::*;
@@ -554,16 +592,41 @@ pub(crate) use tls::{
 };
 pub use tls::{TlsCertificate, TlsCertificateChain, TlsCertificateStats, TlsCertificateVerifier};
 mod production;
+mod sender_parameters;
+pub use sender_parameters::SenderParametersOperation;
+mod encoded_image;
+mod raw_video_frame;
 mod readiness;
+mod source_encoded_video;
 mod video;
+mod video_sink_wants;
+pub use encoded_image::{
+    CorruptionDetectionFilterSettings, EncodedImage, EncodedImageError, EncodedImageFrameType,
+    EncodedImageMetadata, EncodedImagePsnr, EncodedImageRotation, EncodedImageTiming,
+    EncodedVideoBuffer, WritableEncodedVideoBuffer,
+};
+pub use raw_video_frame::{
+    RawVideoBuffer, RawVideoBufferInfo, RawVideoBufferType, RawVideoError, RawVideoFrame,
+    RawVideoFrameMetadata, RawVideoPlane, RawVideoPlaneKind, RawVideoSamples,
+    VideoBufferPreparation, VideoFrameContentType, VideoFrameProcessingTime,
+    VideoFrameRenderParameters, VideoUpdateRect, WritableI420Buffer,
+};
+pub use source_encoded_video::{RecordableVideoFrame, VideoSourceEncodedSink};
+pub use video_sink_wants::{VideoSinkAggregates, VideoSinkFrameSize, VideoSinkWants};
 
 pub(crate) use codec::{
     RustVideoDecoder, RustVideoDecoderFactory, RustVideoEncoder, RustVideoEncoderFactory,
-    decoder_configure, decoder_decode, decoder_factory_create, decoder_factory_formats,
-    decoder_factory_query, decoder_get_info, decoder_is_valid, decoder_register_callback,
-    decoder_release, encoder_encode, encoder_factory_create, encoder_factory_formats,
-    encoder_factory_implementations, encoder_factory_query, encoder_get_info, encoder_init,
-    encoder_is_valid, encoder_register_callback, encoder_release, encoder_set_rates,
+    decoder_configure_value, decoder_decode, decoder_decode_value, decoder_factory_create,
+    decoder_factory_formats, decoder_factory_query, decoder_get_info_value,
+    decoder_implementation_name, decoder_is_valid, decoder_register_callback,
+    decoder_register_callback_value, decoder_release, encoder_encode, encoder_encode_value,
+    encoder_factory_create, encoder_factory_formats, encoder_factory_implementations,
+    encoder_factory_query, encoder_factory_report_codec_info_failure,
+    encoder_factory_report_feedback_failure, encoder_factory_selector, encoder_get_info_value,
+    encoder_init, encoder_init_value, encoder_is_valid, encoder_loss_notification,
+    encoder_packet_loss, encoder_register_callback, encoder_register_callback_value,
+    encoder_release, encoder_rtt, encoder_set_fec_override, encoder_set_rates,
+    encoder_set_rates_value,
 };
 pub use event_log::{
     EventLogEnvironment, EventLogStopCompletion, RtcEvent, RtcEventKind, RtcEventLogFactory,
@@ -622,7 +685,7 @@ pub use data_channel::{
 };
 pub use encoded_video::{
     EncodedH264Input, EncodedH264Source, EncodedVideoAccessUnit, EncodedVideoInput,
-    EncodedVideoSource, H264AccessUnit,
+    EncodedVideoSource, H264AccessUnit, H264SourceProfile,
 };
 pub use execution::{
     BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder,
@@ -653,14 +716,20 @@ pub use peer_configuration::{
 };
 pub use production::{
     ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioObserverId,
-    SessionAudioProcessorId, SessionAudioSourceViewId, SessionChannelId, SessionDtlsTransportId,
-    SessionDtmfError, SessionDtmfSenderId, SessionEvent, SessionFrameDecryptorId,
-    SessionFrameEncryptorId, SessionIceTransportId, SessionMediaStreamId,
-    SessionMediaStreamObserverId, SessionMediaTrackId, SessionPeerId, SessionReceiverId,
-    SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
-    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTrackId,
-    SessionTrackSourceId, SessionTransceiverId, SessionTransportError, SessionVideoObserverId,
-    SessionVideoSourceViewId,
+    SessionAudioProcessorId, SessionAudioSourceViewId, SessionAudioTrackProcessorId,
+    SessionChannelId, SessionDecodedImageCallbackId, SessionDtlsTransportId, SessionDtmfError,
+    SessionDtmfSenderId, SessionEncodedImageCallbackId, SessionEncodedImageId,
+    SessionEncodedVideoBufferId, SessionEvent, SessionFecOverrideId, SessionFrameDecryptorId,
+    SessionFrameEncryptorId, SessionFrameTransformerId, SessionIceTransportId,
+    SessionLocalMediaStreamId, SessionMediaStreamId, SessionMediaStreamObserverId,
+    SessionMediaTrackId, SessionPeerId, SessionRawVideoBufferId, SessionRawVideoFrameId,
+    SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
+    SessionSenderParametersOperationId, SessionSframeDecrypterId, SessionSframeEncrypterId,
+    SessionSourceId, SessionTrackId, SessionTrackSourceId, SessionTransceiverId,
+    SessionTransportError, SessionVideoBufferPreparationId, SessionVideoDecoderId,
+    SessionVideoEncoderId, SessionVideoEncoderSelectorId, SessionVideoObserverId,
+    SessionVideoSinkId, SessionVideoSourceEncodedSinkId, SessionVideoSourceViewId,
+    SessionWritableEncodedBufferId, SessionWritableI420BufferId,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -673,8 +742,8 @@ pub use video::{
     RtpReceiverOperationError, RtpSender, RtpSenderEncoding, RtpSenderOperationError,
     RtpSenderParameters, RtpTransceiver, RtpTransceiverDirection, VideoCodecCapability,
     VideoContentHint, VideoObserver, VideoObserverEvent, VideoSink, VideoSinkEvent, VideoSource,
-    VideoSourceConstraints, VideoSourceState, VideoSourceStats, VideoSourceStatus, VideoSourceView,
-    VideoTrack, VideoTrackState, VideoTrackStatus,
+    VideoSourceConstraints, VideoSourceSink, VideoSourceState, VideoSourceStats, VideoSourceStatus,
+    VideoSourceView, VideoTrack, VideoTrackState, VideoTrackStatus,
 };
 
 #[cxx::bridge(namespace = "pulsebeam::webrtc_sys")]
@@ -776,6 +845,39 @@ mod ffi {
         has_absolute_capture_time: bool,
         absolute_capture_time: FfiAbsoluteCaptureTime,
         frame_instrumentation_data: UniquePtr<NativeFrameInstrumentationData>,
+    }
+    struct FfiVideoResolutionBitrateLimits {
+        frame_size_pixels: i32,
+        min_start_bitrate_bps: i32,
+        min_bitrate_bps: i32,
+        max_bitrate_bps: i32,
+    }
+    struct FfiVideoEncoderFpsAllocation {
+        fractions: Vec<u8>,
+    }
+    struct FfiOwnedVideoEncoderInfo {
+        has_thresholds: bool,
+        qp_low: i32,
+        qp_high: i32,
+        min_pixels_per_frame: i32,
+        requested_resolution_alignment: u32,
+        apply_alignment_to_all_simulcast_layers: bool,
+        supports_native_handle: bool,
+        implementation_name: Vec<u8>,
+        has_trusted_rate_controller: bool,
+        is_hardware_accelerated: bool,
+        enable_cpu_overuse_detection: bool,
+        fps_allocation: Vec<FfiVideoEncoderFpsAllocation>,
+        resolution_bitrate_limits: Vec<FfiVideoResolutionBitrateLimits>,
+        supports_simulcast: bool,
+        preferred_pixel_formats: Vec<i32>,
+        has_is_qp_trusted: bool,
+        is_qp_trusted: bool,
+        has_min_qp: bool,
+        min_qp: i32,
+        has_mapped_resolution: bool,
+        mapped_width: i32,
+        mapped_height: i32,
     }
     struct FfiOwnedVideoDecoderSettings {
         has_buffer_pool_size: bool,
@@ -1716,8 +1818,7 @@ mod ffi {
         min_bitrate_kbps: u32,
         qp_max: u32,
         active: bool,
-        has_format: bool,
-        format: FfiCodecFormat,
+        format: UniquePtr<NativeSdpVideoFormat>,
     }
     #[derive(Default)]
     struct FfiVideoBitrateCodec {
@@ -1818,6 +1919,100 @@ mod ffi {
         max_height: u32,
     }
 
+    #[derive(Default)]
+    struct FfiCodecDependencyTemplate {
+        spatial_id: i32,
+        temporal_id: i32,
+        indications: Vec<i32>,
+        frame_diffs: Vec<i32>,
+        chain_diffs: Vec<i32>,
+    }
+    #[derive(Default)]
+    struct FfiCodecDependencyStructure {
+        structure_id: i32,
+        decode_targets: i32,
+        chains: i32,
+        protected_by_chain: Vec<i32>,
+        resolutions: Vec<FfiRtcEventResolution>,
+        templates: Vec<FfiCodecDependencyTemplate>,
+    }
+    struct FfiCodecBufferUsage {
+        id: i32,
+        referenced: bool,
+        updated: bool,
+    }
+    struct FfiCodecSpecificFields {
+        codec_type: i32,
+        end_of_picture: bool,
+        vp8_non_reference: bool,
+        vp8_temporal_idx: u8,
+        vp8_layer_sync: bool,
+        vp8_key_idx: i8,
+        vp8_explicit_dependencies: bool,
+        vp8_referenced: [usize; 3],
+        vp8_referenced_count: usize,
+        vp8_updated: [usize; 3],
+        vp8_updated_count: usize,
+        vp9_first_frame: bool,
+        vp9_inter_pic: bool,
+        vp9_flexible: bool,
+        vp9_ss_available: bool,
+        vp9_non_ref_inter_layer: bool,
+        vp9_temporal_idx: u8,
+        vp9_temporal_up_switch: bool,
+        vp9_inter_layer: bool,
+        vp9_gof_idx: u8,
+        vp9_spatial_layers: usize,
+        vp9_first_active: usize,
+        vp9_has_resolution: bool,
+        vp9_width: [u16; 8],
+        vp9_height: [u16; 8],
+        vp9_gof: FfiVp9GofInfo,
+        vp9_ref_count: u8,
+        vp9_p_diff: [u8; 3],
+        h264_packetization: i32,
+        h264_temporal_idx: u8,
+        h264_base_sync: bool,
+        h264_idr: bool,
+        has_generic: bool,
+        generic: FfiCodecDependencyTemplate,
+        buffers: Vec<FfiCodecBufferUsage>,
+        part_of_chain: Vec<bool>,
+        active_targets: u32,
+        has_structure: bool,
+        structure: FfiCodecDependencyStructure,
+        has_scalability: bool,
+        scalability: u8,
+        instrumentation: UniquePtr<NativeFrameInstrumentationData>,
+    }
+    struct FfiEncodedCallbackResult {
+        invoked: bool,
+        error: i32,
+        frame_id: u32,
+        drop_next_frame: bool,
+    }
+    struct FfiOwnedEncoderSettings {
+        loss_notification: bool,
+        number_of_cores: i32,
+        max_payload_size: usize,
+        has_thread_limit: bool,
+        thread_limit: i32,
+    }
+    struct FfiOwnedVideoRateControl {
+        target: FfiVideoBitrateAllocation,
+        effective: FfiVideoBitrateAllocation,
+        framerate_fps: f64,
+        bandwidth_bps: i64,
+        bandwidth_kind: i8,
+    }
+    struct FfiVideoEncoderLossNotification {
+        last_decodable: u32,
+        last_received: u32,
+        has_dependencies_decodable: bool,
+        dependencies_decodable: bool,
+        has_received_decodable: bool,
+        received_decodable: bool,
+    }
     struct FfiRateControl {
         bitrate_bps: u32,
         target_bitrate_bps: u32,
@@ -2366,24 +2561,7 @@ mod ffi {
         present: bool,
         value: f64,
     }
-    struct FfiAudioSourceOptions {
-        echo_cancellation: i8,
-        auto_gain_control: i8,
-        noise_suppression: i8,
-        highpass_filter: i8,
-        stereo_swapping: i8,
-        audio_jitter_buffer_fast_accelerate: i8,
-        audio_network_adaptor: i8,
-        init_recording_on_send: i8,
-        echo_cancellation_mode: i8,
-        auto_gain_control_mode: i8,
-        noise_suppression_mode: i8,
-        highpass_filter_mode: i8,
-        audio_jitter_buffer_max_packets: FfiOptionalI32,
-        audio_jitter_buffer_min_delay_ms: FfiOptionalI32,
-        has_audio_network_adaptor_config: bool,
-        audio_network_adaptor_config: Vec<u8>,
-    }
+
     struct FfiTrackAudioOptionsResult {
         code: i32,
         message: Vec<u8>,
@@ -3261,6 +3439,18 @@ mod ffi {
         fn audio_encoder_transfer_native(source: &AudioEncoderTransfer) -> &NativeAudioEncoder;
         type AudioDecoderTransfer;
         fn audio_decoder_transfer_native(source: &AudioDecoderTransfer) -> &NativeAudioDecoder;
+        type RustFrameTransformerProvider;
+        fn frame_transformer_provider_transform(
+            provider: &RustFrameTransformerProvider,
+            frame: UniquePtr<NativeTransformableFrame>,
+            completion: UniquePtr<NativeFrameTransformCompletion>,
+        );
+        fn frame_transformer_provider_binding(
+            provider: &RustFrameTransformerProvider,
+            callback: UniquePtr<NativeFrameTransformCallback>,
+            registered: bool,
+        );
+        fn frame_transformer_provider_panics(provider: &RustFrameTransformerProvider) -> u64;
         type RustFrameEncryptorProvider;
         type RustFrameDecryptorProvider;
         fn frame_encryptor_provider_failure(
@@ -3628,6 +3818,10 @@ mod ffi {
         ) -> Box<RustVideoFactoryEnvironment>;
         fn encoder_factory_clone(source: &RustVideoEncoderFactory) -> Box<RustVideoEncoderFactory>;
         fn decoder_factory_clone(source: &RustVideoDecoderFactory) -> Box<RustVideoDecoderFactory>;
+        type RustVideoEncoderSelectorObserver;
+        fn video_selector_provider_observer(
+            provider: &RustVideoEncoderSelector,
+        ) -> Box<RustVideoEncoderSelectorObserver>;
         type RustVideoEncoderSelector;
         fn video_selector_provider_current(
             provider: &RustVideoEncoderSelector,
@@ -3650,6 +3844,10 @@ mod ffi {
 
         fn run_task(task: Box<RustTask>);
 
+        fn encoder_factory_selector(
+            factory: &RustVideoEncoderFactory,
+            valid: &mut bool,
+        ) -> UniquePtr<NativeOwnedVideoEncoderSelector>;
         fn encoder_factory_formats(
             factory: &RustVideoEncoderFactory,
         ) -> UniquePtr<NativeSdpVideoFormatList>;
@@ -3662,6 +3860,7 @@ mod ffi {
             has_scalability_mode: bool,
             scalability_mode: &[u8],
             resolution: UniquePtr<NativeRtpResolution>,
+            legacy: bool,
         ) -> FfiVideoFactorySupport;
         fn encoder_factory_create(
             factory: &RustVideoEncoderFactory,
@@ -3671,6 +3870,30 @@ mod ffi {
         ) -> Box<RustVideoEncoder>;
         fn encoder_is_valid(encoder: &RustVideoEncoder) -> bool;
         fn encoder_init(encoder: &mut RustVideoEncoder, settings: FfiEncoderSettings) -> i32;
+        fn encoder_set_fec_override(
+            encoder: &mut RustVideoEncoder,
+            value: SharedPtr<NativeFecOverride>,
+        ) -> i32;
+        fn encoder_init_value(
+            encoder: &mut RustVideoEncoder,
+            codec: UniquePtr<NativeVideoCodec>,
+            settings: FfiOwnedEncoderSettings,
+        ) -> i32;
+        fn encoder_encode_value(
+            encoder: &mut RustVideoEncoder,
+            frame: UniquePtr<NativeRawVideoFrame>,
+            has_types: bool,
+            types: Vec<i32>,
+            callback: SharedPtr<NativeEncodedImageCallback>,
+        ) -> i32;
+        fn encoder_set_rates_value(
+            encoder: &mut RustVideoEncoder,
+            rates: UniquePtr<NativeVideoRateControl>,
+        ) -> i32;
+        fn encoder_register_callback_value(
+            encoder: &mut RustVideoEncoder,
+            callback: SharedPtr<NativeEncodedImageCallback>,
+        ) -> i32;
         fn encoder_register_callback(encoder: &mut RustVideoEncoder) -> i32;
         fn encoder_encode(
             encoder: &mut RustVideoEncoder,
@@ -3680,8 +3903,16 @@ mod ffi {
             callback: SharedPtr<NativeEncodedImageCallback>,
         ) -> i32;
         fn encoder_set_rates(encoder: &mut RustVideoEncoder, rates: FfiRateControl) -> i32;
+        fn encoder_packet_loss(encoder: &mut RustVideoEncoder, rate: f32) -> i32;
+        fn encoder_rtt(encoder: &mut RustVideoEncoder, rtt_ms: i64) -> i32;
+        fn encoder_loss_notification(
+            encoder: &mut RustVideoEncoder,
+            notification: FfiVideoEncoderLossNotification,
+        ) -> i32;
+        fn encoder_factory_report_feedback_failure(factory: &RustVideoEncoderFactory);
         fn encoder_release(encoder: &mut RustVideoEncoder) -> i32;
-        fn encoder_get_info(encoder: &RustVideoEncoder) -> FfiEncoderInfo;
+        fn encoder_get_info_value(encoder: &RustVideoEncoder) -> UniquePtr<NativeVideoEncoderInfo>;
+        fn encoder_factory_report_codec_info_failure(factory: &RustVideoEncoderFactory);
 
         fn decoder_factory_formats(
             factory: &RustVideoDecoderFactory,
@@ -3691,6 +3922,7 @@ mod ffi {
             format: UniquePtr<NativeSdpVideoFormat>,
             reference_scaling: bool,
             resolution: UniquePtr<NativeRtpResolution>,
+            legacy: bool,
         ) -> FfiVideoFactorySupport;
         fn decoder_factory_create(
             factory: &RustVideoDecoderFactory,
@@ -3699,7 +3931,48 @@ mod ffi {
             format: UniquePtr<NativeSdpVideoFormat>,
         ) -> Box<RustVideoDecoder>;
         fn decoder_is_valid(decoder: &RustVideoDecoder) -> bool;
-        fn decoder_configure(decoder: &mut RustVideoDecoder, settings: FfiDecoderSettings) -> bool;
+        fn decoder_configure_value(
+            decoder: &mut RustVideoDecoder,
+            settings: UniquePtr<NativeVideoDecoderSettings>,
+        ) -> bool;
+        type RustFecOverride;
+        fn fec_override_provider_allowed(provider: &RustFecOverride, allowed: bool);
+        type RustEncodedImageSink;
+        fn encoded_sink_provider_frame(
+            provider: &RustEncodedImageSink,
+            image: UniquePtr<NativeEncodedImage>,
+            info: UniquePtr<NativeCodecSpecificInfo>,
+        ) -> FfiEncodedCallbackResult;
+        fn encoded_sink_provider_dropped(
+            provider: &RustEncodedImageSink,
+            timestamp: u32,
+            spatial_id: i32,
+            end: bool,
+        );
+        type RustDecodedImageSink;
+        fn decoded_sink_provider_invoke(
+            provider: &RustDecodedImageSink,
+            frame: UniquePtr<NativeRawVideoFrame>,
+            overload: u8,
+            time_ms: i64,
+            has_time: bool,
+            optional_time: i32,
+            has_qp: bool,
+            qp: u8,
+            status: &mut i32,
+        ) -> UniquePtr<NativeRawVideoFrame>;
+        fn decoder_register_callback_value(
+            decoder: &mut RustVideoDecoder,
+            callback: SharedPtr<NativeDecodedImageCallback>,
+        ) -> i32;
+        fn decoder_decode_value(
+            decoder: &mut RustVideoDecoder,
+            frame: UniquePtr<NativeEncodedImage>,
+            missing_overload: bool,
+            missing: bool,
+            render_time_ms: i64,
+            callback: SharedPtr<NativeDecodedImageCallback>,
+        ) -> i32;
         fn decoder_register_callback(decoder: &mut RustVideoDecoder) -> i32;
         fn decoder_decode(
             decoder: &mut RustVideoDecoder,
@@ -3707,7 +3980,8 @@ mod ffi {
             callback: SharedPtr<NativeDecodedImageCallback>,
         ) -> i32;
         fn decoder_release(decoder: &mut RustVideoDecoder) -> i32;
-        fn decoder_get_info(decoder: &RustVideoDecoder) -> FfiDecoderInfo;
+        fn decoder_implementation_name(decoder: &RustVideoDecoder, valid: &mut bool) -> Vec<u8>;
+        fn decoder_get_info_value(decoder: &RustVideoDecoder) -> UniquePtr<NativeVideoDecoderInfo>;
     }
 
     struct FfiEncodedVideoFrame {
@@ -3768,6 +4042,161 @@ mod ffi {
         state: u8,
         volume: f64,
         signal_level: FfiOptionalI32,
+    }
+
+    struct FfiFrameTransformBinding {
+        audio: bool,
+        sender: bool,
+        has_ssrc: bool,
+        ssrc: u32,
+    }
+    struct FfiFrameTransformerStatistics {
+        in_flight: usize,
+        delivered: u64,
+        completed: u64,
+        abandoned: u64,
+        late_completions: u64,
+        capacity_drops: u64,
+        wrong_frame: u64,
+        callback_panics: u64,
+        callback_forwards: u64,
+        late_callback_forwards: u64,
+    }
+    struct FfiRawUpdateRect {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    }
+    struct FfiDecodedCallbackResult {
+        invoked: bool,
+        status: i32,
+    }
+    struct FfiEncodedLayerSize {
+        index: i32,
+        bytes: usize,
+    }
+    struct FfiEncodedBufferRead {
+        initialized: bool,
+        data: Vec<u8>,
+    }
+    struct FfiEncodedImageMetadata {
+        width: u32,
+        height: u32,
+        rtp_timestamp: u32,
+        ntp_time_ms: i64,
+        capture_time_ms: i64,
+        frame_type: i32,
+        rotation: i32,
+        content_type: u8,
+        qp: i32,
+        simulcast_index: FfiOptionalI32,
+        spatial_index: FfiOptionalI32,
+        temporal_index: FfiOptionalI32,
+        spatial_layer_sizes: Vec<FfiEncodedLayerSize>,
+        has_presentation_time: bool,
+        presentation_time_us: i64,
+        has_tracking_id: bool,
+        tracking_id: u16,
+        has_color_space: bool,
+        color_space: FfiMediaColorSpace,
+        has_playout_delay: bool,
+        playout_delay: FfiMediaPlayoutDelay,
+        packet_infos: Vec<FfiRtpReceivedPacketInfo>,
+        retransmission_allowed: bool,
+        steady_state_refresh: bool,
+        timing_flags: u8,
+        timing_ms: [i64; 8],
+        has_corruption_filter: bool,
+        filter_std_dev: f64,
+        filter_luma_threshold: i32,
+        filter_chroma_threshold: i32,
+        has_psnr: bool,
+        psnr: [f64; 3],
+        has_end_of_temporal_unit: bool,
+        end_of_temporal_unit: bool,
+    }
+    struct FfiRawFrameMetadata {
+        id: u16,
+        timestamp_us: i64,
+        rtp_timestamp: u32,
+        ntp_time_ms: i64,
+        has_presentation_timestamp: bool,
+        presentation_timestamp_us: i64,
+        has_reference_time: bool,
+        reference_time_us: i64,
+        rotation: u16,
+        has_color_space: bool,
+        color_space: FfiMediaColorSpace,
+        low_latency: bool,
+        has_max_composition_delay: bool,
+        max_composition_delay: i32,
+        has_update_rect: bool,
+        update_rect: FfiRawUpdateRect,
+        packet_infos: Vec<FfiRtpReceivedPacketInfo>,
+        has_processing_time: bool,
+        processing_start_us: i64,
+        processing_finish_us: i64,
+        repeat_frame: bool,
+        has_content_type: bool,
+        content_type: u8,
+    }
+    struct FfiRawBufferInfo {
+        buffer_type: u8,
+        width: i32,
+        height: i32,
+        chroma_width: i32,
+        chroma_height: i32,
+        stride_y: i32,
+        stride_u: i32,
+        stride_v: i32,
+        stride_a: i32,
+        stride_uv: i32,
+    }
+    struct FfiRawVideoPlane {
+        valid: bool,
+        width: i32,
+        height: i32,
+        stride: i32,
+        bits: u8,
+        data8: Vec<u8>,
+        data16: Vec<u16>,
+    }
+
+    struct FfiRecordableVideoFrame {
+        valid: bool,
+        has_buffer: bool,
+        data: Vec<u8>,
+        codec: i32,
+        key_frame: bool,
+        width: u32,
+        height: u32,
+        has_rotation: bool,
+        rotation: u16,
+        has_color_space: bool,
+        color_space: FfiMediaColorSpace,
+        render_time_us: i64,
+    }
+    struct FfiVideoSinkFrameSize {
+        width: i32,
+        height: i32,
+    }
+    struct FfiVideoSinkWants {
+        valid: bool,
+        rotation_applied: bool,
+        black_frames: bool,
+        max_pixel_count: i32,
+        has_target_pixel_count: bool,
+        target_pixel_count: i32,
+        max_framerate_fps: i32,
+        resolution_alignment: i32,
+        resolutions: Vec<FfiVideoSinkFrameSize>,
+        has_requested_resolution: bool,
+        requested_width: i32,
+        requested_height: i32,
+        is_active: bool,
+        has_aggregates: bool,
+        any_active_without_requested_resolution: bool,
     }
 
     struct FfiVideoSinkEvent {
@@ -4279,6 +4708,107 @@ mod ffi {
             samples: &[f32],
             error: &mut u8,
         ) -> i32;
+        include!("pulsebeam-webrtc-sys/native/video_codec_callbacks.h");
+        type NativeDecodedImageSink;
+        type NativeFecOverride;
+        fn fec_override_new(provider: Box<RustFecOverride>) -> SharedPtr<NativeFecOverride>;
+        fn fec_override_same(a: &NativeFecOverride, b: &NativeFecOverride) -> bool;
+        fn fec_override_allowed(value: &NativeFecOverride, allowed: bool) -> bool;
+        fn fec_override_retired(value: &NativeFecOverride) -> bool;
+        type NativeEncodedImageSink;
+        fn encoded_sink_new(
+            provider: Box<RustEncodedImageSink>,
+        ) -> UniquePtr<NativeEncodedImageSink>;
+        fn encoded_sink_clone(value: &NativeEncodedImageSink) -> UniquePtr<NativeEncodedImageSink>;
+        fn encoded_sink_same(a: &NativeEncodedImageSink, b: &NativeEncodedImageSink) -> bool;
+        unsafe fn encoded_sink_frame(
+            value: &NativeEncodedImageSink,
+            image: &NativeEncodedImage,
+            info: *const NativeCodecSpecificInfo,
+        ) -> FfiEncodedCallbackResult;
+        fn encoded_sink_dropped(
+            value: &NativeEncodedImageSink,
+            timestamp: u32,
+            spatial_id: i32,
+            end: bool,
+        );
+        fn decoded_sink_new(
+            provider: Box<RustDecodedImageSink>,
+        ) -> UniquePtr<NativeDecodedImageSink>;
+        fn decoded_sink_clone(sink: &NativeDecodedImageSink) -> UniquePtr<NativeDecodedImageSink>;
+        fn decoded_sink_same(a: &NativeDecodedImageSink, b: &NativeDecodedImageSink) -> bool;
+        fn decoded_sink_frame(
+            sink: &NativeDecodedImageSink,
+            frame: Pin<&mut NativeRawVideoFrame>,
+            overload: u8,
+            time: i64,
+            has_time: bool,
+            optional_time: i32,
+            has_qp: bool,
+            qp: u8,
+        ) -> i32;
+        include!("pulsebeam-webrtc-sys/native/encoded_image.h");
+        type NativeEncodedImage;
+        type NativeEncodedVideoBuffer;
+        type NativeWritableEncodedBuffer;
+        fn encoded_image_new() -> UniquePtr<NativeEncodedImage>;
+        fn encoded_image_clone(image: &NativeEncodedImage) -> UniquePtr<NativeEncodedImage>;
+        fn encoded_image_assign(image: Pin<&mut NativeEncodedImage>, other: &NativeEncodedImage);
+        fn encoded_image_metadata(image: &NativeEncodedImage) -> FfiEncodedImageMetadata;
+        fn encoded_image_set_metadata(
+            image: Pin<&mut NativeEncodedImage>,
+            value: &FfiEncodedImageMetadata,
+        ) -> bool;
+        fn encoded_image_capture_time(image: &NativeEncodedImage, bits: &mut i64) -> bool;
+        fn encoded_image_set_encode_time(
+            image: Pin<&mut NativeEncodedImage>,
+            start: i64,
+            finish: i64,
+        );
+        fn encoded_image_is_key(image: &NativeEncodedImage) -> bool;
+        fn encoded_image_is_delta(image: &NativeEncodedImage) -> bool;
+        fn encoded_image_size(image: &NativeEncodedImage) -> usize;
+        fn encoded_image_set_size(image: Pin<&mut NativeEncodedImage>, size: usize) -> bool;
+        fn encoded_image_data(image: &NativeEncodedImage) -> Vec<u8>;
+        fn encoded_image_buffer(image: &NativeEncodedImage) -> UniquePtr<NativeEncodedVideoBuffer>;
+        fn encoded_image_set_buffer(
+            image: Pin<&mut NativeEncodedImage>,
+            buffer: &NativeEncodedVideoBuffer,
+        );
+        fn encoded_image_clear_buffer(image: Pin<&mut NativeEncodedImage>);
+        fn encoded_image_layer_size(
+            image: &NativeEncodedImage,
+            index: i32,
+            bytes: &mut usize,
+            present: &mut bool,
+        ) -> bool;
+        fn encoded_image_set_layer_size(
+            image: Pin<&mut NativeEncodedImage>,
+            index: i32,
+            bytes: usize,
+        ) -> bool;
+        fn encoded_image_frame_type_name(value: i32, name: &mut String) -> bool;
+        fn encoded_buffer_empty() -> UniquePtr<NativeEncodedVideoBuffer>;
+        fn encoded_buffer_new_owned(data: Vec<u8>) -> UniquePtr<NativeEncodedVideoBuffer>;
+        fn encoded_buffer_new(data: &[u8]) -> UniquePtr<NativeEncodedVideoBuffer>;
+        fn encoded_buffer_clone(
+            buffer: &NativeEncodedVideoBuffer,
+        ) -> UniquePtr<NativeEncodedVideoBuffer>;
+        fn encoded_buffer_size(buffer: &NativeEncodedVideoBuffer) -> usize;
+        fn encoded_buffer_data(buffer: &NativeEncodedVideoBuffer) -> Vec<u8>;
+        fn encoded_writer_new(size: usize) -> UniquePtr<NativeWritableEncodedBuffer>;
+        fn encoded_writer_size(buffer: &NativeWritableEncodedBuffer) -> usize;
+        fn encoded_writer_resize(buffer: Pin<&mut NativeWritableEncodedBuffer>, size: usize);
+        fn encoded_writer_write(
+            buffer: Pin<&mut NativeWritableEncodedBuffer>,
+            offset: usize,
+            data: &[u8],
+        ) -> bool;
+        fn encoded_writer_read(buffer: &NativeWritableEncodedBuffer) -> FfiEncodedBufferRead;
+        fn encoded_writer_freeze(
+            buffer: UniquePtr<NativeWritableEncodedBuffer>,
+        ) -> UniquePtr<NativeEncodedVideoBuffer>;
+        include!("pulsebeam-webrtc-sys/native/raw_video_frame.h");
         include!("pulsebeam-webrtc-sys/native/audio_frame_values.h");
         type NativeMixerSource;
         type NativeAudioMixer;
@@ -4658,7 +5188,70 @@ mod ffi {
         type NativeReceivedPacket;
         type NativeVideoEncoderFactory;
         type NativeVideoDecoderFactory;
+        type NativeVideoEncoderProduct;
+        fn video_encoder_create_actor_product(
+            owner: &NativePeerConnectionFactory,
+            factory: &NativeVideoEncoderFactory,
+            environment: &NativeEnvironment,
+            retention: Box<RustVideoFactoryEnvironment>,
+            format: &NativeSdpVideoFormat,
+        ) -> UniquePtr<NativeVideoEncoderProduct>;
+        fn video_encoder_create_product(
+            factory: &NativeVideoEncoderFactory,
+            environment: &NativeEnvironment,
+            retention: Box<RustVideoFactoryEnvironment>,
+            format: &NativeSdpVideoFormat,
+        ) -> UniquePtr<NativeVideoEncoderProduct>;
+        fn video_encoder_product_fec(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            value: SharedPtr<NativeFecOverride>,
+        );
+        unsafe fn video_encoder_product_register_callback(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            sink: *const NativeEncodedImageSink,
+        ) -> i32;
+        fn video_encoder_product_initialize(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            codec: &NativeVideoCodec,
+            settings: FfiOwnedEncoderSettings,
+            legacy: bool,
+        ) -> i32;
+        fn video_encoder_product_encode(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            frame: &NativeRawVideoFrame,
+            has_types: bool,
+            types: &[i32],
+        ) -> i32;
+        fn video_encoder_product_rates(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            rates: &NativeVideoRateControl,
+        );
+        fn video_encoder_product_info(
+            product: &NativeVideoEncoderProduct,
+        ) -> UniquePtr<NativeVideoEncoderInfo>;
+        fn video_encoder_product_name(
+            product: &NativeVideoEncoderProduct,
+            valid: &mut bool,
+        ) -> Vec<u8>;
+        fn video_encoder_product_packet_loss(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            rate: f32,
+        );
+        fn video_encoder_product_rtt(product: Pin<&mut NativeVideoEncoderProduct>, rtt_ms: i64);
+        fn video_encoder_product_loss_notification(
+            product: Pin<&mut NativeVideoEncoderProduct>,
+            notification: FfiVideoEncoderLossNotification,
+        );
+        fn video_encoder_product_release(product: Pin<&mut NativeVideoEncoderProduct>) -> i32;
         type NativeVideoDecoderProduct;
+        fn video_decoder_create_actor_product(
+            owner: &NativePeerConnectionFactory,
+            factory: &NativeVideoDecoderFactory,
+            environment: &NativeEnvironment,
+            retention: Box<RustVideoFactoryEnvironment>,
+            format: &NativeSdpVideoFormat,
+            status: &mut i32,
+        ) -> UniquePtr<NativeVideoDecoderProduct>;
         fn video_decoder_create_product(
             factory: &NativeVideoDecoderFactory,
             environment: &NativeEnvironment,
@@ -4671,7 +5264,24 @@ mod ffi {
         ) -> UniquePtr<NativeVideoDecoderInfo>;
         fn video_decoder_product_implementation_name(
             product: &NativeVideoDecoderProduct,
+            valid: &mut bool,
         ) -> Vec<u8>;
+        unsafe fn video_decoder_product_register_callback(
+            product: Pin<&mut NativeVideoDecoderProduct>,
+            sink: *const NativeDecodedImageSink,
+        ) -> i32;
+        fn video_decoder_product_decode(
+            product: Pin<&mut NativeVideoDecoderProduct>,
+            frame: &NativeEncodedImage,
+            missing_overload: bool,
+            missing: bool,
+            render_time_ms: i64,
+            valid: &mut bool,
+        ) -> i32;
+        fn video_decoder_product_configure(
+            product: Pin<&mut NativeVideoDecoderProduct>,
+            settings: &NativeVideoDecoderSettings,
+        ) -> bool;
         fn video_decoder_product_release(product: Pin<&mut NativeVideoDecoderProduct>) -> i32;
         type NativeAudioEncoderFactory;
         type NativeAudioEncoder;
@@ -4858,6 +5468,112 @@ mod ffi {
             source: &NativeAudioCodecPairId,
         ) -> UniquePtr<NativeAudioCodecPairId>;
         fn audio_codec_pair_id_numeric(id: &NativeAudioCodecPairId) -> u64;
+        type NativeRawVideoFrame;
+        type NativeRawVideoBuffer;
+        type NativeWritableI420;
+        type NativeVideoBufferPreparation;
+        fn raw_buffer_type_name(buffer_type: u8) -> String;
+        fn raw_frame_from_render_time(
+            buffer: &NativeRawVideoBuffer,
+            rtp_timestamp: u32,
+            milliseconds: i64,
+            rotation: u16,
+        ) -> UniquePtr<NativeRawVideoFrame>;
+        fn raw_frame_clone(frame: &NativeRawVideoFrame) -> UniquePtr<NativeRawVideoFrame>;
+        fn raw_frame_from_buffer(buffer: &NativeRawVideoBuffer) -> UniquePtr<NativeRawVideoFrame>;
+        fn raw_frame_metadata(frame: &NativeRawVideoFrame) -> FfiRawFrameMetadata;
+        fn raw_frame_set_metadata(
+            frame: Pin<&mut NativeRawVideoFrame>,
+            metadata: &FfiRawFrameMetadata,
+        ) -> bool;
+        fn raw_frame_buffer(frame: &NativeRawVideoFrame) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_frame_set_buffer(
+            frame: Pin<&mut NativeRawVideoFrame>,
+            buffer: &NativeRawVideoBuffer,
+        ) -> bool;
+        fn raw_frame_timestamp_us(frame: &NativeRawVideoFrame) -> i64;
+        fn raw_frame_width(frame: &NativeRawVideoFrame) -> i32;
+        fn raw_frame_height(frame: &NativeRawVideoFrame) -> i32;
+        fn raw_frame_is_texture(frame: &NativeRawVideoFrame) -> bool;
+        fn raw_frame_update_rect(frame: &NativeRawVideoFrame) -> FfiRawUpdateRect;
+        fn raw_frame_size(frame: &NativeRawVideoFrame) -> u32;
+        fn raw_frame_render_time_ms(frame: &NativeRawVideoFrame) -> i64;
+        fn raw_frame_legacy(frame: &NativeRawVideoFrame) -> UniquePtr<NativeVideoFrame>;
+        fn raw_buffer_clone(buffer: &NativeRawVideoBuffer) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_buffer_info(buffer: &NativeRawVideoBuffer) -> FfiRawBufferInfo;
+        fn raw_buffer_storage(buffer: &NativeRawVideoBuffer) -> Vec<u8>;
+        fn raw_buffer_to_i420(buffer: &NativeRawVideoBuffer) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_buffer_get_i420(buffer: &NativeRawVideoBuffer) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_buffer_crop_scale(
+            buffer: &NativeRawVideoBuffer,
+            x: i32,
+            y: i32,
+            crop_width: i32,
+            crop_height: i32,
+            width: i32,
+            height: i32,
+        ) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_buffer_mapped(
+            buffer: &NativeRawVideoBuffer,
+            types: &[u8],
+        ) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_buffer_prepare(
+            buffer: &NativeRawVideoBuffer,
+            width: usize,
+            height: usize,
+            identifier: usize,
+        ) -> UniquePtr<NativeVideoBufferPreparation>;
+        fn raw_buffer_prepared(
+            request: &NativeVideoBufferPreparation,
+            identifier: &mut usize,
+        ) -> bool;
+        fn raw_buffer_preparation_close(request: &NativeVideoBufferPreparation);
+        fn raw_buffer_plane(buffer: &NativeRawVideoBuffer, plane: u8) -> FfiRawVideoPlane;
+        fn raw_i420_create(
+            width: i32,
+            height: i32,
+            stride_y: i32,
+            stride_u: i32,
+            stride_v: i32,
+        ) -> UniquePtr<NativeWritableI420>;
+        fn raw_i420_copy(buffer: &NativeRawVideoBuffer) -> UniquePtr<NativeWritableI420>;
+        fn raw_i420_rotate(
+            buffer: &NativeRawVideoBuffer,
+            rotation: u16,
+        ) -> UniquePtr<NativeWritableI420>;
+        fn raw_i420_freeze(
+            buffer: UniquePtr<NativeWritableI420>,
+        ) -> UniquePtr<NativeRawVideoBuffer>;
+        fn raw_i420_info(buffer: &NativeWritableI420) -> FfiRawBufferInfo;
+        fn raw_i420_initialized(buffer: &NativeWritableI420) -> bool;
+        fn raw_i420_plane(buffer: &NativeWritableI420, plane: u8) -> FfiRawVideoPlane;
+        fn raw_i420_write_plane(
+            buffer: Pin<&mut NativeWritableI420>,
+            plane: u8,
+            data: &[u8],
+            stride: i32,
+        ) -> bool;
+        fn raw_i420_initialize(buffer: Pin<&mut NativeWritableI420>, black: bool);
+        fn raw_i420_crop_from(
+            target: Pin<&mut NativeWritableI420>,
+            source: &NativeRawVideoBuffer,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+        ) -> bool;
+        fn raw_i420_scale_from(
+            target: Pin<&mut NativeWritableI420>,
+            source: &NativeRawVideoBuffer,
+            center_crop: bool,
+        ) -> bool;
+        fn raw_update_rect_operation(
+            a: FfiRawUpdateRect,
+            b: FfiRawUpdateRect,
+            operation: u8,
+            geometry: &[i32],
+            valid: &mut bool,
+        ) -> FfiRawUpdateRect;
         type NativeVideoFrame;
         type NativeEncodedVideoFrame;
         type NativeEncodedImageCallback;
@@ -4983,6 +5699,7 @@ mod ffi {
             receiver: &NativeRtpReceiver,
         ) -> UniquePtr<NativeMediaTrack>;
         type NativeVideoSourceView;
+        type NativeVideoSourceEncodedSink;
         type NativeVideoObserver;
         type NativeVideoTrack;
         type NativeAudioSource;
@@ -4996,6 +5713,107 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/video_codec_values.h");
         type NativeVideoDecoderSettings;
         type NativeVideoDecoderInfo;
+        type NativeVideoEncoderInfo;
+        type NativeCodecSpecificInfo;
+        fn codec_specific_new() -> UniquePtr<NativeCodecSpecificInfo>;
+        fn codec_specific_clone(
+            value: &NativeCodecSpecificInfo,
+        ) -> UniquePtr<NativeCodecSpecificInfo>;
+        fn codec_specific_fields(value: &NativeCodecSpecificInfo) -> FfiCodecSpecificFields;
+        fn codec_specific_set_fields(
+            value: Pin<&mut NativeCodecSpecificInfo>,
+            fields: FfiCodecSpecificFields,
+        ) -> bool;
+        type NativeVideoCodec;
+        fn video_codec_new() -> UniquePtr<NativeVideoCodec>;
+        fn video_codec_clone(value: &NativeVideoCodec) -> UniquePtr<NativeVideoCodec>;
+        fn video_codec_fields(value: &NativeVideoCodec) -> FfiVideoBitrateCodec;
+        fn video_codec_set_fields(
+            value: Pin<&mut NativeVideoCodec>,
+            fields: FfiVideoBitrateCodec,
+        ) -> bool;
+        type NativeVideoBitrateAllocation;
+        fn video_allocation_new() -> UniquePtr<NativeVideoBitrateAllocation>;
+        fn video_allocation_clone(
+            value: &NativeVideoBitrateAllocation,
+        ) -> UniquePtr<NativeVideoBitrateAllocation>;
+        fn video_allocation_fields(
+            value: &NativeVideoBitrateAllocation,
+        ) -> FfiVideoBitrateAllocation;
+        fn video_allocation_set_fields(
+            value: Pin<&mut NativeVideoBitrateAllocation>,
+            fields: FfiVideoBitrateAllocation,
+        ) -> bool;
+        fn video_allocation_set(
+            value: Pin<&mut NativeVideoBitrateAllocation>,
+            spatial: usize,
+            temporal: usize,
+            bits: u32,
+        ) -> bool;
+        fn video_allocation_sum(
+            value: &NativeVideoBitrateAllocation,
+            spatial: usize,
+            temporal: usize,
+            operation: u8,
+        ) -> u32;
+        fn video_allocation_temporal(
+            value: &NativeVideoBitrateAllocation,
+            spatial: usize,
+        ) -> Vec<u32>;
+        fn video_allocation_simulcast(
+            value: &NativeVideoBitrateAllocation,
+            spatial: usize,
+        ) -> UniquePtr<NativeVideoBitrateAllocation>;
+        fn video_allocation_equal(
+            a: &NativeVideoBitrateAllocation,
+            b: &NativeVideoBitrateAllocation,
+        ) -> bool;
+        fn video_allocation_string(value: &NativeVideoBitrateAllocation) -> String;
+        type NativeVideoRateControl;
+        fn video_rate_control_new() -> UniquePtr<NativeVideoRateControl>;
+        fn video_rate_control_clone(
+            value: &NativeVideoRateControl,
+        ) -> UniquePtr<NativeVideoRateControl>;
+        fn video_rate_control_fields(value: &NativeVideoRateControl) -> FfiOwnedVideoRateControl;
+        fn video_rate_control_set_fields(
+            value: Pin<&mut NativeVideoRateControl>,
+            fields: FfiOwnedVideoRateControl,
+        ) -> bool;
+        fn video_rate_control_equal(a: &NativeVideoRateControl, b: &NativeVideoRateControl)
+        -> bool;
+        fn video_rate_control_construct(
+            allocation: FfiVideoBitrateAllocation,
+            fps: f64,
+            has_bandwidth: bool,
+            bandwidth: i64,
+            kind: i8,
+        ) -> UniquePtr<NativeVideoRateControl>;
+        fn video_encoder_info_new() -> UniquePtr<NativeVideoEncoderInfo>;
+        fn video_encoder_info_clone(
+            value: &NativeVideoEncoderInfo,
+        ) -> UniquePtr<NativeVideoEncoderInfo>;
+        fn video_encoder_info_assign(
+            target: Pin<&mut NativeVideoEncoderInfo>,
+            source: &NativeVideoEncoderInfo,
+        );
+        fn video_encoder_info_fields(value: &NativeVideoEncoderInfo) -> FfiOwnedVideoEncoderInfo;
+        fn video_encoder_info_set_fields(
+            target: Pin<&mut NativeVideoEncoderInfo>,
+            fields: FfiOwnedVideoEncoderInfo,
+        ) -> bool;
+        fn video_encoder_info_equal(a: &NativeVideoEncoderInfo, b: &NativeVideoEncoderInfo)
+        -> bool;
+        fn video_encoder_info_string(value: &NativeVideoEncoderInfo, valid: &mut bool) -> Vec<u8>;
+        fn video_encoder_info_limits(
+            value: &NativeVideoEncoderInfo,
+            pixels: i32,
+            valid: &mut bool,
+            found: &mut bool,
+        ) -> FfiVideoResolutionBitrateLimits;
+        fn video_resolution_bitrate_limits_equal(
+            a: FfiVideoResolutionBitrateLimits,
+            b: FfiVideoResolutionBitrateLimits,
+        ) -> bool;
         fn video_decoder_settings_new() -> UniquePtr<NativeVideoDecoderSettings>;
         fn video_decoder_settings_clone(
             source: &NativeVideoDecoderSettings,
@@ -5034,6 +5852,13 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/video_encoder_selector.h");
         type NativeOwnedVideoEncoderSelector;
         type NativeVideoEncoderSelector;
+        fn video_selector_owned_observer(
+            value: &NativeOwnedVideoEncoderSelector,
+        ) -> Box<RustVideoEncoderSelectorObserver>;
+        fn video_encoder_factory_selector(
+            factory: &NativeVideoEncoderFactory,
+            valid: &mut bool,
+        ) -> UniquePtr<NativeOwnedVideoEncoderSelector>;
         fn video_selector_owned_new(
             provider: Box<RustVideoEncoderSelector>,
         ) -> UniquePtr<NativeOwnedVideoEncoderSelector>;
@@ -5133,6 +5958,8 @@ mod ffi {
         ) -> bool;
         fn sdp_video_format_string(value: &NativeSdpVideoFormat, valid: &mut bool) -> Vec<u8>;
         fn sdp_video_format_named(kind: u8) -> UniquePtr<NativeSdpVideoFormat>;
+        fn sdp_video_format_list_valid(list: &NativeSdpVideoFormatList) -> bool;
+        fn sdp_video_format_list_set_valid(list: Pin<&mut NativeSdpVideoFormatList>, valid: bool);
         fn sdp_video_format_list_new() -> UniquePtr<NativeSdpVideoFormatList>;
         fn sdp_video_format_list_len(list: &NativeSdpVideoFormatList) -> usize;
         fn sdp_video_format_list_get(
@@ -5179,6 +6006,7 @@ mod ffi {
             right: &NativeRenderResolution,
         ) -> bool;
         include!("pulsebeam-webrtc-sys/native/frame_transformer.h");
+        include!("pulsebeam-webrtc-sys/native/live_frame_transformer.h");
         type NativeTransformableFrame;
         fn transformable_frame_is_audio(value: &NativeTransformableFrame) -> bool;
         fn transformable_frame_data(value: &NativeTransformableFrame) -> &[u8];
@@ -5426,7 +6254,6 @@ mod ffi {
             source: &NativeRtcpParameters,
         );
         fn rtcp_parameters_equal(lhs: &NativeRtcpParameters, rhs: &NativeRtcpParameters) -> bool;
-
         fn rtp_codec_parameters_payload_type(value: &NativeRtpCodecParameters) -> i32;
         fn rtp_codec_parameters_set_payload_type(
             value: Pin<&mut NativeRtpCodecParameters>,
@@ -5883,6 +6710,21 @@ mod ffi {
         ) -> UniquePtr<NativeRtcError>;
 
         type NativeRtpParameters;
+        type NativeSetParametersOperation;
+        fn rtp_sender_set_parameters_value(
+            sender: &NativeRtpSender,
+            parameters: &NativeRtpParameters,
+            valid: &mut bool,
+        ) -> UniquePtr<NativeRtcError>;
+        fn rtp_sender_set_parameters_async(
+            sender: &NativeRtpSender,
+            parameters: &NativeRtpParameters,
+            valid: &mut bool,
+        ) -> SharedPtr<NativeSetParametersOperation>;
+        fn set_parameters_operation_ready(operation: &NativeSetParametersOperation) -> bool;
+        fn set_parameters_operation_take(
+            operation: &NativeSetParametersOperation,
+        ) -> UniquePtr<NativeRtcError>;
         fn rtp_sender_parameters_value(sender: &NativeRtpSender) -> UniquePtr<NativeRtpParameters>;
         fn rtp_receiver_parameters_value(
             receiver: &NativeRtpReceiver,
@@ -7063,12 +7905,14 @@ mod ffi {
             has_mode: bool,
             mode: &[u8],
             resolution: *const NativeRtpResolution,
+            legacy: bool,
         ) -> FfiVideoFactorySupport;
         unsafe fn video_decoder_query_value(
             factory: &NativeVideoDecoderFactory,
             format: &NativeSdpVideoFormat,
             reference_scaling: bool,
             resolution: *const NativeRtpResolution,
+            legacy: bool,
         ) -> FfiVideoFactorySupport;
         fn video_encoder_formats(factory: &NativeVideoEncoderFactory) -> Vec<FfiCodecFormat>;
         fn video_encoder_query(
@@ -7101,6 +7945,22 @@ mod ffi {
         fn native_encoded_frame_key(frame: &NativeEncodedVideoFrame) -> bool;
         fn native_encoded_frame_qp(frame: &NativeEncodedVideoFrame) -> i32;
         fn native_encoded_frame_data(frame: &NativeEncodedVideoFrame) -> Vec<u8>;
+        fn encoded_callback_same(
+            a: &NativeEncodedImageCallback,
+            b: &NativeEncodedImageCallback,
+        ) -> bool;
+        fn encoded_callback_retired(callback: &NativeEncodedImageCallback) -> bool;
+        unsafe fn encoded_callback_frame(
+            callback: &NativeEncodedImageCallback,
+            image: &NativeEncodedImage,
+            info: *const NativeCodecSpecificInfo,
+        ) -> FfiEncodedCallbackResult;
+        fn encoded_callback_dropped(
+            callback: &NativeEncodedImageCallback,
+            timestamp: u32,
+            spatial_id: i32,
+            end: bool,
+        ) -> bool;
         fn encoded_callback_emit(
             callback: &NativeEncodedImageCallback,
             data: &[u8],
@@ -7110,6 +7970,21 @@ mod ffi {
             key_frame: bool,
             qp: i32,
             metadata: &FfiEncodedVideoMetadata,
+        ) -> bool;
+        fn decoded_callback_frame(
+            callback: &NativeDecodedImageCallback,
+            frame: Pin<&mut NativeRawVideoFrame>,
+            overload: u8,
+            time_ms: i64,
+            has_time: bool,
+            optional_time_ms: i32,
+            has_qp: bool,
+            qp: u8,
+        ) -> FfiDecodedCallbackResult;
+        fn decoded_callback_retired(callback: &NativeDecodedImageCallback) -> bool;
+        fn decoded_callback_same(
+            a: &NativeDecodedImageCallback,
+            b: &NativeDecodedImageCallback,
         ) -> bool;
         fn decoded_callback_emit(
             callback: &NativeDecodedImageCallback,
@@ -7494,14 +8369,17 @@ mod ffi {
             changes: &FfiAudioSourceOptions,
         ) -> FfiAudioSourceOptions;
         fn audio_options_description(value: &FfiAudioSourceOptions) -> String;
-        type NativeAudioProcessor;
-        fn audio_track_processor(track: &NativeAudioTrack) -> UniquePtr<NativeAudioProcessor>;
-        fn audio_processors_same(a: &NativeAudioProcessor, b: &NativeAudioProcessor) -> bool;
-        fn audio_processor_stats(
-            processor: &NativeAudioProcessor,
+        type NativeAudioTrackProcessor;
+        fn audio_track_processor(track: &NativeAudioTrack) -> UniquePtr<NativeAudioTrackProcessor>;
+        fn audio_track_processors_same(
+            a: &NativeAudioTrackProcessor,
+            b: &NativeAudioTrackProcessor,
+        ) -> bool;
+        fn audio_track_processor_stats(
+            processor: &NativeAudioTrackProcessor,
             has_remote_tracks: bool,
         ) -> FfiAudioProcessorStatistics;
-        fn audio_processor_statistics_default() -> FfiAudioProcessorStatistics;
+        fn audio_track_processor_statistics_default() -> FfiAudioProcessorStatistics;
         type NativeAudioSourceView;
         type NativeAudioObserver;
         fn audio_source_view(source: &NativeAudioSource) -> UniquePtr<NativeAudioSourceView>;
@@ -7630,10 +8508,19 @@ mod ffi {
         fn close_video_source(source: &NativeVideoSource) -> bool;
         fn video_source_state(source: &NativeVideoSource) -> u8;
         fn video_source_rejected_sink_requests(source: &NativeVideoSource) -> u64;
+        fn video_source_view_rejected_sink_requests(
+            source: &NativeVideoSourceView,
+            count: &mut u64,
+        ) -> bool;
         fn video_source_as_view(source: &NativeVideoSource) -> UniquePtr<NativeVideoSourceView>;
         fn video_track_source(
             track: &NativeVideoTrack,
             factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeVideoSourceView>;
+        fn video_track_source_from_producer(
+            track: &NativeVideoTrack,
+            factory: &NativePeerConnectionFactory,
+            source: &NativeVideoSource,
         ) -> UniquePtr<NativeVideoSourceView>;
         fn video_source_view_request_refresh(source: &NativeVideoSourceView);
         fn video_source_view_generate_key_frame(source: &NativeVideoSourceView);
@@ -7674,35 +8561,49 @@ mod ffi {
             timestamp_us: i64,
             token: i64,
         ) -> bool;
-        type NativeMediaStream;
-        type NativeMediaStreamObserver;
+        type NativeLocalMediaStream;
+        type NativeLocalMediaStreamObserver;
         fn create_media_stream(
             factory: &NativePeerConnectionFactory,
             id: &str,
-        ) -> UniquePtr<NativeMediaStream>;
-        fn media_stream_id(stream: &NativeMediaStream) -> String;
-        fn media_stream_track_keys(stream: &NativeMediaStream, audio: bool) -> Vec<usize>;
-        fn media_stream_find_track(stream: &NativeMediaStream, audio: bool, id: &str) -> usize;
+        ) -> UniquePtr<NativeLocalMediaStream>;
+        fn local_media_stream_id(stream: &NativeLocalMediaStream) -> String;
+        fn local_media_stream_track_keys(
+            stream: &NativeLocalMediaStream,
+            audio: bool,
+        ) -> Vec<usize>;
+        fn local_media_stream_find_track(
+            stream: &NativeLocalMediaStream,
+            audio: bool,
+            id: &str,
+        ) -> usize;
         fn audio_track_identity(track: &NativeAudioTrack) -> usize;
         fn video_track_identity(track: &NativeVideoTrack) -> usize;
-        fn media_stream_audio_track(
-            stream: &NativeMediaStream,
+        fn local_media_stream_audio_track(
+            stream: &NativeLocalMediaStream,
             track: &NativeAudioTrack,
             add: bool,
         ) -> bool;
-        fn media_stream_video_track(
-            stream: &NativeMediaStream,
+        fn local_media_stream_video_track(
+            stream: &NativeLocalMediaStream,
             track: &NativeVideoTrack,
             add: bool,
         ) -> bool;
-        fn media_stream_observe(
-            stream: &NativeMediaStream,
+        fn local_media_stream_observe(
+            stream: &NativeLocalMediaStream,
             capacity: usize,
-        ) -> UniquePtr<NativeMediaStreamObserver>;
-        fn media_stream_observer_take(observer: &NativeMediaStreamObserver) -> bool;
-        fn media_stream_observer_take_dropped(observer: &NativeMediaStreamObserver) -> u64;
-        fn media_stream_observer_close(observer: &NativeMediaStreamObserver);
+        ) -> UniquePtr<NativeLocalMediaStreamObserver>;
+        fn local_media_stream_observer_take(observer: &NativeLocalMediaStreamObserver) -> bool;
+        fn local_media_stream_observer_take_dropped(
+            observer: &NativeLocalMediaStreamObserver,
+        ) -> u64;
+        fn local_media_stream_observer_close(observer: &NativeLocalMediaStreamObserver);
         fn video_source_i420_allocation_size(width: u32, height: u32) -> usize;
+        fn video_source_push_native_frame(
+            source: &NativeVideoSource,
+            frame: &NativeRawVideoFrame,
+        ) -> bool;
+        fn video_sink_take_native_frame(sink: &NativeVideoSink) -> UniquePtr<NativeRawVideoFrame>;
         fn video_source_push_frame(
             source: &NativeVideoSource,
             data: &[u8],
@@ -7726,7 +8627,32 @@ mod ffi {
         fn video_track_set_should_receive(track: &NativeVideoTrack, receive: bool);
         fn video_track_content_hint(track: &NativeVideoTrack) -> u8;
         fn video_track_set_content_hint(track: &NativeVideoTrack, hint: u8);
-        fn video_track_attach_sink(track: &NativeVideoTrack) -> UniquePtr<NativeVideoSink>;
+        fn video_source_attach_encoded_output(
+            source: &NativeVideoSourceView,
+        ) -> UniquePtr<NativeVideoSourceEncodedSink>;
+        fn video_source_encoded_take_frame(
+            sink: &NativeVideoSourceEncodedSink,
+        ) -> FfiRecordableVideoFrame;
+        fn video_source_encoded_take_event(
+            sink: &NativeVideoSourceEncodedSink,
+        ) -> FfiVideoSinkEvent;
+        fn video_source_encoded_dropped_frames(sink: &NativeVideoSourceEncodedSink) -> u64;
+        fn video_source_encoded_dropped_events(sink: &NativeVideoSourceEncodedSink) -> u64;
+        fn video_source_encoded_close(sink: &NativeVideoSourceEncodedSink);
+        fn video_sink_default_wants() -> FfiVideoSinkWants;
+        fn video_track_attach_sink(
+            track: &NativeVideoTrack,
+            source: &NativeVideoSourceView,
+            wants: &FfiVideoSinkWants,
+            status: &mut u8,
+        ) -> UniquePtr<NativeVideoSink>;
+        fn video_source_attach_sink(
+            source: &NativeVideoSourceView,
+            wants: &FfiVideoSinkWants,
+            status: &mut u8,
+        ) -> UniquePtr<NativeVideoSink>;
+        fn video_sink_update_wants(sink: &NativeVideoSink, wants: &FfiVideoSinkWants) -> u8;
+        fn video_sink_wants(sink: &NativeVideoSink) -> FfiVideoSinkWants;
         fn video_sink_take_frame(sink: &NativeVideoSink) -> UniquePtr<NativeVideoFrame>;
         fn video_sink_dropped_frames(sink: &NativeVideoSink) -> u64;
         fn video_sink_take_event(sink: &NativeVideoSink) -> FfiVideoSinkEvent;
@@ -7744,6 +8670,13 @@ mod ffi {
         fn transceiver_list_at(
             list: &NativeTransceiverList,
             index: usize,
+        ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_add_video_transceiver_value(
+            peer: &NativePeerConnection,
+            track: &NativeVideoTrack,
+            init: &NativeRtpTransceiverInit,
+            valid: &mut bool,
+            error: &mut UniquePtr<NativeRtcError>,
         ) -> UniquePtr<NativeRtpTransceiver>;
         fn peer_add_video_transceiver(
             peer: &NativePeerConnection,
@@ -7984,6 +8917,59 @@ mod ffi {
             value: Pin<&mut NativeFrameDecryptionResult>,
             written: usize,
         );
+        type NativeFrameTransformer;
+        type NativeFrameTransformCompletion;
+        type NativeFrameTransformCallback;
+        fn frame_transform_completion_callback(
+            completion: &NativeFrameTransformCompletion,
+        ) -> UniquePtr<NativeFrameTransformCallback>;
+        fn frame_transform_callback_copy(
+            callback: &NativeFrameTransformCallback,
+        ) -> UniquePtr<NativeFrameTransformCallback>;
+        fn frame_transform_callback_same(
+            a: &NativeFrameTransformCallback,
+            b: &NativeFrameTransformCallback,
+        ) -> bool;
+        fn frame_transform_callback_binding(
+            callback: &NativeFrameTransformCallback,
+        ) -> FfiFrameTransformBinding;
+        fn frame_transform_callback_retired(callback: &NativeFrameTransformCallback) -> bool;
+        fn frame_transform_callback_short_circuit(callback: &NativeFrameTransformCallback) -> bool;
+        fn frame_transform_callback_forward(
+            callback: &NativeFrameTransformCallback,
+            frame: UniquePtr<NativeTransformableFrame>,
+        ) -> u8;
+        unsafe fn rtp_sender_select_frame_transformer(
+            peer: &NativePeerConnection,
+            sender: &NativeRtpSender,
+            provider: *const NativeFrameTransformer,
+        ) -> bool;
+        unsafe fn rtp_receiver_select_frame_transformer(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+            provider: *const NativeFrameTransformer,
+        ) -> bool;
+        fn frame_transformer_new(
+            provider: Box<RustFrameTransformerProvider>,
+            maximum_in_flight: usize,
+        ) -> UniquePtr<NativeFrameTransformer>;
+        fn frame_transformer_copy(
+            value: &NativeFrameTransformer,
+        ) -> UniquePtr<NativeFrameTransformer>;
+        fn frame_transformer_same(a: &NativeFrameTransformer, b: &NativeFrameTransformer) -> bool;
+        fn frame_transformer_close(value: &NativeFrameTransformer);
+        fn frame_transformer_closed(value: &NativeFrameTransformer) -> bool;
+        fn frame_transformer_statistics(
+            value: &NativeFrameTransformer,
+        ) -> FfiFrameTransformerStatistics;
+        fn frame_transform_completion_binding(
+            value: &NativeFrameTransformCompletion,
+        ) -> FfiFrameTransformBinding;
+        fn frame_transform_complete(
+            completion: UniquePtr<NativeFrameTransformCompletion>,
+            frame: UniquePtr<NativeTransformableFrame>,
+        ) -> u8;
+        fn frame_transform_short_circuit(value: &NativeFrameTransformCompletion) -> bool;
         type NativeFrameEncryptor;
         type NativeFrameDecryptor;
         fn frame_crypto_max_output_capacity() -> usize;
@@ -8020,6 +9006,14 @@ mod ffi {
             input: &[u8],
             capacity: usize,
         ) -> FfiFrameCryptoOutput;
+        unsafe fn rtp_sender_set_encoder_selector(
+            sender: &NativeRtpSender,
+            selector: *const NativeVideoEncoderSelector,
+        );
+        fn rtp_sender_set_owned_encoder_selector(
+            sender: &NativeRtpSender,
+            selector: UniquePtr<NativeOwnedVideoEncoderSelector>,
+        );
         unsafe fn rtp_sender_set_frame_encryptor(
             sender: &NativeRtpSender,
             value: *const NativeFrameEncryptor,

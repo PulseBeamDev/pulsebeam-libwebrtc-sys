@@ -45,10 +45,13 @@ class NativePeerConnection;
 class NativeRtpCapabilities;
 class NativeRtcError;
 class NativeVideoFrame;
+class NativeRawVideoFrame;
 struct FfiSenderParameters;
 struct FfiCodecFormat;
 struct FfiVideoSourceStats;
 struct FfiVideoSinkEvent;
+struct FfiVideoSinkWants;
+struct FfiRecordableVideoFrame;
 struct FfiVideoCodecCapability;
 struct FfiEncodedVideoFrame;
 struct FfiRtpHeaderExtension;
@@ -64,6 +67,22 @@ class NativeVideoSourceView final {
  private:
   std::unique_ptr<State> state_;
 };
+class NativeVideoSourceEncodedSink final {
+ public:
+  struct State;
+  explicit NativeVideoSourceEncodedSink(std::unique_ptr<State> state) noexcept;
+  ~NativeVideoSourceEncodedSink();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeVideoSourceEncodedSink> video_source_attach_encoded_output(const NativeVideoSourceView&) noexcept;
+FfiRecordableVideoFrame video_source_encoded_take_frame(const NativeVideoSourceEncodedSink&) noexcept;
+FfiVideoSinkEvent video_source_encoded_take_event(const NativeVideoSourceEncodedSink&) noexcept;
+std::uint64_t video_source_encoded_dropped_frames(const NativeVideoSourceEncodedSink&) noexcept;
+std::uint64_t video_source_encoded_dropped_events(const NativeVideoSourceEncodedSink&) noexcept;
+void video_source_encoded_close(const NativeVideoSourceEncodedSink&) noexcept;
+
 class NativeVideoObserver final {
  public:
   struct State;
@@ -73,35 +92,35 @@ class NativeVideoObserver final {
  private:
   std::unique_ptr<State> state_;
 };
-class NativeMediaStream final {
+class NativeLocalMediaStream final {
  public:
   struct State;
-  explicit NativeMediaStream(std::unique_ptr<State> state) noexcept;
-  ~NativeMediaStream();
+  explicit NativeLocalMediaStream(std::unique_ptr<State> state) noexcept;
+  ~NativeLocalMediaStream();
   const std::unique_ptr<State>& state() const noexcept;
  private:
   std::unique_ptr<State> state_;
 };
-class NativeMediaStreamObserver final {
+class NativeLocalMediaStreamObserver final {
  public:
   struct State;
-  explicit NativeMediaStreamObserver(std::unique_ptr<State> state) noexcept;
-  ~NativeMediaStreamObserver();
+  explicit NativeLocalMediaStreamObserver(std::unique_ptr<State> state) noexcept;
+  ~NativeLocalMediaStreamObserver();
   const std::unique_ptr<State>& state() const noexcept;
  private:
   std::unique_ptr<State> state_;
 };
-std::unique_ptr<NativeMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
-rust::String media_stream_id(const NativeMediaStream& stream) noexcept;
-rust::Vec<std::size_t> media_stream_track_keys(const NativeMediaStream& stream, bool audio) noexcept;
-std::size_t media_stream_find_track(const NativeMediaStream& stream, bool audio, rust::Str id) noexcept;
+std::unique_ptr<NativeLocalMediaStream> create_media_stream(const NativePeerConnectionFactory& factory, rust::Str id) noexcept;
+rust::String local_media_stream_id(const NativeLocalMediaStream& stream) noexcept;
+rust::Vec<std::size_t> local_media_stream_track_keys(const NativeLocalMediaStream& stream, bool audio) noexcept;
+std::size_t local_media_stream_find_track(const NativeLocalMediaStream& stream, bool audio, rust::Str id) noexcept;
 std::size_t video_track_identity(const NativeVideoTrack& track) noexcept;
-bool media_stream_audio_track(const NativeMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept;
-bool media_stream_video_track(const NativeMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept;
-std::unique_ptr<NativeMediaStreamObserver> media_stream_observe(const NativeMediaStream& stream, std::size_t capacity) noexcept;
-bool media_stream_observer_take(const NativeMediaStreamObserver& observer) noexcept;
-std::uint64_t media_stream_observer_take_dropped(const NativeMediaStreamObserver& observer) noexcept;
-void media_stream_observer_close(const NativeMediaStreamObserver& observer) noexcept;
+bool local_media_stream_audio_track(const NativeLocalMediaStream& stream, const NativeAudioTrack& track, bool add) noexcept;
+bool local_media_stream_video_track(const NativeLocalMediaStream& stream, const NativeVideoTrack& track, bool add) noexcept;
+std::unique_ptr<NativeLocalMediaStreamObserver> local_media_stream_observe(const NativeLocalMediaStream& stream, std::size_t capacity) noexcept;
+bool local_media_stream_observer_take(const NativeLocalMediaStreamObserver& observer) noexcept;
+std::uint64_t local_media_stream_observer_take_dropped(const NativeLocalMediaStreamObserver& observer) noexcept;
+void local_media_stream_observer_close(const NativeLocalMediaStreamObserver& observer) noexcept;
 
 class NativeScreenCapture final {
  public:
@@ -236,6 +255,23 @@ class NativeRtpSender final {
 };
 
 
+class NativeRtcError;
+class NativeRtpParameters;
+class NativeRtpTransceiverInit;
+class NativeRtpTransceiver;
+std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value(const NativePeerConnection&, const NativeVideoTrack&, const NativeRtpTransceiverInit&, bool&, std::unique_ptr<NativeRtcError>&) noexcept;
+class NativeSetParametersOperation final {
+ public:
+  struct State;
+  explicit NativeSetParametersOperation(std::shared_ptr<State> state) : state_(std::move(state)) {}
+  const std::shared_ptr<State>& state() const noexcept { return state_; }
+ private:
+  std::shared_ptr<State> state_;
+};
+std::unique_ptr<NativeRtcError> rtp_sender_set_parameters_value(const NativeRtpSender&, const NativeRtpParameters&, bool&) noexcept;
+std::shared_ptr<NativeSetParametersOperation> rtp_sender_set_parameters_async(const NativeRtpSender&, const NativeRtpParameters&, bool&) noexcept;
+bool set_parameters_operation_ready(const NativeSetParametersOperation&) noexcept;
+std::unique_ptr<NativeRtcError> set_parameters_operation_take(const NativeSetParametersOperation&) noexcept;
 class NativeRtpReceiver;
 struct FfiRtpPacketEvent;
 class NativeRtpSenderObserver final {
@@ -348,8 +384,10 @@ std::unique_ptr<NativeVideoSource> create_video_source(
 bool close_video_source(const NativeVideoSource& source) noexcept;
 std::uint8_t video_source_state(const NativeVideoSource& source) noexcept;
 std::uint64_t video_source_rejected_sink_requests(const NativeVideoSource& source) noexcept;
+bool video_source_view_rejected_sink_requests(const NativeVideoSourceView&, std::uint64_t&) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_source_as_view(const NativeVideoSource& source) noexcept;
 std::unique_ptr<NativeVideoSourceView> video_track_source(const NativeVideoTrack& track, const NativePeerConnectionFactory& factory) noexcept;
+std::unique_ptr<NativeVideoSourceView> video_track_source_from_producer(const NativeVideoTrack&, const NativePeerConnectionFactory&, const NativeVideoSource&) noexcept;
 void video_source_view_request_refresh(const NativeVideoSourceView&) noexcept;
 void video_source_view_generate_key_frame(const NativeVideoSourceView&) noexcept;
 void video_source_view_process_constraints(const NativeVideoSourceView&,
@@ -392,8 +430,16 @@ bool video_track_should_receive(const NativeVideoTrack& track) noexcept;
 void video_track_set_should_receive(const NativeVideoTrack& track, bool receive) noexcept;
 std::uint8_t video_track_content_hint(const NativeVideoTrack& track) noexcept;
 void video_track_set_content_hint(const NativeVideoTrack& track, std::uint8_t hint) noexcept;
+FfiVideoSinkWants video_sink_default_wants() noexcept;
 std::unique_ptr<NativeVideoSink> video_track_attach_sink(
-    const NativeVideoTrack& track) noexcept;
+    const NativeVideoTrack&, const NativeVideoSourceView&,
+    const FfiVideoSinkWants&, std::uint8_t&) noexcept;
+std::unique_ptr<NativeVideoSink> video_source_attach_sink(
+    const NativeVideoSourceView&, const FfiVideoSinkWants&, std::uint8_t&) noexcept;
+std::uint8_t video_sink_update_wants(const NativeVideoSink&, const FfiVideoSinkWants&) noexcept;
+FfiVideoSinkWants video_sink_wants(const NativeVideoSink&) noexcept;
+bool video_source_push_native_frame(const NativeVideoSource&, const NativeRawVideoFrame&) noexcept;
+std::unique_ptr<NativeRawVideoFrame> video_sink_take_native_frame(const NativeVideoSink&) noexcept;
 std::unique_ptr<NativeVideoFrame> video_sink_take_frame(
     const NativeVideoSink& sink) noexcept;
 std::uint64_t video_sink_dropped_frames(const NativeVideoSink& sink) noexcept;
@@ -547,6 +593,10 @@ FfiFrameCryptoFailure frame_decryptor_failure(const NativeFrameDecryptor& value)
 std::size_t frame_decryptor_max_size(const NativeFrameDecryptor& value, std::int32_t media, std::size_t size) noexcept;
 FfiFrameCryptoOutput frame_decryptor_decrypt(const NativeFrameDecryptor& value, std::int32_t media, rust::Slice<const std::uint32_t> csrcs,
     rust::Slice<const std::uint8_t> additional, rust::Slice<const std::uint8_t> input, std::size_t capacity) noexcept;
+class NativeVideoEncoderSelector;
+class NativeOwnedVideoEncoderSelector;
+void rtp_sender_set_encoder_selector(const NativeRtpSender&, const NativeVideoEncoderSelector*) noexcept;
+void rtp_sender_set_owned_encoder_selector(const NativeRtpSender&, std::unique_ptr<NativeOwnedVideoEncoderSelector>) noexcept;
 void rtp_sender_set_frame_encryptor(const NativeRtpSender& sender, const NativeFrameEncryptor* value) noexcept;
 std::unique_ptr<NativeFrameEncryptor> rtp_sender_frame_encryptor(const NativeRtpSender& sender) noexcept;
 bool rtp_receiver_set_frame_decryptor(const NativeRtpReceiver& receiver, const NativeFrameDecryptor* value) noexcept;

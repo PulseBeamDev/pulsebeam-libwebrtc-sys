@@ -398,6 +398,8 @@ std::int32_t video_header_h264_equals(FfiVideoHeaderH264 l,
     return status;
   return video_frame_metadata_equals(left, right);
 }
+FfiVp9GofInfo CodecGofFields(const webrtc::GofInfoVP9& value) { return CopyGof(value); }
+bool CodecGofFromFields(const FfiVp9GofInfo& input, webrtc::GofInfoVP9& value) { return LoadGof(input, value); }
 std::int32_t vp9_gof_set_structure(FfiVp9GofInfo &input,
                                    std::int32_t mode) noexcept {
   if (mode < 0 || mode > 3)

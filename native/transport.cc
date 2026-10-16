@@ -20,6 +20,11 @@
 
 namespace pulsebeam::webrtc_sys {
 namespace {
+template <class F> decltype(auto) OnNetwork(webrtc::Thread* thread, F&& call) {
+  // SDK network roles can forbid even self-BlockingCall after setup.
+  if (thread->IsCurrent()) return std::forward<F>(call)();
+  return thread->BlockingCall(std::forward<F>(call));
+}
 template <class Event> struct EventQueue {
   std::shared_ptr<ReadinessSignal> readiness;
   std::mutex mutex;
@@ -231,7 +236,7 @@ const std::unique_ptr<NativeIceTransport::State>& NativeIceTransport::state() co
 }
 std::unique_ptr<NativeIceTransport> dtls_transport_ice(const NativeDtlsTransport& transport) noexcept {
   auto& owner = *transport.state();
-  auto ice = owner.network->BlockingCall([&] { return owner.transport->ice_transport(); });
+  auto ice = OnNetwork(owner.network, [&] { return owner.transport->ice_transport(); });
   if (!ice) return nullptr;
   auto state = std::make_unique<NativeIceTransport::State>();
   state->transport = std::move(ice);
@@ -241,12 +246,12 @@ std::unique_ptr<NativeIceTransport> dtls_transport_ice(const NativeDtlsTransport
 }
 bool ice_transport_has_internal(const NativeIceTransport& transport) noexcept {
   auto& state = *transport.state();
-  return state.network->BlockingCall([&] { return state.transport->internal() != nullptr; });
+  return OnNetwork(state.network, [&] { return state.transport->internal() != nullptr; });
 }
 FfiIceInternalValue ice_transport_internal_value(const NativeIceTransport& transport,
                                                 std::uint8_t field) noexcept {
   auto& state = *transport.state();
-  return state.network->BlockingCall([&] {
+  return OnNetwork(state.network, [&] {
     FfiIceInternalValue out{};
     auto* internal = state.transport->internal();
     if (!internal) return out;
@@ -468,7 +473,7 @@ std::unique_ptr<NativeSctpInformation> sctp_information_clone(
 bool dtls_transport_register_observer(const NativeDtlsTransport& transport,
                                       std::size_t capacity) noexcept {
   auto& state = *transport.state();
-  return state.network->BlockingCall([&] {
+  return OnNetwork(state.network, [&] {
     if (!capacity || state.registered) return false;
     state.queue.Reset(capacity);
     state.transport->RegisterObserver(&state);
@@ -479,7 +484,7 @@ bool dtls_transport_register_observer(const NativeDtlsTransport& transport,
 bool sctp_transport_register_observer(const NativeSctpTransport& transport,
                                       std::size_t capacity) noexcept {
   auto& state = *transport.state();
-  return state.network->BlockingCall([&] {
+  return OnNetwork(state.network, [&] {
     if (!capacity || state.registered) return false;
     state.queue.Reset(capacity);
     state.transport->RegisterObserver(&state);
@@ -489,7 +494,7 @@ bool sctp_transport_register_observer(const NativeSctpTransport& transport,
 }
 void dtls_transport_unregister_observer(const NativeDtlsTransport& transport) noexcept {
   auto& state = *transport.state();
-  state.network->BlockingCall([&] {
+  OnNetwork(state.network, [&] {
     if (!state.registered) return;
     state.transport->UnregisterObserver();
     state.registered = false;
@@ -497,7 +502,7 @@ void dtls_transport_unregister_observer(const NativeDtlsTransport& transport) no
 }
 void sctp_transport_unregister_observer(const NativeSctpTransport& transport) noexcept {
   auto& state = *transport.state();
-  state.network->BlockingCall([&] {
+  OnNetwork(state.network, [&] {
     if (!state.registered) return;
     state.transport->UnregisterObserver();
     state.registered = false;

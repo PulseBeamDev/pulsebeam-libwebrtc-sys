@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use crate::{FieldTrialsSnapshot, VideoCodecFormat, VideoScalabilityMode, ffi};
+use crate::{FieldTrialsSnapshot, VideoScalabilityMode, ffi};
 
 /// Native codec identity, distinct from an SDP codec name or format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,7 +68,7 @@ pub struct VideoCodecLayer {
     pub min_bitrate_kbps: u32,
     pub qp_max: u32,
     pub active: bool,
-    pub format: Option<VideoCodecFormat>,
+    pub format: Option<crate::SdpVideoFormat>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VideoCodecSpecificConfiguration {
@@ -137,13 +137,123 @@ fn layer(value: ffi::FfiVideoBitrateCodecLayer) -> VideoCodecLayer {
         min_bitrate_kbps: value.min_bitrate_kbps,
         qp_max: value.qp_max,
         active: value.active,
-        format: value
-            .has_format
-            .then(|| crate::codec::from_ffi_format(value.format)),
+        format: (!value.format.is_null()).then(|| crate::SdpVideoFormat::from_native(value.format)),
     }
 }
 impl VideoCodecConfiguration {
-    fn from_native(value: ffi::FfiVideoBitrateCodec) -> Self {
+    pub(crate) fn native(&self) -> ffi::FfiVideoBitrateCodec {
+        fn layer(v: &VideoCodecLayer) -> ffi::FfiVideoBitrateCodecLayer {
+            ffi::FfiVideoBitrateCodecLayer {
+                width: v.width,
+                height: v.height,
+                max_framerate: v.max_framerate,
+                temporal_layers: v.temporal_layers,
+                max_bitrate_kbps: v.max_bitrate_kbps,
+                target_bitrate_kbps: v.target_bitrate_kbps,
+                min_bitrate_kbps: v.min_bitrate_kbps,
+                qp_max: v.qp_max,
+                active: v.active,
+                format: v.format.as_ref().map_or_else(cxx::UniquePtr::null, |f| {
+                    ffi::sdp_video_format_clone(f.native())
+                }),
+            }
+        }
+        let mut v = ffi::FfiVideoBitrateCodec {
+            codec_type: match self.codec_type {
+                VideoCodecType::Generic => 0,
+                VideoCodecType::Vp8 => 1,
+                VideoCodecType::Vp9 => 2,
+                VideoCodecType::Av1 => 3,
+                VideoCodecType::H264 => 4,
+                VideoCodecType::H265 => 5,
+                VideoCodecType::Native(v) => v,
+            },
+            width: self.width,
+            height: self.height,
+            start_bitrate_kbps: self.start_bitrate_kbps,
+            max_bitrate_kbps: self.max_bitrate_kbps,
+            min_bitrate_kbps: self.min_bitrate_kbps,
+            max_framerate: self.max_framerate,
+            active: self.active,
+            qp_max: self.qp_max,
+            number_of_simulcast_streams: self.number_of_simulcast_streams,
+            simulcast_streams: self.simulcast_streams.iter().map(layer).collect(),
+            spatial_layers: self.spatial_layers.iter().map(layer).collect(),
+            mode: match self.mode {
+                VideoCodecMode::Realtime => 0,
+                VideoCodecMode::Screensharing => 1,
+                VideoCodecMode::Native(v) => v,
+            },
+            expect_encode_from_texture: self.expect_encode_from_texture,
+            timing_delay_ms: self.timing_delay_ms,
+            timing_outlier_ratio_percent: self.timing_outlier_ratio_percent,
+            legacy_conference_mode: self.legacy_conference_mode,
+            scalability_mode: self
+                .scalability_mode
+                .as_ref()
+                .map_or_else(String::new, |v| v.as_str().to_owned()),
+            complexity: match self.complexity {
+                VideoEncoderComplexity::Low => -1,
+                VideoEncoderComplexity::Normal => 0,
+                VideoEncoderComplexity::High => 1,
+                VideoEncoderComplexity::Higher => 2,
+                VideoEncoderComplexity::Max => 3,
+                VideoEncoderComplexity::Native(v) => v,
+            },
+            frame_drop_enabled: self.frame_drop_enabled,
+            ..Default::default()
+        };
+        match self.codec_specific {
+            Some(VideoCodecSpecificConfiguration::Vp8 {
+                temporal_layers,
+                denoising,
+                automatic_resize,
+                key_frame_interval,
+            }) => {
+                v.temporal_layers = temporal_layers;
+                v.denoising = denoising;
+                v.automatic_resize = automatic_resize;
+                v.key_frame_interval = key_frame_interval;
+            }
+            Some(VideoCodecSpecificConfiguration::Vp9 {
+                temporal_layers,
+                denoising,
+                key_frame_interval,
+                adaptive_qp,
+                automatic_resize,
+                spatial_layers,
+                flexible_mode,
+                inter_layer_prediction,
+            }) => {
+                v.temporal_layers = temporal_layers;
+                v.denoising = denoising;
+                v.key_frame_interval = key_frame_interval;
+                v.adaptive_qp = adaptive_qp;
+                v.automatic_resize = automatic_resize;
+                v.specific_spatial_layers = spatial_layers;
+                v.flexible_mode = flexible_mode;
+                v.inter_layer_prediction = match inter_layer_prediction {
+                    VideoInterLayerPrediction::Off => 0,
+                    VideoInterLayerPrediction::On => 1,
+                    VideoInterLayerPrediction::OnKeyPicture => 2,
+                    VideoInterLayerPrediction::Native(v) => v,
+                };
+            }
+            Some(VideoCodecSpecificConfiguration::H264 {
+                key_frame_interval,
+                temporal_layers,
+            }) => {
+                v.key_frame_interval = key_frame_interval;
+                v.temporal_layers = temporal_layers;
+            }
+            Some(VideoCodecSpecificConfiguration::Av1 { automatic_resize }) => {
+                v.automatic_resize = automatic_resize
+            }
+            None => {}
+        }
+        v
+    }
+    pub(crate) fn from_native(value: ffi::FfiVideoBitrateCodec) -> Self {
         let codec_type = VideoCodecType::from_native(value.codec_type);
         let codec_specific = match codec_type {
             VideoCodecType::Vp8 => Some(VideoCodecSpecificConfiguration::Vp8 {
@@ -232,13 +342,23 @@ pub struct VideoBitrateAllocation {
     pub bandwidth_limited: bool,
 }
 impl VideoBitrateAllocation {
+    pub(crate) fn from_native(value: ffi::FfiVideoBitrateAllocation) -> Self {
+        Self {
+            layer_bitrates_bps: std::array::from_fn(|s| {
+                std::array::from_fn(|t| {
+                    value.has_layer_bitrate[s][t].then_some(value.layer_bitrates_bps[s][t])
+                })
+            }),
+            bandwidth_limited: value.bandwidth_limited,
+        }
+    }
     pub fn sum_bps(&self) -> Option<u32> {
         self.layer_bitrates_bps
             .iter()
             .flatten()
             .try_fold(0_u32, |sum, rate| sum.checked_add(rate.unwrap_or(0)))
     }
-    fn native(self) -> Option<ffi::FfiVideoBitrateAllocation> {
+    pub(crate) fn native(self) -> Option<ffi::FfiVideoBitrateAllocation> {
         self.sum_bps()?;
         Some(ffi::FfiVideoBitrateAllocation {
             layer_bitrates_bps: self
@@ -727,15 +847,11 @@ mod tests {
                 min_bitrate_kbps: 17,
                 qp_max: 63,
                 active: false,
-                has_format: true,
-                format: ffi::FfiCodecFormat {
-                    name: "custom-mixed-codec".into(),
-                    parameters: vec![ffi::FfiCodecParameter {
-                        key: "arbitrary".into(),
-                        value: "value".into(),
-                    }],
-                    scalability_modes: Vec::new(),
-                },
+                format: crate::SdpVideoFormat::with_parameters(
+                    "custom-mixed-codec",
+                    &std::collections::BTreeMap::from([(b"arbitrary".to_vec(), b"value".to_vec())]),
+                )
+                .native,
             });
         let output = VideoCodecConfiguration::from_native(input);
         assert_eq!(output.start_bitrate_kbps, u32::MAX);
@@ -751,8 +867,9 @@ mod tests {
         );
         assert_eq!(layer.max_bitrate_kbps, u32::MAX);
         assert!(!layer.active);
-        assert_eq!(layer.format.as_ref().unwrap().name, "custom-mixed-codec");
-        assert_eq!(layer.format.as_ref().unwrap().parameters[0].value, "value");
+        let format = layer.format.as_ref().unwrap().fields();
+        assert_eq!(format.name, b"custom-mixed-codec");
+        assert_eq!(format.parameters[b"arbitrary".as_slice()], b"value");
         assert_eq!(
             output.codec_specific,
             Some(VideoCodecSpecificConfiguration::Vp9 {

@@ -5,10 +5,15 @@
 #include <memory>
 
 #include "rust/cxx.h"
+#include "api/audio_options.h"
 
 namespace webrtc { class AudioTrackInterface; }
 
 namespace pulsebeam::webrtc_sys {
+struct FfiAudioSourceOptions;
+webrtc::AudioOptions media_audio_options_read(const FfiAudioSourceOptions&) noexcept;
+FfiAudioSourceOptions media_audio_options_write(const webrtc::AudioOptions&) noexcept;
+std::uint8_t media_audio_options_check(const FfiAudioSourceOptions&) noexcept;
 
 class NativePeerConnectionFactory;
 class NativePeerConnection;
@@ -27,19 +32,19 @@ class NativeAudioSource;
 class NativeAudioTrack;
 
 struct FfiAudioProcessorStatistics;
-class NativeAudioProcessor final {
+class NativeAudioTrackProcessor final {
  public:
   struct State;
-  explicit NativeAudioProcessor(std::unique_ptr<State> state) noexcept;
-  ~NativeAudioProcessor();
+  explicit NativeAudioTrackProcessor(std::unique_ptr<State> state) noexcept;
+  ~NativeAudioTrackProcessor();
   const std::unique_ptr<State>& state() const noexcept;
  private:
   std::unique_ptr<State> state_;
 };
-std::unique_ptr<NativeAudioProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept;
-bool audio_processors_same(const NativeAudioProcessor& a, const NativeAudioProcessor& b) noexcept;
-FfiAudioProcessorStatistics audio_processor_stats(const NativeAudioProcessor& processor, bool has_remote_tracks) noexcept;
-FfiAudioProcessorStatistics audio_processor_statistics_default() noexcept;
+std::unique_ptr<NativeAudioTrackProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept;
+bool audio_track_processors_same(const NativeAudioTrackProcessor& a, const NativeAudioTrackProcessor& b) noexcept;
+FfiAudioProcessorStatistics audio_track_processor_stats(const NativeAudioTrackProcessor& processor, bool has_remote_tracks) noexcept;
+FfiAudioProcessorStatistics audio_track_processor_statistics_default() noexcept;
 
 // Internal synchronous SDK-handle access; never exported through CXX.
 webrtc::AudioTrackInterface* audio_track_sdk_handle(const NativeAudioTrack& track) noexcept;

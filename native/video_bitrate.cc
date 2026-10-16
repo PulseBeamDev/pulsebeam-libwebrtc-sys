@@ -7,6 +7,7 @@
 #include "api/video/video_codec_constants.h"
 #include "api/video_codecs/scalability_mode.h"
 #include "pulsebeam-webrtc-sys/native/event_log.h"
+#include "pulsebeam-webrtc-sys/native/video_codec_values.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 
 namespace pulsebeam::webrtc_sys {
@@ -25,19 +26,12 @@ FfiVideoBitrateCodecLayer CodecLayer(const webrtc::SimulcastStream& source) {
   value.min_bitrate_kbps = source.minBitrate;
   value.qp_max = source.qpMax;
   value.active = source.active;
-  value.has_format = source.format.has_value();
-  if (source.format) {
-    value.format.name = source.format->name;
-    for (const auto& parameter : source.format->parameters)
-      value.format.parameters.push_back({parameter.first, parameter.second});
-    for (const auto mode : source.format->scalability_modes)
-      value.format.scalability_modes.push_back(
-          std::string(webrtc::ScalabilityModeToString(mode)));
-  }
+  if (source.format) value.format = std::make_unique<NativeSdpVideoFormat>(*source.format);
   return value;
 }
 
-FfiVideoBitrateCodec CodecConfiguration(const webrtc::VideoCodec& source) {
+}  // namespace
+FfiVideoBitrateCodec VideoCodecConfigurationFields(const webrtc::VideoCodec& source) {
   FfiVideoBitrateCodec value{};
   value.codec_type = static_cast<std::int32_t>(source.codecType);
   value.width = source.width;
@@ -102,6 +96,7 @@ FfiVideoBitrateCodec CodecConfiguration(const webrtc::VideoCodec& source) {
   return value;
 }
 
+namespace {
 webrtc::VideoBitrateAllocation Allocation(FfiVideoBitrateAllocation source) {
   webrtc::VideoBitrateAllocation value;
   for (std::size_t spatial = 0; spatial < webrtc::kMaxSpatialLayers; ++spatial) {
@@ -156,7 +151,7 @@ class RustAllocatorFactoryAdapter final
       const webrtc::VideoCodec& codec) override {
     auto source = video_bitrate_factory_create(
         *source_, rtc_event_log_factory_environment(environment),
-        CodecConfiguration(codec));
+        VideoCodecConfigurationFields(codec));
     if (video_bitrate_allocator_builtin(*source)) {
       return webrtc::CreateBuiltinVideoBitrateAllocatorFactory()->Create(
           environment, codec);

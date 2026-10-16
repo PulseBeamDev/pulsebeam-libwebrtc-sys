@@ -165,6 +165,14 @@ impl Drop for SelectorState {
         }
     }
 }
+pub(crate) struct RustVideoEncoderSelectorObserver(pub VideoEncoderSelectorFailureObserver);
+pub(crate) fn video_selector_provider_observer(
+    provider: &RustVideoEncoderSelector,
+) -> Box<RustVideoEncoderSelectorObserver> {
+    Box::new(RustVideoEncoderSelectorObserver(
+        provider.state.failure.clone(),
+    ))
+}
 pub(crate) struct RustVideoEncoderSelector {
     state: Arc<SelectorState>,
 }
@@ -235,6 +243,20 @@ pub struct OwnedVideoEncoderSelector {
 // endpoint, native sequence, borrowed factory, or task queue is retained.
 unsafe impl Send for OwnedVideoEncoderSelector {}
 impl OwnedVideoEncoderSelector {
+    pub(crate) fn from_native(
+        native: cxx::UniquePtr<ffi::NativeOwnedVideoEncoderSelector>,
+    ) -> Option<Self> {
+        let value = native.as_ref()?;
+        let failure = ffi::video_selector_owned_observer(value).0.clone();
+        Some(Self {
+            native,
+            failure,
+            _not_sync: PhantomData,
+        })
+    }
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeOwnedVideoEncoderSelector> {
+        self.native
+    }
     pub fn from_provider(provider: impl VideoEncoderSelectorProvider) -> Self {
         let (provider, failure) = registration(provider);
         Self {

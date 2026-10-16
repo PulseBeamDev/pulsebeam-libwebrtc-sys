@@ -22,6 +22,16 @@ pub struct VideoCodecCreationContext {
 /// Calls can run concurrently on native engine threads. Never wait for or
 /// reenter the owning peer/actor from a callback or destructor.
 pub trait VideoEncoderFactoryProvider: Send + Sync + 'static {
+    fn query_support_legacy(
+        &self,
+        format: &SdpVideoFormat,
+        mode: Option<&[u8]>,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        self.query_support(format, mode, None)
+    }
+    fn encoder_selector(&self) -> Option<crate::OwnedVideoEncoderSelector> {
+        None
+    }
     fn supported_formats(&self) -> Vec<SdpVideoFormat>;
     fn implementations(&self) -> Vec<SdpVideoFormat> {
         self.supported_formats()
@@ -38,6 +48,13 @@ pub trait VideoEncoderFactoryProvider: Send + Sync + 'static {
     ) -> Result<Box<dyn crate::VideoEncoder>, crate::CodecError>;
 }
 pub trait VideoDecoderFactoryProvider: Send + Sync + 'static {
+    fn query_support_legacy(
+        &self,
+        format: &SdpVideoFormat,
+        reference_scaling: bool,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        self.query_support(format, reference_scaling, None)
+    }
     fn supported_formats(&self) -> Vec<SdpVideoFormat>;
     fn query_support(
         &self,
@@ -52,6 +69,16 @@ pub trait VideoDecoderFactoryProvider: Send + Sync + 'static {
 }
 struct OwnedEncoderFactory<T>(T);
 impl<T: VideoEncoderFactoryProvider> crate::VideoEncoderFactory for OwnedEncoderFactory<T> {
+    fn query_support_legacy_value(
+        &self,
+        format: &SdpVideoFormat,
+        mode: Option<&[u8]>,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        self.0.query_support_legacy(format, mode)
+    }
+    fn encoder_selector(&self) -> Option<crate::OwnedVideoEncoderSelector> {
+        self.0.encoder_selector()
+    }
     fn supported_format_values(&self) -> Vec<SdpVideoFormat> {
         self.0.supported_formats()
     }
@@ -91,6 +118,13 @@ impl<T: VideoEncoderFactoryProvider> crate::VideoEncoderFactory for OwnedEncoder
 }
 struct OwnedDecoderFactory<T>(T);
 impl<T: VideoDecoderFactoryProvider> crate::VideoDecoderFactory for OwnedDecoderFactory<T> {
+    fn query_support_legacy_value(
+        &self,
+        format: &SdpVideoFormat,
+        reference_scaling: bool,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        self.0.query_support_legacy(format, reference_scaling)
+    }
     fn supported_format_values(&self) -> Vec<SdpVideoFormat> {
         self.0.supported_formats()
     }
@@ -153,6 +187,10 @@ pub enum VideoFactoryQueryError {
     ProviderPanicked,
     UnsafeNativeFormatFormatting,
     NativeParameterCountOverflow,
+    /// A codec info callback or its actual SDK consumption handoff failed.
+    CodecInfoFailed,
+    CodecFeedbackFailed,
+    CodecCreationFailed,
 }
 impl VideoFactoryQueryError {
     pub(crate) fn raw(self) -> u8 {
@@ -165,6 +203,9 @@ impl VideoFactoryQueryError {
             Self::ProviderPanicked => 6,
             Self::UnsafeNativeFormatFormatting => 7,
             Self::NativeParameterCountOverflow => 8,
+            Self::CodecInfoFailed => 9,
+            Self::CodecFeedbackFailed => 10,
+            Self::CodecCreationFailed => 11,
         }
     }
     pub(crate) fn from_raw(raw: u8) -> Option<Self> {
@@ -178,6 +219,9 @@ impl VideoFactoryQueryError {
             6 => Some(Self::ProviderPanicked),
             7 => Some(Self::UnsafeNativeFormatFormatting),
             8 => Some(Self::NativeParameterCountOverflow),
+            9 => Some(Self::CodecInfoFailed),
+            10 => Some(Self::CodecFeedbackFailed),
+            11 => Some(Self::CodecCreationFailed),
             _ => unreachable!("closed video factory query status"),
         }
     }
@@ -207,12 +251,15 @@ impl fmt::Display for VideoFactoryQueryError {
             Self::NativeParameterCountOverflow => {
                 "native factory fuzzy matching may overflow its signed parameter counter"
             }
+            Self::CodecInfoFailed => "codec information callback or SDK handoff failed",
+            Self::CodecFeedbackFailed => "codec feedback callback or SDK handoff failed",
+            Self::CodecCreationFailed => "caller codec creation failed",
         })
     }
 }
 impl std::error::Error for VideoFactoryQueryError {}
 
-/// First binding query/destruction failure. This observer retains no native
+/// First binding query, codec-info/feedback or destruction failure. This observer retains no native
 /// factory or codec. Native unsupported queries are not binding failures.
 #[derive(Clone, Default)]
 pub struct VideoFactoryFailureObserver(Arc<Mutex<Option<VideoFactoryQueryError>>>);
@@ -310,6 +357,24 @@ pub(crate) fn legacy_resolution(
         })
         .transpose()
 }
+pub(crate) fn native_failed_formats() -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    let mut value = ffi::sdp_video_format_list_new();
+    ffi::sdp_video_format_list_set_valid(value.pin_mut(), false);
+    value
+}
+pub(crate) fn checked_formats(
+    value: cxx::UniquePtr<ffi::NativeSdpVideoFormatList>,
+) -> Result<Vec<SdpVideoFormat>, VideoFactoryQueryError> {
+    if value
+        .as_ref()
+        .is_none_or(|v| !ffi::sdp_video_format_list_valid(v))
+    {
+        return Err(VideoFactoryQueryError::ProviderPanicked);
+    }
+    Ok(crate::video_codec_values::sdp_video_formats_from_list(
+        value,
+    ))
+}
 pub(crate) fn native_formats(
     formats: Vec<SdpVideoFormat>,
 ) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
@@ -351,6 +416,43 @@ pub(crate) fn ffi_support(
     }
 }
 impl VideoEncoderFactoryHandle {
+    pub fn try_supported_format_values(
+        &self,
+    ) -> Result<Vec<SdpVideoFormat>, VideoFactoryQueryError> {
+        checked_formats(ffi::video_encoder_formats_value(self.native()))
+    }
+    pub fn try_implementation_values(&self) -> Result<Vec<SdpVideoFormat>, VideoFactoryQueryError> {
+        checked_formats(ffi::video_encoder_implementations_value(self.native()))
+    }
+    /// Actual selected SDK GetEncoderSelector, preserving native null.
+    pub fn encoder_selector(
+        &self,
+    ) -> Result<Option<crate::OwnedVideoEncoderSelector>, VideoFactoryQueryError> {
+        let mut valid = false;
+        let native = ffi::video_encoder_factory_selector(self.native(), &mut valid);
+        if valid {
+            Ok(crate::OwnedVideoEncoderSelector::from_native(native))
+        } else {
+            Err(VideoFactoryQueryError::ProviderPanicked)
+        }
+    }
+    pub fn query_support_legacy_value(
+        &self,
+        format: &SdpVideoFormat,
+        mode: Option<&[u8]>,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        // SAFETY: no resolution pointer is supplied to this synchronous overload.
+        support_result(unsafe {
+            ffi::video_encoder_query_value(
+                self.native(),
+                format.native(),
+                mode.is_some(),
+                mode.unwrap_or_default(),
+                std::ptr::null(),
+                true,
+            )
+        })
+    }
     pub fn from_provider(
         provider: impl VideoEncoderFactoryProvider,
     ) -> Result<Self, crate::CodecError> {
@@ -373,6 +475,7 @@ impl VideoEncoderFactoryHandle {
                 mode.is_some(),
                 mode.unwrap_or_default(),
                 resolution.map_or(std::ptr::null(), |value| value.native()),
+                false,
             )
         };
         support_result(result)
@@ -385,6 +488,27 @@ impl VideoEncoderFactoryHandle {
     }
 }
 impl VideoDecoderFactoryHandle {
+    pub fn try_supported_format_values(
+        &self,
+    ) -> Result<Vec<SdpVideoFormat>, VideoFactoryQueryError> {
+        checked_formats(ffi::video_decoder_formats_value(self.native()))
+    }
+    pub fn query_support_legacy_value(
+        &self,
+        format: &SdpVideoFormat,
+        reference_scaling: bool,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        // SAFETY: no resolution pointer is supplied to this synchronous overload.
+        support_result(unsafe {
+            ffi::video_decoder_query_value(
+                self.native(),
+                format.native(),
+                reference_scaling,
+                std::ptr::null(),
+                true,
+            )
+        })
+    }
     pub fn from_provider(
         provider: impl VideoDecoderFactoryProvider,
     ) -> Result<Self, crate::CodecError> {
@@ -403,6 +527,7 @@ impl VideoDecoderFactoryHandle {
                 format.native(),
                 reference_scaling,
                 resolution.map_or(std::ptr::null(), |value| value.native()),
+                false,
             )
         };
         support_result(result)

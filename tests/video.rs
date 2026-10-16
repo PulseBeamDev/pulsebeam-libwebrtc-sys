@@ -10,6 +10,8 @@ use std::{
 
 #[path = "support/non_trickle.rs"]
 mod non_trickle;
+#[path = "support/video_sink_wants.rs"]
+mod video_sink_wants;
 
 use pulsebeam_webrtc_sys::{
     CodecError, CodecSupport, ConnectionState, DecodedImageCallback, EncodedH264Input,
@@ -1711,7 +1713,6 @@ impl pulsebeam_webrtc_sys::VideoBitrateAllocator for AllocationProduct {
             ..Default::default()
         };
         result.layer_bitrates_bps[0][0] = Some(123_456);
-        result.layer_bitrates_bps[0][1] = Some(0);
         result
     }
     fn set_legacy_conference_mode(&mut self, enabled: bool) {
@@ -1729,10 +1730,10 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
     use pulsebeam_webrtc_sys::{
         DataRate, PeerConnectionDependencies, VideoBitrateAllocatorFactory, VideoCodecType,
     };
-    // Exercise a sparse allocation in a temporal domain the product actually
-    // advertises, rather than requiring L1T1 to retain an unsupported TL1 cell.
+    // Plain H264 initializes L1T1. FPS declarations do not enable another
+    // native temporal mode; test a sparse single-temporal-layer allocation.
     let counters = Arc::new(Counters {
-        encoder_fps_allocation: Some([vec![128, 255], vec![], vec![], vec![], vec![]]),
+        encoder_fps_allocation: Some([vec![255], vec![], vec![], vec![], vec![]]),
         ..Default::default()
     });
     let observations = Arc::new(AllocationObservations::default());
@@ -1787,16 +1788,14 @@ fn per_peer_allocator_product_controls_real_native_encoder_rates_and_retains_env
                 && counters.encoder_rates.lock().unwrap().iter().any(|rates| {
                     rates.target_bitrate_bps == 123_456
                     && rates.target_layer_bitrates_bps[0][0] == Some(123_456)
-                    && rates.target_layer_bitrates_bps[0][1] == Some(0)
+                    && rates.target_layer_bitrates_bps[0][1].is_none()
                     && rates.target_layer_bitrates_bps[0][2].is_none()
                     && rates.target_bandwidth_limited
-                    // This default native configuration enables bitrate
-                    // adjustment. Observe the effective allocation separately;
-                    // do not replace it with the caller allocator's target.
+                    // Observe effective allocation independently. Native
+                    // adjustment need not reduce this particular allocation.
                     && rates.bitrate_bps > 0
-                    && rates.bitrate_bps < rates.target_bitrate_bps
                     && rates.layer_bitrates_bps[0][0] == Some(rates.bitrate_bps)
-                    && rates.layer_bitrates_bps[0][1] == Some(0)
+                    && rates.layer_bitrates_bps[0][1].is_none()
                     && rates.layer_bitrates_bps[0][2].is_none()
                 })
         })

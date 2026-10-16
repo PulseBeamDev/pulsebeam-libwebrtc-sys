@@ -27,12 +27,34 @@ impl VideoEncoderFactoryProvider for RawFormats {
         Err(CodecError::UnsupportedFormat)
     }
 }
+struct RawDecoderFormats;
+impl VideoDecoderFactoryProvider for RawDecoderFormats {
+    fn supported_formats(&self) -> Vec<SdpVideoFormat> {
+        RawFormats.supported_formats()
+    }
+    fn query_support(
+        &self,
+        _: &SdpVideoFormat,
+        _: bool,
+        _: Option<&Resolution>,
+    ) -> Result<CodecSupport, VideoFactoryQueryError> {
+        Ok(CodecSupport {
+            supported: true,
+            power_efficient: false,
+        })
+    }
+    fn create(&self, _: VideoCodecCreationContext) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        Err(CodecError::UnsupportedFormat)
+    }
+}
 #[test]
 fn native_offer_completion_keeps_non_utf8_protocol_bytes_without_an_extra_terminal() {
     let encoder = VideoEncoderFactoryHandle::from_provider(RawFormats).unwrap();
     let factory = PeerConnectionFactory::builder()
         .video_encoder_factory(encoder)
-        .video_decoder_factory(VideoDecoderFactoryHandle::builtin().unwrap())
+        // Both native capability sides advertise the parameter. The SDK may
+        // drop encoder-only parameters during its common-codec negotiation.
+        .video_decoder_factory(VideoDecoderFactoryHandle::from_provider(RawDecoderFormats).unwrap())
         .build()
         .unwrap();
     let mut peer = factory

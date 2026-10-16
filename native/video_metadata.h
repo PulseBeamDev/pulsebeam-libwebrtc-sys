@@ -29,6 +29,8 @@ struct FfiVideoHeaderVp8;
 struct FfiVideoHeaderVp9;
 struct FfiVideoHeaderH264;
 struct FfiVp9GofInfo;
+FfiVp9GofInfo CodecGofFields(const webrtc::GofInfoVP9&);
+bool CodecGofFromFields(const FfiVp9GofInfo&, webrtc::GofInfoVP9&);
 
 class NativeVideoFrameMetadata final {
 public:

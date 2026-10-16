@@ -101,15 +101,19 @@ fn actor_stream_tracks_and_closed_observer_output_survive_identifier_retirement_
     let duplicate = session.create_source_track(b, "same").unwrap();
     let video = session.create_source_track(v, "same").unwrap();
     let stream = session.create_media_stream("").unwrap();
-    assert_eq!(session.media_stream_id(stream).unwrap(), "");
+    assert_eq!(session.local_stream_id(stream).unwrap(), "");
     let events = session
         .observe_media_stream(stream, NonZeroUsize::new(2).unwrap())
         .unwrap();
-    assert!(session.add_media_stream_track(stream, audio).unwrap());
-    assert!(!session.add_media_stream_track(stream, duplicate).unwrap());
-    assert!(session.add_media_stream_track(stream, video).unwrap());
-    let audio_alias = session.media_stream_audio_tracks(stream).unwrap()[0];
-    let video_alias = session.media_stream_video_tracks(stream).unwrap()[0];
+    assert!(session.local_add_media_stream_track(stream, audio).unwrap());
+    assert!(
+        !session
+            .local_add_media_stream_track(stream, duplicate)
+            .unwrap()
+    );
+    assert!(session.local_add_media_stream_track(stream, video).unwrap());
+    let audio_alias = session.local_stream_audio_tracks(stream).unwrap()[0];
+    let video_alias = session.local_stream_video_tracks(stream).unwrap()[0];
     assert!(
         session
             .media_stream_tracks_same(audio_alias, audio)
@@ -141,20 +145,24 @@ fn actor_stream_tracks_and_closed_observer_output_survive_identifier_retirement_
         let mut session = session;
         assert!(
             session
-                .remove_media_stream_track(stream, duplicate)
+                .local_remove_media_stream_track(stream, duplicate)
                 .unwrap()
         );
-        assert!(!session.remove_media_stream_track(stream, audio).unwrap());
+        assert!(
+            !session
+                .local_remove_media_stream_track(stream, audio)
+                .unwrap()
+        );
         assert!(
             session
-                .media_stream_audio_tracks(stream)
+                .local_stream_audio_tracks(stream)
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(session.take_media_stream_dropped(events).unwrap(), 1);
         session.close_media_stream_observer(events).unwrap();
         session.close_media_stream_observer(events).unwrap();
-        session.release_media_stream(stream);
+        session.local_release_media_stream(stream);
         for id in [audio, duplicate, video] {
             session.release_media_stream_track(id);
         }

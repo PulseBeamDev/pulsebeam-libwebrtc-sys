@@ -21,23 +21,30 @@ class StockFrameCallbackSlot final {
       webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback)
       : callback_(std::move(callback)) {}
 
-  void OnTransformedFrame(
+  bool OnTransformedFrame(
       std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
     auto callback = Admit();
-    if (!callback) return;
+    if (!callback) return false;
     callback->OnTransformedFrame(std::move(frame));
     // Drop the call's reference before retirement can return. Final delegate
     // release stays on the SDK unregister role, not a completion caller.
     callback = nullptr;
     Complete();
+    return true;
   }
 
-  void StartShortCircuiting() {
+  bool StartShortCircuiting() {
     auto callback = Admit();
-    if (!callback) return;
+    if (!callback) return false;
     callback->StartShortCircuiting();
     callback = nullptr;
     Complete();
+    return true;
+  }
+
+  bool IsLive() {
+    std::lock_guard lock(mutex_);
+    return !retired_ && callback_ != nullptr;
   }
 
   void Retire() {

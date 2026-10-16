@@ -1317,6 +1317,18 @@ impl PeerConnectionFactory {
     pub(crate) fn requires_deferred_teardown(&self) -> bool {
         ffi::factory_requires_deferred_teardown(self.native())
     }
+    pub(crate) fn codec_owner(&self) -> Rc<FactoryInner> {
+        self.0.clone()
+    }
+    pub(crate) fn codec_environment(&self) -> &Environment {
+        &self.0._environment
+    }
+    pub(crate) fn codec_encoder_factory(&self) -> Option<&VideoEncoderFactoryHandle> {
+        self.0._video_encoder.as_ref()
+    }
+    pub(crate) fn codec_decoder_factory(&self) -> Option<&VideoDecoderFactoryHandle> {
+        self.0._video_decoder.as_ref()
+    }
     pub fn clock_timestamp(&self) -> crate::Timestamp {
         self.0._environment.timestamp()
     }
@@ -1443,7 +1455,7 @@ impl PeerConnectionFactory {
     }
 
     /// Create a native owning track container, not SDP routing or media sync.
-    pub fn create_media_stream(&self, id: &str) -> Result<crate::MediaStream, PeerError> {
+    pub fn create_media_stream(&self, id: &str) -> Result<crate::LocalMediaStream, PeerError> {
         let native = ffi::create_media_stream(self.native(), id);
         if native.is_null() {
             return Err(PeerError {
@@ -1451,7 +1463,7 @@ impl PeerConnectionFactory {
                 message: "native media stream creation failed".into(),
             });
         }
-        Ok(crate::MediaStream::from_native(native, self.0.clone()))
+        Ok(crate::LocalMediaStream::from_native(native, self.0.clone()))
     }
 
     /// Enumerate input or output devices for this native-audio factory.
@@ -2264,6 +2276,84 @@ impl PeerConnection {
             .collect())
     }
 
+    /// Install the entire native initialization value in one AddTransceiver.
+    /// The supplied value remains unchanged on both rejection and acceptance.
+    pub fn add_video_transceiver_with_init(
+        &self,
+        track: &VideoTrack,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<RtpTransceiver, crate::RtpSenderOperationError> {
+        let fail = |message: &str| PeerError {
+            kind: PeerErrorKind::InvalidParameter,
+            message: message.into(),
+        };
+        if self.inner._factory._controlled_driver.is_some()
+            && (!self.inner._factory.controlled_media || !track.is_admitted_controlled_video())
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "controlled source profile is not admitted".into(),
+            }
+            .into());
+        }
+        if !track.is_local_to(&self.inner._factory) {
+            return Err(fail("track must belong to this factory").into());
+        }
+        if track.is_direct_encoded() {
+            let encodings = init.send_encodings();
+            if (track.is_direct_simulcast() && encodings.len() != 3)
+                || (!track.is_direct_simulcast() && encodings.len() > 1)
+            {
+                return Err(fail(
+                    "initial encoding count is unsupported by the direct source profile",
+                )
+                .into());
+            }
+            for encoding in encodings {
+                if encoding
+                    .scalability_mode_bytes()
+                    .as_deref()
+                    .is_some_and(|mode| !(track.is_direct_l1t3() && mode == b"L1T3"))
+                    || (!track.is_direct_simulcast()
+                        && (encoding.scale_resolution_down_to().is_some()
+                            || encoding
+                                .scale_resolution_down_by()
+                                .is_some_and(|scale| scale != 1.0)))
+                    || encoding
+                        .num_temporal_layers()
+                        .is_some_and(|layers| layers != if track.is_direct_l1t3() { 3 } else { 1 })
+                {
+                    return Err(fail(
+                        "initial encoding fields are unsupported by the direct source profile",
+                    )
+                    .into());
+                }
+            }
+        }
+        let mut valid = false;
+        let mut error = cxx::UniquePtr::null();
+        let native = ffi::peer_add_video_transceiver_value(
+            self.inner.native(),
+            track.native(),
+            init.native(),
+            &mut valid,
+            &mut error,
+        );
+        if !valid {
+            return Err(fail("unsafe native transceiver initialization arithmetic").into());
+        }
+        if native.is_null() {
+            return Err(crate::RtpSenderOperationError::Native(
+                crate::RtcError::from_native(error),
+            ));
+        }
+        let value = RtpTransceiver::from_native(native, self.inner.clone());
+        self.inner.sender_tracks.borrow_mut().insert(
+            value.sender().resource_key(),
+            SenderTrackLease::new(&value.sender(), track.clone()),
+        );
+        Ok(value)
+    }
     pub fn add_video_transceiver(
         &self,
         track: &VideoTrack,

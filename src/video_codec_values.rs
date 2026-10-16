@@ -71,6 +71,10 @@ pub(crate) fn sdp_video_formats_from_list(
     list: cxx::UniquePtr<ffi::NativeSdpVideoFormatList>,
 ) -> Vec<SdpVideoFormat> {
     let list = list.as_ref().expect("owned native format list");
+    assert!(
+        ffi::sdp_video_format_list_valid(list),
+        "factory callback failed; use try_supported_format_values for a fallible query"
+    );
     (0..ffi::sdp_video_format_list_len(list))
         .map(|index| SdpVideoFormat::from_native(ffi::sdp_video_format_list_get(list, index)))
         .collect()

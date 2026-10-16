@@ -4,6 +4,7 @@
 #include "api/transport/bandwidth_estimation_settings.h"
 #include "pulsebeam-webrtc-sys/native/audio_frame_values.h"
 #include "pulsebeam-webrtc-sys/native/audio_device.h"
+#include "pulsebeam-webrtc-sys/native/live_frame_transformer.h"
 #include "pulsebeam-webrtc-sys/native/rtp_values.h"
 #include "pulsebeam-webrtc-sys/native/metronome.h"
 #include "pulsebeam-webrtc-sys/native/certificate_generator.h"
@@ -36,6 +37,11 @@
 #include <openssl/x509v3.h>
 
 #include "api/create_modular_peer_connection_factory.h"
+#include "api/environment/environment_factory.h"
+#include "p2p/base/basic_packet_socket_factory.h"
+#include "p2p/client/basic_port_allocator.h"
+#include "rtc_base/network.h"
+#include "rtc_base/network_monitor_factory.h"
 #include "api/crypto/crypto_options.h"
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO)
 #include "api/audio/create_audio_device_module.h"
@@ -1190,7 +1196,36 @@ std::unique_ptr<webrtc::SessionDescriptionInterface> ParseDescription(
 
 }  // namespace
 
+// Base destruction order keeps the factory alive through manager teardown.
+namespace {
+struct NetworkMonitorOwner {
+  explicit NetworkMonitorOwner(std::unique_ptr<webrtc::NetworkMonitorFactory> value)
+      : monitor(std::move(value)) {}
+  std::unique_ptr<webrtc::NetworkMonitorFactory> monitor;
+};
+class OwnedMonitorNetworkManager final : private NetworkMonitorOwner,
+                                         public webrtc::BasicNetworkManager {
+ public:
+  OwnedMonitorNetworkManager(const webrtc::Environment& env, webrtc::SocketFactory* sockets,
+      std::unique_ptr<webrtc::NetworkMonitorFactory> monitor)
+      : NetworkMonitorOwner(std::move(monitor)),
+        webrtc::BasicNetworkManager(env, sockets, NetworkMonitorOwner::monitor.get()) {}
+};
+class SharedLocalPermissionFactory final : public webrtc::LocalNetworkAccessPermissionFactoryInterface {
+ public:
+  explicit SharedLocalPermissionFactory(std::shared_ptr<webrtc::LocalNetworkAccessPermissionFactoryInterface> factory)
+      : factory_(std::move(factory)) {}
+  std::unique_ptr<webrtc::LocalNetworkAccessPermissionInterface> Create() override {
+    return factory_->Create();
+  }
+ private:
+  std::shared_ptr<webrtc::LocalNetworkAccessPermissionFactoryInterface> factory_;
+};
+}  // namespace
 struct NativePeerConnectionFactory::State {
+  std::optional<webrtc::Environment> allocator_environment;
+  webrtc::NetworkManager* allocator_network_manager = nullptr;
+  webrtc::PacketSocketFactory* allocator_socket_factory = nullptr;
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   std::shared_ptr<ReadinessSignal> readiness;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
@@ -1211,6 +1246,7 @@ struct NativePeerConnectionFactory::State {
 };
 
 struct NativePeerConnection::State {
+  std::unique_ptr<NativeFrameTransformerHosts> frame_transformer_hosts;
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> opus_transformer;
   webrtc::scoped_refptr<HeadlessAudioDevice> headless_audio_device;
   bool native_audio_enabled = false;
@@ -1297,7 +1333,7 @@ NativePeerConnectionFactory::readiness() const noexcept {
 }
 
 NativePeerConnection::NativePeerConnection(std::unique_ptr<State> state) noexcept
-    : state_(std::move(state)) {}
+    : state_(std::move(state)) { state_->frame_transformer_hosts = std::make_unique<NativeFrameTransformerHosts>(); }
 NativePeerConnection::~NativePeerConnection() {
   close_peer_connection(*this);
   if (state_ && state_->peer && state_->signaling_thread) {
@@ -1331,6 +1367,7 @@ webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
 NativePeerConnection::opus_transformer() const noexcept {
   return state_->opus_transformer;
 }
+NativeFrameTransformerHosts& NativePeerConnection::frame_transformer_hosts() const noexcept { return *state_->frame_transformer_hosts; }
 std::shared_ptr<ReadinessSignal>
 NativePeerConnection::readiness() const noexcept {
   return state_->events->readiness;
@@ -1535,6 +1572,20 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   // factories, default providers, or a newly constructed stock Call.
   dependencies.media_factory = std::make_unique<ObservedMediaFactory>(
       std::move(dependencies.media_factory), call_creation);
+  // Supply the same SDK defaults explicitly so per-peer public allocator
+  // injection can borrow them, including caller-selected network resources.
+  const auto allocator_environment = *dependencies.env;
+  if (!dependencies.network_manager) {
+    dependencies.network_manager = std::make_unique<OwnedMonitorNetworkManager>(
+        allocator_environment, dependencies.network_thread->socketserver(),
+        std::move(dependencies.network_monitor_factory));
+  }
+  if (!dependencies.packet_socket_factory) {
+    dependencies.packet_socket_factory = std::make_unique<webrtc::BasicPacketSocketFactory>(
+        dependencies.network_thread->socketserver());
+  }
+  auto* allocator_network_manager = dependencies.network_manager.get();
+  auto* allocator_socket_factory = dependencies.packet_socket_factory.get();
   auto factory =
       webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));
   if (!factory) {
@@ -1558,6 +1609,9 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     });
   }
   auto state = std::make_unique<NativePeerConnectionFactory::State>();
+  state->allocator_environment = allocator_environment;
+  state->allocator_network_manager = allocator_network_manager;
+  state->allocator_socket_factory = allocator_socket_factory;
   state->readiness = readiness ? readiness->signal() : nullptr;
   state->headless_audio_device = std::move(headless_audio_device);
   state->audio_device = std::move(platform_audio_device);
@@ -1740,7 +1794,6 @@ std::shared_ptr<NativeCertificate> certificate_from_pem(
   if (!identity) return nullptr;
   return RetainCertificate(webrtc::RTCCertificate::Create(std::move(identity)));
 }
-
 FfiCertificatePem certificate_to_pem(
     const NativeCertificate& certificate) noexcept {
   const auto pem = certificate.certificate()->ToPEM();
@@ -2255,7 +2308,11 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   auto observer = std::make_unique<PeerObserver>(events);
   webrtc::PeerConnectionDependencies dependencies(observer.get());
   dependencies.trials = field_trials_adapter(std::move(field_trials));
-  dependencies.lna_permission_factory = MakeLocalNetworkPermissionFactory(std::move(local_permission));
+  auto permission_factory = std::shared_ptr<webrtc::LocalNetworkAccessPermissionFactoryInterface>(
+      MakeLocalNetworkPermissionFactory(std::move(local_permission)));
+  if (permission_factory) {
+    dependencies.lna_permission_factory = std::make_unique<SharedLocalPermissionFactory>(permission_factory);
+  }
   dependencies.cert_generator = certificate_generator_adapter(std::move(certificate_generator), *factory.state()->certificate_generator_scope);
   dependencies.async_dns_resolver_factory = async_dns_factory_adapter(std::move(async_dns_factory));
   dependencies.video_bitrate_allocator_factory = video_bitrate_factory_adapter(std::move(video_bitrate_factory));
@@ -2288,6 +2345,20 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
   std::optional<CreationResult> creation_result;
   factory.signaling_thread()->BlockingCall([&] {
     PeerCallCreationScope scope(factory.state()->call_creation, call_observation);
+    if (permission_factory) {
+      // The pinned SDK's default allocator omits its LNA dependency. Inject
+      // the public SDK allocator with the same resources and shared provider,
+      // retaining the provider for both local ports and transport control.
+      webrtc::EnvironmentFactory allocator_env(*factory.state()->allocator_environment);
+      if (dependencies.trials) allocator_env.Set(dependencies.trials->CreateCopy());
+      dependencies.allocator = std::make_unique<webrtc::BasicPortAllocator>(
+          allocator_env.Create(), factory.state()->allocator_network_manager,
+          factory.state()->allocator_socket_factory, configuration.turn_customizer, nullptr,
+          std::make_unique<SharedLocalPermissionFactory>(permission_factory));
+      dependencies.allocator->SetPortRange(configuration.port_allocator_config.min_port,
+          configuration.port_allocator_config.max_port);
+      dependencies.allocator->set_flags(configuration.port_allocator_config.flags);
+    }
     creation_result.emplace(factory.state()->factory->CreatePeerConnectionOrError(
         configuration, std::move(dependencies)));
   });
@@ -2844,6 +2915,7 @@ bool close_peer_connection(const NativePeerConnection& peer) noexcept {
       // could require any unrelated native lifecycle work.
       state->legacy_continuation.Cancel();
       state->legacy_operation = 0;
+      state->frame_transformer_hosts->Retire();
       state->peer->Close();
       state->events->Close();
       state->closed = true;

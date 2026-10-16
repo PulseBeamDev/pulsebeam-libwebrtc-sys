@@ -1,4 +1,5 @@
 #include "pulsebeam-webrtc-sys/native/audio.h"
+#include "pulsebeam-webrtc-sys/native/live_frame_transformer.h"
 #include "pulsebeam-webrtc-sys/native/audio_sink_queue.h"
 
 #include <algorithm>
@@ -418,6 +419,9 @@ class EncodedAudioCollector : public webrtc::FrameTransformerInterface {
 };
 
 }  // namespace
+webrtc::AudioOptions media_audio_options_read(const FfiAudioSourceOptions& v) noexcept { return ReadAudioOptions(v); }
+FfiAudioSourceOptions media_audio_options_write(const webrtc::AudioOptions& v) noexcept { return WriteAudioOptions(v); }
+std::uint8_t media_audio_options_check(const FfiAudioSourceOptions& v) noexcept { return CheckAudioOptions(v); }
 
 struct NativeEncodedAudioSink::State {
   const NativePeerConnection* peer = nullptr;
@@ -462,7 +466,7 @@ std::size_t audio_track_identity(const NativeAudioTrack& track) noexcept {
   return reinterpret_cast<std::size_t>(audio_track_sdk_handle(track));
 }
 
-struct NativeAudioProcessor::State {
+struct NativeAudioTrackProcessor::State {
   webrtc::scoped_refptr<webrtc::AudioProcessorInterface> processor;
   webrtc::Thread* signaling_thread = nullptr;
 };
@@ -525,25 +529,25 @@ static FfiAudioProcessorStatistics WriteProcessorStatistics(
   return out;
 }
 #pragma clang diagnostic pop
-FfiAudioProcessorStatistics audio_processor_statistics_default() noexcept {
+FfiAudioProcessorStatistics audio_track_processor_statistics_default() noexcept {
   return WriteProcessorStatistics({});
 }
-NativeAudioProcessor::NativeAudioProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
-NativeAudioProcessor::~NativeAudioProcessor() {
+NativeAudioTrackProcessor::NativeAudioTrackProcessor(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeAudioTrackProcessor::~NativeAudioTrackProcessor() {
   state_->signaling_thread->BlockingCall([&] { state_->processor = nullptr; });
 }
-const std::unique_ptr<NativeAudioProcessor::State>& NativeAudioProcessor::state() const noexcept { return state_; }
-std::unique_ptr<NativeAudioProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept {
-  auto state = std::make_unique<NativeAudioProcessor::State>();
+const std::unique_ptr<NativeAudioTrackProcessor::State>& NativeAudioTrackProcessor::state() const noexcept { return state_; }
+std::unique_ptr<NativeAudioTrackProcessor> audio_track_processor(const NativeAudioTrack& track) noexcept {
+  auto state = std::make_unique<NativeAudioTrackProcessor::State>();
   state->signaling_thread = track.state()->signaling_thread;
   state->signaling_thread->BlockingCall([&] { state->processor = track.state()->track->GetAudioProcessor(); });
   if (!state->processor) return nullptr;
-  return std::make_unique<NativeAudioProcessor>(std::move(state));
+  return std::make_unique<NativeAudioTrackProcessor>(std::move(state));
 }
-bool audio_processors_same(const NativeAudioProcessor& a, const NativeAudioProcessor& b) noexcept {
+bool audio_track_processors_same(const NativeAudioTrackProcessor& a, const NativeAudioTrackProcessor& b) noexcept {
   return a.state()->processor.get() == b.state()->processor.get();
 }
-FfiAudioProcessorStatistics audio_processor_stats(const NativeAudioProcessor& processor, bool has_remote_tracks) noexcept {
+FfiAudioProcessorStatistics audio_track_processor_stats(const NativeAudioTrackProcessor& processor, bool has_remote_tracks) noexcept {
   return processor.state()->signaling_thread->BlockingCall([&] {
     return WriteProcessorStatistics(processor.state()->processor->GetStats(has_remote_tracks));
   });
@@ -1151,7 +1155,7 @@ std::unique_ptr<NativeEncodedAudioSink> rtp_receiver_attach_encoded_audio_sink(
   state->receiver_id = remote->id();
   state->collector = webrtc::make_ref_counted<EncodedAudioCollector>(peer.readiness());
   peer.worker_thread()->BlockingCall([&] {
-    remote->SetFrameTransformer(state->collector);
+    peer.frame_transformer_hosts().Receiver(peer, remote)->SetCollector(state->collector);
   });
   return std::make_unique<NativeEncodedAudioSink>(std::move(state));
 }
@@ -1194,11 +1198,9 @@ std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(
   auto transceiver = result.MoveValue();
   if (track.state()->opus_frames) {
     if (auto transformer = peer.opus_transformer()) {
-      // Native sender proxy is sequence-bound; do not replace the factory's
-      // stable transformer identity on any live audio ChannelSend.
-      peer.signaling_thread()->BlockingCall([&] {
-        transceiver->sender()->SetEncoderToPacketizerFrameTransformer(transformer);
-      });
+      // A stable host composes factory metadata with caller transformation.
+      // ChannelSend must never initialize a second native delegate.
+      peer.frame_transformer_hosts().Sender(peer, transceiver->sender());
     }
   }
   return wrap_rtp_transceiver(std::move(transceiver));

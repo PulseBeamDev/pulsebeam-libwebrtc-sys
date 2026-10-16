@@ -18,41 +18,49 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "5dd15a9e42e18f3a279a6b2127c706f69bee03a7071754af877ab420543cdf54";
+    "0008c077162b8e2a48aed9819393d0e52fd9b49b1ea3f37028f8518cfe8c001d";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "7bf6377e3e16f5a2aa5aeb26afe28a464502148bf39059649a4ebcaf094c09c8";
+    "4b182c74cc2b951ae8d1f94451fe2b078744cb063edc544578567e584730c18a";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "9a5999e97df519e6d2f562e864435bf90865a6f61f2e98a9fbf2981c175ef206";
+    "95f12f2568bb9555b4e00f3e9e34fcff3869ac3eea2e16b5b6f00e68a4395740";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
 const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("Justfile", include_bytes!("../Justfile")),
     (
-        "tools/native_cc_wrapper.py",
-        include_bytes!("../tools/native_cc_wrapper.py"),
+        "native/async_dns.cc",
+        include_bytes!("../native/async_dns.cc"),
+    ),
+    (
+        "native/async_dns.h",
+        include_bytes!("../native/async_dns.h"),
     ),
     ("native/audio.cc", include_bytes!("../native/audio.cc")),
     ("native/audio.h", include_bytes!("../native/audio.h")),
     (
-        "native/audio_sink_queue.h",
-        include_bytes!("../native/audio_sink_queue.h"),
+        "native/audio_device.cc",
+        include_bytes!("../native/audio_device.cc"),
     ),
     (
-        "native/video_sink_queue.h",
-        include_bytes!("../native/video_sink_queue.h"),
+        "native/audio_device.h",
+        include_bytes!("../native/audio_device.h"),
     ),
     (
-        "native/video_source_controls.h",
-        include_bytes!("../native/video_source_controls.h"),
+        "native/audio_echo_config.cc",
+        include_bytes!("../native/audio_echo_config.cc"),
     ),
     (
-        "native/raw_video_source.h",
-        include_bytes!("../native/raw_video_source.h"),
+        "native/audio_echo_config.h",
+        include_bytes!("../native/audio_echo_config.h"),
     ),
     (
-        "native/frame_callback_slot.h",
-        include_bytes!("../native/frame_callback_slot.h"),
+        "native/audio_encoder_ana.inc",
+        include_bytes!("../native/audio_encoder_ana.inc"),
+    ),
+    (
+        "native/audio_encoder_ana_access.h",
+        include_bytes!("../native/audio_encoder_ana_access.h"),
     ),
     (
         "native/audio_frame_values.cc",
@@ -71,28 +79,8 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         include_bytes!("../native/audio_processor.h"),
     ),
     (
-        "native/audio_encoder_ana_access.h",
-        include_bytes!("../native/audio_encoder_ana_access.h"),
-    ),
-    (
-        "native/audio_encoder_ana.inc",
-        include_bytes!("../native/audio_encoder_ana.inc"),
-    ),
-    (
-        "native/audio_device.cc",
-        include_bytes!("../native/audio_device.cc"),
-    ),
-    (
-        "native/audio_device.h",
-        include_bytes!("../native/audio_device.h"),
-    ),
-    (
-        "native/audio_echo_config.cc",
-        include_bytes!("../native/audio_echo_config.cc"),
-    ),
-    (
-        "native/audio_echo_config.h",
-        include_bytes!("../native/audio_echo_config.h"),
+        "native/audio_sink_queue.h",
+        include_bytes!("../native/audio_sink_queue.h"),
     ),
     (
         "native/certificate_generator.cc",
@@ -102,48 +90,6 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/certificate_generator.h",
         include_bytes!("../native/certificate_generator.h"),
     ),
-    (
-        "native/async_dns.cc",
-        include_bytes!("../native/async_dns.cc"),
-    ),
-    (
-        "native/async_dns.h",
-        include_bytes!("../native/async_dns.h"),
-    ),
-    (
-        "native/video_bitrate.cc",
-        include_bytes!("../native/video_bitrate.cc"),
-    ),
-    (
-        "native/video_bitrate.h",
-        include_bytes!("../native/video_bitrate.h"),
-    ),
-    (
-        "native/video_metadata.cc",
-        include_bytes!("../native/video_metadata.cc"),
-    ),
-    (
-        "native/video_metadata.h",
-        include_bytes!("../native/video_metadata.h"),
-    ),
-    (
-        "native/network_control.cc",
-        include_bytes!("../native/network_control.cc"),
-    ),
-    (
-        "native/network_control.h",
-        include_bytes!("../native/network_control.h"),
-    ),
-    (
-        "native/network_predictor.cc",
-        include_bytes!("../native/network_predictor.cc"),
-    ),
-    (
-        "native/network_predictor.h",
-        include_bytes!("../native/network_predictor.h"),
-    ),
-    ("native/fec.cc", include_bytes!("../native/fec.cc")),
-    ("native/fec.h", include_bytes!("../native/fec.h")),
     ("native/clock.cc", include_bytes!("../native/clock.cc")),
     ("native/clock.h", include_bytes!("../native/clock.h")),
     ("native/codec.cc", include_bytes!("../native/codec.cc")),
@@ -155,6 +101,14 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     (
         "native/data_channel.h",
         include_bytes!("../native/data_channel.h"),
+    ),
+    (
+        "native/encoded_image.cc",
+        include_bytes!("../native/encoded_image.cc"),
+    ),
+    (
+        "native/encoded_image.h",
+        include_bytes!("../native/encoded_image.h"),
     ),
     (
         "native/event_log.cc",
@@ -172,6 +126,28 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/execution.h",
         include_bytes!("../native/execution.h"),
     ),
+    ("native/fec.cc", include_bytes!("../native/fec.cc")),
+    ("native/fec.h", include_bytes!("../native/fec.h")),
+    (
+        "native/frame_callback_slot.h",
+        include_bytes!("../native/frame_callback_slot.h"),
+    ),
+    (
+        "native/frame_transformer.cc",
+        include_bytes!("../native/frame_transformer.cc"),
+    ),
+    (
+        "native/frame_transformer.h",
+        include_bytes!("../native/frame_transformer.h"),
+    ),
+    (
+        "native/live_frame_transformer.cc",
+        include_bytes!("../native/live_frame_transformer.cc"),
+    ),
+    (
+        "native/live_frame_transformer.h",
+        include_bytes!("../native/live_frame_transformer.h"),
+    ),
     (
         "native/local_network_permission.cc",
         include_bytes!("../native/local_network_permission.cc"),
@@ -179,6 +155,14 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     (
         "native/local_network_permission.h",
         include_bytes!("../native/local_network_permission.h"),
+    ),
+    (
+        "native/media_stream.cc",
+        include_bytes!("../native/media_stream.cc"),
+    ),
+    (
+        "native/media_stream.h",
+        include_bytes!("../native/media_stream.h"),
     ),
     (
         "native/media_values.cc",
@@ -199,54 +183,40 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ("native/network.cc", include_bytes!("../native/network.cc")),
     ("native/network.h", include_bytes!("../native/network.h")),
     (
+        "native/network_control.cc",
+        include_bytes!("../native/network_control.cc"),
+    ),
+    (
+        "native/network_control.h",
+        include_bytes!("../native/network_control.h"),
+    ),
+    (
+        "native/network_predictor.cc",
+        include_bytes!("../native/network_predictor.cc"),
+    ),
+    (
+        "native/network_predictor.h",
+        include_bytes!("../native/network_predictor.h"),
+    ),
+    (
         "native/opus_carrier.h",
         include_bytes!("../native/opus_carrier.h"),
     ),
     ("native/peer.cc", include_bytes!("../native/peer.cc")),
     ("native/peer.h", include_bytes!("../native/peer.h")),
-    ("native/stats.cc", include_bytes!("../native/stats.cc")),
-    ("native/stats.h", include_bytes!("../native/stats.h")),
-    (
-        "native/stats_objects.h",
-        include_bytes!("../native/stats_objects.h"),
-    ),
     ("native/probe.cc", include_bytes!("../native/probe.cc")),
     ("native/probe.h", include_bytes!("../native/probe.h")),
     (
-        "native/socket_address.cc",
-        include_bytes!("../native/socket_address.cc"),
+        "native/raw_video_frame.cc",
+        include_bytes!("../native/raw_video_frame.cc"),
     ),
     (
-        "native/socket_address.h",
-        include_bytes!("../native/socket_address.h"),
+        "native/raw_video_frame.h",
+        include_bytes!("../native/raw_video_frame.h"),
     ),
     (
-        "native/task_queue_provider.cc",
-        include_bytes!("../native/task_queue_provider.cc"),
-    ),
-    (
-        "native/task_queue_provider.h",
-        include_bytes!("../native/task_queue_provider.h"),
-    ),
-    ("native/tls.cc", include_bytes!("../native/tls.cc")),
-    ("native/tls.h", include_bytes!("../native/tls.h")),
-    ("native/video.cc", include_bytes!("../native/video.cc")),
-    ("native/video.h", include_bytes!("../native/video.h")),
-    (
-        "native/media_stream.cc",
-        include_bytes!("../native/media_stream.cc"),
-    ),
-    (
-        "native/media_stream.h",
-        include_bytes!("../native/media_stream.h"),
-    ),
-    (
-        "native/frame_transformer.cc",
-        include_bytes!("../native/frame_transformer.cc"),
-    ),
-    (
-        "native/frame_transformer.h",
-        include_bytes!("../native/frame_transformer.h"),
+        "native/raw_video_source.h",
+        include_bytes!("../native/raw_video_source.h"),
     ),
     (
         "native/rtc_error.cc",
@@ -265,6 +235,24 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         include_bytes!("../native/rtp_values.h"),
     ),
     (
+        "native/socket_address.cc",
+        include_bytes!("../native/socket_address.cc"),
+    ),
+    (
+        "native/socket_address.h",
+        include_bytes!("../native/socket_address.h"),
+    ),
+    (
+        "native/source_encoded_video.h",
+        include_bytes!("../native/source_encoded_video.h"),
+    ),
+    ("native/stats.cc", include_bytes!("../native/stats.cc")),
+    ("native/stats.h", include_bytes!("../native/stats.h")),
+    (
+        "native/stats_objects.h",
+        include_bytes!("../native/stats_objects.h"),
+    ),
+    (
         "native/string_builder.cc",
         include_bytes!("../native/string_builder.cc"),
     ),
@@ -273,12 +261,40 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         include_bytes!("../native/string_builder.h"),
     ),
     (
+        "native/task_queue_provider.cc",
+        include_bytes!("../native/task_queue_provider.cc"),
+    ),
+    (
+        "native/task_queue_provider.h",
+        include_bytes!("../native/task_queue_provider.h"),
+    ),
+    ("native/tls.cc", include_bytes!("../native/tls.cc")),
+    ("native/tls.h", include_bytes!("../native/tls.h")),
+    (
         "native/transport.cc",
         include_bytes!("../native/transport.cc"),
     ),
     (
         "native/transport.h",
         include_bytes!("../native/transport.h"),
+    ),
+    ("native/video.cc", include_bytes!("../native/video.cc")),
+    ("native/video.h", include_bytes!("../native/video.h")),
+    (
+        "native/video_bitrate.cc",
+        include_bytes!("../native/video_bitrate.cc"),
+    ),
+    (
+        "native/video_bitrate.h",
+        include_bytes!("../native/video_bitrate.h"),
+    ),
+    (
+        "native/video_codec_callbacks.cc",
+        include_bytes!("../native/video_codec_callbacks.cc"),
+    ),
+    (
+        "native/video_codec_callbacks.h",
+        include_bytes!("../native/video_codec_callbacks.h"),
     ),
     (
         "native/video_codec_values.cc",
@@ -295,6 +311,30 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     (
         "native/video_encoder_selector.h",
         include_bytes!("../native/video_encoder_selector.h"),
+    ),
+    (
+        "native/video_metadata.cc",
+        include_bytes!("../native/video_metadata.cc"),
+    ),
+    (
+        "native/video_metadata.h",
+        include_bytes!("../native/video_metadata.h"),
+    ),
+    (
+        "native/video_sink_queue.h",
+        include_bytes!("../native/video_sink_queue.h"),
+    ),
+    (
+        "native/video_sink_wants.h",
+        include_bytes!("../native/video_sink_wants.h"),
+    ),
+    (
+        "native/video_source_controls.h",
+        include_bytes!("../native/video_source_controls.h"),
+    ),
+    (
+        "tools/native_cc_wrapper.py",
+        include_bytes!("../tools/native_cc_wrapper.py"),
     ),
 ];
 

@@ -238,8 +238,15 @@ native worker; `VideoTrack` also forwards refresh requests. Actor equivalents ar
 `process_video_source_constraints` and `request_video_track_refresh`. These are
 native void requests, not promises of a frame or applied limits. The pinned push
 source inherits SDK no-ops; the RTP source forwards keyframe requests while its
-native callback remains installed. Constraints are not cached or normalized. Full sink
-wants and remaining source encoded-output operations are still incomplete.
+native callback remains installed. Constraints are not cached or normalized.
+`VideoSourceView::attach_encoded_output` registers an independent native recordable
+encoded-output sink when the source reports support. It is separate from the
+receiver transformer slot. `RecordableVideoFrame` preserves encoded buffer
+presence/bytes, codec, resolution, keyframe, optional rotation/color space and
+render time; it does not invent RTP metadata absent from that interface.
+Source encoded sinks share close state across clones and retain at most eight
+frames/64 MiB, with intentional loss counts. Production sessions keep these
+registrations captive behind `SessionVideoSourceEncodedSinkId`.
 
 Drain `try_peer_event`, `try_channel_event`, registered DTMF/DTLS/SCTP observer
 queues and any attached encoded sinks, then await `ready()` (or call `poll_ready` from an executor). Readiness coalesces
@@ -386,17 +393,36 @@ and zero alignments cannot mask an unsafe future aggregate. Requests are not
 normalized. Unsafe SDK void updates retire that source registration through
 native RemoveSink: preserving a prior pair could retain stale black-frame or
 geometry expectations after SDK track-local bookkeeping changed. The internal
-worker-scoped preflight helper instead preserves prior registrations on refusal;
-it is not yet wired to a public custom-wants API. The source's saturating
+worker-scoped public attach/update preflight instead preserves prior registrations
+on refusal. The source's saturating
 `rejected_sink_requests` count makes those adapter refusals explicit, separate
 from native source statistics and discarded-frame callbacks. Owning local source
 views retain this diagnostic through producer retirement; remote SDK sources
 return `None`. The production actor exposes
-`video_source_rejected_sink_requests`. This guard does not qualify unrelated
-encoder-side alignment arithmetic or expose custom sink wants yet.
+`video_source_rejected_sink_requests`. Remote RTP sources preflight against their
+actual SDK broadcaster pairs on the same worker as their raw mutations. This
+guard does not qualify unrelated encoder-side alignment arithmetic.
 
-`PeerConnectionFactory::create_media_stream` creates an owning native track
-container, not SDP routing or receive synchronization. Get/Find return the exact
+`VideoSinkWants` preserves every pinned SDK hint, including optional target and
+requested sizes, ordered resolutions and aggregates. Its default comes from the
+SDK. `VideoTrack::attach_sink_with_wants` and `VideoSourceView::attach_sink_with_wants`
+create owning registrations; `update_wants` forwards complete values. `wants`
+reads the actual per-sink source registration, including the SDK track's
+`black_frames = !enabled` rewrite, and returns `None` after close or native
+retirement. Hints do not promise resizing, rate limiting or generated frames.
+Source-interface sinks bypass the track's enabled-state rewrite. Sink clones
+share one registration, bounded frame/event queues and close state.
+
+Production sessions expose `attach_raw_video_with_wants` and
+`update_raw_video_sink_wants` for receiver sinks. Independent track/source
+registrations use `attach_video_track_sink_with_wants`,
+`attach_video_source_sink_with_wants` and `SessionVideoSinkId`. Their alias,
+query, update, poll, close and release operations keep local handles captive
+during migration and retain sources after outer source/view IDs are released.
+
+`PeerConnectionFactory::create_media_stream` creates a typed `LocalMediaStream`
+track container, not SDP routing or receive synchronization. This is distinct
+from main's byte-oriented general `MediaStream` interface. Get/Find return the exact
 accepted track owners in native insertion order. Native Add rejects duplicate
 IDs per media kind; Remove matches by ID even when passed a different track.
 Successful membership retains each track's actual source/factory or received
@@ -410,9 +436,10 @@ Retiring IDs does not invalidate independently retained aliases or queued output
 `AudioTrack::processor` queries the native per-track processor and returns an
 owning alias only when one exists. The pinned stock tracks return `None`, even
 when the shared voice-engine APM is processing audio; source options and peer
-statistics are not substitute processors. `AudioProcessor::stats` forwards the
+statistics are not substitute processors. `AudioTrackProcessor::stats` forwards the
 remote-track condition and preserves every optional observation, including the
-deprecated voice-detection value. No new processor/APM factory is provided.
+deprecated voice-detection value. This per-track alias is distinct from the
+standalone `AudioProcessor` and processing factories supplied by the audio API.
 
 Borrowed `MonoPcm`, `InterleavedPcm` and `DeinterleavedPcm` views support signed
 16-bit and float PCM without owning or copying their storage. Mutable variants
@@ -564,12 +591,34 @@ short/extra buffers, narrow strides, and overflow are rejected.
 
 ## Decoded video sink retention
 
-Each attached `VideoSink` holds at most four decoded I420 frames and 16 MiB
-of frame data. On overflow it drops oldest frames; frames exceeding the byte
-budget are discarded. `VideoSink::dropped_frames()` reports cumulative loss,
-including after explicit close. Polling `try_next_frame()` does not guarantee
-receipt of every decoded frame. The cap applies per sink; applications should
-close unused sinks to release retained frames.
+Each attached `VideoSink` or `VideoSourceSink` holds at most four owning SDK
+frames and 16 MiB of CPU plane storage, including strides and sample width.
+For opaque native storage, whose allocation size the SDK does not expose, the
+byte budget measures packed-I420-equivalent geometry, not GPU allocation.
+On overflow it drops oldest frames; frames exceeding the byte budget are
+discarded. `dropped_frames()` reports cumulative retention loss, including after
+explicit close. The cap applies per sink; close unused sinks to release frames.
+
+`try_next_native_frame()` pops a `RawVideoFrame` with its actual SDK buffer,
+complete metadata and retained acquisition source/factory. The legacy
+`try_next_frame()` consumes the same queue and explicitly converts to its
+packed-I420 value. Neither polling API promises every frame or advances work.
+Native frame copies have independent metadata and share immutable buffer
+ownership. Buffer type/geometry/strides, owning 8/16-bit plane samples,
+I420 conversion, crop/scale and native mapping/preparation preserve the SDK's
+results; mapping a non-native storage type is rejected before its native CHECK.
+Preparation owns the real SDK completion callback and has explicit retirement.
+
+`WritableI420Buffer` has exclusive native ownership, including custom strides.
+Uninitialized planes cannot be read, and incomplete buffers cannot be published.
+Plane writes, native initialization/black filling, copy/rotation and crop/scale
+fill storage before consuming `freeze` creates immutable shared ownership.
+`RawVideoFrame::from_buffer`, complete `RawVideoFrameMetadata` replacement,
+and `VideoSource::push_native_frame` retain metadata instead of reducing it to
+the legacy pixel/timestamp fields. SDK frame IDs and locally stored metadata
+are not promises that those values cross the wire.
+`ProductionSession` keeps these resources captive behind frame, buffer, writer
+and preparation IDs, with the same operations and explicit release methods.
 
 ## Audio processing
 

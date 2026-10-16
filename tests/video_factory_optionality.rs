@@ -60,10 +60,10 @@ impl Drop for PanickingFactory {
 fn factory_callback_and_destructor_panics_do_not_cross_cxx() {
     let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let factory = VideoEncoderFactoryHandle::new(PanickingFactory(dropped.clone())).unwrap();
-    assert!(factory.supported_format_values().is_empty());
-    // The caught payload's own destructor panics if it is accidentally dropped.
-    assert!(factory.supported_format_values().is_empty());
-    assert!(factory.implementation_values().is_empty());
+    assert!(factory.try_supported_format_values().is_err());
+    // Failure stays observable rather than becoming a fabricated empty list.
+    assert!(factory.try_supported_format_values().is_err());
+    assert!(factory.try_implementation_values().is_err());
     assert!(
         !factory
             .query_support(&VideoCodecFormat::new("VP8"), None, None)
@@ -100,8 +100,8 @@ impl Drop for PanickingDecoderFactory {
 fn decoder_factory_panics_do_not_cross_cxx() {
     let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let factory = VideoDecoderFactoryHandle::new(PanickingDecoderFactory(dropped.clone())).unwrap();
-    assert!(factory.supported_format_values().is_empty());
-    assert!(factory.supported_format_values().is_empty());
+    assert!(factory.try_supported_format_values().is_err());
+    assert!(factory.try_supported_format_values().is_err());
     assert!(
         !factory
             .query_support(&VideoCodecFormat::new("VP8"), false, None)

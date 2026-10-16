@@ -1,6 +1,6 @@
 //! Owning SDK frame crypto providers, separate from SFrame key management.
 //! With panic=unwind, callback and provider-destructor panics are contained.
-//! Panic payloads are intentionally forgotten to avoid a panicking payload Drop.
+//! Standard panic payloads are disposed; unknown payloads avoid untrusted Drop.
 use crate::peer::PeerInner;
 use crate::{MediaType, ffi};
 use std::fmt;

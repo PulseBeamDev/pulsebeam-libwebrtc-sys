@@ -8,6 +8,9 @@
 
 namespace pulsebeam::webrtc_sys {
 struct RustVideoEncoderSelector;
+struct RustVideoEncoderSelectorObserver;
+class NativeOwnedVideoEncoderSelector;
+rust::Box<RustVideoEncoderSelectorObserver> video_selector_owned_observer(const NativeOwnedVideoEncoderSelector&) noexcept;
 class NativeSdpVideoFormat;
 class NativeRenderResolution;
 

@@ -128,26 +128,47 @@ pub enum VideoSourceState {
 impl VideoSourceState {
     fn from_native(value: u8) -> Self {
         match value {
-            0 => Self::Initializing, 1 => Self::Live, 2 => Self::Ended, 3 => Self::Muted,
+            0 => Self::Initializing,
+            1 => Self::Live,
+            2 => Self::Ended,
+            3 => Self::Muted,
             value => unreachable!("native adapter returned invalid video source state {value}"),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VideoContentHint { None, Fluid, Detailed, Text }
+pub enum VideoContentHint {
+    None,
+    Fluid,
+    Detailed,
+    Text,
+}
 impl VideoContentHint {
     fn native(self) -> u8 {
-        match self { Self::None => 0, Self::Fluid => 1, Self::Detailed => 2, Self::Text => 3 }
+        match self {
+            Self::None => 0,
+            Self::Fluid => 1,
+            Self::Detailed => 2,
+            Self::Text => 3,
+        }
     }
     fn from_native(value: u8) -> Self {
-        match value { 0 => Self::None, 1 => Self::Fluid, 2 => Self::Detailed, 3 => Self::Text,
-            value => unreachable!("native adapter returned invalid content hint {value}") }
+        match value {
+            0 => Self::None,
+            1 => Self::Fluid,
+            2 => Self::Detailed,
+            3 => Self::Text,
+            value => unreachable!("native adapter returned invalid content hint {value}"),
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VideoSourceStats { pub input_width: i32, pub input_height: i32 }
+pub struct VideoSourceStats {
+    pub input_width: i32,
+    pub input_height: i32,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VideoSourceStatus {
     pub state: VideoSourceState,
@@ -488,12 +509,35 @@ impl VideoSource {
         ffi::video_source_rejected_sink_requests(self.native())
     }
 
+    /// Publish a complete immutable SDK frame without discarding metadata or
+    /// normalizing its buffer to packed I420.
+    pub fn push_native_frame(&self, frame: &crate::RawVideoFrame) -> Result<(), CodecError> {
+        if self.state() == VideoSourceState::Ended {
+            return Err(CodecError::Released);
+        }
+        let timestamp = frame.timestamp_us();
+        if timestamp == i64::MIN
+            || timestamp == i64::MAX
+            || ffi::video_source_i420_allocation_size(frame.width() as u32, frame.height() as u32)
+                == 0
+        {
+            return Err(CodecError::InvalidFrame);
+        }
+        ffi::video_source_push_native_frame(self.native(), frame.native())
+            .then_some(())
+            .ok_or(CodecError::Released)
+    }
+
     pub fn push_frame(&self, frame: &VideoFrame) -> Result<(), CodecError> {
         if self.state() == VideoSourceState::Ended {
             return Err(CodecError::Released);
         }
         let allocation_size = ffi::video_source_i420_allocation_size(frame.width, frame.height);
-        if allocation_size == 0 || allocation_size != frame.buffer.as_bytes().len() {
+        if allocation_size == 0
+            || allocation_size != frame.buffer.as_bytes().len()
+            || frame.timestamp_us == i64::MIN
+            || frame.timestamp_us == i64::MAX
+        {
             return Err(CodecError::InvalidFrame);
         }
         ffi::video_source_push_frame(
@@ -517,11 +561,14 @@ impl VideoSource {
 
     /// An owning SDK interface view, not another frame producer.
     pub fn as_view(&self) -> VideoSourceView {
-        VideoSourceView { inner: Rc::new(VideoSourceViewInner {
-            native: ffi::video_source_as_view(self.native()),
-            _producer: Some(self.inner.clone()), _track: None,
-            _factory: self.inner._factory.clone(),
-        }) }
+        VideoSourceView {
+            inner: Rc::new(VideoSourceViewInner {
+                native: ffi::video_source_as_view(self.native()),
+                _producer: Some(self.inner.clone()),
+                _track: None,
+                _factory: self.inner._factory.clone(),
+            }),
+        }
     }
 
     pub(crate) fn controlled_media(&self) -> bool {
@@ -545,7 +592,9 @@ impl VideoSource {
 /// assert_send::<pulsebeam_webrtc_sys::VideoSourceView>();
 /// ```
 #[derive(Clone)]
-pub struct VideoSourceView { inner: Rc<VideoSourceViewInner> }
+pub struct VideoSourceView {
+    inner: Rc<VideoSourceViewInner>,
+}
 struct VideoSourceViewInner {
     native: cxx::UniquePtr<ffi::NativeVideoSourceView>,
     _producer: Option<Rc<SourceInner>>,
@@ -558,13 +607,42 @@ impl VideoSourceView {
     pub fn same_interface(&self, other: &Self) -> bool {
         ffi::video_source_views_same_interface(self.native(), other.native())
     }
-    pub fn state(&self) -> VideoSourceState { VideoSourceState::from_native(ffi::video_source_view_state(self.native())) }
-    pub fn remote(&self) -> bool { ffi::video_source_view_remote(self.native()) }
-    pub fn is_screencast(&self) -> bool { ffi::video_source_view_screencast(self.native()) }
-    pub fn needs_denoising(&self) -> Option<bool> {
-        match ffi::video_source_view_denoising(self.native()) { -1 => None, 0 => Some(false), 1 => Some(true), value => unreachable!("invalid native denoising value {value}") }
+    pub fn state(&self) -> VideoSourceState {
+        VideoSourceState::from_native(ffi::video_source_view_state(self.native()))
     }
-    pub fn supports_encoded_output(&self) -> bool { ffi::video_source_view_encoded_output(self.native()) }
+    pub fn remote(&self) -> bool {
+        ffi::video_source_view_remote(self.native())
+    }
+    pub fn is_screencast(&self) -> bool {
+        ffi::video_source_view_screencast(self.native())
+    }
+    pub fn needs_denoising(&self) -> Option<bool> {
+        match ffi::video_source_view_denoising(self.native()) {
+            -1 => None,
+            0 => Some(false),
+            1 => Some(true),
+            value => unreachable!("invalid native denoising value {value}"),
+        }
+    }
+    pub fn supports_encoded_output(&self) -> bool {
+        ffi::video_source_view_encoded_output(self.native())
+    }
+    /// Register on the exact native source's recordable encoded output.
+    /// A false SDK SupportsEncodedOutput result is genuinely unsupported.
+    /// This does not reserve or replace the receiver transformer slot.
+    pub fn attach_encoded_output(&self) -> Result<crate::VideoSourceEncodedSink, PeerError> {
+        if !self.supports_encoded_output() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "native video source does not support encoded output".into(),
+            });
+        }
+        let native = ffi::video_source_attach_encoded_output(self.native());
+        if native.is_null() {
+            return Err(native_error("native source encoded sink creation failed"));
+        }
+        Ok(crate::VideoSourceEncodedSink::new(native, self.clone()))
+    }
     /// Dispatch the native refresh request on the existing owner worker.
     /// A source may implement this as a no-op; this does not promise a frame.
     pub fn request_refresh_frame(&self) {
@@ -592,52 +670,125 @@ impl VideoSourceView {
         );
     }
 
-    /// Admission diagnostics for the exact caller-owned producer retained by
-    /// this view. SDK-owned remote sources have no such adapter and return None.
-    /// This follows a construction-time ownership edge, not a source-ID lookup.
+    /// Diagnostics from the actual retained producer, not source-ID matching
+    /// or a configuration echo. SDK-owned remote sources have no adapter count.
     pub fn rejected_sink_requests(&self) -> Option<u64> {
-        let source = self.inner._producer.as_ref().or_else(|| {
-            self.inner._track.as_ref().and_then(|track| track.inner._source.as_ref())
-        })?;
-        Some(ffi::video_source_rejected_sink_requests(
-            source.native.as_ref().expect("validated video source"),
-        ))
+        let mut count = 0;
+        ffi::video_source_view_rejected_sink_requests(self.native(), &mut count).then_some(count)
+    }
+
+    /// Attach directly to this SDK source interface, independently of track
+    /// enabled-state rewriting. Aliases share the registration and event queue.
+    pub fn attach_sink(&self) -> Result<VideoSourceSink, PeerError> {
+        self.attach_sink_with_wants(&crate::VideoSinkWants::default())
+    }
+    pub fn attach_sink_with_wants(
+        &self,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<VideoSourceSink, PeerError> {
+        if self.remote() && self.inner._factory.encoded_video_receive_only() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "factory only receives encoded video; decoded sinks are unavailable"
+                    .into(),
+            });
+        }
+        let mut status = 0;
+        let native = ffi::video_source_attach_sink(self.native(), &wants.native(), &mut status);
+        if native.is_null() {
+            return Err(sink_operation_error(status));
+        }
+        Ok(VideoSourceSink {
+            inner: Rc::new(VideoSourceSinkInner {
+                native,
+                _source: self.clone(),
+            }),
+        })
     }
 
     pub fn stats(&self) -> Option<VideoSourceStats> {
         let value = ffi::video_source_view_stats(self.native());
-        value.available.then_some(VideoSourceStats { input_width: value.input_width, input_height: value.input_height })
+        value.available.then_some(VideoSourceStats {
+            input_width: value.input_width,
+            input_height: value.input_height,
+        })
     }
     /// A fresh collection of SDK queries, not a cached or atomic snapshot.
     pub fn status(&self) -> VideoSourceStatus {
-        VideoSourceStatus { state: self.state(), remote: self.remote(), is_screencast: self.is_screencast(), needs_denoising: self.needs_denoising(), supports_encoded_output: self.supports_encoded_output(), stats: self.stats() }
+        VideoSourceStatus {
+            state: self.state(),
+            remote: self.remote(),
+            is_screencast: self.is_screencast(),
+            needs_denoising: self.needs_denoising(),
+            supports_encoded_output: self.supports_encoded_output(),
+            stats: self.stats(),
+        }
     }
-    pub fn observe_changes(&self, capacity: std::num::NonZeroUsize) -> Result<VideoObserver, PeerError> {
-        VideoObserver::new(ffi::video_source_view_observe(self.native(), capacity.get()), Some(self.clone()), None)
+    pub fn observe_changes(
+        &self,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<VideoObserver, PeerError> {
+        VideoObserver::new(
+            ffi::video_source_view_observe(self.native(), capacity.get()),
+            Some(self.clone()),
+            None,
+        )
     }
-    fn native(&self) -> &ffi::NativeVideoSourceView { self.inner.native.as_ref().expect("owning video source view") }
+    fn native(&self) -> &ffi::NativeVideoSourceView {
+        self.inner
+            .native
+            .as_ref()
+            .expect("owning video source view")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VideoObserverEvent { Changed }
+pub enum VideoObserverEvent {
+    Changed,
+}
 /// A bounded owning native observer queue. Close unregisters synchronously,
 /// retaining accepted notifications and overflow counts for later consumption.
 #[derive(Clone)]
-pub struct VideoObserver { inner: Rc<VideoObserverInner> }
+pub struct VideoObserver {
+    inner: Rc<VideoObserverInner>,
+}
 struct VideoObserverInner {
     native: cxx::UniquePtr<ffi::NativeVideoObserver>,
     _source: Option<VideoSourceView>,
     _track: Option<VideoTrack>,
 }
 impl VideoObserver {
-    fn new(native: cxx::UniquePtr<ffi::NativeVideoObserver>, source: Option<VideoSourceView>, track: Option<VideoTrack>) -> Result<Self, PeerError> {
-        if native.is_null() { return Err(PeerError { kind: PeerErrorKind::NativeConstruction, message: "native video observer creation failed".into() }); }
-        Ok(Self { inner: Rc::new(VideoObserverInner { native, _source: source, _track: track }) })
+    fn new(
+        native: cxx::UniquePtr<ffi::NativeVideoObserver>,
+        source: Option<VideoSourceView>,
+        track: Option<VideoTrack>,
+    ) -> Result<Self, PeerError> {
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::NativeConstruction,
+                message: "native video observer creation failed".into(),
+            });
+        }
+        Ok(Self {
+            inner: Rc::new(VideoObserverInner {
+                native,
+                _source: source,
+                _track: track,
+            }),
+        })
     }
-    pub fn try_next_event(&self) -> Option<VideoObserverEvent> { ffi::video_observer_take(self.native()).then_some(VideoObserverEvent::Changed) }
-    pub fn take_dropped_events(&self) -> u64 { ffi::video_observer_take_dropped(self.native()) }
-    pub fn close(&self) { ffi::video_observer_close(self.native()); }
-    fn native(&self) -> &ffi::NativeVideoObserver { self.inner.native.as_ref().expect("owning video observer") }
+    pub fn try_next_event(&self) -> Option<VideoObserverEvent> {
+        ffi::video_observer_take(self.native()).then_some(VideoObserverEvent::Changed)
+    }
+    pub fn take_dropped_events(&self) -> u64 {
+        ffi::video_observer_take_dropped(self.native())
+    }
+    pub fn close(&self) {
+        ffi::video_observer_close(self.native());
+    }
+    fn native(&self) -> &ffi::NativeVideoObserver {
+        self.inner.native.as_ref().expect("owning video observer")
+    }
 }
 
 /// A sequence-bound local or remote video track.
@@ -746,30 +897,72 @@ impl VideoTrack {
     pub fn id(&self) -> String {
         ffi::video_track_id(self.native())
     }
-
     pub fn same_resource(&self, other: &Self) -> bool {
         ffi::video_track_identity(self.native()) == ffi::video_track_identity(other.native())
     }
 
-    pub fn kind(&self) -> String { ffi::video_track_kind(self.native()) }
-    pub fn should_receive(&self) -> bool { ffi::video_track_should_receive(self.native()) }
-    pub fn set_should_receive(&self, receive: bool) { ffi::video_track_set_should_receive(self.native(), receive); }
-    pub fn content_hint(&self) -> VideoContentHint { VideoContentHint::from_native(ffi::video_track_content_hint(self.native())) }
-    pub fn set_content_hint(&self, hint: VideoContentHint) { ffi::video_track_set_content_hint(self.native(), hint.native()); }
+    pub fn kind(&self) -> String {
+        ffi::video_track_kind(self.native())
+    }
+    pub fn should_receive(&self) -> bool {
+        ffi::video_track_should_receive(self.native())
+    }
+    pub fn set_should_receive(&self, receive: bool) {
+        ffi::video_track_set_should_receive(self.native(), receive);
+    }
+    pub fn content_hint(&self) -> VideoContentHint {
+        VideoContentHint::from_native(ffi::video_track_content_hint(self.native()))
+    }
+    pub fn set_content_hint(&self, hint: VideoContentHint) {
+        ffi::video_track_set_content_hint(self.native(), hint.native());
+    }
     pub fn status(&self) -> VideoTrackStatus {
-        VideoTrackStatus { id: self.id(), kind: self.kind(), state: self.state(), enabled: self.enabled(), should_receive: self.should_receive(), content_hint: self.content_hint() }
+        VideoTrackStatus {
+            id: self.id(),
+            kind: self.kind(),
+            state: self.state(),
+            enabled: self.enabled(),
+            should_receive: self.should_receive(),
+            content_hint: self.content_hint(),
+        }
     }
     pub fn source(&self) -> Option<VideoSourceView> {
-        let native = ffi::video_track_source(self.native(), self.origin_factory().native());
-        (!native.is_null()).then(|| VideoSourceView { inner: Rc::new(VideoSourceViewInner {
-            native, _producer: None, _track: Some(self.clone()), _factory: self.origin_factory().clone(),
-        }) })
+        let native = match self.inner._source.as_ref() {
+            Some(source) => ffi::video_track_source_from_producer(
+                self.native(),
+                self.origin_factory().native(),
+                source.native.as_ref().expect("validated video source"),
+            ),
+            None => ffi::video_track_source(self.native(), self.origin_factory().native()),
+        };
+        (!native.is_null()).then(|| VideoSourceView {
+            inner: Rc::new(VideoSourceViewInner {
+                native,
+                _producer: None,
+                _track: Some(self.clone()),
+                _factory: self.origin_factory().clone(),
+            }),
+        })
     }
-    pub fn observe_changes(&self, capacity: std::num::NonZeroUsize) -> Result<VideoObserver, PeerError> {
-        VideoObserver::new(ffi::video_track_observe(self.native(), self.origin_factory().native(), capacity.get()), None, Some(self.clone()))
+    pub fn observe_changes(
+        &self,
+        capacity: std::num::NonZeroUsize,
+    ) -> Result<VideoObserver, PeerError> {
+        VideoObserver::new(
+            ffi::video_track_observe(
+                self.native(),
+                self.origin_factory().native(),
+                capacity.get(),
+            ),
+            None,
+            Some(self.clone()),
+        )
     }
     fn origin_factory(&self) -> &Rc<FactoryInner> {
-        self.inner._factory.as_ref().unwrap_or_else(|| &self.inner._peer.as_ref().expect("track origin")._factory)
+        self.inner
+            ._factory
+            .as_ref()
+            .unwrap_or_else(|| &self.inner._peer.as_ref().expect("track origin")._factory)
     }
 
     pub fn enabled(&self) -> bool {
@@ -795,6 +988,13 @@ impl VideoTrack {
     }
 
     pub fn attach_sink(&self) -> Result<VideoSink, PeerError> {
+        self.attach_sink_with_wants(&crate::VideoSinkWants::default())
+    }
+
+    pub fn attach_sink_with_wants(
+        &self,
+        wants: &crate::VideoSinkWants,
+    ) -> Result<VideoSink, PeerError> {
         if self
             .inner
             ._peer
@@ -807,13 +1007,25 @@ impl VideoTrack {
                     .into(),
             });
         }
-        let native = ffi::video_track_attach_sink(self.native());
+        let source = self
+            .source()
+            .ok_or_else(|| native_error("native video track has no source"))?;
+        let mut status = 0;
+        let native = ffi::video_track_attach_sink(
+            self.native(),
+            source.native(),
+            &wants.native(),
+            &mut status,
+        );
         if native.is_null() {
-            Err(native_error("failed to attach video sink"))
+            Err(sink_operation_error(status))
         } else {
             Ok(VideoSink {
-                native,
-                _track: self.inner.clone(),
+                inner: Rc::new(VideoSinkInner {
+                    native,
+                    _track: self.inner.clone(),
+                    _source: source,
+                }),
             })
         }
     }
@@ -884,7 +1096,7 @@ pub enum VideoSinkEvent {
 }
 
 impl VideoSinkEvent {
-    fn from_native(event: ffi::FfiVideoSinkEvent) -> Option<Self> {
+    pub(crate) fn from_native(event: ffi::FfiVideoSinkEvent) -> Option<Self> {
         if !event.valid {
             return None;
         }
@@ -905,8 +1117,13 @@ mod video_sink_event_tests {
 
     #[test]
     fn control_callbacks_preserve_optional_and_floating_values() {
-        for bits in [0, 0x8000000000000000, 0x7ff0000000000000,
-                     0xfff0000000000000, 0x7ff8000000000123] {
+        for bits in [
+            0,
+            0x8000000000000000,
+            0x7ff0000000000000,
+            0xfff0000000000000,
+            0x7ff8000000000123,
+        ] {
             let event = VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
                 valid: true,
                 kind: 1,
@@ -923,11 +1140,16 @@ mod video_sink_event_tests {
         }
         assert_eq!(
             VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
-                valid: true, kind: 1, has_min_fps: false, min_fps: 0.0,
-                has_max_fps: true, max_fps: 0.0,
+                valid: true,
+                kind: 1,
+                has_min_fps: false,
+                min_fps: 0.0,
+                has_max_fps: true,
+                max_fps: 0.0,
             }),
             Some(VideoSinkEvent::ConstraintsChanged(VideoSourceConstraints {
-                min_fps: None, max_fps: Some(0.0),
+                min_fps: None,
+                max_fps: Some(0.0),
             })),
         );
     }
@@ -936,19 +1158,104 @@ mod video_sink_event_tests {
     fn discard_and_empty_callbacks_are_distinct() {
         assert_eq!(
             VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
-                valid: true, kind: 0, has_min_fps: false, min_fps: 0.0,
-                has_max_fps: false, max_fps: 0.0,
+                valid: true,
+                kind: 0,
+                has_min_fps: false,
+                min_fps: 0.0,
+                has_max_fps: false,
+                max_fps: 0.0,
             }),
             Some(VideoSinkEvent::DiscardedFrame),
         );
         assert_eq!(
             VideoSinkEvent::from_native(ffi::FfiVideoSinkEvent {
-                valid: false, kind: 0, has_min_fps: false, min_fps: 0.0,
-                has_max_fps: false, max_fps: 0.0,
+                valid: false,
+                kind: 0,
+                has_min_fps: false,
+                min_fps: 0.0,
+                has_max_fps: false,
+                max_fps: 0.0,
             }),
             None,
         );
     }
+}
+
+fn sink_operation_error(status: u8) -> PeerError {
+    match status {
+        1 => PeerError {
+            kind: PeerErrorKind::Closed,
+            message: "video sink registration is closed".into(),
+        },
+        2 => PeerError {
+            kind: PeerErrorKind::InvalidParameter,
+            message:
+                "sink alignment exceeds safe SDK signed arithmetic across independent sink removal"
+                    .into(),
+        },
+        _ => native_error("failed to bind native video sink target"),
+    }
+}
+fn registered_sink_wants(native: &ffi::NativeVideoSink) -> Option<crate::VideoSinkWants> {
+    let wants = ffi::video_sink_wants(native);
+    wants
+        .valid
+        .then(|| crate::VideoSinkWants::from_native(wants))
+}
+fn poll_raw_video_frame(native: &ffi::NativeVideoSink) -> Option<VideoFrame> {
+    let frame = ffi::video_sink_take_frame(native);
+    let frame = frame.as_ref()?;
+    Some(
+        VideoFrame::i420(
+            ffi::native_video_frame_width(frame),
+            ffi::native_video_frame_height(frame),
+            ffi::native_video_frame_i420(frame),
+            ffi::native_video_frame_timestamp_us(frame),
+            ffi::native_video_frame_rtp_timestamp(frame),
+        )
+        .expect("native adapter returned an invalid I420 frame")
+        .with_rotation(crate::VideoRotation::from_degrees(
+            ffi::native_video_frame_rotation(frame),
+        )),
+    )
+}
+macro_rules! raw_video_sink_controls {
+    () => {
+        /// Read the actual SDK source registration, including track black-frame
+        /// rewriting. None means closed or retired, not cached submitted hints.
+        pub fn wants(&self) -> Option<crate::VideoSinkWants> {
+            registered_sink_wants(self.native())
+        }
+        /// Forward every native hint. Unsafe alignment is rejected atomically;
+        /// this does not promise the source honors adaptation requests.
+        pub fn update_wants(&self, wants: &crate::VideoSinkWants) -> Result<(), PeerError> {
+            let status = ffi::video_sink_update_wants(self.native(), &wants.native());
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(sink_operation_error(status))
+            }
+        }
+        /// Saturating intentional queue loss count, retained after close.
+        pub fn dropped_frames(&self) -> u64 {
+            ffi::video_sink_dropped_frames(self.native())
+        }
+        pub fn try_next_event(&self) -> Option<VideoSinkEvent> {
+            VideoSinkEvent::from_native(ffi::video_sink_take_event(self.native()))
+        }
+        pub fn dropped_events(&self) -> u64 {
+            ffi::video_sink_dropped_events(self.native())
+        }
+        /// Shared by aliases. Native removal is a callback barrier and clears
+        /// frame retention; queued control notifications remain observable.
+        pub fn close(&mut self) -> Result<(), PeerError> {
+            if ffi::close_video_sink(self.native()) {
+                Ok(())
+            } else {
+                Err(native_error("failed to detach video sink"))
+            }
+        }
+    };
 }
 
 /// A sequence-bound caller-polled video sink.
@@ -966,46 +1273,38 @@ mod video_sink_event_tests {
 /// fn assert_sync<T: Sync>() {}
 /// assert_sync::<pulsebeam_webrtc_sys::VideoSink>();
 /// ```
+#[derive(Clone)]
 pub struct VideoSink {
+    inner: Rc<VideoSinkInner>,
+}
+struct VideoSinkInner {
+    // Detach before releasing the exact SDK target and originating factory.
     native: cxx::UniquePtr<ffi::NativeVideoSink>,
     _track: Rc<TrackInner>,
+    _source: VideoSourceView,
 }
-
 impl VideoSink {
-    /// Number of frames discarded by this sink's retention policy, saturating
-    /// at `u64::MAX`. Closed sinks retain the last count.
-    pub fn dropped_frames(&self) -> u64 {
-        ffi::video_sink_dropped_frames(self.native.as_ref().expect("validated video sink"))
+    fn native(&self) -> &ffi::NativeVideoSink {
+        self.inner.native.as_ref().expect("validated video sink")
     }
-
-    /// Pop an owned discarded-frame or constraints callback. The eight-event
-    /// FIFO drops its oldest event when full, independently of frame retention.
-    /// Accepted events remain available after close. Polling never invokes a
-    /// caller callback, pumps native work or advances controlled time.
-    pub fn try_next_event(&self) -> Option<VideoSinkEvent> {
-        VideoSinkEvent::from_native(ffi::video_sink_take_event(
-            self.native.as_ref().expect("validated video sink"),
-        ))
-    }
-
-    /// Control events lost to queue overflow, saturating at `u64::MAX`.
-    /// Native discarded-frame notifications do not increment the separate
-    /// frame-retention counter returned by [`Self::dropped_frames`].
-    pub fn dropped_events(&self) -> u64 {
-        ffi::video_sink_dropped_events(self.native.as_ref().expect("validated video sink"))
-    }
-
+    raw_video_sink_controls!();
     pub fn try_next_received_frame(&self) -> Option<ReceivedVideoFrame> {
         self.try_next_frame().map(|frame| ReceivedVideoFrame {
             peer_id: self
+                .inner
                 ._track
                 ._peer
                 .as_ref()
                 .and_then(|peer| peer.controlled_id),
             track_id: ffi::video_track_id(
-                self._track.native.as_ref().expect("validated video track"),
+                self.inner
+                    ._track
+                    .native
+                    .as_ref()
+                    .expect("validated video track"),
             ),
             observed_at: self
+                .inner
                 ._track
                 ._peer
                 .as_ref()
@@ -1013,9 +1312,9 @@ impl VideoSink {
             frame,
         })
     }
-
     pub fn try_next_frame(&self) -> Option<VideoFrame> {
         if self
+            .inner
             ._track
             ._peer
             .as_ref()
@@ -1023,32 +1322,68 @@ impl VideoSink {
         {
             return None;
         }
-        if ffi::video_track_state(self._track.native.as_ref().expect("validated video track")) == 1
+        if ffi::video_track_state(
+            self.inner
+                ._track
+                .native
+                .as_ref()
+                .expect("validated video track"),
+        ) == 1
         {
             return None;
         }
-        let native =
-            ffi::video_sink_take_frame(self.native.as_ref().expect("validated video sink"));
-        let native = native.as_ref()?;
-        Some(
-            VideoFrame::i420(
-                ffi::native_video_frame_width(native),
-                ffi::native_video_frame_height(native),
-                ffi::native_video_frame_i420(native),
-                ffi::native_video_frame_timestamp_us(native),
-                ffi::native_video_frame_rtp_timestamp(native),
-            )
-            .expect("native adapter returned an invalid I420 frame")
-            .with_rotation(crate::VideoRotation::from_degrees(
-                ffi::native_video_frame_rotation(native),
-            )),
+        poll_raw_video_frame(self.native())
+    }
+    /// Pop the same callback queue as the legacy value API, retaining the full
+    /// SDK frame/buffer graph and acquisition source.
+    pub fn try_next_native_frame(&self) -> Option<crate::RawVideoFrame> {
+        if self
+            .inner
+            ._track
+            ._peer
+            .as_ref()
+            .is_some_and(|peer| peer.closed.get())
+            || ffi::video_track_state(
+                self.inner
+                    ._track
+                    .native
+                    .as_ref()
+                    .expect("validated video track"),
+            ) == 1
+        {
+            return None;
+        }
+        crate::RawVideoFrame::acquired(
+            ffi::video_sink_take_native_frame(self.native()),
+            self.inner._source.clone(),
         )
     }
+}
 
-    pub fn close(&mut self) -> Result<(), PeerError> {
-        ffi::close_video_sink(self.native.as_ref().expect("validated video sink"))
-            .then_some(())
-            .ok_or_else(|| native_error("failed to detach video sink"))
+/// A source-interface registration, not a track registration. Track enabled
+/// state does not rewrite its hints. Clone aliases the exact native sink,
+/// callback queue, close state and retained source dependency.
+#[derive(Clone)]
+pub struct VideoSourceSink {
+    inner: Rc<VideoSourceSinkInner>,
+}
+struct VideoSourceSinkInner {
+    native: cxx::UniquePtr<ffi::NativeVideoSink>,
+    _source: VideoSourceView,
+}
+impl VideoSourceSink {
+    fn native(&self) -> &ffi::NativeVideoSink {
+        self.inner.native.as_ref().expect("validated source sink")
+    }
+    raw_video_sink_controls!();
+    pub fn try_next_frame(&self) -> Option<VideoFrame> {
+        poll_raw_video_frame(self.native())
+    }
+    pub fn try_next_native_frame(&self) -> Option<crate::RawVideoFrame> {
+        crate::RawVideoFrame::acquired(
+            ffi::video_sink_take_native_frame(self.native()),
+            self.inner._source.clone(),
+        )
     }
 }
 
@@ -1162,7 +1497,6 @@ impl MediaType {
         valid.then_some(text)
     }
 }
-
 impl crate::PeerConnection {
     /// A single native owning GetSenders snapshot, including Plan B senders.
     pub fn senders(&self) -> Vec<RtpSender> {
@@ -1309,9 +1643,7 @@ impl RtpSender {
         let owner = if let Some(lease) = self.peer.sender_tracks.borrow().get(&key) {
             lease.track.media_track_owner()
         } else if let Some(lease) = self.peer.audio_sender_tracks.borrow().get(&key) {
-            crate::media_track::MediaTrackOwner::Audio {
-                _track: lease.track.clone(),
-            }
+            lease.track.media_track_owner()
         } else {
             crate::media_track::MediaTrackOwner::Factory {
                 _factory: self.peer._factory.clone(),
@@ -1360,7 +1692,8 @@ impl RtpSender {
         }
         if let Some(track) = track {
             if self.peer._factory.uses_controlled_execution()
-                && (!self.peer._factory.controlled_media || !track.is_admitted_controlled_video())
+                && (!self.peer._factory.controlled_media
+                    || (track.local_video().is_none() && track.local_audio().is_none()))
             {
                 return Err(PeerError {
                     kind: PeerErrorKind::UnsupportedOperation,
@@ -1539,7 +1872,7 @@ impl RtpSender {
         })
     }
 
-    fn has_negotiated_dependency_descriptor(&self) -> bool {
+    pub(crate) fn has_negotiated_dependency_descriptor(&self) -> bool {
         const URI: &str = "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
         let list = ffi::peer_video_transceivers(self.peer.native());
         let Some(list) = list.as_ref() else {
@@ -1739,8 +2072,62 @@ impl RtpSender {
         })
     }
 
+    /// Select caller transformation inside the host's stable SDK adapter.
+    /// None retires caller requests, not the SDK adapter or required metadata.
+    /// The pinned SDK cannot reliably detach/reinitialize native delegates.
+    pub fn set_frame_transformer(
+        &self,
+        transformer: Option<&crate::FrameTransformer>,
+    ) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if transformer.is_some_and(crate::FrameTransformer::is_closed) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "caller transformer is retired".into(),
+            });
+        }
+        let value = transformer.map_or(std::ptr::null(), |value| value.native() as *const _);
+        // SAFETY: synchronous optional borrow; the host retains shared ownership.
+        unsafe {
+            ffi::rtp_sender_select_frame_transformer(self.peer.native(), self.native(), value)
+        }
+        .then_some(())
+        .ok_or_else(|| native_error("sender transformer host does not belong to this peer"))
+    }
+    #[deprecated(note = "Use set_frame_transformer")]
+    pub fn set_encoder_to_packetizer_frame_transformer(
+        &self,
+        transformer: Option<&crate::FrameTransformer>,
+    ) -> Result<(), PeerError> {
+        self.set_frame_transformer(transformer)
+    }
+
     /// Install or clear the SDK's refcounted frame encryptor. This is additional
     /// frame encryption, not a replacement for native SRTP authentication.
+    /// Install the actual ref-counted native sender selector. Aliases share
+    /// the same provider; the SDK owns installation and encoder switching.
+    pub fn set_encoder_selector(&self, selector: Option<&crate::VideoEncoderSelector>) {
+        let pointer = selector.map_or(std::ptr::null(), |v| v.native() as *const _);
+        // SAFETY: the SDK retains its own ref-counted copy during this call.
+        unsafe {
+            ffi::rtp_sender_set_encoder_selector(self.native(), pointer);
+        }
+    }
+    /// Deprecated unique-ownership SDK overload, distinct from shared aliasing.
+    pub fn set_owned_encoder_selector(&self, selector: Option<crate::OwnedVideoEncoderSelector>) {
+        ffi::rtp_sender_set_owned_encoder_selector(
+            self.native(),
+            selector.map_or_else(
+                cxx::UniquePtr::null,
+                crate::OwnedVideoEncoderSelector::into_native,
+            ),
+        );
+    }
     pub fn set_frame_encryptor(&self, encryptor: Option<&crate::FrameEncryptor>) {
         let value = encryptor
             .map(|value| value.native() as *const _)
@@ -1841,6 +2228,40 @@ impl RtpReceiver {
             self.peer.clone(),
         )
     }
+    /// Select caller transformation before the receiver's encoded collector.
+    /// Retiring the caller preserves the stable native delegate and collector.
+    pub fn set_frame_transformer(
+        &self,
+        transformer: Option<&crate::FrameTransformer>,
+    ) -> Result<(), PeerError> {
+        if self.peer.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer is closed".into(),
+            });
+        }
+        if transformer.is_some_and(crate::FrameTransformer::is_closed) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "caller transformer is retired".into(),
+            });
+        }
+        let value = transformer.map_or(std::ptr::null(), |value| value.native() as *const _);
+        // SAFETY: actual native receiver identity is checked; ownership is retained.
+        unsafe {
+            ffi::rtp_receiver_select_frame_transformer(self.peer.native(), self.native(), value)
+        }
+        .then_some(())
+        .ok_or_else(|| native_error("receiver transformer host does not belong to this peer"))
+    }
+    #[deprecated(note = "Use set_frame_transformer")]
+    pub fn set_depacketizer_to_decoder_frame_transformer(
+        &self,
+        transformer: Option<&crate::FrameTransformer>,
+    ) -> Result<(), PeerError> {
+        self.set_frame_transformer(transformer)
+    }
+
     /// Construct a decryptor bound permanently to this native receiver.
     pub fn create_frame_decryptor(
         &self,
@@ -2274,7 +2695,6 @@ impl RtpTransceiver {
         }
         Self::capability_install_result(native)
     }
-
     /// The public synchronous SDK stop operation, preserving native RTCError
     /// and idempotent already-stopping behavior. This is not StopInternal.
     pub fn stop_standard(&self) -> Result<(), crate::RtpTransceiverOperationError> {

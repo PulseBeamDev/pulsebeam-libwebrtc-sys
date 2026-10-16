@@ -2,11 +2,13 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "api/frame_transformer_interface.h"
 #include "rust/cxx.h"
 
 namespace pulsebeam::webrtc_sys {
+struct FrameTransformProvenance;
 class NativeVideoFrameMetadata;
 class NativeRtpVideoHeader;
 struct FfiTransformableFrameTime;
@@ -14,7 +16,9 @@ struct FfiTransformableAudioFields;
 
 // Closed producer graph: only actual stock SDK frames and SDK clones enter this
 // owner. No external implementation can satisfy the SDK's private Passkey.
-// Frame destruction owns no callback, queue, endpoint or execution role.
+// Live delivery provenance retains the unregister-barrier slot. SDK unregister
+// releases its callback on the SDK role; late frame destruction cannot move
+// final callback/borrowed-queue release onto the frame owner's thread.
 class NativeTransformableFrame final {
 public:
   NativeTransformableFrame(
@@ -26,6 +30,8 @@ public:
     return *frame_;
   }
   bool audio() const noexcept { return audio_; }
+  const std::shared_ptr<FrameTransformProvenance>& provenance() const noexcept { return provenance_; }
+  void set_provenance(std::shared_ptr<FrameTransformProvenance> provenance) noexcept { provenance_ = std::move(provenance); }
   webrtc::VideoCodecType mime_codec() const noexcept { return mime_codec_; }
   std::unique_ptr<webrtc::TransformableFrameInterface> Take() noexcept {
     return std::move(frame_);
@@ -34,11 +40,14 @@ public:
 private:
   std::unique_ptr<webrtc::TransformableFrameInterface> frame_;
   bool audio_;
+  std::shared_ptr<FrameTransformProvenance> provenance_;
   // The video MIME codec is immutable in the stock frame, unlike its header.
   // Capture it from the construction path, not from mutable metadata later.
   webrtc::VideoCodecType mime_codec_;
 };
 
+bool transformable_audio_completion_safe(const NativeTransformableFrame& value, bool sender_target) noexcept;
+bool transformable_video_completion_safe(const NativeTransformableFrame& value, bool sender_target) noexcept;
 bool transformable_frame_is_audio(const NativeTransformableFrame &) noexcept;
 rust::Slice<const std::uint8_t>
 transformable_frame_data(const NativeTransformableFrame &) noexcept;
