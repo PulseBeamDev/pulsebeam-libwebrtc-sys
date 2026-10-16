@@ -157,12 +157,21 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
         session
             .set_video_track_content_hint(track, VideoContentHint::Text)
             .unwrap();
-        assert_eq!(session.video_source_rejected_sink_requests(view).unwrap(), Some(0));
+        assert_eq!(
+            session.video_source_rejected_sink_requests(view).unwrap(),
+            Some(0)
+        );
         session.request_video_source_refresh(view).unwrap();
         session.generate_video_source_key_frame(view).unwrap();
-        session.process_video_source_constraints(view, VideoSourceConstraints {
-            min_fps: None, max_fps: Some(0.0),
-        }).unwrap();
+        session
+            .process_video_source_constraints(
+                view,
+                VideoSourceConstraints {
+                    min_fps: None,
+                    max_fps: Some(0.0),
+                },
+            )
+            .unwrap();
         session.request_video_track_refresh(track).unwrap();
         let status = session.video_track_status(track).unwrap();
         assert_eq!(status.kind, "video");
@@ -184,10 +193,15 @@ fn actor_video_view_and_closed_observer_survive_retired_ids_and_migration() {
             VideoSourceState::Ended
         );
         assert_eq!(session.video_source_status(alias).unwrap().stats, None);
-        assert_eq!(session.video_source_rejected_sink_requests(alias).unwrap(), Some(0));
+        assert_eq!(
+            session.video_source_rejected_sink_requests(alias).unwrap(),
+            Some(0)
+        );
         session.request_video_source_refresh(alias).unwrap();
         session.generate_video_source_key_frame(alias).unwrap();
-        session.process_video_source_constraints(alias, VideoSourceConstraints::default()).unwrap();
+        session
+            .process_video_source_constraints(alias, VideoSourceConstraints::default())
+            .unwrap();
         for _ in 0..2 {
             assert_eq!(
                 session.try_video_observer_event(track_events).unwrap(),

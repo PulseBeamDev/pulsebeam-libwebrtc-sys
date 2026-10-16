@@ -315,17 +315,37 @@ fn decoded_audio_sink_receives_headless_pcm_over_negotiated_peer() {
     let remote_alias = receivers[0].audio_track().unwrap().source().unwrap();
     assert!(remote_source.is_remote());
     assert!(remote_source.same_resource(&remote_alias));
-    let volume_events = remote_source.observe_volume(std::num::NonZeroUsize::new(2).unwrap()).unwrap();
+    let volume_events = remote_source
+        .observe_volume(std::num::NonZeroUsize::new(2).unwrap())
+        .unwrap();
     remote_source.set_volume(0.25).unwrap();
     assert_eq!(remote_alias.volume(), 0.25);
-    assert_eq!(volume_events.try_next_event(), Some(pulsebeam_webrtc_sys::AudioObserverEvent::Volume(0.25)));
+    assert_eq!(
+        volume_events.try_next_event(),
+        Some(pulsebeam_webrtc_sys::AudioObserverEvent::Volume(0.25))
+    );
     remote_alias.set_volume(1.0).unwrap();
     volume_events.close();
-    assert_eq!(volume_events.try_next_event(), Some(pulsebeam_webrtc_sys::AudioObserverEvent::Volume(1.0)));
+    assert_eq!(
+        volume_events.try_next_event(),
+        Some(pulsebeam_webrtc_sys::AudioObserverEvent::Volume(1.0))
+    );
     assert_eq!(volume_events.try_next_event(), None);
-    assert_eq!(bob.add_audio_transceiver(&remote_track, RtpTransceiverDirection::SendOnly).err().unwrap().kind, PeerErrorKind::InvalidParameter);
+    assert_eq!(
+        bob.add_audio_transceiver(&remote_track, RtpTransceiverDirection::SendOnly)
+            .err()
+            .unwrap()
+            .kind,
+        PeerErrorKind::InvalidParameter
+    );
     let bob_sender = bob.audio_transceivers().unwrap().remove(0).sender();
-    assert!(bob_sender.set_audio_track(Some(&remote_track)).unwrap_err().message.contains("dependency cycle"));
+    assert!(
+        bob_sender
+            .set_audio_track(Some(&remote_track))
+            .unwrap_err()
+            .message
+            .contains("dependency cycle")
+    );
     let receiver_snapshot = receivers[0].get_parameters();
     assert!(!receiver_snapshot.codecs().is_empty());
     assert!(!receivers[0].set_parameters(&receiver_snapshot));
