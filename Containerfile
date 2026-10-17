@@ -4,6 +4,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         build-essential \
         ca-certificates \
+        clang-19 \
         cmake \
         coturn \
         curl \
@@ -20,7 +21,7 @@ RUN apt-get update \
         libxrandr-dev \
         libxrender-dev \
         libxtst-dev \
-        lld \
+        lld-19 \
         lsb-release \
         ninja-build \
         openssl \

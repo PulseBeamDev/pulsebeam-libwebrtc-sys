@@ -226,10 +226,10 @@ pub(crate) struct RustCallerApmDump {
     failure: AudioProcessingDumpFailureObserver,
 }
 pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
-    // Also contain a pathological panic-payload destructor. Only the nested
-    // payload is leaked if dropping the original payload itself panics.
+    // A destructor may itself panic. Dispose its ordinary panic payload
+    // without unwinding across FFI; preserve only unknown drop types.
     if let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-        std::mem::forget(nested);
+        crate::panic_payload::discard(nested);
     }
 }
 impl RustCallerApmDump {
