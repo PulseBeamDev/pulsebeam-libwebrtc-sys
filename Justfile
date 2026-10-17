@@ -128,7 +128,7 @@ linux-image image:
 linux-run image command *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    exec podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw,z" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$1" "$2" "${@:3}"
+    exec podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" --volume "{{ root }}:/workspace:rw,z" --workdir /workspace --env HOME=/tmp --env XDG_RUNTIME_DIR=/tmp --env CARGO_HOME=/workspace/.work/cargo-home --env PULSEBEAM_WEBRTC_SANITIZER --env ASAN_OPTIONS "$1" "$2" "${@:3}"
 
 # Synchronize, build, export, archive, and compile/link-check one complete crate artifact.
 build flavor target:
@@ -723,7 +723,17 @@ _cpp-smoke flavor target kit:
       case "{{ target }}" in linux-*) link+=(-lutil);; macos-*|ios-*) link+=(-liconv);; windows-*) link+=(userenv.lib ntdll.lib);; esac
     fi
     case "{{ target }}" in
-      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
+      linux-x86_64)
+        if test "${PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY:-}" = 1; then
+          # A runtime consumer must link the release archive without the
+          # producer's Chromium checkout or sysroot.
+          cxx=$(command -v clang++-19)
+          args=(--target=x86_64-linux-gnu -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread)
+        else
+          cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"
+          args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread)
+        fi
+        ;;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1");;
       macos-x86_64|macos-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -DWEBRTC_POSIX -DWEBRTC_MAC);;
@@ -737,7 +747,16 @@ _rust-smoke flavor target kit:
     set -euo pipefail
     src="{{ work }}/checkout/src"; kit_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ kit }}"); cargo_home_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/cargo-home"); smoke_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/rust-smoke/{{ flavor }}/{{ target }}")
     case "{{ target }}" in
-      linux-x86_64) cargo_target=x86_64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=x86_64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_amd64-sysroot" -C link-arg=-fuse-ld=lld);;
+      linux-x86_64)
+        cargo_target=x86_64-unknown-linux-gnu
+        if test "${PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY:-}" = 1; then
+          cxx=$(command -v clang-19)
+          rustflags=(-C link-arg=--target=x86_64-linux-gnu -C link-arg=-fuse-ld=lld)
+        else
+          cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"
+          rustflags=(-C link-arg=--target=x86_64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_amd64-sysroot" -C link-arg=-fuse-ld=lld)
+        fi
+        ;;
       linux-arm64) cargo_target=aarch64-unknown-linux-gnu; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C link-arg=--target=aarch64-linux-gnu -C "link-arg=--sysroot=$src/build/linux/debian_bullseye_arm64-sysroot" -C link-arg=-fuse-ld=lld -C link-arg=--rtlib=compiler-rt -C link-arg=--unwindlib=none);;
       android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); case "{{ target }}" in android-x86_64) cargo_target=x86_64-linux-android; triple=x86_64;; *) cargo_target=aarch64-linux-android; triple=aarch64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=--target=${triple}-linux-android26" -C "link-arg=--sysroot=$prebuilt/sysroot" -C link-arg=-fuse-ld=lld -C link-arg=--unwindlib=none);;
       macos-x86_64|macos-arm64) case "{{ target }}" in macos-x86_64) cargo_target=x86_64-apple-darwin; arch=x86_64;; *) cargo_target=aarch64-apple-darwin; arch=arm64;; esac; cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang"; rustflags=(-C "link-arg=-arch" -C "link-arg=$arch" -C "link-arg=-isysroot" -C "link-arg=$(xcrun --sdk macosx --show-sdk-path)" -C link-arg=-mmacosx-version-min=12.0);;
@@ -746,7 +765,7 @@ _rust-smoke flavor target kit:
     esac
     if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
       rustflags+=(-C link-arg=-fsanitize=address)
-      if test "{{ target }}" = linux-x86_64; then cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
+      if test "{{ target }}" = linux-x86_64 && test "${PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY:-}" != 1; then cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; fi
     fi
     linker_env="CARGO_TARGET_$(printf '%s' "$cargo_target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
     command=(env RUSTFLAGS="${rustflags[*]}" CARGO_HOME="$cargo_home_native" CARGO_TARGET_DIR="$smoke_native" PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR="$kit_native")
@@ -769,6 +788,7 @@ _runtime-test flavor target archive:
     test -f "{{ archive }}" || { echo "missing runtime artifact: {{ archive }}" >&2; exit 1; }
     artifact=$(mktemp -d); trap 'rm -rf "$artifact"' EXIT
     tar -C "$artifact" -xzf "{{ archive }}"
+    if test "{{ target }}" = linux-x86_64; then export PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY=1; fi
     features=(); test "{{ flavor }}" = core || features=(--features native)
     src="{{ work }}/checkout/src"
     rustflags=(); linker=''; if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then

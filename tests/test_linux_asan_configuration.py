@@ -230,6 +230,14 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         )
         clang_plus_plus.chmod(0o755)
         tools.mkdir()
+        # Runtime jobs have no producer checkout, so exercise the artifact-only
+        # system compiler while keeping the producer compiler probes unchanged.
+        host_cxx = tools / "clang++-19"
+        host_cxx.write_text(clang_plus_plus.read_text(encoding="utf-8"), encoding="utf-8")
+        host_cxx.chmod(0o755)
+        host_clang = tools / "clang-19"
+        host_clang.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        host_clang.chmod(0o755)
         cargo = tools / "cargo"
         cargo.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'linker=%s\\n' \"${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-}\" > \"$PULSEBEAM_TEST_CARGO_LOG\"\nprintf 'rustflags=%s\\n' \"${RUSTFLAGS:-}\" >> \"$PULSEBEAM_TEST_CARGO_LOG\"\n",

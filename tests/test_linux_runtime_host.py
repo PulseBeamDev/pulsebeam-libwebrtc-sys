@@ -36,6 +36,43 @@ class LinuxRuntimeHostTests(unittest.TestCase):
                 self.assertIn(f"{target} is not native to this runtime host", result.stderr)
                 self.assertFalse(extracted)
 
+    def test_artifact_only_smoke_uses_host_compiler_without_producer_sysroot(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            binary = temp / "bin"
+            binary.mkdir()
+            self._executable(
+                binary / "clang++-19",
+                '#!/usr/bin/env python3\nimport json, os, sys\n'
+                'open(os.environ["SMOKE_ARGS"], "w", encoding="utf-8").write(json.dumps(sys.argv[1:]))\n',
+            )
+            kit = temp / "kit"
+            kit.mkdir()
+            (kit / "build.txt").write_text("cxx_defines=-DWEBRTC_POSIX\n", encoding="utf-8")
+            (kit / "manifest.json").write_text(
+                json.dumps({"native_configuration": {"gn_args": {"rtc_enable_protobuf": "true"}}}),
+                encoding="utf-8",
+            )
+            output = temp / "smoke-args.json"
+            environment = os.environ | {
+                "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
+                "PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY": "1",
+                "SMOKE_ARGS": str(output),
+            }
+            result = subprocess.run(
+                ["just", "--justfile", str(ROOT / "Justfile"), "_cpp-smoke", "core", "linux-x86_64", str(kit)],
+                cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIn("--target=x86_64-linux-gnu", args)
+            self.assertIn("-nostdinc++", args)
+            self.assertIn("-DPULSEBEAM_EXPECT_PROTOBUF=1", args)
+            self.assertFalse(any(arg.startswith("--sysroot=") for arg in args))
+            self.assertNotIn(str(ROOT / ".work" / "checkout"), " ".join(args))
+
     def _run_runtime_test(self, target, system, machine):
         with tempfile.TemporaryDirectory() as tempdir:
             temp = Path(tempdir)

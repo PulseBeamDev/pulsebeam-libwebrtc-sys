@@ -17,8 +17,8 @@ NATIVE_PACKAGES = (
     "libxrandr-dev", "libxrender-dev", "libxtst-dev",
 )
 BUILD_TOOLS = (
-    "build-essential", "ca-certificates", "coturn", "curl", "file", "git", "lld", "lsb-release",
-    "cmake", "ninja-build", "openssl", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
+    "build-essential", "ca-certificates", "coturn", "curl", "file", "git", "lld-19", "lsb-release",
+    "clang-19", "cmake", "ninja-build", "openssl", "perl", "pkg-config", "python3", "sccache", "tar", "unzip", "xz-utils",
 )
 
 
@@ -100,7 +100,7 @@ class LinuxContainerTests(unittest.TestCase):
                 "run", "--rm", "--userns=keep-id", "--user", f"{os.getuid()}:{os.getgid()}",
                 "--volume", f"{ROOT}:/workspace:rw,z", "--workdir", "/workspace", "--env",
                 "HOME=/tmp", "--env", "XDG_RUNTIME_DIR=/tmp", "--env",
-                "PULSEBEAM_WEBRTC_SANITIZER", "--env", "ASAN_OPTIONS", "pulsebeam-linux-task3",
+                "CARGO_HOME=/workspace/.work/cargo-home", "--env", "PULSEBEAM_WEBRTC_SANITIZER", "--env", "ASAN_OPTIONS", "pulsebeam-linux-task3",
                 "env", "-u", "PULSEBEAM_WEBRTC_SANITIZER", "just", "build", "core",
                 "linux-x86_64",
             ],
