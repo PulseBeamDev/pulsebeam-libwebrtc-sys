@@ -18,6 +18,7 @@
 #include "api/packet_socket_factory.h"
 #include "p2p/base/async_stun_tcp_socket.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/native/network_values.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
 #include "rtc_base/network_monitor.h"
 #include "rtc_base/network_monitor_factory.h"
@@ -268,6 +269,179 @@ std::unique_ptr<webrtc::NetworkMonitorFactory> network_monitor_factory_adapter(
     rust::Box<RustNetworkMonitorFactory> factory) noexcept {
   if (!network_monitor_factory_present(*factory)) return nullptr;
   return std::make_unique<RustNetworkMonitorFactoryAdapter>(std::move(factory));
+}
+
+namespace {
+void ManagerSignalActive(const std::shared_ptr<NativeNetworkChange::State>& signal, bool active, bool retire = false) {
+  std::lock_guard lock(signal->mutex);
+  if (signal->running != active || retire) ++signal->generation;
+  signal->running = active;
+  if (retire) { signal->thread = nullptr; signal->callback = {}; }
+}
+
+// The SDK destroys this facade on signaling. Its Rust product and every
+// sequence-bound dependent Network are explicitly retired on the network role.
+class RustNetworkManagerAdapter final : public webrtc::NetworkManager {
+ public:
+  struct State {
+    State(rust::Box<RustNetworkManagerFactory> selected_factory, rust::Box<RustNetworkManager> selected_product,
+          std::shared_ptr<NativeNetworkChange::State> changed, std::shared_ptr<NativeNetworkChange::State> error,
+          std::shared_ptr<NativeNetworkResources> selected_resources)
+        : factory(std::move(selected_factory)), changes(std::move(changed)), errors(std::move(error)), resources(std::move(selected_resources)), product(std::move(selected_product)) {}
+    // Keep the creation environment through product and network destruction.
+    rust::Box<RustNetworkManagerFactory> factory;
+    std::shared_ptr<NativeNetworkChange::State> changes;
+    std::shared_ptr<NativeNetworkChange::State> errors;
+    std::shared_ptr<NativeNetworkResources> resources;
+    std::map<const webrtc::Network*, std::shared_ptr<NativeNetwork>> retained_networks;
+    std::map<webrtc::MdnsResponderInterface*, std::shared_ptr<NativeMdnsResponder>> retained_mdns;
+    rust::Box<RustNetworkManager> product;
+    std::size_t updating_clients = 0;
+    bool failure_signalled = false;
+  };
+  RustNetworkManagerAdapter(webrtc::Thread* owner, std::unique_ptr<State> state)
+      : owner_(owner), state_(std::move(state)) {
+    state_->resources->BindManager(this);
+    state_->changes->callback = [resources = state_->resources] { resources->NotifyManager(0); };
+    state_->errors->callback = [resources = state_->resources] { resources->NotifyManager(1); };
+  }
+  ~RustNetworkManagerAdapter() override {
+    auto retire = [&] {
+      ManagerSignalActive(state_->changes, false, true);
+      ManagerSignalActive(state_->errors, false, true);
+      while (state_->updating_clients != 0) {
+        --state_->updating_clients;
+        network_manager_stop(*state_->product);
+      }
+      state_->resources->Retire();
+      state_.reset();
+    };
+    if (owner_->IsCurrent()) retire(); else owner_->BlockingCall(retire);
+  }
+  bool InitializeProduct() { return network_manager_initialize(*state_->product); }
+  void Initialize() override { Invoke([&] { network_manager_initialize(*state_->product); Failure(); }); }
+  void StartUpdating() override {
+    Invoke([&] {
+      ++state_->updating_clients;
+      ManagerSignalActive(state_->changes, true);
+      ManagerSignalActive(state_->errors, true);
+      // Every newly updating consumer needs its initial error even if an
+      // earlier consumer already observed this product's terminal failure.
+      state_->failure_signalled = false;
+      network_manager_start(*state_->product);
+      Failure();
+    });
+  }
+  void StopUpdating() override {
+    Invoke([&] {
+      if (state_->updating_clients != 0) --state_->updating_clients;
+      if (state_->updating_clients == 0) {
+        ManagerSignalActive(state_->changes, false);
+        ManagerSignalActive(state_->errors, false);
+        state_->failure_signalled = false;
+      }
+      network_manager_stop(*state_->product);
+    });
+  }
+  std::vector<const webrtc::Network*> GetNetworks() const override { return Networks(false); }
+  std::vector<const webrtc::Network*> GetAnyAddressNetworks() override { return Networks(true); }
+  EnumerationPermission enumeration_permission() const override {
+    return Invoke([&] {
+      const bool blocked = network_manager_permission(*state_->product);
+      Failure();
+      return blocked ? ENUMERATION_BLOCKED : ENUMERATION_ALLOWED;
+    });
+  }
+  bool GetDefaultLocalAddress(int family, webrtc::IPAddress* address) const override {
+    return Invoke([&] {
+      auto result = network_manager_default_address(*state_->product, family);
+      Failure();
+      if (!result.present) return false;
+      if (result.ip.empty()) { *address = webrtc::IPAddress(); return true; }
+      auto ip = ToIp({result.ip.data(), result.ip.size()});
+      if (!ip) return false;
+      *address = *ip;
+      return true;
+    });
+  }
+  webrtc::MdnsResponderInterface* GetMdnsResponder() const override {
+    return Invoke([&]() -> webrtc::MdnsResponderInterface* {
+      auto value = network_manager_mdns(*state_->product);
+      Failure();
+      if (!value) return nullptr;
+      auto* responder = value->responder();
+      if (responder) state_->retained_mdns.try_emplace(responder, std::move(value));
+      return responder;
+    });
+  }
+  void DumpNetworks() override { Invoke([&] { network_manager_dump(*state_->product); Failure(); }); }
+  void set_vpn_list(const std::vector<webrtc::NetworkMask>& masks) override {
+    Invoke([&] {
+      rust::Vec<FfiIpNetworkMask> values;
+      for (const auto& mask : masks) values.push_back({FromIp(mask.address()), mask.prefix_length()});
+      network_manager_set_vpn(*state_->product, std::move(values));
+      Failure();
+    });
+  }
+ private:
+  template<class F> auto Invoke(F&& operation) const -> decltype(operation()) {
+    if (owner_->IsCurrent()) return operation();
+    return owner_->BlockingCall(std::forward<F>(operation));
+  }
+  void Failure() const {
+    if (!state_->failure_signalled && network_manager_failed(*state_->product)) {
+      if (NativeNetworkChange(state_->errors).Notify()) state_->failure_signalled = true;
+    }
+  }
+  std::vector<const webrtc::Network*> Networks(bool any) const {
+    return Invoke([&] {
+      auto values = network_manager_networks(*state_->product, any);
+      std::vector<const webrtc::Network*> result;
+      result.reserve(values.size());
+      for (const auto& value : values) {
+        // Public Rust Network constructors never return null. Do not pass a
+        // null entry into the SDK's dereferencing allocator path regardless.
+        if (!value.network) continue;
+        const auto* native = &value.network->network();
+        state_->retained_networks.try_emplace(native, value.network);
+        result.push_back(native);
+      }
+      Failure();
+      return result;
+    });
+  }
+  webrtc::Thread* const owner_;
+  std::unique_ptr<State> state_;
+};
+}  // namespace
+
+std::unique_ptr<webrtc::NetworkManager> network_manager_factory_adapter(
+    rust::Box<RustNetworkManagerFactory> factory, const webrtc::FieldTrialsView& trials,
+    webrtc::Thread* network_thread) noexcept {
+  if (!network_manager_factory_present(*factory) || !network_thread) return nullptr;
+  std::unique_ptr<webrtc::NetworkManager> result;
+  auto create = [&] {
+    auto changes = std::make_shared<NativeNetworkChange::State>();
+    auto errors = std::make_shared<NativeNetworkChange::State>();
+    changes->thread = errors->thread = network_thread;
+    auto resources = std::make_shared<NativeNetworkResources>();
+    auto product = network_manager_create(*factory, std::make_unique<NativeFieldTrials>(trials.CreateCopy()),
+        std::make_shared<NativeNetworkChange>(changes), std::make_shared<NativeNetworkChange>(errors), resources);
+    if (!network_manager_present(*product)) {
+      ManagerSignalActive(changes, false, true);
+      ManagerSignalActive(errors, false, true);
+      resources->Retire();
+      return;
+    }
+    auto state = std::make_unique<RustNetworkManagerAdapter::State>(std::move(factory), std::move(product), changes, errors, resources);
+    auto adapter = std::make_unique<RustNetworkManagerAdapter>(network_thread, std::move(state));
+    // ConnectionContext does not call Initialize on an injected manager. Finish
+    // initialization before its first allocator can subscribe/start updating.
+    if (!adapter->InitializeProduct()) return;
+    result = std::move(adapter);
+  };
+  if (network_thread->IsCurrent()) create(); else network_thread->BlockingCall(create);
+  return result;
 }
 
 struct NativeSimulatedNetwork::State {

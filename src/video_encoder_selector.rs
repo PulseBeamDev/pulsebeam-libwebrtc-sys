@@ -1,11 +1,12 @@
 //! Owning native video encoder selectors. Native callbacks run on the SDK
 //! encoder queue; creation and final destruction can run on another thread.
+use crate::provider_panic::catch_provider as catch_unwind;
 use crate::{DataRate, RenderResolution, SdpVideoFormat, ffi};
 use std::{
     cell::{Cell, RefCell},
     fmt,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU8, Ordering},
@@ -84,19 +85,6 @@ impl Drop for ActiveSelector {
         });
     }
 }
-fn discard_panic(payload: Box<dyn std::any::Any + Send>) {
-    // Release original payload-owned leases rather than leaking every custom
-    // payload. Its destructor can itself panic, so contain that second unwind.
-    // An arbitrary secondary payload cannot be destructed recursively with a
-    // termination guarantee; forget only that exceptional non-string payload.
-    if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-        if secondary.is::<String>() || secondary.is::<&'static str>() {
-            drop(secondary);
-        } else {
-            std::mem::forget(secondary);
-        }
-    }
-}
 struct SelectorState {
     provider: Mutex<Option<Box<dyn VideoEncoderSelectorProvider>>>,
     failure: VideoEncoderSelectorFailureObserver,
@@ -142,10 +130,9 @@ impl SelectorState {
                     Some(result)
                 }
             }
-            Err(payload) => {
+            Err(()) => {
                 self.failure
                     .set(VideoEncoderSelectorFailure::ProviderPanicked);
-                discard_panic(payload);
                 None
             }
         }
@@ -158,10 +145,9 @@ impl Drop for SelectorState {
             .get_mut()
             .unwrap_or_else(|poison| poison.into_inner())
             .take();
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(provider))) {
+        if catch_unwind(AssertUnwindSafe(|| drop(provider))).is_err() {
             self.failure
                 .set(VideoEncoderSelectorFailure::DestructorPanicked);
-            discard_panic(payload);
         }
     }
 }

@@ -1,6 +1,8 @@
 #![cfg(feature = "native")]
 
-use pulsebeam_webrtc_sys::{ControlledWorld, PeerError, PeerErrorKind};
+use pulsebeam_webrtc_sys::{
+    CameraControlError, CameraSettings, ControlledWorld, PeerError, PeerErrorKind,
+};
 use std::{net::Ipv4Addr, time::Duration};
 
 fn rejected<T>(result: Result<T, PeerError>) {
@@ -12,6 +14,13 @@ fn rejected<T>(result: Result<T, PeerError>) {
         error.message,
         "physical video capture is unavailable in controlled execution"
     );
+}
+
+fn rejected_control<T>(result: Result<T, CameraControlError>) {
+    match result {
+        Err(CameraControlError::Binding(error)) => rejected::<()>(Err(error)),
+        _ => panic!("controlled camera control entered platform code"),
+    }
 }
 
 #[test]
@@ -30,6 +39,14 @@ fn controlled_capture_rejects_before_platform_discovery_or_source_creation() {
         .unwrap();
     let before = (world.now(), world.next_deadline());
 
+    rejected(factory.create_camera_options());
+    rejected(factory.create_camera_device_info());
+    rejected(factory.create_camera("camera"));
+    rejected(factory.desktop_capture_options(false, true));
+    rejected(factory.desktop_capture_options(true, false));
+    rejected_control(factory.camera_capabilities("camera"));
+    rejected_control(factory.camera_orientation("camera"));
+    rejected_control(factory.best_camera_capability("camera", &CameraSettings::default()));
     rejected(factory.camera_devices());
     rejected(factory.camera_formats("camera"));
     rejected(factory.open_camera("camera", 640, 480, 30));

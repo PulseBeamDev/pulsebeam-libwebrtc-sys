@@ -89,6 +89,7 @@ impl CallerDecodableAudioFrame {
     }
 }
 pub(crate) fn audio_caller_frame_duration_callback(source: &RustCallerAudioFrameCall) -> usize {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.frame.duration() {
         Ok(value) => value,
         Err(error) => {
@@ -98,6 +99,7 @@ pub(crate) fn audio_caller_frame_duration_callback(source: &RustCallerAudioFrame
     }
 }
 pub(crate) fn audio_caller_frame_dtx_callback(source: &RustCallerAudioFrameCall) -> bool {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.frame.is_dtx_packet() {
         Ok(value) => value,
         Err(error) => {
@@ -110,6 +112,7 @@ pub(crate) fn audio_caller_frame_decode_callback(
     source: &RustCallerAudioFrameCall,
     capacity: usize,
 ) -> ffi::FfiDecodedAudio {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.frame.decode(capacity) {
         Ok(Some(value)) => ffi::FfiDecodedAudio {
             samples: value.samples,

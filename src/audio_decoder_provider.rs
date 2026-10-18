@@ -150,6 +150,7 @@ impl AudioDecoderProductFailureObserver {
         e
     }
     fn caught_drop(&self, operation: AudioDecoderProductOperation, call: impl FnOnce()) -> bool {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         if let Err(payload) = catch_unwind(AssertUnwindSafe(call)) {
             self.report(operation, AudioDecoderProductFailureKind::Panicked);
             self.0.disabled.store(true, Ordering::Release);

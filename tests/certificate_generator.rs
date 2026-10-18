@@ -45,7 +45,9 @@ impl CertificateGeneratorProvider for Provider {
 impl Drop for Provider {
     fn drop(&mut self) {
         self.0.dropped.fetch_add(1, Ordering::SeqCst);
-        if self.0.panic_drop { panic_payload::raise(); }
+        if self.0.panic_drop {
+            panic_payload::raise();
+        }
     }
 }
 
@@ -62,7 +64,10 @@ fn run_completion_lifecycle(panic_drop: bool) {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<CertificateGenerator>();
     send_sync::<CertificateCompletion>();
-    let observed = Arc::new(Observed { panic_drop, ..Observed::default() });
+    let observed = Arc::new(Observed {
+        panic_drop,
+        ..Observed::default()
+    });
     let signaling = SignalingThread::start().unwrap();
     let (tx, rx) = mpsc::channel();
     assert!(signaling.post(move || tx.send(std::thread::current().id()).unwrap()));

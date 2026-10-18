@@ -137,6 +137,7 @@ pub(crate) fn audio_caller_decoder_environment(
 pub(crate) fn audio_caller_decoder_formats_callback(
     source: &RustAudioDecoderFactoryCall,
 ) -> Vec<ffi::FfiAudioCodecSpec> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.registration.supported_decoders() {
         Ok(values) => values
             .into_iter()
@@ -155,6 +156,7 @@ pub(crate) fn audio_caller_decoder_supported_callback(
     source: &RustAudioDecoderFactoryCall,
     format: ffi::FfiSdpAudioFormat,
 ) -> bool {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source
         .registration
         .is_supported_decoder(&SdpAudioFormat::from_native(format))
@@ -173,6 +175,7 @@ pub(crate) fn audio_caller_decoder_create_callback(
     compatibility: bool,
     pair: cxx::UniquePtr<ffi::NativeAudioCodecPairId>,
 ) -> cxx::UniquePtr<ffi::NativeAudioDecoder> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let environment = Environment::from_sdk(native_environment, source.environment.as_ref());
     let format = SdpAudioFormat::from_native(format);
     let pair = if pair.is_null() {

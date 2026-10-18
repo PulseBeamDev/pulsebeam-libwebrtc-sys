@@ -1,8 +1,9 @@
 //! Owned encode/decode metronomes with worker-sequence tick delivery.
+use crate::provider_panic::catch_provider as catch_unwind;
 use crate::{TimeDelta, ffi};
 use std::{
     fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -34,13 +35,23 @@ pub trait MetronomeProvider: Send + 'static {
 #[derive(Clone)]
 pub struct Metronome(Arc<State>);
 struct State {
-    provider: Mutex<Box<dyn MetronomeProvider>>,
+    provider: Mutex<Option<Box<dyn MetronomeProvider>>>,
     failed: AtomicBool,
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        let provider = self
+            .provider
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let _ = catch_unwind(|| drop(provider));
+    }
 }
 impl Metronome {
     pub fn from_provider(provider: impl MetronomeProvider) -> Self {
         Self(Arc::new(State {
-            provider: Mutex::new(Box::new(provider)),
+            provider: Mutex::new(Some(Box::new(provider))),
             failed: AtomicBool::new(false),
         }))
     }
@@ -90,6 +101,51 @@ impl fmt::Display for MetronomeTickError {
 }
 impl std::error::Error for MetronomeTickError {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Field;
+    impl Drop for Field {
+        fn drop(&mut self) {
+            panic!("payload field cleanup");
+        }
+    }
+    struct Payload(Field);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            panic!("payload cleanup");
+        }
+    }
+    struct HostileProvider(Arc<AtomicUsize>);
+    impl MetronomeProvider for HostileProvider {
+        fn tick_period(&self) -> TimeDelta {
+            std::panic::panic_any(Payload(Field));
+        }
+    }
+    impl Drop for HostileProvider {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            std::panic::panic_any(Payload(Field));
+        }
+    }
+    #[test]
+    fn hostile_period_and_final_provider_drop_remain_contained() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let metronome = Metronome::from_provider(HostileProvider(drops.clone()));
+        let bridge = metronome.bridge();
+        assert_eq!(metronome_tick_period(&bridge), i64::MAX);
+        assert!(metronome.has_failed());
+        assert_eq!(metronome_tick_period(&bridge), i64::MAX);
+        drop(metronome);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(bridge);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(!crate::provider_panic::callback_active());
+    }
+}
+
 pub(crate) struct RustMetronome(Option<Metronome>);
 pub(crate) fn metronome_present(source: &RustMetronome) -> bool {
     source.0.is_some()
@@ -103,6 +159,9 @@ pub(crate) fn metronome_tick_period(source: &RustMetronome) -> i64 {
     }
     let Ok(provider) = handle.0.provider.lock() else {
         handle.0.failed.store(true, Ordering::Release);
+        return i64::MAX;
+    };
+    let Some(provider) = provider.as_ref() else {
         return i64::MAX;
     };
     match catch_unwind(AssertUnwindSafe(|| provider.tick_period())) {
@@ -126,6 +185,9 @@ pub(crate) fn metronome_request_tick(
     }
     let Ok(mut provider) = handle.0.provider.lock() else {
         handle.0.failed.store(true, Ordering::Release);
+        return;
+    };
+    let Some(provider) = provider.as_mut() else {
         return;
     };
     if catch_unwind(AssertUnwindSafe(|| {

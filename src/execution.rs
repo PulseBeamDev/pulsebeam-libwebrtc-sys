@@ -9,7 +9,7 @@ pub const MAX_CONTROLLED_TIME: Duration =
 
 // Non-Send closures enter native code only through creator-thread cooperative
 // queues. Threaded posting methods continue to require Send closures.
-pub(crate) struct RustTask(Option<Box<dyn FnOnce() + 'static>>);
+pub(crate) struct RustTask(Option<Box<dyn FnOnce() + 'static>>, bool);
 impl Drop for RustTask {
     fn drop(&mut self) {
         let task = self.0.take();
@@ -18,13 +18,24 @@ impl Drop for RustTask {
 }
 
 pub(crate) fn run_task(mut task: Box<RustTask>) {
+    let task_context = task.1;
     if let Some(task) = task.0.take() {
-        let _ = crate::provider_panic::catch_provider(task);
+        if task_context {
+            let _ = crate::provider_panic::catch_provider(task);
+        } else {
+            let _ = crate::provider_panic::catch_task(task);
+        }
     }
 }
 
 pub(crate) fn boxed_task(task: impl FnOnce() + Send + 'static) -> Box<RustTask> {
-    Box::new(RustTask(Some(Box::new(task))))
+    Box::new(RustTask(Some(Box::new(task)), false))
+}
+
+// A Current() snapshot grants posting, not an owning control-plane loan. It
+// may be an SDK-internal encoder queue whose deletion would wait on this task.
+pub(crate) fn boxed_context_task(task: impl FnOnce() + Send + 'static) -> Box<RustTask> {
+    Box::new(RustTask(Some(Box::new(task)), true))
 }
 
 fn duration_micros(duration: Duration) -> Option<i64> {
@@ -245,7 +256,14 @@ impl TaskQueueFactory {
     /// not count against it. A zero budget never dispatches work.
     pub fn pump(&self, budget: usize) -> Result<PumpResult, BuildEnvironmentError> {
         self.check_current()?;
-        let dispatched = ffi::pump_ready_tasks(self.native(), budget);
+        let blocked = controlled_dispatch_blocked();
+        let turn = (!blocked).then(controlled_owner_turn).flatten();
+        let dispatched = if blocked {
+            0
+        } else {
+            ffi::pump_ready_tasks(self.native(), budget)
+        };
+        drop(turn);
         let next_deadline = self.next_deadline();
         let ready = self
             .0
@@ -254,6 +272,7 @@ impl TaskQueueFactory {
             .is_some_and(|clock| next_deadline.is_some_and(|deadline| deadline <= clock.now()));
         Ok(PumpResult {
             dispatched,
+            blocked,
             ready,
             next_deadline,
         })
@@ -324,12 +343,11 @@ impl TaskQueue {
         self.native.as_ref().is_some_and(ffi::task_queue_has_failed)
     }
 
-    /// Exact native delays and both precision modes. Custom providers accept
-    /// all states. Linux default queues accept all negatives, both infinities,
-    /// and finite positives through `(i64::MAX - 999_999_999) / 1000` us.
-    /// Cooperative queues accept finite signed values; negative delays become
-    /// immediately due, and deadlines beyond their clock domain are discarded
-    /// by the native scheduler. Unsupported conversions are explicit errors.
+    /// Exact native delays and both precision modes. Custom providers and SDK
+    /// backends receive native values unchanged; backend arithmetic/rounding is
+    /// SDK-owned. Cooperative queues require finite signed values; negatives
+    /// become immediately due and out-of-domain deadlines are discarded by the
+    /// caller-owned scheduler.
     /// Success indicates native posting, not an execution acknowledgement.
     /// Location is the pinned standalone SDK's empty value.
     pub fn post_delayed_native(
@@ -359,10 +377,9 @@ impl TaskQueue {
             return Err(BuildEnvironmentError::NotCooperative);
         }
         self.factory.check_current()?;
-        Ok(self
-            .native
-            .as_ref()
-            .is_some_and(|native| ffi::post_task(native, Box::new(RustTask(Some(Box::new(task)))))))
+        Ok(self.native.as_ref().is_some_and(|native| {
+            ffi::post_task(native, Box::new(RustTask(Some(Box::new(task)), false)))
+        }))
     }
 
     pub fn post(&self, task: impl FnOnce() + Send + 'static) -> bool {
@@ -402,7 +419,10 @@ impl TaskQueue {
 #[path = "environment_factory.rs"]
 mod environment_factory;
 pub use environment_factory::EnvironmentFactory;
-pub(crate) use environment_factory::{RustEnvironmentFactoryRetention, RustEnvironmentFactoryRandomness, environment_factory_has_randomness, environment_factory_randomness};
+pub(crate) use environment_factory::{
+    RustEnvironmentFactoryRandomness, RustEnvironmentFactoryRetention,
+    environment_factory_has_randomness, environment_factory_randomness,
+};
 
 /// A thread-safe, copyable WebRTC environment.
 pub struct Environment {
@@ -487,7 +507,9 @@ impl Environment {
     }
 
     pub(crate) fn cooperative_queues(&self) -> Option<bool> {
-        self._task_queue_factory.as_ref().map(TaskQueueFactory::is_cooperative)
+        self._task_queue_factory
+            .as_ref()
+            .map(TaskQueueFactory::is_cooperative)
     }
 
     pub(crate) fn uses_system_clock(&self) -> bool {
@@ -499,13 +521,18 @@ impl Environment {
     /// A default system clock needs a production lease for safe NTP conversion.
     pub fn clock(&self) -> Result<crate::Clock, EnvironmentClockError> {
         let environment = self.native.as_ref().ok_or(EnvironmentClockError::Closed)?;
-        let selected = self._clock_handle.as_ref()
+        let selected = self
+            ._clock_handle
+            .as_ref()
             .map_or(std::ptr::null(), |clock| clock.native() as *const _);
         // SAFETY: the optional pointer is either null or a live selected clock
         // retained by this environment. Identity-bound metadata is propagated
         // only by constructors and from_sdk's exact native pointer comparison.
-        let native = unsafe { ffi::environment_clock(environment, selected, self._clock.is_some()) };
-        if native.is_null() { return Err(EnvironmentClockError::RealTimeClockUnavailable); }
+        let native =
+            unsafe { ffi::environment_clock(environment, selected, self._clock.is_some()) };
+        if native.is_null() {
+            return Err(EnvironmentClockError::RealTimeClockUnavailable);
+        }
         Ok(crate::Clock::from_environment(native, self))
     }
 
@@ -514,7 +541,9 @@ impl Environment {
     /// lifecycle queues. Cooperative operations keep the original creator sequence.
     pub fn task_queue_factory(&self) -> Result<TaskQueueFactory, BuildEnvironmentError> {
         self.native.as_ref().ok_or(BuildEnvironmentError::Closed)?;
-        let selected = self._task_queue_factory.as_ref()
+        let selected = self
+            ._task_queue_factory
+            .as_ref()
             .ok_or(BuildEnvironmentError::UnqualifiedEnvironment)?;
         TaskQueueFactory::from_environment(self, selected)
     }
@@ -526,7 +555,9 @@ impl Environment {
         crate::RtcEventLogUtility::from_environment(self)
     }
 
-    pub(crate) fn manual_clock_source(&self) -> Option<&ManualClock> { self._clock.as_ref() }
+    pub(crate) fn manual_clock_source(&self) -> Option<&ManualClock> {
+        self._clock.as_ref()
+    }
 
     pub(crate) fn selected_clock_handle(&self) -> Option<&crate::Clock> {
         self._clock_handle.as_ref()
@@ -607,7 +638,9 @@ impl fmt::Display for EnvironmentClockError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Closed => "environment is closed",
-            Self::RealTimeClockUnavailable => "system clock cannot retain a production lease while testing time is active",
+            Self::RealTimeClockUnavailable => {
+                "system clock cannot retain a production lease while testing time is active"
+            }
         })
     }
 }
@@ -676,7 +709,12 @@ impl EnvironmentBuilder {
             None => TaskQueueFactory::default_threaded()?,
         };
         factory.check_current()?;
-        if self.custom_clock.as_ref().is_some_and(|clock| clock.manual_source().is_none()) && factory.0.clock.is_some() {
+        if self
+            .custom_clock
+            .as_ref()
+            .is_some_and(|clock| clock.manual_source().is_none())
+            && factory.0.clock.is_some()
+        {
             return Err(BuildEnvironmentError::MismatchedCooperativeClock);
         }
         let clock = match (&self.clock, &factory.0.clock) {
@@ -750,8 +788,12 @@ impl fmt::Display for BuildEnvironmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Closed => "environment is closed",
-            Self::ProductionRuntimeUnavailable => "production task queues cannot coexist with controlled execution",
-            Self::UnqualifiedEnvironment => "SDK environment has no identity-bound task queue factory registration",
+            Self::ProductionRuntimeUnavailable => {
+                "production task queues cannot coexist with controlled execution"
+            }
+            Self::UnqualifiedEnvironment => {
+                "SDK environment has no identity-bound task queue factory registration"
+            }
             Self::InvalidQueueName => "task queue names cannot contain a NUL byte",
             Self::MismatchedCooperativeClock => {
                 "the environment clock differs from the cooperative factory clock"
@@ -888,11 +930,9 @@ macro_rules! thread_handle {
                     .is_some_and(|native| ffi::thread_post_task(native, boxed_task(task)))
             }
 
-            /// Native Thread delay choices, including finite negative values
-            /// in [-1998, -1] us (rounded to zero by the SDK), and positives
-            /// through i32::MAX milliseconds. Other states are explicit errors.
-            /// Borrowed controlled threads instead accept all finite values.
-            /// Both precision modes use the native millisecond rounding here.
+            /// Native Thread delays and both precision modes are passed through
+            /// unchanged; SDK threads own their arithmetic and millisecond
+            /// rounding. Borrowed controlled threads require finite values.
             pub fn post_delayed_native(
                 &self,
                 delay: crate::TimeDelta,
@@ -934,6 +974,9 @@ macro_rules! thread_handle {
             pub(crate) fn native(&self) -> &ffi::NativeThread {
                 self.native.as_ref().expect("validated WebRTC thread")
             }
+            pub(crate) fn into_native(mut self) -> cxx::UniquePtr<ffi::NativeThread> {
+                std::mem::replace(&mut self.native, cxx::UniquePtr::null())
+            }
         }
     };
 }
@@ -954,8 +997,90 @@ thread_handle!(SignalingThread, false);
 /// ```
 #[derive(Clone)]
 pub struct ControlledPeerDriver(Rc<DriverInner>);
+#[derive(Clone)]
+pub(crate) struct WeakControlledPeerDriver(std::rc::Weak<DriverInner>);
+impl WeakControlledPeerDriver {
+    pub(crate) fn upgrade(&self) -> Option<ControlledPeerDriver> {
+        self.0.upgrade().map(ControlledPeerDriver)
+    }
+}
+
+// These are real ownership edges back to this driver's SDK graph, not IDs or
+// label-based joins. Weak edges avoid idle cycles. Only an enclosing native
+// dispatch/notification turn upgrades them, and all strong leases drain after
+// the SDK call returns, never from inside a provider callback.
+#[derive(Default)]
+struct DriverOwners {
+    factories: Vec<std::rc::Weak<crate::peer::FactoryInner>>,
+    peers: Vec<std::rc::Weak<crate::peer::PeerInner>>,
+    held_factories: Vec<Rc<crate::peer::FactoryInner>>,
+    held_peers: Vec<Rc<crate::peer::PeerInner>>,
+    depth: usize,
+    retiring: bool,
+}
+impl DriverOwners {
+    fn prune(&mut self) {
+        self.factories.retain(|owner| owner.strong_count() != 0);
+        self.peers.retain(|owner| owner.strong_count() != 0);
+    }
+}
+thread_local! {
+    static CURRENT_DRIVER: std::cell::RefCell<std::rc::Weak<DriverInner>> = const { std::cell::RefCell::new(std::rc::Weak::new()) };
+}
+pub(crate) struct ControlledOwnerTurn {
+    driver: ControlledPeerDriver,
+}
+impl Drop for ControlledOwnerTurn {
+    fn drop(&mut self) {
+        let drain = {
+            let mut owners = self.driver.0.owners.borrow_mut();
+            owners.depth -= 1;
+            if owners.depth == 0 && !owners.retiring {
+                owners.retiring = true;
+                true
+            } else {
+                false
+            }
+        };
+        if !drain {
+            return;
+        }
+        loop {
+            let (peers, factories) = {
+                let mut owners = self.driver.0.owners.borrow_mut();
+                if owners.held_peers.is_empty() && owners.held_factories.is_empty() {
+                    owners.prune();
+                    owners.retiring = false;
+                    break;
+                }
+                (
+                    std::mem::take(&mut owners.held_peers),
+                    std::mem::take(&mut owners.held_factories),
+                )
+            };
+            // Native destruction may invoke providers and add new owners. No
+            // RefCell loan spans destructors; nested turns append to the next
+            // batch rather than retiring inside the current native destructor.
+            drop(peers);
+            drop(factories);
+        }
+    }
+}
+fn controlled_dispatch_blocked() -> bool {
+    CURRENT_DRIVER
+        .with(|current| current.borrow().upgrade())
+        .is_some_and(|driver| {
+            driver.owners.borrow().retiring || crate::provider_panic::callback_active()
+        })
+}
+pub(crate) fn controlled_owner_turn() -> Option<ControlledOwnerTurn> {
+    CURRENT_DRIVER
+        .with(|current| current.borrow().upgrade())
+        .map(|inner| ControlledPeerDriver(inner).owner_turn())
+}
 
 struct DriverInner {
+    owners: std::cell::RefCell<DriverOwners>,
     native: cxx::UniquePtr<ffi::NativeDriverThread>,
     clock: ManualClock,
     seeded: bool,
@@ -964,40 +1089,101 @@ struct DriverInner {
 }
 
 impl ControlledPeerDriver {
+    pub(crate) fn downgrade(&self) -> WeakControlledPeerDriver {
+        WeakControlledPeerDriver(Rc::downgrade(&self.0))
+    }
+    fn from_inner(inner: DriverInner) -> Self {
+        let value = Self(Rc::new(inner));
+        CURRENT_DRIVER.with(|current| *current.borrow_mut() = Rc::downgrade(&value.0));
+        value
+    }
+    pub(crate) fn owner_turn(&self) -> ControlledOwnerTurn {
+        {
+            let mut owners = self.0.owners.borrow_mut();
+            if owners.depth == 0 && !owners.retiring {
+                owners.prune();
+                let factories = owners
+                    .factories
+                    .iter()
+                    .filter_map(std::rc::Weak::upgrade)
+                    .collect::<Vec<_>>();
+                let peers = owners
+                    .peers
+                    .iter()
+                    .filter_map(std::rc::Weak::upgrade)
+                    .collect::<Vec<_>>();
+                owners.held_factories.extend(factories);
+                owners.held_peers.extend(peers);
+            }
+            owners.depth += 1;
+        }
+        ControlledOwnerTurn {
+            driver: self.clone(),
+        }
+    }
+    pub(crate) fn register_factory(&self, owner: &Rc<crate::peer::FactoryInner>) {
+        let mut owners = self.0.owners.borrow_mut();
+        owners.prune();
+        owners.factories.push(Rc::downgrade(owner));
+        if owners.depth != 0 || owners.retiring {
+            owners.held_factories.push(owner.clone());
+        }
+    }
+    pub(crate) fn register_peer(&self, owner: &Rc<crate::peer::PeerInner>) {
+        let mut owners = self.0.owners.borrow_mut();
+        owners.prune();
+        owners.peers.push(Rc::downgrade(owner));
+        if owners.depth != 0 || owners.retiring {
+            owners.held_peers.push(owner.clone());
+        }
+    }
     pub fn new(clock: &ManualClock) -> Result<Self, ThreadStartError> {
         let native = ffi::new_driver_thread(clock.native());
         if native.is_null() {
             Err(ThreadStartError)
         } else {
-            Ok(Self(Rc::new(DriverInner {
+            Ok(Self::from_inner(DriverInner {
+                owners: std::cell::RefCell::new(DriverOwners::default()),
                 native,
                 clock: clock.clone(),
                 seeded: false,
                 next_peer_id: std::cell::Cell::new(1),
                 _creator_sequence: PhantomData,
-            })))
+            }))
         }
     }
 
     /// Dispatch up to 1,024 ready tasks without moving time or waiting.
     /// Returns true on the creator thread (including when idle), false
-    /// off-thread. Success does not imply a drain; use `pump` for a
+    /// off-thread or when provider/retirement reentry blocks dispatch.
+    /// Success does not imply a drain; use `pump` for a
     /// caller-selected budget and a remaining-work snapshot.
     pub fn run_ready(&self) -> bool {
         if !self.is_current() {
             return false;
         }
-        self.pump(1_024);
-        true
+        !self.pump(1_024).blocked
     }
 
     /// Dispatch at most `budget` tasks across this driver's peer and media
     /// queues. All queues sharing its clock use deadline then posting order.
+    /// Provider callbacks and owner retirement return `blocked` without
+    /// recursively executing native work or advancing time.
     pub fn pump(&self, budget: usize) -> PumpResult {
-        let dispatched = ffi::driver_pump(self.native(), budget);
+        // Do not recursively execute SDK work while a native provider still
+        // has a live callback loan or owner retirement is in progress.
+        let blocked = self.0.owners.borrow().retiring || crate::provider_panic::callback_active();
+        let turn = (!blocked).then(|| self.owner_turn());
+        let dispatched = if blocked {
+            0
+        } else {
+            ffi::driver_pump(self.native(), budget)
+        };
+        drop(turn);
         let next_deadline = self.next_deadline();
         PumpResult {
             dispatched,
+            blocked,
             ready: next_deadline.is_some_and(|deadline| deadline <= self.0.clock.now()),
             next_deadline,
         }
@@ -1045,6 +1231,9 @@ impl ControlledPeerDriver {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PumpResult {
     pub dispatched: usize,
+    /// No task ran because dispatch was requested from a provider callback or
+    /// during owner retirement. The deadline/ready fields remain real snapshots.
+    pub blocked: bool,
     pub ready: bool,
     pub next_deadline: Option<Duration>,
 }
@@ -1080,13 +1269,14 @@ impl ControlledWorld {
         if native.is_null() {
             return Err(WorldAcquireError::HooksUnavailable);
         }
-        let driver = ControlledPeerDriver(Rc::new(DriverInner {
+        let driver = ControlledPeerDriver::from_inner(DriverInner {
+            owners: std::cell::RefCell::new(DriverOwners::default()),
             native,
             clock: clock.clone(),
             seeded: true,
             next_peer_id: std::cell::Cell::new(1),
             _creator_sequence: PhantomData,
-        }));
+        });
         Ok(Self {
             factory,
             clock,
@@ -1211,20 +1401,44 @@ mod tests {
         // An SDK snapshot without selected Rust origin still owns the exact
         // clock, but cannot use Rust metadata to preflight its conversion kind.
         let unqualified = Environment::from_sdk(ffi::clone_environment(selected.native()), None);
-        assert!(matches!(unqualified.task_queue_factory(), Err(BuildEnvironmentError::UnqualifiedEnvironment)));
+        assert!(matches!(
+            unqualified.task_queue_factory(),
+            Err(BuildEnvironmentError::UnqualifiedEnvironment)
+        ));
         let utility = unqualified.clock().unwrap();
         assert_eq!(utility.time_in_microseconds(), 100);
-        for timestamp in [crate::Timestamp::plus_infinity(), crate::Timestamp::minus_infinity(),
-            crate::Timestamp::from_microseconds(-1).unwrap()] {
-            assert!(!utility.convert_timestamp_to_ntp_time(timestamp).unwrap().is_valid());
+        for timestamp in [
+            crate::Timestamp::plus_infinity(),
+            crate::Timestamp::minus_infinity(),
+        ] {
+            assert!(
+                !utility
+                    .convert_timestamp_to_ntp_time(timestamp)
+                    .unwrap()
+                    .is_valid()
+            );
         }
-        assert!(utility.convert_timestamp_to_ntp_time(crate::Timestamp::from_microseconds(-1_000_000).unwrap()).unwrap().is_valid());
+        // SharedClock rejects infinite unit queries but delegates every finite
+        // conversion, including negative subsecond input, to the pinned SDK.
+        for micros in [-1, -1_000_000] {
+            assert!(
+                utility
+                    .convert_timestamp_to_ntp_time(
+                        crate::Timestamp::from_microseconds(micros).unwrap()
+                    )
+                    .unwrap()
+                    .is_valid()
+            );
+        }
         // Matching clock identity alone cannot grant cooperative scheduling.
         assert!(!other.uses_controlled_clock(&clock));
         let mismatched =
             Environment::from_sdk(ffi::clone_environment(other.native()), Some(&selected));
         assert!(!mismatched.uses_controlled_clock(&clock));
-        assert!(matches!(mismatched.task_queue_factory(), Err(BuildEnvironmentError::UnqualifiedEnvironment)));
+        assert!(matches!(
+            mismatched.task_queue_factory(),
+            Err(BuildEnvironmentError::UnqualifiedEnvironment)
+        ));
         drop(selected);
         clock.advance(Duration::from_micros(50)).unwrap();
         assert_eq!(copied.timestamp().microseconds().unwrap(), 150);
@@ -1270,12 +1484,20 @@ mod tests {
         }
 
         let world = ControlledWorld::acquire(81, Duration::from_secs(99)).unwrap();
-        let environment = Environment::builder().task_queue_factory(&world.factory).build().unwrap();
+        let environment = Environment::builder()
+            .task_queue_factory(&world.factory)
+            .build()
+            .unwrap();
         let utility = environment.task_queue_factory().unwrap();
-        let rebound = Environment::builder().task_queue_factory(&utility).build().unwrap();
+        let rebound = Environment::builder()
+            .task_queue_factory(&utility)
+            .build()
+            .unwrap();
         let rebound_utility = rebound.task_queue_factory().unwrap();
         let queue = Rc::new(RefCell::new(
-            rebound_utility.create_queue("caller-reposting", QueuePriority::Normal).unwrap(),
+            rebound_utility
+                .create_queue("caller-reposting", QueuePriority::Normal)
+                .unwrap(),
         ));
         let count = Rc::new(Cell::new(0));
         repost(queue.clone(), count.clone());

@@ -9,6 +9,7 @@
 #include "pulsebeam-webrtc-sys/native/metronome.h"
 #include "pulsebeam-webrtc-sys/native/certificate_generator.h"
 #include "pulsebeam-webrtc-sys/native/async_dns.h"
+#include "pulsebeam-webrtc-sys/native/packet_socket.h"
 #include "pulsebeam-webrtc-sys/native/video_bitrate.h"
 #include "pulsebeam-webrtc-sys/native/network_predictor.h"
 #include "pulsebeam-webrtc-sys/native/fec.h"
@@ -21,6 +22,8 @@
 #include <climits>
 #include <cstdint>
 #include <deque>
+#include <limits>
+#include "call/packet_receiver.h"
 #include <mutex>
 #include <optional>
 #include <set>
@@ -989,12 +992,15 @@ std::optional<webrtc::SdpType> SdpType(std::uint8_t value) {
   return std::nullopt;
 }
 
-// Private, source-pinned observation only. This is not an allocator registry or
-// a safety/admission proof. No caller API exposes MediaFactory or these types.
+// Private, source-pinned ownership association and binding admission diagnostics.
+// This is not an allocator registry or a whole-graph safety proof. No caller
+// API exposes MediaFactory or the borrowed native Call/PacketReceiver.
 struct CallObservation {
   std::mutex mutex;
   std::optional<webrtc::Environment> creation_environment;
+  FfiClockTimeBounds clock_bounds{};  // Exact retained SDK creation clock only.
   bool live = false;
+  std::uint64_t rtp_arrival_rejections = 0;  // Saturating binding counter, not RTCStats.
 };
 
 struct PeerCallCreationContext {
@@ -1028,15 +1034,17 @@ class PeerCallCreationScope final {
 // Own the real selected Call and preserve its stream pointers and implementations.
 // Stream/configuration observation and the Encode-prefix witness are NOT installed
 // here. In particular, creation_environment is an input snapshot, not an effective
-// allocator weight/capacity snapshot. Every virtual operation delegates unchanged.
-class ObservedCall final : public webrtc::Call {
+// allocator weight/capacity snapshot. RTP admission guards the actual Call
+// receiver precondition, not socket-wide packet metadata or control traffic.
+class ObservedCall final : public webrtc::Call, public webrtc::PacketReceiver {
  public:
   ObservedCall(std::unique_ptr<webrtc::Call> actual,
                std::shared_ptr<CallObservation> observation,
-               const webrtc::Environment& environment)
+               const NativeEnvironment& environment)
       : actual_(std::move(actual)), observation_(std::move(observation)) {
     std::lock_guard lock(observation_->mutex);
-    observation_->creation_environment.emplace(environment);
+    observation_->creation_environment.emplace(environment.environment());
+    observation_->clock_bounds = environment_clock_time_bounds(environment);
     observation_->live = true;
   }
   ~ObservedCall() override {
@@ -1098,7 +1106,22 @@ class ObservedCall final : public webrtc::Call {
       webrtc::scoped_refptr<webrtc::Resource> resource) override {
     actual_->AddAdaptationResource(std::move(resource));
   }
-  webrtc::PacketReceiver* Receiver() override { return actual_->Receiver(); }
+  webrtc::PacketReceiver* Receiver() override { return this; }
+  void DeliverRtcpPacket(webrtc::CopyOnWriteBuffer packet) override {
+    actual_->Receiver()->DeliverRtcpPacket(std::move(packet));
+  }
+  void DeliverRtpPacket(webrtc::MediaType media_type, webrtc::RtpPacketReceived packet,
+                        webrtc::PacketReceiver::OnUndemuxablePacketHandler handler) override {
+    // Call requires a finite arrival before interpreting its numeric payload.
+    // All subsequent timestamp/history arithmetic remains SDK-owned.
+    if (!packet.arrival_time().IsFinite()) {
+      std::lock_guard lock(observation_->mutex);
+      if (observation_->rtp_arrival_rejections != std::numeric_limits<std::uint64_t>::max())
+        ++observation_->rtp_arrival_rejections;
+      return;
+    }
+    actual_->Receiver()->DeliverRtpPacket(media_type, std::move(packet), std::move(handler));
+  }
   webrtc::RtpTransportControllerSendInterface* GetTransportControllerSend() override {
     return actual_->GetTransportControllerSend();
   }
@@ -1148,8 +1171,10 @@ class ObservedCall final : public webrtc::Call {
 class ObservedMediaFactory final : public webrtc::MediaFactory {
  public:
   ObservedMediaFactory(std::unique_ptr<webrtc::MediaFactory> selected,
-                       std::shared_ptr<PeerCallCreationContext> context)
-      : selected_(std::move(selected)), context_(std::move(context)) {}
+                       std::shared_ptr<PeerCallCreationContext> context,
+                       std::unique_ptr<NativeEnvironment> selected_environment)
+      : selected_environment_(std::move(selected_environment)),
+        selected_(std::move(selected)), context_(std::move(context)) {}
   std::unique_ptr<webrtc::MediaEngineInterface> CreateMediaEngine(
       const webrtc::Environment& environment,
       webrtc::PeerConnectionFactoryDependencies& dependencies) override {
@@ -1163,14 +1188,15 @@ class ObservedMediaFactory final : public webrtc::MediaFactory {
     }
     // Capture before delegation, without holding the context mutex across any
     // selected provider. Never synchronously query signaling from this worker.
-    const auto environment = config.env;
+    const auto environment = retain_environment_from_sdk(config.env, selected_environment_.get());
     auto actual = selected_->CreateCall(std::move(config));
     if (!actual || !observation) return actual;
     return std::make_unique<ObservedCall>(
-        std::move(actual), std::move(observation), environment);
+        std::move(actual), std::move(observation), *environment);
   }
 
  private:
+  std::unique_ptr<NativeEnvironment> selected_environment_;
   std::unique_ptr<webrtc::MediaFactory> selected_;
   std::shared_ptr<PeerCallCreationContext> context_;
 };
@@ -1389,11 +1415,13 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeThread& worker_thread,
     const NativeThread& signaling_thread,
     const NativeNetworkManagerProvider* network_manager,
+    rust::Box<RustNetworkManagerFactory> network_manager_factory,
     rust::Box<RustNetworkMonitorFactory> network_monitor_factory,
     rust::Box<RustNetworkStatePredictorFactory> network_predictor_factory,
     rust::Box<RustFecControllerFactory> fec_factory,
     rust::Box<RustNetworkControllerFactory> network_controller_factory,
     const NativePacketSocketFactoryProvider* packet_socket_factory,
+    rust::Box<RustPacketSocketFactory> socket_factory,
     const NativeAudioEncoderFactory* audio_encoder,
     const NativeAudioDecoderFactory* audio_decoder,
     const NativeVideoEncoderFactory* video_encoder,
@@ -1435,19 +1463,55 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     error = "a required WebRTC thread is closed";
     return nullptr;
   }
-  if (network_manager && network_monitor_factory_present(*network_monitor_factory)) {
+  // Selected-role construction also makes synchronous calls (including manager
+  // initialization on network). Reject a forbidden source-role edge before any
+  // SDK BlockingCall can enter its fatal invocation-policy check.
+  if (auto* current = webrtc::Thread::Current()) {
+    for (auto* target : {dependencies.network_thread, dependencies.worker_thread,
+                         dependencies.signaling_thread}) {
+      if (target != current && !current->IsInvokeToThreadAllowed(target)) {
+        error = "current native role cannot synchronously construct a factory on the selected roles";
+        return nullptr;
+      }
+    }
+  }
+  const bool custom_manager = network_manager_factory_present(*network_manager_factory);
+  if (network_manager && custom_manager) {
+    error = "endpoint network manager and manager factory are mutually exclusive";
+    return nullptr;
+  }
+  if ((network_manager || custom_manager) && network_monitor_factory_present(*network_monitor_factory)) {
     error = "network manager and network monitor factory are mutually exclusive";
     return nullptr;
   }
   dependencies.network_monitor_factory = network_monitor_factory_adapter(std::move(network_monitor_factory));
-  if (network_manager) {
+  if (custom_manager) {
+    dependencies.network_manager = network_manager_factory_adapter(std::move(network_manager_factory),
+        dependencies.env->field_trials(), dependencies.network_thread);
+    if (!dependencies.network_manager) {
+      error = "selected network manager factory rejected creation or initialization";
+      return nullptr;
+    }
+  } else if (network_manager) {
     dependencies.network_manager = network_manager->Create();
     if (!dependencies.network_manager) {
       error = "failed to create the network manager";
       return nullptr;
     }
   }
-  if (packet_socket_factory) {
+  const bool custom_sockets = socket_factory_present(*socket_factory);
+  if (packet_socket_factory && custom_sockets) {
+    error = "endpoint and general socket factories are mutually exclusive";
+    return nullptr;
+  }
+  if (custom_sockets) {
+    dependencies.packet_socket_factory = socket_factory_adapter(std::move(socket_factory),
+        *dependencies.env, dependencies.network_thread);
+    if (!dependencies.packet_socket_factory) {
+      error = "selected general socket factory could not be installed on the network role";
+      return nullptr;
+    }
+  } else if (packet_socket_factory) {
     dependencies.packet_socket_factory = packet_socket_factory->Create();
     if (!dependencies.packet_socket_factory) {
       error = "failed to create the packet socket factory";
@@ -1570,7 +1634,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   // Wrap the actual selected instance. Do not substitute engines, encoder stream
   // factories, default providers, or a newly constructed stock Call.
   dependencies.media_factory = std::make_unique<ObservedMediaFactory>(
-      std::move(dependencies.media_factory), call_creation);
+      std::move(dependencies.media_factory), call_creation, clone_environment(environment));
   // Supply the same SDK defaults explicitly so per-peer public allocator
   // injection can borrow them, including caller-selected network resources.
   const auto allocator_environment = *dependencies.env;
@@ -2023,6 +2087,11 @@ bool factory_select_audio_device(const NativePeerConnectionFactory& factory,
 class TurnCaVerifier final : public webrtc::SSLCertificateVerifier {
  public:
   explicit TurnCaVerifier(X509* ca) : ca_(ca, X509_free) {}
+  bool Verify(const webrtc::SSLCertificate& certificate) override {
+    std::vector<std::unique_ptr<webrtc::SSLCertificate>> leaf;
+    leaf.push_back(certificate.Clone());
+    return VerifyChain(webrtc::SSLCertChain(std::move(leaf)));
+  }
 
   bool VerifyChain(const webrtc::SSLCertChain& chain) override {
     if (chain.GetSize() == 0) {
@@ -2264,6 +2333,13 @@ std::shared_ptr<NativeCertificate> peer_configuration_certificate(const NativePe
   const auto& certificates = native.state()->configuration.certificates;
   return index < certificates.size() ? std::make_shared<NativeCertificate>(certificates[index]) : nullptr;
 }
+FfiCallAdmissionStats peer_call_admission_stats(const NativePeerConnection& peer) noexcept {
+  auto observation = peer.state()->call_observation;
+  if (!observation) return {};
+  std::lock_guard lock(observation->mutex);
+  return {observation->creation_environment.has_value(), observation->live,
+          observation->clock_bounds, observation->rtp_arrival_rejections};
+}
 std::unique_ptr<NativePeerConfiguration> peer_get_configuration(const NativePeerConnection& peer) noexcept {
   auto state = std::make_unique<NativePeerConfiguration::State>();
   state->configuration = peer.state()->peer->GetConfiguration();
@@ -2336,7 +2412,7 @@ std::unique_ptr<NativePeerConnection> create_peer_connection(
       return nullptr;
     }
     dependencies.tls_cert_verifier =
-        std::make_unique<TurnCaVerifier>(ca.release());
+        owned_native_tls_certificate_verifier_adapter(std::make_unique<TurnCaVerifier>(ca.release()));
   }
   auto call_observation = std::make_shared<CallObservation>();
   using CreationResult = webrtc::RTCErrorOr<
@@ -2920,13 +2996,38 @@ bool peer_set_native_audio_enabled(const NativePeerConnection& peer,
   return ok;
 }
 
+bool factory_in_native_execution_context(const NativePeerConnectionFactory& factory) noexcept {
+  const auto& state = factory.state();
+  // Current() may be a private codec queue. Synchronous destruction can wait
+  // on that queue even when it is not one of the three public role threads.
+  return state && (webrtc::TaskQueueBase::Current() || state->network_thread->IsCurrent() || state->worker_thread->IsCurrent() || state->signaling_thread->IsCurrent());
+}
+bool factory_control_call_allowed(const NativePeerConnectionFactory& factory) noexcept {
+  const auto& state = factory.state();
+  if (!state || state->signaling_thread->IsCurrent()) return true;
+  if (state->network_thread->IsCurrent() || state->worker_thread->IsCurrent()) return false;
+  auto* current = webrtc::Thread::Current();
+  return !current || current->IsInvokeToThreadAllowed(state->signaling_thread);
+}
+bool peer_control_call_allowed(const NativePeerConnection& peer) noexcept {
+  const auto& state = peer.state();
+  if (!state || state->signaling_thread->IsCurrent()) return true;
+  // ConnectionContext allows worker -> network, never worker/network ->
+  // signaling. Do not enter the SDK's blocking-call CHECK/deadlock path.
+  if (state->network_thread->IsCurrent() || state->worker_thread->IsCurrent()) return false;
+  auto* current = webrtc::Thread::Current();
+  return !current || current->IsInvokeToThreadAllowed(state->signaling_thread);
+}
+
 bool close_peer_connection(const NativePeerConnection& peer) noexcept {
   const auto& state = peer.state();
   if (!state || state->closed) {
     return true;
   }
+  if (!peer_control_call_allowed(peer)) return false;
   state->signaling_thread->BlockingCall([&] {
     if (!state->closed) {
+      state->closed = true;
       // Production Close marshals behind prior signaling work. Controlled
       // Close first destroys the retained continuation, before SDK teardown
       // could require any unrelated native lifecycle work.
@@ -2935,7 +3036,6 @@ bool close_peer_connection(const NativePeerConnection& peer) noexcept {
       state->frame_transformer_hosts->Retire();
       state->peer->Close();
       state->events->Close();
-      state->closed = true;
     }
   });
   return true;

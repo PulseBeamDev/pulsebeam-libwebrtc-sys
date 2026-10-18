@@ -260,6 +260,7 @@ pub(crate) fn audio_caller_decoder_scalar_callback(
     source: &RustCallerAudioDecoderCall,
     kind: u8,
 ) -> i32 {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let result = match kind {
         0 => source.decoder.sample_rate_hz(),
         _ => source.decoder.error_code(),
@@ -273,6 +274,7 @@ pub(crate) fn audio_caller_decoder_scalar_callback(
     }
 }
 pub(crate) fn audio_caller_decoder_channels_callback(source: &RustCallerAudioDecoderCall) -> usize {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.decoder.channels() {
         Ok(value) => value,
         Err(e) => {
@@ -282,6 +284,7 @@ pub(crate) fn audio_caller_decoder_channels_callback(source: &RustCallerAudioDec
     }
 }
 pub(crate) fn audio_caller_decoder_reset_callback(source: &RustCallerAudioDecoderCall) {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if let Err(e) = source.decoder.reset() {
         source.report(e);
     }
@@ -291,6 +294,7 @@ pub(crate) fn audio_caller_decoder_packet_duration_callback(
     encoded: &[u8],
     redundant: bool,
 ) -> i32 {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let result = if redundant {
         source.decoder.redundant_packet_duration(encoded)
     } else {
@@ -308,6 +312,7 @@ pub(crate) fn audio_caller_decoder_packet_fec_callback(
     source: &RustCallerAudioDecoderCall,
     encoded: &[u8],
 ) -> bool {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.decoder.packet_has_fec(encoded) {
         Ok(value) => value,
         Err(e) => {
@@ -321,6 +326,7 @@ pub(crate) fn audio_caller_decoder_parse_callback(
     encoded: Vec<u8>,
     timestamp: u32,
 ) -> Vec<ffi::FfiCallerParsedAudioFrame> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match source.decoder.parse_payload(encoded, timestamp) {
         Ok(parsed) => parsed
             .into_iter()
@@ -371,6 +377,7 @@ pub(crate) fn audio_caller_decoder_plc_callback(
     requested: usize,
     prefix: &[i16],
 ) -> ffi::FfiAudioPlc {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let mut samples = prefix.to_vec();
     match source
         .decoder

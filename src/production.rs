@@ -12,6 +12,11 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(feature = "native")]
+mod capture;
+mod retirement;
+use retirement::SessionRetirement;
+
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, DataChannel, DataChannelConfiguration,
     DataChannelError, DataChannelEvent, DataChannelMessage, DataChannelSendResult,
@@ -72,6 +77,10 @@ resource_id!(
     SessionAudioSourceViewId,
     SessionAudioTrackProcessorId,
     SessionAudioObserverId,
+    SessionDesktopOptionsId,
+    SessionDesktopMetadataId,
+    SessionCameraOptionsId,
+    SessionCameraDeviceInfoId,
     SessionTransceiverId,
     SessionSenderId,
     SessionReceiverId,
@@ -157,6 +166,10 @@ enum Source {
     RawVideo(crate::VideoSource),
     Opus(EncodedAudioSource),
     Video(EncodedVideoSource),
+    #[cfg(feature = "native")]
+    Camera(crate::CameraCapture),
+    #[cfg(feature = "native")]
+    Desktop(crate::ScreenCapture),
 }
 impl Source {
     fn audio_source(&self) -> Result<&crate::AudioSource, PeerError> {
@@ -176,6 +189,10 @@ impl Source {
                 .close()
                 .map_err(|e| error(PeerErrorKind::Internal, &e.to_string())),
             Self::Video(source) => source.close().map_err(codec_error),
+            #[cfg(feature = "native")]
+            Self::Camera(capture) => capture.stop(),
+            #[cfg(feature = "native")]
+            Self::Desktop(capture) => capture.stop(),
         }
     }
     fn video_track(
@@ -186,6 +203,10 @@ impl Source {
         match self {
             Self::RawVideo(source) => factory.create_video_track(id, source),
             Self::Video(source) => source.create_track(factory, id),
+            #[cfg(feature = "native")]
+            Self::Camera(capture) => factory.create_video_track(id, capture.source()),
+            #[cfg(feature = "native")]
+            Self::Desktop(capture) => factory.create_video_track(id, capture.source()),
             _ => Err(missing()),
         }
     }
@@ -351,11 +372,12 @@ pub enum SessionEvent {
 /// A move-only, `Send`, non-`Sync` owner for a production engine resource graph.
 /// Every engine operation requires exclusive actor access. Native sequencing
 /// uses the engine's existing signaling/worker/network roles, not a second
-/// application owner executor. Controlled worlds and legacy local handles stay
-/// non-Send and cannot be imported into this graph.
-/// Final drop from an SDK callback transfers the whole graph to a private
-/// cleanup caller, so callback retirement precedes native role destruction.
-/// This cleanup is asynchronous only on SDK callback roles.
+/// application owner executor. A single-use production retirement worker is
+/// reserved at construction only for final Drop from native execution contexts;
+/// it never proxies application commands. Such Drop returns after handoff,
+/// while native teardown waits for active SDK work to finish. Explicit shutdown
+/// and Drop on ordinary caller threads remain synchronous. Controlled worlds
+/// and legacy local handles stay non-Send and cannot enter this graph.
 ///
 /// ```
 /// fn assert_send<T: Send>() {}
@@ -414,12 +436,25 @@ pub struct ProductionSession {
     senders: HashMap<SessionSenderId, Resource<RtpSender>>,
     receivers: HashMap<SessionReceiverId, Resource<RtpReceiver>>,
     sources: HashMap<SessionSourceId, Source>,
+    #[cfg(feature = "native")]
+    desktop_options: HashMap<SessionDesktopOptionsId, crate::DesktopCaptureOptions>,
+    #[cfg(feature = "native")]
+    camera_device_info: HashMap<SessionCameraDeviceInfoId, crate::CameraDeviceInfo>,
+    #[cfg(feature = "native")]
+    camera_options: HashMap<SessionCameraOptionsId, crate::CameraCaptureOptions>,
+    #[cfg(feature = "native")]
+    desktop_metadata: HashMap<SessionDesktopMetadataId, crate::DesktopCaptureMetadata>,
     peers: HashMap<SessionPeerId, Peer>,
     input: Option<EncodedVideoInput>,
+    // Release defaults after native peer dependents, before their role owners.
+    video_bitrate_allocator_factory: Option<crate::VideoBitrateAllocatorFactory>,
     factory: cleanup::CaptiveFactory,
     readiness: Arc<Readiness>,
     closed: bool,
     _exclusive: PhantomData<Cell<()>>,
+    // Last to drop. This worker has no application command queue and accepts
+    // at most the one final owner, with all SDK roles/dependencies still live.
+    retirement: Option<SessionRetirement>,
 }
 
 // SAFETY: the *entire* Rc graph is captive here. Construction accepts only owned
@@ -430,6 +465,9 @@ pub struct ProductionSession {
 // session ownership, even after migration; native callbacks never touch them.
 // Native objects marshal affine operations and final releases to retained live
 // engine role threads (including the bypass-proxy SDP initiation overloads).
+// Callback-triggered final Drop transfers this same exclusive graph, not any
+// shared Rc reference, to its pre-admitted single-use retirement worker. The
+// worker detaches only after ownership handoff and never borrows the SDK caller.
 // Only the independently synchronized Readiness and codec broker states cross
 // callback threads. Drop tears down all dependents before the role threads.
 // If the final owner is released by an SDK-thread Waker, the entire graph moves
@@ -465,8 +503,11 @@ pub struct ProductionSessionBuilder {
     encode_metronome: Option<crate::Metronome>,
     decode_metronome: Option<crate::Metronome>,
     network_monitor_factory: Option<Arc<dyn crate::NetworkMonitorFactory>>,
+    network_manager_factory: Option<crate::NetworkManagerFactory>,
+    socket_factory: Option<crate::PacketSocketFactory>,
     network_predictor_factory: Option<crate::NetworkStatePredictorFactory>,
     fec_factory: Option<crate::FecControllerFactory>,
+    video_bitrate_allocator_factory: Option<crate::VideoBitrateAllocatorFactory>,
     network_controller_factory: Option<crate::NetworkControllerFactory>,
     environment_event_log: Option<Box<dyn crate::RtcEventLogger>>,
     clock: Option<crate::Clock>,
@@ -555,6 +596,23 @@ impl ProductionSessionBuilder {
     ) -> Result<Self, CodecError> {
         Ok(self.video_decoder_factory(&crate::VideoDecoderFactoryHandle::from_provider(provider)?))
     }
+    /// Default for subsequently created peers. An explicit per-peer allocator
+    /// overrides it; omission of both preserves native stock selection.
+    pub fn video_bitrate_allocator_factory(
+        mut self,
+        factory: &crate::VideoBitrateAllocatorFactory,
+    ) -> Self {
+        self.video_bitrate_allocator_factory = Some(factory.clone());
+        self
+    }
+    pub fn video_bitrate_allocator_provider(
+        self,
+        provider: impl crate::VideoBitrateAllocatorFactoryProvider,
+    ) -> Self {
+        self.video_bitrate_allocator_factory(&crate::VideoBitrateAllocatorFactory::from_provider(
+            provider,
+        ))
+    }
     pub fn network_controller_factory(mut self, factory: &crate::NetworkControllerFactory) -> Self {
         self.network_controller_factory = Some(factory.clone());
         self
@@ -575,6 +633,9 @@ impl ProductionSessionBuilder {
     ) -> Self {
         self.fec_controller_factory(&crate::FecControllerFactory::from_provider(provider))
     }
+    /// The pinned SDK ignores the standalone predictor dependency slot, so
+    /// build rejects it. Use network_controller_factory with an explicit
+    /// NetworkControllerFactory::goog_cc configuration instead.
     pub fn network_state_predictor_factory(
         mut self,
         factory: &crate::NetworkStatePredictorFactory,
@@ -644,6 +705,32 @@ impl ProductionSessionBuilder {
     pub fn environment_factory(mut self, factory: &crate::EnvironmentFactory) -> Self {
         self.environment_factory = Some(factory.clone());
         self
+    }
+
+    /// Create sequence-bound manager products inside the native network role;
+    /// no local Network or manager handles are imported into the actor.
+    pub fn network_manager_factory(mut self, factory: &crate::NetworkManagerFactory) -> Self {
+        self.network_manager_factory = Some(factory.clone());
+        self
+    }
+    pub fn network_manager_provider(
+        self,
+        provider: impl crate::NetworkManagerFactoryProvider,
+    ) -> Self {
+        self.network_manager_factory(&crate::NetworkManagerFactory::from_provider(provider))
+    }
+
+    /// Create local products inside the SDK network role; no !Send socket,
+    /// accepted product or context is imported into the actor.
+    pub fn socket_factory(mut self, factory: &crate::PacketSocketFactory) -> Self {
+        self.socket_factory = Some(factory.clone());
+        self
+    }
+    pub fn socket_factory_provider(
+        self,
+        provider: impl crate::PacketSocketFactoryImplementation,
+    ) -> Self {
+        self.socket_factory(&crate::PacketSocketFactory::from_provider(provider))
     }
 
     /// Register an owned monitor factory with native network-thread callbacks.
@@ -737,6 +824,9 @@ impl ProductionSession {
             encode_metronome: None,
             decode_metronome: None,
             network_monitor_factory: None,
+            network_manager_factory: None,
+            socket_factory: None,
+            video_bitrate_allocator_factory: None,
             network_predictor_factory: None,
             fec_factory: None,
             network_controller_factory: None,
@@ -856,7 +946,6 @@ impl ProductionSession {
     }
 
     fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
-        cleanup::prepare()?;
         // Keep the lease until error-path provider cleanup has finished.
         let ProductionSessionBuilder {
             randomness,
@@ -881,6 +970,9 @@ impl ProductionSession {
             encode_metronome,
             decode_metronome,
             network_monitor_factory,
+            network_manager_factory,
+            socket_factory,
+            video_bitrate_allocator_factory,
             network_predictor_factory,
             fec_factory,
             network_controller_factory,
@@ -963,6 +1055,12 @@ impl ProductionSession {
         if let Some(factory) = network_monitor_factory {
             builder = builder.shared_network_monitor_factory(factory);
         }
+        if let Some(factory) = network_manager_factory {
+            builder = builder.network_manager_factory(&factory);
+        }
+        if let Some(factory) = socket_factory {
+            builder = builder.socket_factory(&factory);
+        }
         if let Some(factory) = network_predictor_factory {
             builder = builder.network_state_predictor_factory(&factory);
         }
@@ -981,20 +1079,39 @@ impl ProductionSession {
                 "controlled task queue factories cannot enter the production actor",
             ));
         }
-        if environment_factory.is_some() || field_trials.is_some() || environment_event_log.is_some() || clock.is_some() || task_queue_factory.is_some() || randomness.is_some() {
+        if environment_factory.is_some()
+            || field_trials.is_some()
+            || environment_event_log.is_some()
+            || clock.is_some()
+            || task_queue_factory.is_some()
+            || randomness.is_some()
+        {
             let mut environment = environment_factory.unwrap_or_default();
             let configure = || -> Result<crate::Environment, crate::BuildEnvironmentError> {
-                if let Some(factory) = task_queue_factory { environment.set_task_queue_factory(&factory)?; }
-                if let Some(clock) = clock { environment.set_clock_handle(&clock)?; }
-                if let Some(view) = field_trials { environment.set_field_trials(view)?; }
-                if let Some(logger) = environment_event_log { environment.set_event_log(logger)?; }
-                if let Some(lease) = randomness { environment.set_randomness(&lease)?; }
+                if let Some(factory) = task_queue_factory {
+                    environment.set_task_queue_factory(&factory)?;
+                }
+                if let Some(clock) = clock {
+                    environment.set_clock_handle(&clock)?;
+                }
+                if let Some(view) = field_trials {
+                    environment.set_field_trials(view)?;
+                }
+                if let Some(logger) = environment_event_log {
+                    environment.set_event_log(logger)?;
+                }
+                if let Some(lease) = randomness {
+                    environment.set_randomness(&lease)?;
+                }
                 environment.create()
             };
             let environment = configure()
                 .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
             if environment.cooperative_queues() != Some(false) {
-                return Err(error(PeerErrorKind::UnsupportedParameter, "production environment requires qualified non-cooperative task queues"));
+                return Err(error(
+                    PeerErrorKind::UnsupportedParameter,
+                    "production environment requires qualified non-cooperative task queues",
+                ));
             }
             builder = builder.environment(environment);
         }
@@ -1041,6 +1158,9 @@ impl ProductionSession {
             );
         }
         let factory = builder.build()?;
+        // A successful factory already holds the production lease, so a
+        // rejected controlled selection cannot start this worker.
+        let retirement = SessionRetirement::new()?;
         Ok(Self {
             connectivity: connectivity::ConnectivityResources::default(),
             video_encoders: HashMap::new(),
@@ -1072,6 +1192,15 @@ impl ProductionSession {
             audio_track_processors: HashMap::new(),
             media_tracks: HashMap::new(),
             sources: HashMap::new(),
+            #[cfg(feature = "native")]
+            desktop_options: HashMap::new(),
+            #[cfg(feature = "native")]
+            camera_device_info: HashMap::new(),
+            #[cfg(feature = "native")]
+            camera_options: HashMap::new(),
+            #[cfg(feature = "native")]
+            desktop_metadata: HashMap::new(),
+            video_bitrate_allocator_factory,
             video_observers: HashMap::new(),
             video_source_views: HashMap::new(),
             video_buffer_preparations: HashMap::new(),
@@ -1092,6 +1221,7 @@ impl ProductionSession {
             readiness,
             closed: false,
             _exclusive: PhantomData,
+            retirement: Some(retirement),
         })
     }
 
@@ -1131,9 +1261,13 @@ impl ProductionSession {
     pub fn create_peer_with_dependencies(
         &mut self,
         config: RtcConfiguration,
-        dependencies: crate::PeerConnectionDependencies,
+        mut dependencies: crate::PeerConnectionDependencies,
     ) -> Result<SessionPeerId, PeerError> {
         self.check_open()?;
+        if dependencies.video_bitrate_allocator_factory.is_none() {
+            dependencies.video_bitrate_allocator_factory =
+                self.video_bitrate_allocator_factory.clone();
+        }
         let id = SessionPeerId(next_id()?);
         let value = self
             .factory
@@ -1157,6 +1291,20 @@ impl ProductionSession {
             return Err(error(PeerErrorKind::Closed, "peer is closed"));
         }
         Ok(peer.value.configuration())
+    }
+
+    /// Read binding RTP admission diagnostics without an SDK role hop. Remains
+    /// available after peer/session close while this session owns the peer.
+    pub fn peer_call_admission_stats(
+        &self,
+        peer: SessionPeerId,
+    ) -> Result<Option<crate::CallAdmissionStats>, PeerError> {
+        Ok(self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .call_admission_stats())
     }
 
     pub fn set_peer_configuration(
@@ -1920,6 +2068,8 @@ impl ProductionSession {
     }
 
     pub fn close_channel(&mut self, channel: SessionChannelId) -> Result<(), PeerError> {
+        self.channels.get(&channel).ok_or_else(missing)?;
+        self.factory.check_control_call()?;
         self.channels
             .get_mut(&channel)
             .ok_or_else(missing)?
@@ -1990,6 +2140,10 @@ impl ProductionSession {
     /// stopped/detached. Already transmitted input can reach an open receiver.
     /// Previously returned owned output is unaffected.
     pub fn close_source(&mut self, id: SessionSourceId) -> Result<(), PeerError> {
+        if !self.sources.contains_key(&id) {
+            return Ok(());
+        }
+        self.factory.check_control_call()?;
         if let Some(source) = self.sources.get_mut(&id) {
             source.close()?;
             self.sources.remove(&id);
@@ -4588,6 +4742,16 @@ impl ProductionSession {
         Ok(id)
     }
 
+    fn video_track_for_source(
+        &self,
+        id: SessionSourceId,
+        track_id: &str,
+    ) -> Result<crate::VideoTrack, PeerError> {
+        self.sources
+            .get(&id)
+            .ok_or_else(missing)?
+            .video_track(&self.factory, track_id)
+    }
     fn insert_receiver(
         &mut self,
         peer: SessionPeerId,
@@ -6023,6 +6187,9 @@ impl ProductionSession {
     /// operations still yield exactly one outcome through try_peer_event.
     pub fn close_peer(&mut self, peer: SessionPeerId) -> Result<(), PeerError> {
         self.peers.get(&peer).ok_or_else(missing)?;
+        // Admission precedes even observer unregistration, which can block on
+        // native roles and must not partly mutate a rejected callback close.
+        self.factory.check_control_call()?;
         self.connectivity.retire_dtmf_observers(peer);
         // Retire raw observer slots before stopping the peer's resource graph.
         // Already queued records remain available, including after close.
@@ -6061,6 +6228,7 @@ impl ProductionSession {
         if self.closed {
             return Ok(());
         }
+        self.factory.check_control_call()?;
         for encoder in self.video_encoders.values_mut() {
             let _ = encoder.release();
         }
@@ -6092,6 +6260,14 @@ impl ProductionSession {
         self.audio_observers.clear();
         self.audio_source_views.clear();
         self.sources.clear();
+        #[cfg(feature = "native")]
+        self.desktop_options.clear();
+        #[cfg(feature = "native")]
+        self.camera_device_info.clear();
+        #[cfg(feature = "native")]
+        self.camera_options.clear();
+        #[cfg(feature = "native")]
+        self.desktop_metadata.clear();
         self.closed = true;
         self.readiness.notify();
         Ok(())
@@ -6103,8 +6279,13 @@ impl Drop for ProductionSession {
         if self.factory.is_empty() {
             return;
         }
-        if self.factory.requires_deferred_teardown() {
-            cleanup::defer(self.take_for_cleanup());
+        if self.retirement.is_some()
+            && (crate::provider_panic::callback_active()
+                || self.factory.requires_deferred_teardown())
+        {
+            let mut owner = self.take_for_cleanup();
+            let retirement = owner.retirement.take().expect("admitted retirement owner");
+            retirement.retire(owner);
             return;
         }
         let _ = self.shutdown();

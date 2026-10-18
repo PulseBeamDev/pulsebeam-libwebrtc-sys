@@ -37,7 +37,7 @@ Applications select owning execution, network/security, event-log, congestion/FE
 
 - Expose applicable factory/product/value/feedback operations with actual creation environment and durable clock identity.
 - Selected components consume real feedback and generate native-supported effects; native metric order, optional/default selection and errors remain exact.
-- Reached arithmetic, probe/rate/interval/FEC and callback-loan operations are safe. Consumer-required non-null products must reject safely rather than become fabricated success.
+- Native arithmetic, including probe/rate/interval/FEC calculations, remains libwebrtc-owned. Bindings preserve native-supported inputs rather than preflight private algorithms. Callback loans and required non-null products retain Rust/CXX boundary and lifetime safety; rejection must not become fabricated success.
 - Callbacks/resources remain valid under reentry, aliases, concurrent feedback and actor migration/retirement.
 
 ### Use opt-in Linux video capture
@@ -98,7 +98,7 @@ require a separate test for each member or expose private unrelated SDK internal
 
 - Owning typed public APIs preserve valid native-supported input, legitimate defaults, optional values, open protocol tokens and native errors. CXX/raw pointers/unsafe adapters stay private; generic configuration bags are not parity.
 - No fabricated success, payload/metadata synthesis, silent normalization, guessed identity join, hidden registry or stock substitution. Native packetization, transport, feedback, reassembly and codec behavior remain engine-owned.
-- Protect actually reached native abort/UB and Rust memory hazards. Do not expand speculative invalid numeric domains into unrelated obligations. Unsupported is acceptable only for a genuinely unsupported pinned native operation, not missing binding work.
+- Trust libwebrtc for its internal numeric arithmetic. Do not add shadow state, numeric quotas, conservative native-arithmetic admission profiles or field-trial rejection to preflight private SDK algorithms. Preserve direct FFI/unit representation requirements and Rust/CXX ownership, callback, buffer-validity and teardown protections. Unsupported is acceptable only for a genuinely unsupported pinned native operation, not missing binding work.
 - Retain every relevant native and Rust dependency through asynchronous callbacks and final destruction. Applicable public builder/endpoint and ProductionSession paths are part of this outcome, not a later sibling integration task.
 - ProductionSession remains move-only Send, non-Sync, single mutable-owner and usable after caller-thread migration. Controlled execution, when relevant, remains explicitly caller-owned and sequence-bound without hidden progress or production fallback.
 
@@ -171,7 +171,7 @@ boundary is required only where isolated values or mocks cannot faithfully show 
 | Material risk | Sufficient observable evidence |
 | --- | --- |
 | Standalone injection or invented control success | Observe actual packet/feedback/rate activity reaching selected providers and native control/protection results. |
-| Unsafe feedback arithmetic or callback ownership | Exercise relevant native supported boundaries/failures and alias/concurrency/retirement behavior on the selected environment. |
+| Feedback/value forwarding or callback ownership failures | Observe faithful native-supported values and outcomes, direct FFI conversion requirements, and alias/concurrency/retirement behavior on the selected environment. Internal SDK arithmetic is upstream responsibility. |
 
 ### Use opt-in Linux video capture
 

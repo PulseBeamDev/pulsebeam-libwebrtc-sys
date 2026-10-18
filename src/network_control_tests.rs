@@ -37,9 +37,9 @@ enum Behavior {
     PanicUpdate,
     PanicEcn,
     InvalidUnits,
-    InvalidUpdate,
+    InfiniteBwePeriod,
     ZeroProbeSize,
-    UnsafeProbeTimestampSpan,
+    WideProbeTimestampSpan,
     PerProbeOvershoot,
     DropPanics,
 }
@@ -147,7 +147,7 @@ impl Controller {
         if matches!(self.behavior, Behavior::InvalidUnits) {
             update.congestion_window = Some(DataSize::Bytes(-1));
         }
-        if matches!(self.behavior, Behavior::InvalidUpdate) {
+        if matches!(self.behavior, Behavior::InfiniteBwePeriod) {
             update
                 .target_rate
                 .as_mut()
@@ -161,7 +161,7 @@ impl Controller {
                 probe.target_data_rate = DataRate::BitsPerSecond(1);
                 probe.min_probe_delta = TimeDelta::from_native_microsecond_bits(1);
             }
-            Behavior::UnsafeProbeTimestampSpan => {
+            Behavior::WideProbeTimestampSpan => {
                 update.probe_cluster_configs[0].at_time =
                     Timestamp::from_native_microsecond_bits(if self.counter.get() == 1 {
                         i64::MAX - 1
@@ -545,18 +545,6 @@ fn native_factory_product_interval_and_drop_panics_are_contained() {
             Behavior::InvalidUnits,
             NetworkControllerFailure::InvalidUnits,
         ),
-        (
-            Behavior::InvalidUpdate,
-            NetworkControllerFailure::InvalidUpdate,
-        ),
-        (
-            Behavior::ZeroProbeSize,
-            NetworkControllerFailure::InvalidUpdate,
-        ),
-        (
-            Behavior::PerProbeOvershoot,
-            NetworkControllerFailure::InvalidUpdate,
-        ),
     ] {
         let observations = Arc::new(Observations::default());
         let (replies, failure) = invoke(
@@ -618,33 +606,74 @@ fn native_factory_product_interval_and_drop_panics_are_contained() {
     assert_eq!(observations.product_drops.load(Ordering::Relaxed), 1);
 }
 #[test]
-fn unsafe_probe_timestamp_span_rejects_before_native_expiry_subtraction() {
+fn native_adapter_preserves_wide_probe_timestamps_without_shadow_history() {
     let environment = Environment::builder().build().unwrap();
     let observations = Arc::new(Observations::default());
     let (replies, failure) = invoke(
         &environment,
         &observations,
-        Behavior::UnsafeProbeTimestampSpan,
+        Behavior::WideProbeTimestampSpan,
         &[Default::default(), Default::default(), Default::default()],
         &[0, 2, 0],
     );
-    assert_eq!(failure, Some(NetworkControllerFailure::InvalidUpdate));
+    // This driver observes adapter conversion only, not private pacer arithmetic.
+    assert_eq!(failure, None);
     assert_eq!(replies.len(), 3);
-    assert_eq!(
-        replies[0].probe_cluster_configs[0].at_time,
-        Timestamp::from_native_microsecond_bits(i64::MAX - 1)
-    );
-    for reply in &replies[1..] {
-        assert!(reply.probe_cluster_configs.is_empty());
-        assert!(reply.pacer_config.is_none());
-        assert_eq!(
-            reply.target_rate.as_ref().unwrap().target_rate,
-            DataRate::BitsPerSecond(0)
-        );
+    for (reply, time) in replies
+        .iter()
+        .zip([i64::MAX - 1, i64::MIN + 1, i64::MIN + 1])
+    {
+        let mut expected = fixed_update();
+        expected.probe_cluster_configs[0].at_time = Timestamp::from_native_microsecond_bits(time);
+        assert_eq!(reply, &expected);
     }
-    assert_eq!(observations.calls.lock().unwrap().len(), 2);
+    assert_eq!(observations.calls.lock().unwrap().len(), 3);
     assert_eq!(observations.product_drops.load(Ordering::Relaxed), 1);
 }
+#[test]
+fn native_adapter_forwards_representable_updates_without_arithmetic_budgets() {
+    let environment = Environment::builder().build().unwrap();
+    for behavior in [
+        Behavior::InfiniteBwePeriod,
+        Behavior::ZeroProbeSize,
+        Behavior::PerProbeOvershoot,
+    ] {
+        let observations = Arc::new(Observations::default());
+        let (replies, failure) = invoke(
+            &environment,
+            &observations,
+            behavior,
+            &[Default::default()],
+            &[0],
+        );
+        let mut expected = fixed_update();
+        match behavior {
+            Behavior::InfiniteBwePeriod => {
+                expected
+                    .target_rate
+                    .as_mut()
+                    .unwrap()
+                    .network_estimate
+                    .bwe_period = TimeDelta::plus_infinity();
+            }
+            Behavior::ZeroProbeSize => {
+                expected.probe_cluster_configs[0].target_data_rate = DataRate::BitsPerSecond(1);
+                expected.probe_cluster_configs[0].min_probe_delta =
+                    TimeDelta::from_native_microsecond_bits(1);
+            }
+            Behavior::PerProbeOvershoot => {
+                expected.probe_cluster_configs[0].target_data_rate = DataRate::BitsPerSecond(8000);
+                expected.probe_cluster_configs[0].min_probe_delta =
+                    TimeDelta::from_native_microsecond_bits(1000);
+                expected.probe_cluster_configs[0].target_probe_count = i32::MAX / 2;
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(failure, None);
+        assert_eq!(replies, vec![expected]);
+    }
+}
+
 #[test]
 fn explicit_factory_trial_gate() {
     let observations = Arc::new(Observations::default());

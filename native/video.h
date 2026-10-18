@@ -7,6 +7,7 @@
 
 #include "api/scoped_refptr.h"
 #include "rust/cxx.h"
+#include "pulsebeam-webrtc-sys/native/desktop_frame.h"
 
 namespace webrtc {
 class MediaStreamTrackInterface;
@@ -67,6 +68,18 @@ class NativeVideoSourceView final {
  private:
   std::unique_ptr<State> state_;
 };
+class NativeEnvironment;
+class NativeVideoSource;
+class NativeScreenCapture;
+class NativeDesktopOptions final {
+ public:
+  struct State;
+  explicit NativeDesktopOptions(std::unique_ptr<State> state) noexcept;
+  ~NativeDesktopOptions();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
 class NativeVideoSourceEncodedSink final {
  public:
   struct State;
@@ -121,6 +134,28 @@ std::unique_ptr<NativeLocalMediaStreamObserver> local_media_stream_observe(const
 bool local_media_stream_observer_take(const NativeLocalMediaStreamObserver& observer) noexcept;
 std::uint64_t local_media_stream_observer_take_dropped(const NativeLocalMediaStreamObserver& observer) noexcept;
 void local_media_stream_observer_close(const NativeLocalMediaStreamObserver& observer) noexcept;
+struct FfiDesktopOptions;
+std::unique_ptr<NativeDesktopOptions> desktop_options_new(
+    const NativePeerConnectionFactory& factory, const NativeEnvironment& environment,
+    bool defaults, bool selected_environment) noexcept;
+std::unique_ptr<NativeDesktopOptions> desktop_options_clone(const NativeDesktopOptions& options) noexcept;
+FfiDesktopOptions desktop_options_read(const NativeDesktopOptions& options) noexcept;
+std::uint8_t desktop_is_wayland(const NativeDesktopOptions& options) noexcept;
+std::uint8_t desktop_options_write(const NativeDesktopOptions& options, const FfiDesktopOptions& fields) noexcept;
+std::int64_t desktop_options_time_us(const NativeDesktopOptions& options) noexcept;
+class NativeClock;
+bool desktop_options_clock_matches(const NativeDesktopOptions& options, const NativeClock& clock) noexcept;
+std::unique_ptr<NativeDesktopOptions> desktop_options_resource(const NativeDesktopOptions& options, std::uint8_t kind) noexcept;
+std::unique_ptr<NativeDesktopOptions> desktop_resource_create(const NativeDesktopOptions& options, std::uint8_t kind, rust::Str name) noexcept;
+std::uint8_t desktop_options_set_resource(const NativeDesktopOptions& options, std::uint8_t kind, bool present, const NativeDesktopOptions& resource) noexcept;
+bool desktop_resource_equal(const NativeDesktopOptions& a, const NativeDesktopOptions& b, std::uint8_t kind) noexcept;
+struct RustDesktopCaptureReceiver;
+struct RustDesktopSelectionObserver;
+std::unique_ptr<NativeScreenCapture> create_desktop_capture(
+    const NativeVideoSource& source, const NativeDesktopOptions& options,
+    std::uint8_t kind, bool select, std::int64_t id,
+    rust::Box<RustDesktopCaptureReceiver> receiver,
+    rust::Box<RustDesktopSelectionObserver> observer, rust::String& error) noexcept;
 
 class NativeScreenCapture final {
  public:
@@ -351,8 +386,45 @@ class NativeRtpTransceiver final {
   std::unique_ptr<State> state_;
 };
 
+struct RustCameraInitializationObserver;
+class NativeCameraOptions final {
+ public:
+  struct State;
+  explicit NativeCameraOptions(std::unique_ptr<State> state) noexcept;
+  ~NativeCameraOptions();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeCameraOptions> camera_options_new(const NativePeerConnectionFactory& factory) noexcept;
+std::unique_ptr<NativeCameraOptions> camera_options_clone(const NativeCameraOptions& options) noexcept;
+std::uint8_t camera_options_flags(const NativeCameraOptions& options) noexcept;
+bool camera_options_write(const NativeCameraOptions& options, bool v4l2, bool pipewire) noexcept;
+bool camera_options_set_fd(const NativeCameraOptions& options, std::int32_t fd) noexcept;
+std::int32_t camera_options_initialize(const NativeCameraOptions& options, const RustCameraInitializationObserver& observer) noexcept;
+
+class NativeCameraDeviceInfo final {
+ public:
+  struct State;
+  explicit NativeCameraDeviceInfo(std::unique_ptr<State> state) noexcept;
+  ~NativeCameraDeviceInfo();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+struct FfiCameraInfoRequest;
+struct FfiCameraInfoReply;
+std::unique_ptr<NativeCameraDeviceInfo> camera_info_new(const NativePeerConnectionFactory& factory) noexcept;
+std::unique_ptr<NativeCameraDeviceInfo> camera_info_new_with_options(const NativePeerConnectionFactory& factory, const NativeCameraOptions& options) noexcept;
+FfiCameraInfoReply camera_info_query(const NativeCameraDeviceInfo& info, const FfiCameraInfoRequest& request) noexcept;
+void camera_info_close(const NativeCameraDeviceInfo& info) noexcept;
+
 struct FfiCameraDevice;
 struct FfiCameraFormat;
+struct FfiCameraDeviceControl;
+struct FfiCameraSettings;
+FfiCameraDeviceControl camera_device_control(rust::Str device_id, std::uint8_t kind,
+    const FfiCameraSettings& settings) noexcept;
 bool camera_formats(rust::Str device_id,
                     rust::Vec<FfiCameraFormat>& formats,
                     rust::String& error) noexcept;
@@ -366,8 +438,33 @@ bool screen_capture_next_frame(const NativeScreenCapture& capture) noexcept;
 std::uint8_t screen_capture_status(const NativeScreenCapture& capture) noexcept;
 std::uint64_t screen_capture_failed_frames(const NativeScreenCapture& capture) noexcept;
 bool close_screen(const NativeScreenCapture& capture) noexcept;
+std::uint8_t desktop_set_memory_factory(const NativeScreenCapture& capture, rust::Box<RustDesktopMemoryFactory> source) noexcept;
+std::uint8_t desktop_set_receiver(const NativeScreenCapture& capture, rust::Box<RustDesktopCaptureReceiver> source) noexcept;
+std::uint8_t desktop_set_selection_observer(const NativeScreenCapture& capture, rust::Box<RustDesktopSelectionObserver> source) noexcept;
+struct FfiDesktopMetadata;
+class NativeDesktopMetadata final {
+ public:
+  struct State;
+  explicit NativeDesktopMetadata(std::unique_ptr<State> state) noexcept;
+  ~NativeDesktopMetadata();
+  const std::unique_ptr<State>& state() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+std::unique_ptr<NativeDesktopMetadata> desktop_capture_metadata(const NativeScreenCapture& capture) noexcept;
+std::unique_ptr<NativeDesktopMetadata> desktop_metadata_clone(const NativeDesktopMetadata& metadata) noexcept;
+FfiDesktopMetadata desktop_metadata_read(const NativeDesktopMetadata& metadata) noexcept;
+bool desktop_metadata_equal(const NativeDesktopMetadata& a, const NativeDesktopMetadata& b, bool cancellable) noexcept;
+struct FfiDesktopControl;
+FfiDesktopControl desktop_control(const NativeScreenCapture& capture, std::uint8_t kind,
+    std::int64_t id, std::int32_t x, std::int32_t y,
+    std::uint32_t width, std::uint32_t height) noexcept;
 bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
                     rust::String& error) noexcept;
+std::unique_ptr<NativeCamera> create_camera(const NativeVideoSource& source,
+    rust::Str device_id, rust::String& error) noexcept;
+std::unique_ptr<NativeCamera> create_camera_with_options(const NativeVideoSource& source,
+    const NativeCameraOptions& options, rust::Str device_id, rust::String& error) noexcept;
 std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
                                            rust::Str device_id,
                                            std::uint32_t width,
@@ -378,6 +475,12 @@ std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
 std::uint8_t camera_capture_status(const NativeCamera& camera,
                                    std::uint64_t stale_after_ms) noexcept;
 bool close_camera(const NativeCamera& camera) noexcept;
+struct RustRawCameraSink;
+std::uint8_t camera_set_raw_sink(const NativeCamera& camera, rust::Box<RustRawCameraSink> source) noexcept;
+struct FfiCameraSettings;
+struct FfiCameraControl;
+FfiCameraControl camera_control(const NativeCamera& camera, std::uint8_t kind,
+    std::uint16_t rotation, bool flag, const FfiCameraSettings& settings) noexcept;
 
 std::unique_ptr<NativeVideoSource> create_video_source(
     const NativePeerConnectionFactory& factory) noexcept;

@@ -26,6 +26,8 @@ struct RustCertificateGenerator;
 struct RustAsyncDnsFactory;
 struct RustVideoBitrateAllocatorFactory;
 struct RustNetworkMonitorFactory;
+struct RustNetworkManagerFactory;
+struct RustPacketSocketFactory;
 struct RustNetworkStatePredictorFactory;
 struct RustFecControllerFactory;
 struct RustNetworkControllerFactory;
@@ -109,6 +111,8 @@ std::size_t peer_configuration_certificate_count(
 std::shared_ptr<NativeCertificate>
 peer_configuration_certificate(const NativePeerConfiguration &native,
                                std::size_t index) noexcept;
+struct FfiCallAdmissionStats;
+FfiCallAdmissionStats peer_call_admission_stats(const NativePeerConnection& peer) noexcept;
 std::unique_ptr<NativePeerConfiguration>
 peer_get_configuration(const NativePeerConnection &peer) noexcept;
 std::uint8_t peer_set_configuration(const NativePeerConnection &peer,
@@ -175,11 +179,13 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeEnvironment &environment, const NativeThread &network_thread,
     const NativeThread &worker_thread, const NativeThread &signaling_thread,
     const NativeNetworkManagerProvider *network_manager,
+    rust::Box<RustNetworkManagerFactory> network_manager_factory,
     rust::Box<RustNetworkMonitorFactory> network_monitor_factory,
     rust::Box<RustNetworkStatePredictorFactory> network_predictor_factory,
     rust::Box<RustFecControllerFactory> fec_factory,
     rust::Box<RustNetworkControllerFactory> network_controller_factory,
     const NativePacketSocketFactoryProvider *packet_socket_factory,
+    rust::Box<RustPacketSocketFactory> socket_factory,
     const NativeAudioEncoderFactory *audio_encoder,
     const NativeAudioDecoderFactory *audio_decoder,
     const NativeVideoEncoderFactory *video_encoder,
@@ -332,6 +338,9 @@ bool test_peer_control_observations(const NativePeerConnection &peer,
 std::unique_ptr<NativeDataChannel>
 peer_take_data_channel(const NativePeerConnection &peer,
                        std::uint64_t arrival_id) noexcept;
+bool factory_in_native_execution_context(const NativePeerConnectionFactory &factory) noexcept;
+bool factory_control_call_allowed(const NativePeerConnectionFactory &factory) noexcept;
+bool peer_control_call_allowed(const NativePeerConnection &peer) noexcept;
 bool close_peer_connection(const NativePeerConnection &peer) noexcept;
 // Route audio lifecycle through WebRTC AudioState, not directly through ADM.
 bool peer_set_native_audio_enabled(const NativePeerConnection &peer,

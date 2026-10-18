@@ -1,9 +1,9 @@
 #include "pulsebeam-webrtc-sys/native/network_control.h"
-#include <deque>
 #include <limits>
 #include <utility>
 #include "api/units/data_size.h"
-#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "api/transport/goog_cc_factory.h"
+#include "pulsebeam-webrtc-sys/native/network_predictor.h"
 #include "system_wrappers/include/clock.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
@@ -423,78 +423,6 @@ webrtc::NetworkStateEstimate Unpack(const FfiNcNetworkStateEstimate& value, bool
   return result;
 }
 
-// The pinned prober retains at most six clusters (it trims to five before
-// pushing). Completion may remove more, so this is a conservative history of
-// every cluster that could still be queued, without borrowing the pacer.
-using ProbeHistory = std::deque<std::int64_t>;
-bool FiniteTimestampDifference(std::int64_t current, std::int64_t previous) {
-  // Exclude overflow and the two reserved TimeDelta infinity representations.
-  return !(previous > 0 && current < kMinus + previous + 1) &&
-         !(previous < 0 && current > kPlus + previous - 1);
-}
-bool ValidUpdate(const webrtc::NetworkControlUpdate& value, ProbeHistory& history) {
-  if (value.congestion_window && value.congestion_window->IsMinusInfinity()) return false;
-  if (value.pacer_config) {
-    const auto& pacer = *value.pacer_config;
-    if (!pacer.time_window.IsFinite() || pacer.time_window < webrtc::TimeDelta::Zero() ||
-        !pacer.data_window.IsFinite() || !pacer.pad_window.IsFinite()) return false;
-    const auto maximum = kPlus / 8000000;
-    if (pacer.data_window.bytes() > maximum || pacer.pad_window.bytes() > maximum) return false;
-    // Native debt/padding accounting multiplies either rate by up to 500 ms.
-    const auto maximum_rate = (kPlus - 4000000) / 500000;
-    if (pacer.data_rate().bps() <= 0 || pacer.data_rate().bps() > maximum_rate ||
-        pacer.pad_rate().bps() > maximum_rate) return false;
-  }
-  for (const auto& probe : value.probe_cluster_configs) {
-    if (!probe.at_time.IsFinite() || !probe.target_data_rate.IsFinite() ||
-        probe.target_data_rate.bps() <= 0 || !probe.target_duration.IsFinite() ||
-        probe.target_duration < webrtc::TimeDelta::Zero() ||
-        !probe.min_probe_delta.IsFinite() || probe.min_probe_delta <= webrtc::TimeDelta::Zero() ||
-        probe.target_probe_count < 0 || probe.id == webrtc::PacedPacketInfo::kNotAProbe) return false;
-    const auto at_time = probe.at_time.us();
-    for (const auto previous : history) {
-      if (!FiniteTimestampDifference(at_time, previous)) return false;
-    }
-    if (history.size() == 6) history.pop_front();
-    history.push_back(at_time);
-    const auto rate = probe.target_data_rate.bps();
-    const auto duration = probe.target_duration.us();
-    const auto delta = probe.min_probe_delta.us();
-    const auto maximum_product = kPlus - 4000000;
-    if ((duration != 0 && rate > maximum_product / duration) ||
-        rate > maximum_product / delta) return false;
-    const auto minimum_bytes = (rate * duration + 4000000) / 8000000;
-    const auto burst_bytes = (rate * delta + 4000000) / 8000000;
-    // This adapter is installed only in standard PeerConnection Call roots.
-    // Their RTP/FEC/padding packets are bounded by IP_PACKET_SIZE; the send
-    // controller rejects transport overhead >= 500 bytes. There is no public
-    // raw Call or MTU setter in this binding. Revisit this bound if adding one.
-    constexpr std::int64_t maximum_packet = IP_PACKET_SIZE + 499;
-    const auto burst_bound = burst_bytes + maximum_packet;
-    const auto budget = std::numeric_limits<int>::max();
-    // ProbeSent accumulates whole bursts in int. Overshoot can recur for EVERY
-    // probe, not only the last one. Before completion either the byte minimum
-    // or the count minimum is still unmet. Bound both possible termination
-    // paths, including one last burst after the byte minimum is approached.
-    if (burst_bytes == 0 || burst_bound > budget ||
-        minimum_bytes > budget - burst_bound ||
-        probe.target_probe_count > budget / burst_bound) return false;
-  }
-  if (value.target_rate) {
-    const auto& target = *value.target_rate;
-    if (!target.at_time.IsFinite() || !target.target_rate.IsFinite() ||
-        target.target_rate.bps() > std::numeric_limits<std::uint32_t>::max() ||
-        !target.network_estimate.round_trip_time.IsFinite() ||
-        target.network_estimate.round_trip_time < webrtc::TimeDelta::Zero() ||
-        target.network_estimate.round_trip_time.ms() > kPlus / 1000 ||
-        !target.network_estimate.bwe_period.IsFinite() ||
-        target.network_estimate.bwe_period < webrtc::TimeDelta::Zero() ||
-        target.network_estimate.bwe_period.ms() > kPlus / 1000 ||
-        !(target.network_estimate.loss_rate_ratio >= 0 && target.network_estimate.loss_rate_ratio <= 1) ||
-        !(target.cwnd_reduce_ratio >= 0 && target.cwnd_reduce_ratio <= 1)) return false;
-  }
-  return true;
-}
 webrtc::NetworkControlUpdate Reject(const webrtc::Environment& env) {
   webrtc::NetworkControlUpdate result;
   webrtc::TargetTransferRate target;
@@ -510,6 +438,98 @@ webrtc::NetworkControlUpdate Reject(const webrtc::Environment& env) {
   // native EnqueuePacket precondition; zero target requests no new allocation.
   return result;
 }
+class EstimatorAdapter final : public webrtc::NetworkStateEstimator {
+ public:
+  explicit EstimatorAdapter(rust::Box<RustNetworkStateEstimator> source)
+      : source_(std::move(source)) {}
+  std::optional<webrtc::NetworkStateEstimate> GetCurrentEstimate() override {
+    auto reply = network_estimator_estimate(*source_);
+    if (!reply.present) return std::nullopt;
+    bool valid = true;
+    auto estimate = Unpack(reply.value, valid);
+    if (!valid) { network_estimator_invalid(*source_, 2); return std::nullopt; }
+    return estimate;
+  }
+  void OnTransportPacketsFeedback(const webrtc::TransportPacketsFeedback& value) override {
+    network_estimator_feedback(*source_, Pack(value));
+  }
+  void OnReceivedPacket(const webrtc::PacketResult& value) override {
+    network_estimator_received(*source_, Pack(value));
+  }
+  void OnRouteChange(const webrtc::NetworkRouteChange& value) override {
+    network_estimator_route(*source_, Pack(value));
+  }
+ private:
+  rust::Box<RustNetworkStateEstimator> source_;
+};
+class EstimatorFactoryAdapter final : public webrtc::NetworkStateEstimatorFactory {
+ public:
+  explicit EstimatorFactoryAdapter(rust::Box<RustNetworkStateEstimatorFactory> source)
+      : source_(std::move(source)) {}
+  std::unique_ptr<webrtc::NetworkStateEstimator> Create(const webrtc::FieldTrialsView* trials) override {
+    // A null native input is distinct from an owning copy of an empty view.
+    auto copy = trials ? std::make_unique<NativeFieldTrials>(trials->CreateCopy()) : nullptr;
+    auto product = network_estimator_create(*source_, std::move(copy));
+    if (!network_estimator_present(*product)) return nullptr;
+    return std::make_unique<EstimatorAdapter>(std::move(product));
+  }
+ private:
+  rust::Box<RustNetworkStateEstimatorFactory> source_;
+};
+std::unique_ptr<webrtc::NetworkStateEstimatorFactory> EstimatorFactory(rust::Box<RustNetworkStateEstimatorFactory> source) {
+  if (!network_estimator_factory_present(*source)) return nullptr;
+  return std::make_unique<EstimatorFactoryAdapter>(std::move(source));
+}
+
+// Native SDK controllers can outlive the factory that created them (the stock
+// SDK path itself creates a temporary factory). Retain the Rust execution-domain
+// and child registration owners through the actual controller's destruction.
+class RetainedSdkController final : public webrtc::NetworkControllerInterface {
+ public:
+  RetainedSdkController(rust::Box<RustNetworkControllerFactory> source,
+                        std::unique_ptr<webrtc::NetworkControllerInterface> actual)
+      : source_(std::move(source)), actual_(std::move(actual)) {}
+  webrtc::NetworkControlUpdate OnNetworkAvailability(webrtc::NetworkAvailability value) override { return actual_->OnNetworkAvailability(std::move(value)); }
+  webrtc::NetworkControlUpdate OnNetworkRouteChange(webrtc::NetworkRouteChange value) override { return actual_->OnNetworkRouteChange(std::move(value)); }
+  webrtc::NetworkControlUpdate OnProcessInterval(webrtc::ProcessInterval value) override { return actual_->OnProcessInterval(std::move(value)); }
+  webrtc::NetworkControlUpdate OnRemoteBitrateReport(webrtc::RemoteBitrateReport value) override { return actual_->OnRemoteBitrateReport(std::move(value)); }
+  webrtc::NetworkControlUpdate OnRoundTripTimeUpdate(webrtc::RoundTripTimeUpdate value) override { return actual_->OnRoundTripTimeUpdate(std::move(value)); }
+  webrtc::NetworkControlUpdate OnSentPacket(webrtc::SentPacket value) override { return actual_->OnSentPacket(std::move(value)); }
+  webrtc::NetworkControlUpdate OnReceivedPacket(webrtc::ReceivedPacket value) override { return actual_->OnReceivedPacket(std::move(value)); }
+  webrtc::NetworkControlUpdate OnStreamsConfig(webrtc::StreamsConfig value) override { return actual_->OnStreamsConfig(std::move(value)); }
+  webrtc::NetworkControlUpdate OnTargetRateConstraints(webrtc::TargetRateConstraints value) override { return actual_->OnTargetRateConstraints(std::move(value)); }
+  webrtc::NetworkControlUpdate OnTransportLossReport(webrtc::TransportLossReport value) override { return actual_->OnTransportLossReport(std::move(value)); }
+  webrtc::NetworkControlUpdate OnTransportPacketsFeedback(webrtc::TransportPacketsFeedback value) override { return actual_->OnTransportPacketsFeedback(std::move(value)); }
+  webrtc::NetworkControlUpdate OnNetworkStateEstimate(webrtc::NetworkStateEstimate value) override { return actual_->OnNetworkStateEstimate(std::move(value)); }
+  bool SupportsEcnAdaptation() const override { return actual_->SupportsEcnAdaptation(); }
+ private:
+  rust::Box<RustNetworkControllerFactory> source_;
+  std::unique_ptr<webrtc::NetworkControllerInterface> actual_;
+};
+class GoogCcFactoryAdapter final : public webrtc::NetworkControllerFactoryInterface {
+ public:
+  explicit GoogCcFactoryAdapter(rust::Box<RustNetworkControllerFactory> source)
+      : source_(std::move(source)),
+        predictor_(network_predictor_factory_adapter(network_controller_goog_cc_predictor(*source_))) {
+    webrtc::GoogCcFactoryConfig config;
+    config.rfc_8888_feedback_negotiated = network_controller_goog_cc_rfc8888(*source_);
+    config.network_state_estimator_factory = EstimatorFactory(network_controller_goog_cc_estimator(*source_));
+    config.network_state_predictor_factory = predictor_.get();
+    actual_ = std::make_unique<webrtc::GoogCcNetworkControllerFactory>(std::move(config));
+  }
+  std::unique_ptr<webrtc::NetworkControllerInterface> Create(webrtc::NetworkControllerConfig config) override {
+    auto retained = network_controller_factory_retain(*source_);
+    auto controller = actual_->Create(std::move(config));
+    return std::make_unique<RetainedSdkController>(std::move(retained), std::move(controller));
+  }
+  webrtc::TimeDelta GetProcessInterval() const override { return actual_->GetProcessInterval(); }
+ private:
+  rust::Box<RustNetworkControllerFactory> source_;
+  // The SDK config borrows this factory, so destroy the actual factory first.
+  std::unique_ptr<webrtc::NetworkStatePredictorFactoryInterface> predictor_;
+  std::unique_ptr<webrtc::GoogCcNetworkControllerFactory> actual_;
+};
+
 class ControllerAdapter final : public webrtc::NetworkControllerInterface {
  public:
   ControllerAdapter(rust::Box<RustNetworkController> source, webrtc::Environment env)
@@ -582,14 +602,11 @@ class ControllerAdapter final : public webrtc::NetworkControllerInterface {
     bool valid = true;
     auto update = Unpack(reply, valid);
     if (!valid) { network_controller_invalid(*source_, 2); return Reject(env_); }
-    auto history = probe_history_;
-    if (!ValidUpdate(update, history)) { network_controller_invalid(*source_, 4); return Reject(env_); }
-    probe_history_ = std::move(history);
+    // Native pacing, probing and rate arithmetic is libwebrtc-owned.
     return update;
   }
   rust::Box<RustNetworkController> source_;
   webrtc::Environment env_;
-  ProbeHistory probe_history_;
 };
 class FactoryAdapter final : public webrtc::NetworkControllerFactoryInterface {
  public:
@@ -611,6 +628,8 @@ class FactoryAdapter final : public webrtc::NetworkControllerFactoryInterface {
 }  // namespace
 std::unique_ptr<webrtc::NetworkControllerFactoryInterface> network_controller_factory_adapter(rust::Box<RustNetworkControllerFactory> source) noexcept {
   if (!network_controller_factory_present(*source)) return nullptr;
+  if (network_controller_is_goog_cc(*source))
+    return std::make_unique<GoogCcFactoryAdapter>(std::move(source));
   return std::make_unique<FactoryAdapter>(std::move(source));
 }
 bool network_controller_injection_enabled(const NativeEnvironment& environment) noexcept {

@@ -9,6 +9,36 @@ use std::{
     },
 };
 
+thread_local! { static DNS_LOANS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) }; }
+// Actual Rust provider-allocation loans, not SDK identity/owner lookups. Do not
+// recursively lock the same non-Sync provider on this thread. Other threads
+// still serialize on its mutex, preserving ordinary concurrent result queries.
+struct DnsProviderLoan;
+impl DnsProviderLoan {
+    fn enter<T>(provider: &T) -> Option<Self> {
+        let pointer = provider as *const T as usize;
+        DNS_LOANS
+            .try_with(|loans| {
+                let mut loans = loans.borrow_mut();
+                if loans.contains(&pointer) {
+                    None
+                } else {
+                    loans.push(pointer);
+                    Some(Self)
+                }
+            })
+            .ok()
+            .flatten()
+    }
+}
+impl Drop for DnsProviderLoan {
+    fn drop(&mut self) {
+        let _ = DNS_LOANS.try_with(|loans| {
+            loans.borrow_mut().pop();
+        });
+    }
+}
+
 /// Callable native DNS result. Preserve the source hostname and port in each
 /// returned address, replacing only its resolved IP, and honor the requested
 /// family. Errors are native signed resolver codes, not binding error enums.
@@ -40,6 +70,10 @@ impl DnsResolverResult {
         if self.has_failed() {
             return None;
         }
+        let Some(_loan) = DnsProviderLoan::enter(self.0.as_ref()) else {
+            self.0.failed.store(true, Ordering::Release);
+            return None;
+        };
         let Ok(provider) = self.0.provider.lock() else {
             self.0.failed.store(true, Ordering::Release);
             return None;
@@ -127,6 +161,10 @@ impl AsyncDnsResolverFactory {
         if self.has_failed() {
             return None;
         }
+        let Some(_loan) = DnsProviderLoan::enter(self.0.as_ref()) else {
+            self.0.failed.store(true, Ordering::Release);
+            return None;
+        };
         let Ok(provider) = self.0.provider.lock() else {
             self.0.failed.store(true, Ordering::Release);
             return None;
@@ -224,6 +262,7 @@ impl Drop for RustAsyncDnsFactory {
 pub(crate) struct RustAsyncDnsResolver {
     provider: Mutex<Option<Box<dyn AsyncDnsResolver>>>,
     failed: Arc<AtomicBool>,
+    aggregate: Option<Arc<AtomicBool>>,
 }
 impl Drop for RustAsyncDnsResolver {
     fn drop(&mut self) {
@@ -233,17 +272,30 @@ impl Drop for RustAsyncDnsResolver {
             .unwrap_or_else(|poison| poison.into_inner())
             .take();
         if catch_unwind(AssertUnwindSafe(|| drop(provider))).is_err() {
-            self.failed.store(true, Ordering::Release);
+            self.fail();
         }
     }
 }
 impl RustAsyncDnsResolver {
+    pub(crate) fn failure_latch(&self) -> Arc<AtomicBool> {
+        self.failed.clone()
+    }
+    fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+        if let Some(aggregate) = &self.aggregate {
+            aggregate.store(true, Ordering::Release);
+        }
+    }
     fn with<T>(&self, action: impl FnOnce(&mut dyn AsyncDnsResolver) -> T) -> Option<T> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
+        let Some(_loan) = DnsProviderLoan::enter(self) else {
+            self.fail();
+            return None;
+        };
         let Ok(mut provider) = self.provider.lock() else {
-            self.failed.store(true, Ordering::Release);
+            self.fail();
             return None;
         };
         if self.failed.load(Ordering::Acquire) {
@@ -254,19 +306,42 @@ impl RustAsyncDnsResolver {
         })) {
             Ok(value) => Some(value),
             Err(_) => {
-                self.failed.store(true, Ordering::Release);
+                self.fail();
                 None
             }
         }
     }
 }
+pub(crate) fn async_dns_source_failed(source: &RustAsyncDnsResolver) -> bool {
+    source.failed.load(Ordering::Acquire)
+}
+pub(crate) fn async_dns_result_failed(source: &RustAsyncDnsResult) -> bool {
+    source.failed.load(Ordering::Acquire)
+        || source
+            .result
+            .as_ref()
+            .is_none_or(DnsResolverResult::has_failed)
+}
 pub(crate) fn async_dns_factory_present(source: &RustAsyncDnsFactory) -> bool {
     source.0.is_some()
+}
+pub(crate) fn socket_factory_resolver(
+    provider: Option<Box<dyn AsyncDnsResolver>>,
+    aggregate: Arc<AtomicBool>,
+) -> Box<RustAsyncDnsResolver> {
+    // A factory diagnostic is not a per-product failure latch. A failed socket
+    // or another installation must not poison this resolver's native results.
+    Box::new(RustAsyncDnsResolver {
+        provider: Mutex::new(Some(provider.unwrap_or_else(|| Box::new(FailedResolver)))),
+        failed: Arc::new(AtomicBool::new(false)),
+        aggregate: Some(aggregate),
+    })
 }
 fn wrap(provider: Box<dyn AsyncDnsResolver>, failed: Arc<AtomicBool>) -> Box<RustAsyncDnsResolver> {
     Box::new(RustAsyncDnsResolver {
         provider: Mutex::new(Some(provider)),
         failed,
+        aggregate: None,
     })
 }
 pub(crate) fn async_dns_factory_create(source: &RustAsyncDnsFactory) -> Box<RustAsyncDnsResolver> {
@@ -342,12 +417,21 @@ pub(crate) fn async_dns_start(
 pub(crate) struct RustAsyncDnsResult {
     result: Option<DnsResolverResult>,
     failed: Arc<AtomicBool>,
+    aggregate: Option<Arc<AtomicBool>>,
+}
+impl RustAsyncDnsResult {
+    fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+        if let Some(aggregate) = &self.aggregate {
+            aggregate.store(true, Ordering::Release);
+        }
+    }
 }
 impl Drop for RustAsyncDnsResult {
     fn drop(&mut self) {
         let result = self.result.take();
         if catch_unwind(AssertUnwindSafe(|| drop(result))).is_err() {
-            self.failed.store(true, Ordering::Release);
+            self.fail();
         }
     }
 }
@@ -358,6 +442,7 @@ pub(crate) fn async_dns_result_view(source: &RustAsyncDnsResolver) -> Box<RustAs
     Box::new(RustAsyncDnsResult {
         result: Some(result),
         failed: source.failed.clone(),
+        aggregate: source.aggregate.clone(),
     })
 }
 pub(crate) fn async_dns_result_identity(source: &RustAsyncDnsResult) -> usize {
@@ -370,7 +455,7 @@ pub(crate) fn async_dns_result_error(source: &RustAsyncDnsResult) -> i32 {
     let result = source.result.as_ref().expect("owned result");
     let error = result.error();
     if result.has_failed() {
-        source.failed.store(true, Ordering::Release);
+        source.fail();
     }
     error
 }
@@ -384,7 +469,7 @@ pub(crate) fn async_dns_result_address(
     let result = source.result.as_ref().expect("owned result");
     let address = result.resolved_address(AddressFamily::from_native_value(family));
     if result.has_failed() {
-        source.failed.store(true, Ordering::Release);
+        source.fail();
     }
     match address {
         Some(address) => ffi::socket_address_clone(address.native()),

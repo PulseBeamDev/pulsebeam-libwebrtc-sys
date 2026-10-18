@@ -143,7 +143,7 @@ impl FieldTrialsSnapshot {
         Self { native }
     }
 
-    fn native(&self) -> &ffi::NativeFieldTrials {
+    pub(crate) fn native(&self) -> &ffi::NativeFieldTrials {
         self.native.as_ref().expect("owned field-trial view")
     }
 

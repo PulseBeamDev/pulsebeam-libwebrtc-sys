@@ -461,7 +461,10 @@ impl VideoBitrateAllocatorFactory {
         self.0.failed.load(Ordering::Acquire)
     }
 }
-pub(crate) struct RustVideoBitrateAllocatorFactory(pub Option<VideoBitrateAllocatorFactory>, pub Option<crate::Environment>);
+pub(crate) struct RustVideoBitrateAllocatorFactory(
+    pub Option<VideoBitrateAllocatorFactory>,
+    pub Option<crate::Environment>,
+);
 pub(crate) struct RustVideoBitrateAllocator {
     provider: Mutex<Option<Box<dyn VideoBitrateAllocator>>>,
     builtin: bool,
@@ -539,9 +542,7 @@ pub(crate) fn video_bitrate_factory_create(
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     factory_provider.as_deref_mut().map(|provider| {
                         provider.create(
-                            VideoBitrateAllocatorEnvironment(
-                                environment.clone(),
-                            ),
+                            VideoBitrateAllocatorEnvironment(environment.clone()),
                             VideoCodecConfiguration::from_native(codec),
                         )
                     })
@@ -686,7 +687,10 @@ mod tests {
             calls: calls.clone(),
             mutable: Cell::new(0),
         });
-        let source = Arc::new(RustVideoBitrateAllocatorFactory(Some(registration.clone()), None));
+        let source = Arc::new(RustVideoBitrateAllocatorFactory(
+            Some(registration.clone()),
+            None,
+        ));
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let source = source.clone();

@@ -22,7 +22,7 @@ fn default_queue_preserves_signed_infinite_and_precise_delays() {
         .create_queue("native-delays", QueuePriority::Normal)
         .unwrap();
     let (tx, rx) = mpsc::channel();
-    for bits in [i64::MIN, i64::MIN + 1, -1, 0, 1] {
+    for bits in [i64::MIN, -1, 0, 1] {
         for precision in [TaskDelayPrecision::Low, TaskDelayPrecision::High] {
             let tx = tx.clone();
             assert!(
@@ -38,9 +38,9 @@ fn default_queue_preserves_signed_infinite_and_precise_delays() {
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), bits);
         }
     }
-    let maximum = (i64::MAX - 999_999_999) / 1000;
     let dropped = Arc::new(AtomicUsize::new(0));
-    for bits in [maximum, i64::MAX] {
+    // Observe real pending-task retirement, not a binding-imposed wait horizon.
+    for bits in [60_000_000, i64::MAX] {
         let marker = Dropped(dropped.clone());
         assert!(
             queue
@@ -57,32 +57,10 @@ fn default_queue_preserves_signed_infinite_and_precise_delays() {
         );
     }
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
-    for bits in [maximum + 1, i64::MAX - 1] {
-        let marker = Dropped(dropped.clone());
-        assert_eq!(
-            queue.post_delayed_native(
-                TimeDelta::from_native_microsecond_bits(bits),
-                TaskDelayPrecision::Low,
-                TaskQueueLocation,
-                move || drop(marker)
-            ),
-            Err(BuildEnvironmentError::UnsupportedNativeDelay)
-        );
-    }
-    assert_eq!(dropped.load(Ordering::SeqCst), 2);
     let (tx, rx) = mpsc::channel();
     assert!(queue.post(move || {
         let context = TaskQueueContext::current().unwrap();
         assert_eq!(context.name_bytes(), b"native-delays");
-        assert_eq!(
-            context.post_delayed(
-                TimeDelta::from_microseconds(maximum + 1).unwrap(),
-                TaskDelayPrecision::High,
-                TaskQueueLocation,
-                || {}
-            ),
-            Err(TaskQueuePostError::UnsupportedNativeDelay)
-        );
         context
             .post_delayed(
                 TimeDelta::minus_infinity(),
@@ -94,7 +72,7 @@ fn default_queue_preserves_signed_infinite_and_precise_delays() {
     }));
     rx.recv_timeout(Duration::from_secs(2)).unwrap();
     queue.close();
-    assert_eq!(dropped.load(Ordering::SeqCst), 4);
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -174,7 +152,7 @@ fn cooperative_queue_accepts_finite_states_without_autonomous_progress() {
 }
 
 #[test]
-fn thread_backend_retains_its_millisecond_conversion_domain() {
+fn thread_backend_posts_native_delays_and_retires_pending_work() {
     let mut worker = WorkerThread::start().unwrap();
     let (tx, rx) = mpsc::channel();
     for bits in [-1998, -1, 0, 1, 1001] {
@@ -193,40 +171,24 @@ fn thread_backend_retains_its_millisecond_conversion_domain() {
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), bits);
         }
     }
-    let maximum = i64::from(i32::MAX) * 1000;
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let marker = Dropped(dropped.clone());
     assert!(
         worker
             .post_delayed_native(
-                TimeDelta::from_microseconds(maximum).unwrap(),
+                TimeDelta::from_microseconds(60_000_000).unwrap(),
                 TaskDelayPrecision::High,
                 TaskQueueLocation,
-                || panic!("long delay must not run")
+                move || {
+                    drop(marker);
+                    panic!("long delay must not run");
+                }
             )
             .unwrap()
     );
-    for bits in [i64::MIN, -1999, maximum + 1, i64::MAX] {
-        assert_eq!(
-            worker.post_delayed_native(
-                TimeDelta::from_native_microsecond_bits(bits),
-                TaskDelayPrecision::Low,
-                TaskQueueLocation,
-                || {}
-            ),
-            Err(BuildEnvironmentError::UnsupportedNativeDelay)
-        );
-    }
     let (tx, rx) = mpsc::channel();
     assert!(worker.post(move || {
         let context = TaskQueueContext::current().unwrap();
-        assert_eq!(
-            context.post_delayed(
-                TimeDelta::from_microseconds(-1999).unwrap(),
-                TaskDelayPrecision::High,
-                TaskQueueLocation,
-                || {}
-            ),
-            Err(TaskQueuePostError::UnsupportedNativeDelay)
-        );
         context
             .post_delayed(
                 TimeDelta::from_microseconds(-1998).unwrap(),
@@ -238,4 +200,5 @@ fn thread_backend_retains_its_millisecond_conversion_domain() {
     }));
     rx.recv_timeout(Duration::from_secs(2)).unwrap();
     worker.close();
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }

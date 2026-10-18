@@ -45,19 +45,16 @@ class RustClockAdapter final : public webrtc::Clock {
  private:
   rust::Box<RustClockProvider> provider_;
 };
-// The SDK offset is process-static but hidden. A matched sample captures its
-// mapping modulo the NTP era. Only native current time enters the SDK converter;
-// arbitrary timestamps use the exact integer modular extension in Rust.
+// Retain the process lease through every SDK clock consumer. Conversion and
+// calibration remain native; no binding-owned arithmetic shadows the SDK.
 class RealTimeClockAdapter final : public webrtc::Clock {
  public:
   explicit RealTimeClockAdapter(std::unique_ptr<NativeProductionLease> lease)
-      : lease_(std::move(lease)), clock_(webrtc::Clock::GetRealTimeClock()),
-        anchor_(Sample()) {}
+      : lease_(std::move(lease)), clock_(webrtc::Clock::GetRealTimeClock()) {}
   webrtc::Timestamp CurrentTime() override { return clock_->CurrentTime(); }
   webrtc::NtpTime ConvertTimestampToNtpTime(webrtc::Timestamp timestamp) override {
     if (!timestamp.IsFinite()) return webrtc::NtpTime();
-    return webrtc::NtpTime(real_time_clock_convert_ntp(
-        anchor_.timestamp_us, anchor_.ntp, timestamp.us()));
+    return clock_->ConvertTimestampToNtpTime(timestamp);
   }
   FfiClockNtpSample Sample() const {
     const auto timestamp = clock_->CurrentTime();
@@ -69,15 +66,7 @@ class RealTimeClockAdapter final : public webrtc::Clock {
   // environments can outlive all Rust clock handles without admitting hooks.
   std::unique_ptr<NativeProductionLease> lease_;
   webrtc::Clock* clock_;
-  const FfiClockNtpSample anchor_;
 };
-// The SDK's negative fractional conversion casts a negative double to uint32,
-// which is undefined. Exact negative seconds and positive NTP era wrapping are
-// supported. Native callers get invalid NTP for undefined inputs; Rust queries
-// report a typed error before invoking that SDK operation.
-bool SimulatedNtpSupported(webrtc::Timestamp timestamp) {
-  return timestamp.IsFinite() && timestamp.us() % 1000000 >= 0;
-}
 class SimulatedClockAdapter final : public webrtc::Clock {
  public:
   SimulatedClockAdapter(std::int64_t initial, std::int64_t minimum,
@@ -88,7 +77,7 @@ class SimulatedClockAdapter final : public webrtc::Clock {
     return clock_.CurrentTime();
   }
   webrtc::NtpTime ConvertTimestampToNtpTime(webrtc::Timestamp timestamp) override {
-    if (!SimulatedNtpSupported(timestamp)) return webrtc::NtpTime();
+    if (!timestamp.IsFinite()) return webrtc::NtpTime();
     return clock_.ConvertTimestampToNtpTime(timestamp);
   }
   bool Advance(std::int64_t delta_us) {
@@ -115,12 +104,11 @@ class SimulatedClockAdapter final : public webrtc::Clock {
 };
 FfiClockNtpValue ConvertNtp(const NativeClock& clock, webrtc::Timestamp timestamp) {
   if ((clock.simulated() || clock.real_time()) && !timestamp.IsFinite()) return {1, 0};
-  if (clock.simulated() && !SimulatedNtpSupported(timestamp)) return {2, 0};
   return {0, static_cast<std::uint64_t>(clock.clock()->ConvertTimestampToNtpTime(timestamp))};
 }
 // The delegate owns the exact SDK environment, not an echoed clock selection.
 // Its storage owns the reached bridge clock adapters. A raw SDK real-time
-// singleton needs the same lease and safe modular converter as real_time().
+// singleton needs the same process lease as real_time().
 class EnvironmentClockReference final : public webrtc::Clock {
  public:
   EnvironmentClockReference(webrtc::Environment environment,
@@ -144,10 +132,12 @@ class ClockReference final : public webrtc::Clock {
   std::shared_ptr<webrtc::Clock> clock_;
 };
 }
-NativeClock::NativeClock(std::shared_ptr<webrtc::Clock> clock, ClockKind kind, bool monotonic) noexcept
-    : clock_(std::move(clock)), kind_(kind), monotonic_(monotonic) {}
+NativeClock::NativeClock(std::shared_ptr<webrtc::Clock> clock, ClockKind kind, bool monotonic, const webrtc::Clock* sdk_identity) noexcept
+    : clock_(std::move(clock)), kind_(kind), monotonic_(monotonic),
+      sdk_identity_(sdk_identity ? sdk_identity : clock_.get()) {}
 NativeClock::~NativeClock() = default;
 const std::shared_ptr<webrtc::Clock>& NativeClock::clock() const noexcept { return clock_; }
+const webrtc::Clock* NativeClock::sdk_identity() const noexcept { return sdk_identity_; }
 bool NativeClock::simulated() const noexcept {
   return kind_ == ClockKind::Simulated || kind_ == ClockKind::RetainedSimulated;
 }
@@ -161,17 +151,19 @@ std::unique_ptr<NativeClock> new_real_time_clock() noexcept {
   auto lease = new_production_lease();
   if (!lease || webrtc::GetClockForTesting()) return nullptr;
   return std::make_unique<NativeClock>(
-      std::make_shared<RealTimeClockAdapter>(std::move(lease)), ClockKind::RealTime, true);
+      std::make_shared<RealTimeClockAdapter>(std::move(lease)), ClockKind::RealTime, true,
+      webrtc::Clock::GetRealTimeClock());
 }
 std::unique_ptr<NativeClock> environment_clock(const NativeEnvironment& environment,
     const NativeClock* selected, bool manual) noexcept {
   auto sdk = environment.environment();
+  const auto* identity = &sdk.clock();
   if (&sdk.clock() == webrtc::Clock::GetRealTimeClock()) {
     auto real_time = new_real_time_clock();
     if (!real_time) return nullptr;
     return std::make_unique<NativeClock>(
         std::make_shared<EnvironmentClockReference>(std::move(sdk), real_time->clock()),
-        ClockKind::RetainedRealTime, true);
+        ClockKind::RetainedRealTime, true, identity);
   }
   const auto kind = manual || (selected && selected->simulated())
       ? ClockKind::RetainedSimulated
@@ -179,7 +171,7 @@ std::unique_ptr<NativeClock> environment_clock(const NativeEnvironment& environm
   const bool monotonic = manual || (selected && selected->monotonic()) ||
       environment_clock_time_bounds(environment).monotonic;
   return std::make_unique<NativeClock>(
-      std::make_shared<EnvironmentClockReference>(std::move(sdk)), kind, monotonic);
+      std::make_shared<EnvironmentClockReference>(std::move(sdk)), kind, monotonic, identity);
 }
 bool clock_is_monotonic(const NativeClock& clock) noexcept { return clock.monotonic(); }
 FfiClockNtpSample real_time_clock_native_sample(const NativeClock& clock) noexcept {

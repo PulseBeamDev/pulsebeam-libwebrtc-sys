@@ -1,6 +1,12 @@
 //! Owned asynchronous local-network permission providers.
-use crate::{ffi, SocketAddress, provider_panic::catch_provider as catch_unwind};
-use std::{panic::AssertUnwindSafe, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use crate::{SocketAddress, ffi, provider_panic::catch_provider as catch_unwind};
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalNetworkPermissionStatus {
     Granted,

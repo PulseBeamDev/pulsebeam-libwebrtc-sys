@@ -239,13 +239,11 @@ fn independent_observer_survives_contained_unique_and_shared_destruction() {
     );
 }
 
-struct Payload(Arc<AtomicUsize>);
-impl Drop for Payload {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        panic!("payload destructor");
-    }
-}
+// Unknown payloads are intentionally forgotten by the containment policy.
+// Exercise a double-panicking destructor without deliberately allocating and
+// leaking a payload-owned counter; this is not an arbitrary-payload leak test.
+#[path = "common/panic_payload.rs"]
+mod panic_payload;
 struct Panicked(Arc<AtomicUsize>);
 impl VideoEncoderSelectorProvider for Panicked {
     fn on_current_encoder(&mut self, _: SdpVideoFormat) {
@@ -253,7 +251,7 @@ impl VideoEncoderSelectorProvider for Panicked {
     }
     fn on_available_bitrate(&mut self, _: DataRate) -> Option<SdpVideoFormat> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        std::panic::panic_any(Payload(self.0.clone()))
+        panic_payload::raise()
     }
     fn on_encoder_broken(&mut self) -> Option<SdpVideoFormat> {
         panic!("poisoned selector must not be called");
@@ -281,9 +279,10 @@ fn panic_poisoning_is_distinct_from_native_no_switch_and_suppresses_later_calls(
             .unwrap()
             .is_none()
     );
-    // One callback and one released original payload, including contained
-    // destructor failure. Later callbacks do not touch the failed provider.
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // Only the callback runs. Arbitrary panic payloads are not destructed:
+    // their field cleanup could double-panic and abort across the SDK loan.
+    // Later callbacks do not touch the failed provider.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 struct Recursive(Arc<Mutex<Option<VideoEncoderSelector>>>);

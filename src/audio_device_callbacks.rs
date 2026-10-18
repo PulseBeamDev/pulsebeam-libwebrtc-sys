@@ -153,6 +153,7 @@ impl RustAudioDeviceCallbacks {
         operation: AudioDeviceCallbackOperation,
         f: impl FnOnce(&mut Provider) -> Result<T, String>,
     ) -> Option<T> {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let entered = ACTIVE.with(|v| {
             let mut v = v.borrow_mut();
             let id = self as *const Self as usize;
@@ -189,6 +190,7 @@ impl RustAudioDeviceCallbacks {
         }
     }
     fn dispose(&mut self) {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let provider = self
             .provider
             .get_mut()

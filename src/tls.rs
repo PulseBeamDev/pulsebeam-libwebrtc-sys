@@ -1,5 +1,13 @@
-use std::{fmt, num::NonZeroUsize, panic::AssertUnwindSafe, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use crate::{ffi, provider_panic::catch_provider};
+use std::{
+    fmt,
+    num::NonZeroUsize,
+    panic::AssertUnwindSafe,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 /// Deeply owned native certificate statistics, including the issuer chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,7 +97,7 @@ impl TlsCertificate {
     pub fn stats(&self) -> Option<TlsCertificateStats> {
         TlsCertificateStats::from_native(ffi::tls_certificate_stats(self.native()))
     }
-    fn native(&self) -> &ffi::NativeTlsCertificate {
+    pub(crate) fn native(&self) -> &ffi::NativeTlsCertificate {
         self.native.as_ref().expect("owned certificate")
     }
     fn from_native(native: cxx::UniquePtr<ffi::NativeTlsCertificate>) -> Option<Self> {
@@ -161,6 +169,33 @@ impl TlsCertificateChain {
     }
 }
 
+/// An owning reference to the exact verifier supplied to a native peer. Socket
+/// creation options retain this owner, not a pointer borrowed from the factory
+/// or peer. It remains usable after socket/peer retirement. Verification is
+/// synchronous, shares the original failure latch and contains provider panics.
+#[derive(Clone)]
+pub struct SocketTlsVerifier(cxx::SharedPtr<ffi::NativeTlsVerifier>);
+// The backing contains either a Send + Sync Rust verifier/atomic failure latch,
+// or the binding's internal TURN-CA verifier with serialized native-only calls.
+// Both own their inputs/dependencies; no SSL session, role or socket is retained.
+// Foreign C++ verifier implementations cannot enter this private origin path.
+unsafe impl Send for SocketTlsVerifier {}
+unsafe impl Sync for SocketTlsVerifier {}
+impl SocketTlsVerifier {
+    pub(crate) fn from_native(value: cxx::SharedPtr<ffi::NativeTlsVerifier>) -> Option<Self> {
+        (!value.is_null()).then_some(Self(value))
+    }
+    pub fn verify(&self, certificate: &TlsCertificate) -> bool {
+        ffi::tls_verifier_verify(self.0.as_ref().unwrap(), certificate.native())
+    }
+    pub fn verify_chain(&self, chain: &TlsCertificateChain) -> bool {
+        ffi::tls_verifier_verify_chain(self.0.as_ref().unwrap(), chain.native())
+    }
+    pub fn has_failed(&self) -> bool {
+        ffi::tls_verifier_failed(self.0.as_ref().unwrap())
+    }
+}
+
 /// Synchronous native TLS verification. Callbacks normally run on the network
 /// sequence and must not wait for/reenter the owning application actor. Values
 /// are retained owners, not callback-scoped references; clones can leave the
@@ -222,6 +257,9 @@ impl RustTlsCertificateVerifier {
             }
         }
     }
+}
+pub(crate) fn rust_tls_certificate_verifier_failed(verifier: &RustTlsCertificateVerifier) -> bool {
+    verifier.failed.load(Ordering::Acquire)
 }
 pub(crate) fn tls_certificate_verifier_present(verifier: &RustTlsCertificateVerifier) -> bool {
     verifier.provider.is_some()

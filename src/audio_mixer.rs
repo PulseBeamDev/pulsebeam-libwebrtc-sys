@@ -95,6 +95,7 @@ impl RustMixerSource {
         &self,
         f: impl FnOnce(&mut dyn AudioMixerSourceProvider) -> Result<T, AudioMixerError>,
     ) -> Result<T, AudioMixerError> {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let result = (|| {
             let _scope = Scope::enter(self as *const Self as usize)?;
             let mut provider = self.provider.lock().unwrap_or_else(|e| e.into_inner());
@@ -117,6 +118,7 @@ impl RustMixerSource {
 }
 impl Drop for RustMixerSource {
     fn drop(&mut self) {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let provider = self
             .provider
             .get_mut()

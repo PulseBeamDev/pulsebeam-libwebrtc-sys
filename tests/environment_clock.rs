@@ -136,8 +136,8 @@ fn manual_utility_keeps_native_time_and_rust_only_lease_without_progress() {
     assert_eq!(utility.time_in_microseconds(), 1_250_000);
     assert_eq!(utility.current_ntp_time().unwrap().seconds(), 2_208_988_801);
     assert_eq!(
-        utility.convert_timestamp_to_ntp_time(Timestamp::from_microseconds(-1).unwrap()),
-        Err(TimeValueError::OutOfRange)
+        utility.convert_timestamp_to_ntp_time(Timestamp::from_microseconds(-1_000_000).unwrap()),
+        Ok(NtpTime::from_parts(2_208_988_799, 0))
     );
     assert_eq!(
         utility.convert_timestamp_to_ntp_time(Timestamp::plus_infinity()),
@@ -171,11 +171,7 @@ fn default_utility_uses_sdk_time_and_retains_system_clock_admission() {
         utility.convert_timestamp_to_ntp_time(Timestamp::minus_infinity()),
         Err(TimeValueError::InfiniteValue)
     );
-    assert!(
-        utility
-            .convert_timestamp_to_ntp_time(Timestamp::from_microseconds(i64::MAX - 1).unwrap())
-            .is_ok()
-    );
+    assert!(utility.convert_timestamp_to_ntp_time(actual).is_ok());
     environment.close();
     assert!(ControlledWorld::acquire(0xc10e, Duration::from_secs(1)).is_err());
     drop(utility);

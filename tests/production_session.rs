@@ -311,6 +311,7 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
                 .unwrap();
         }
         let mut frames = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(15);
         while frames.len() < 2 {
             for receiver in &receivers {
                 while let Some(frame) = session.try_audio_frame(*receiver).unwrap() {
@@ -318,7 +319,14 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
                 }
             }
             if frames.len() < 2 {
-                wait(&mut session);
+                // Actor readiness coalesces peer activity, not encoded sink
+                // arrivals. Drain the actual media queues with a bounded wait.
+                assert!(
+                    Instant::now() < deadline,
+                    "received only {} of two mapped Opus frames",
+                    frames.len()
+                );
+                thread::sleep(Duration::from_millis(1));
             }
         }
         assert_eq!(frames.len(), 2);

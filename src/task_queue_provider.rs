@@ -1,5 +1,5 @@
-use crate::{QueuePriority, TimeDelta, ffi};
 use crate::provider_panic::catch_provider as catch_unwind;
+use crate::{QueuePriority, TimeDelta, ffi};
 use std::panic::AssertUnwindSafe;
 use std::sync::{
     Arc,
@@ -88,23 +88,27 @@ impl TaskQueueContext {
     /// Post asynchronously through the native queue that is current on this
     /// thread. This works for engine-created queues without exposing an owner
     /// or pointer. It cannot post from another thread or retain the queue.
+    /// This may be an SDK-internal queue: its callbacks cannot synchronously
+    /// close peers. Post control work to a caller-owned queue instead.
     /// Address reuse has the same meaning as `TaskQueueIdentity`: this is a
     /// current-address comparison, not a persistent resource identifier.
     /// Native shutdown can cancel accepted work. A provider failure reported
     /// after posting does not roll back work already delivered to its scheduler.
     pub fn post(&self, task: impl FnOnce() + Send + 'static) -> Result<(), TaskQueuePostError> {
-        match ffi::task_queue_current_post(self.identity.0, crate::execution::boxed_task(task)) {
+        match ffi::task_queue_current_post(
+            self.identity.0,
+            crate::execution::boxed_context_task(task),
+        ) {
             0 => Ok(()),
             1 => Err(TaskQueuePostError::NotCurrent),
             _ => Err(TaskQueuePostError::QueueUnavailable),
         }
     }
     /// Post an exact native delay asynchronously through the current queue.
-    /// Custom providers accept all signed/infinite states. Built-in backends
-    /// retain their native precision/rounding and clock-domain behavior and
-    /// reject unsafe conversions with `UnsupportedNativeDelay`; see
-    /// [`crate::TaskQueue::post_delayed_native`] and
-    /// [`crate::WorkerThread::post_delayed_native`] for the backend domains.
+    /// Custom providers and SDK backends receive signed/infinite states unchanged;
+    /// backend arithmetic and precision/rounding remain native. Caller-owned
+    /// cooperative queues require finite delays; see
+    /// [`crate::TaskQueue::post_delayed_native`].
     /// This has the same current-address and shutdown semantics as `post`.
     pub fn post_delayed(
         &self,
@@ -117,7 +121,7 @@ impl TaskQueueContext {
             self.identity.0,
             delay.native_microsecond_bits(),
             precision == TaskDelayPrecision::High,
-            crate::execution::boxed_task(task),
+            crate::execution::boxed_context_task(task),
         ) {
             0 => Ok(()),
             1 => Err(TaskQueuePostError::NotCurrent),
@@ -214,8 +218,15 @@ pub struct TaskQueueTask(cxx::UniquePtr<ffi::NativeTaskQueueTicket>);
 // and checks retirement; deletion revokes captures before freeing the identity.
 unsafe impl Send for TaskQueueTask {}
 impl TaskQueueTask {
-    pub fn execute(self) -> bool {
-        ffi::task_queue_ticket_submit(self.0)
+    pub fn execute(mut self) -> bool {
+        let _turn = crate::execution::controlled_owner_turn();
+        ffi::task_queue_ticket_submit(std::mem::replace(&mut self.0, cxx::UniquePtr::null()))
+    }
+}
+impl Drop for TaskQueueTask {
+    fn drop(&mut self) {
+        let _turn = crate::execution::controlled_owner_turn();
+        drop(std::mem::replace(&mut self.0, cxx::UniquePtr::null()));
     }
 }
 
@@ -276,7 +287,11 @@ pub(crate) fn task_queue_provider_create(
             _ => QueuePriority::Normal,
         };
         match catch_unwind(AssertUnwindSafe(|| {
-            state.provider.as_ref().expect("live queue factory").create_task_queue(name, priority)
+            state
+                .provider
+                .as_ref()
+                .expect("live queue factory")
+                .create_task_queue(name, priority)
         })) {
             Ok(provider) => Some(provider),
             Err(_) => {

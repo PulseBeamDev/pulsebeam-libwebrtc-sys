@@ -12,7 +12,13 @@ use std::{
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum DropPoint { #[default] None, Factory, Resolver, Result }
+enum DropPoint {
+    #[default]
+    None,
+    Factory,
+    Resolver,
+    Result,
+}
 #[derive(Default)]
 struct Observed {
     drop_point: DropPoint,
@@ -32,7 +38,9 @@ struct ResultProvider(Arc<Observed>);
 impl Drop for ResultProvider {
     fn drop(&mut self) {
         self.0.result_dropped.fetch_add(1, Ordering::SeqCst);
-        if self.0.drop_point == DropPoint::Result { panic_payload::raise(); }
+        if self.0.drop_point == DropPoint::Result {
+            panic_payload::raise();
+        }
     }
 }
 impl AsyncDnsResolverResult for ResultProvider {
@@ -80,14 +88,18 @@ impl AsyncDnsResolver for Resolver {
 impl Drop for Resolver {
     fn drop(&mut self) {
         self.observed.dropped.fetch_add(1, Ordering::SeqCst);
-        if self.observed.drop_point == DropPoint::Resolver { panic_payload::raise(); }
+        if self.observed.drop_point == DropPoint::Resolver {
+            panic_payload::raise();
+        }
     }
 }
 struct Factory(Arc<Observed>);
 impl Drop for Factory {
     fn drop(&mut self) {
         self.0.factory_dropped.fetch_add(1, Ordering::SeqCst);
-        if self.0.drop_point == DropPoint::Factory { panic_payload::raise(); }
+        if self.0.drop_point == DropPoint::Factory {
+            panic_payload::raise();
+        }
     }
 }
 impl AsyncDnsResolverFactoryProvider for Factory {
@@ -239,7 +251,10 @@ fn run_native_dns(drop_point: DropPoint) {
         .unwrap()
         .to_owned();
     for retire_before_delivery in [false, true] {
-        let observed = Arc::new(Observed { drop_point, ..Observed::default() });
+        let observed = Arc::new(Observed {
+            drop_point,
+            ..Observed::default()
+        });
         let dns = AsyncDnsResolverFactory::from_provider(Factory(observed.clone()));
         let mut peer = factory
             .create_peer_connection_with_dependencies(
@@ -352,11 +367,15 @@ fn run_native_dns(drop_point: DropPoint) {
                         && address.port() == original.port())
             );
             drop(calls);
-            let dropped_with_panic =
-                (drop_point == DropPoint::Resolver && observed.dropped.load(Ordering::SeqCst) != 0)
-                || (drop_point == DropPoint::Result && observed.result_dropped.load(Ordering::SeqCst) != 0);
-            assert_eq!(dns.has_failed(), dropped_with_panic,
-                "destructor failure must latch as soon as native resolution retires its owner");
+            let dropped_with_panic = (drop_point == DropPoint::Resolver
+                && observed.dropped.load(Ordering::SeqCst) != 0)
+                || (drop_point == DropPoint::Result
+                    && observed.result_dropped.load(Ordering::SeqCst) != 0);
+            assert_eq!(
+                dns.has_failed(),
+                dropped_with_panic,
+                "destructor failure must latch as soon as native resolution retires its owner"
+            );
             drop(dns);
             peer.close().unwrap();
             drop(peer);
@@ -367,7 +386,10 @@ fn run_native_dns(drop_point: DropPoint) {
         }
         world.pump(256);
         assert_eq!(observed.factory_dropped.load(Ordering::SeqCst), 1);
-        assert_eq!(observed.result_dropped.load(Ordering::SeqCst), observed.created.load(Ordering::SeqCst));
+        assert_eq!(
+            observed.result_dropped.load(Ordering::SeqCst),
+            observed.created.load(Ordering::SeqCst)
+        );
     }
     remote.close().unwrap();
     drop(remote_channel);

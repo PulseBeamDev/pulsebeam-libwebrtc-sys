@@ -1,7 +1,10 @@
-use crate::{ffi, FiniteTimestamp, NtpTime, TimeValueError, Timestamp};
 use crate::provider_panic::catch_provider as catch_unwind;
+use crate::{FiniteTimestamp, NtpTime, TimeValueError, Timestamp, ffi};
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, atomic::{AtomicBool, AtomicI64, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicI64, Ordering},
+};
 
 /// Both virtual methods of the pinned Clock interface. Reads and conversion
 /// can run concurrently on any engine role thread. Current time must be finite
@@ -90,8 +93,16 @@ pub(crate) struct RustClockProvider(Arc<ProviderState>);
 
 pub(crate) fn clock_provider_current_time(provider: &RustClockProvider) -> i64 {
     let state = &provider.0;
-    if state.failed.load(Ordering::Acquire) { return state.last_time.load(Ordering::Acquire); }
-    let result = catch_unwind(AssertUnwindSafe(|| state.provider.as_ref().expect("live clock provider").current_time()));
+    if state.failed.load(Ordering::Acquire) {
+        return state.last_time.load(Ordering::Acquire);
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        state
+            .provider
+            .as_ref()
+            .expect("live clock provider")
+            .current_time()
+    }));
     if let Some(mutex) = &state.monotonic_time {
         let mut last = mutex
             .lock()
@@ -125,8 +136,16 @@ pub(crate) fn clock_provider_current_time(provider: &RustClockProvider) -> i64 {
 }
 pub(crate) fn clock_provider_convert_ntp(provider: &RustClockProvider, timestamp: i64) -> u64 {
     let state = &provider.0;
-    if state.failed.load(Ordering::Acquire) { return 0; }
-    match catch_unwind(AssertUnwindSafe(|| state.provider.as_ref().expect("live clock provider").convert_timestamp_to_ntp_time(Timestamp::from_native_microsecond_bits(timestamp)))) {
+    if state.failed.load(Ordering::Acquire) {
+        return 0;
+    }
+    match catch_unwind(AssertUnwindSafe(|| {
+        state
+            .provider
+            .as_ref()
+            .expect("live clock provider")
+            .convert_timestamp_to_ntp_time(Timestamp::from_native_microsecond_bits(timestamp))
+    })) {
         Ok(value) => value.raw(),
         Err(_) => {
             let _guard = state.monotonic_time.as_ref().map(|mutex| {
@@ -150,7 +169,7 @@ struct ClockState {
 }
 // SAFETY: the native handle owns a shared adapter with no thread-affine state.
 // It calls a Send + Sync provider, synchronized native SimulatedClock, or the
-// SDK real-time singleton with a retained production lease and immutable anchor.
+// SDK real-time singleton with a retained production lease.
 // Environment references retain the adapter independently. No borrowed Clock
 // pointer escapes to Rust.
 unsafe impl Send for ClockState {}
@@ -165,18 +184,25 @@ unsafe impl Sync for ClockState {}
 #[derive(Clone)]
 pub struct Clock(Arc<ClockState>);
 impl Clock {
-    pub(crate) fn from_environment(native: cxx::UniquePtr<ffi::NativeClock>, environment: &crate::Environment) -> Self {
+    pub(crate) fn from_environment(
+        native: cxx::UniquePtr<ffi::NativeClock>,
+        environment: &crate::Environment,
+    ) -> Self {
         let monotonic = ffi::clock_is_monotonic(native.as_ref().expect("owned environment clock"));
         Self(Arc::new(ClockState {
             native,
-            provider: environment.selected_clock_handle().and_then(|clock| clock.0.provider.clone()),
+            provider: environment
+                .selected_clock_handle()
+                .and_then(|clock| clock.0.provider.clone()),
             _environment: Some(Box::new(environment.clone())),
             manual_source: environment.manual_clock_source().cloned(),
             bounds: environment.clock_time_bounds(),
             monotonic,
         }))
     }
-    pub(crate) fn manual_source(&self) -> Option<&crate::ManualClock> { self.0.manual_source.as_ref() }
+    pub(crate) fn manual_source(&self) -> Option<&crate::ManualClock> {
+        self.0.manual_source.as_ref()
+    }
     pub fn from_provider(provider: impl ClockProvider) -> Self {
         Self::from_bounded_provider(provider, ClockTimeBounds::all_finite())
     }
@@ -209,7 +235,9 @@ impl Clock {
     ) -> Self {
         let fallback = 0i64.clamp(bounds.minimum.microseconds(), bounds.maximum.microseconds());
         let state = Arc::new(ProviderState {
-            provider: Some(Box::new(provider)), bounds, failed: AtomicBool::new(false),
+            provider: Some(Box::new(provider)),
+            bounds,
+            failed: AtomicBool::new(false),
             last_time: AtomicI64::new(fallback),
             monotonic_time: monotonic.then(|| std::sync::Mutex::new(None)),
         });
@@ -232,15 +260,11 @@ impl Clock {
     pub fn time_bounds(&self) -> ClockTimeBounds {
         self.0.bounds
     }
-    /// Owned SDK real-time clock with safe timestamp-to-NTP conversion.
+    /// Owned SDK real-time clock with native timestamp-to-NTP conversion.
     ///
-    /// A matched native sample captures the SDK's cached mapping. Integer
-    /// modular conversion preserves every native-defined result, including
-    /// fractional truncation and era wrapping. For finite timestamps outside
-    /// the SDK's nonnegative, signed-addition domain, the same mapping extends
-    /// modulo one NTP era instead of executing undefined native arithmetic.
+    /// Conversion, fractional rounding and NTP era interpretation are SDK-owned.
     /// Infinity is rejected by Rust queries and becomes invalid NTP for native
-    /// consumers. Custom providers and simulated clocks keep their own rules.
+    /// consumers. Custom providers keep their own conversion contract.
     ///
     /// Construction requires the SDK's ordinary valid-system-clock assumptions.
     /// The clock and every retaining environment hold a production lease, so
@@ -279,21 +303,18 @@ impl Clock {
             .millis()
             .expect("finite native provider time")
     }
-    /// Native current-time conversion. The built-in simulated clock cannot
-    /// safely convert negative fractional seconds. The real-time clock uses its
-    /// matched-anchor modular mapping. Custom providers define their own domain,
-    /// including explicit invalid NTP results.
+    /// Native current-time conversion. Built-in clocks delegate NTP arithmetic
+    /// to libwebrtc. Custom providers define their own domain, including explicit
+    /// invalid NTP results.
     pub fn current_ntp_time(&self) -> Result<NtpTime, TimeValueError> {
         ntp_result(ffi::provider_clock_current_ntp(self.native()))
     }
     pub fn current_ntp_in_milliseconds(&self) -> Result<i64, TimeValueError> {
         self.current_ntp_time().map(NtpTime::millis)
     }
-    /// Convert without narrowing custom provider inputs. Built-in simulated
-    /// conversion rejects infinity and negative fractional seconds before SDK
-    /// entry; negative exact seconds and NTP era wrapping remain supported.
-    /// Real-time conversion rejects infinity but defines a modular extension for
-    /// every finite timestamp, preserving all native-defined conversion bits.
+    /// Convert without narrowing custom provider inputs. Built-in clocks require
+    /// finite timestamps and delegate every finite value to the native converter;
+    /// NTP arithmetic and era interpretation remain libwebrtc-owned.
     pub fn convert_timestamp_to_ntp_time(
         &self,
         timestamp: Timestamp,
@@ -327,25 +348,6 @@ impl std::fmt::Display for RealTimeClockUnavailable {
     }
 }
 impl std::error::Error for RealTimeClockUnavailable {}
-
-// For an integer microsecond remainder r, the SDK emits floor(r * Q / M).
-// Q > M makes that mapping injective; ceil(fraction * M / Q) recovers r exactly.
-// Only the anchor's time modulo Q seconds is needed, not its private era/offset.
-// Widen before subtraction: two finite native timestamps may differ by > i64.
-pub(crate) fn real_time_clock_convert_ntp(
-    anchor_timestamp: i64,
-    anchor_ntp: u64,
-    timestamp: i64,
-) -> u64 {
-    const M: i128 = 1_000_000;
-    const Q: i128 = 1 << 32;
-    let anchor = NtpTime::from_raw(anchor_ntp);
-    let remainder = (i128::from(anchor.fractions()) * M + Q - 1) / Q;
-    let anchor_us = i128::from(anchor.seconds()) * M + remainder;
-    let delta = i128::from(timestamp) - i128::from(anchor_timestamp);
-    let target = (anchor_us + delta).rem_euclid(Q * M);
-    NtpTime::from_parts((target / M) as u32, ((target % M) * Q / M) as u32).raw()
-}
 
 fn ntp_result(value: ffi::FfiClockNtpValue) -> Result<NtpTime, TimeValueError> {
     match value.error {
@@ -401,8 +403,8 @@ impl SimulatedClock {
         Self::new(Timestamp::from_microseconds(initial)?)
     }
     /// Shared read/conversion view for environment and production builders.
-    /// Internal native NTP queries return invalid NTP for unsafe conversion
-    /// inputs; this view's Rust queries expose those failures as typed errors.
+    /// Finite NTP inputs delegate to the SDK converter; infinite inputs return
+    /// a typed error from Rust and invalid NTP to native consumers.
     pub fn clock(&self) -> &Clock {
         &self.0
     }
@@ -431,73 +433,6 @@ impl std::ops::Deref for SimulatedClock {
 #[cfg(test)]
 mod real_time_tests {
     use super::*;
-
-    // This is the pinned SDK's defined nonnegative integer conversion, with
-    // the addition supplied separately in i128 so tests never execute C++ UB.
-    fn native_bits(ntp_us: i128) -> u64 {
-        assert!((0..=i128::from(i64::MAX)).contains(&ntp_us));
-        NtpTime::from_parts(
-            (ntp_us / 1_000_000) as u32,
-            ((ntp_us % 1_000_000) * (1i128 << 32) / 1_000_000) as u32,
-        )
-        .raw()
-    }
-
-    #[test]
-    fn anchor_quantization_recovers_every_integer_microsecond() {
-        for remainder in 0..1_000_000 {
-            let anchor = native_bits(19_000_000 + remainder);
-            assert_eq!(real_time_clock_convert_ntp(-17, anchor, -17), anchor);
-        }
-    }
-
-    #[test]
-    fn native_defined_values_are_exact_across_eras_and_fractional_boundaries() {
-        const ERA: i128 = (1i128 << 32) * 1_000_000;
-        for offset in [
-            0,
-            2_208_988_800_123_456,
-            ERA + 999_999,
-            i128::from(i64::MAX) - ERA,
-        ] {
-            let anchor = native_bits(offset);
-            for target in [0, 1, 999_999, 1_000_000, 1_000_001, ERA - 1, ERA, ERA + 1] {
-                if offset + target <= i128::from(i64::MAX) {
-                    assert_eq!(
-                        real_time_clock_convert_ntp(0, anchor, target as i64),
-                        native_bits(offset + target)
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn finite_extension_wraps_both_directions_and_widens_before_subtraction() {
-        const ERA: i64 = (1i64 << 32) * 1_000_000;
-        assert_eq!(
-            real_time_clock_convert_ntp(0, 0, -1),
-            NtpTime::from_parts(u32::MAX, 4_294_963_001).raw()
-        );
-        assert_eq!(real_time_clock_convert_ntp(0, 0, ERA), 0);
-        assert_eq!(real_time_clock_convert_ntp(0, 0, -ERA), 0);
-        let anchor_timestamp = i64::MIN + 1;
-        let target = i64::MAX - 1;
-        let expected = native_bits(
-            (i128::from(target) - i128::from(anchor_timestamp)).rem_euclid(i128::from(ERA)),
-        );
-        assert_eq!(
-            real_time_clock_convert_ntp(anchor_timestamp, 0, target),
-            expected
-        );
-        let reverse = native_bits(
-            (i128::from(anchor_timestamp) - i128::from(target)).rem_euclid(i128::from(ERA)),
-        );
-        assert_eq!(
-            real_time_clock_convert_ntp(target, 0, anchor_timestamp),
-            reverse
-        );
-    }
 
     #[test]
     fn real_time_mapping_matches_independent_native_samples() {

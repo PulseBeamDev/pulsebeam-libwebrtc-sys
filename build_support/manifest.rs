@@ -18,11 +18,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "0008c077162b8e2a48aed9819393d0e52fd9b49b1ea3f37028f8518cfe8c001d";
+    "80c90d9481ee060170a30dc21d36b5641197bc917a4aa2bd30794b426c712efb";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
-    "4b182c74cc2b951ae8d1f94451fe2b078744cb063edc544578567e584730c18a";
+    "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "95f12f2568bb9555b4e00f3e9e34fcff3869ac3eea2e16b5b6f00e68a4395740";
+    "cbc8114cd4eda0b7dfa9398f3dabdd20f551843bbeb75a81b3e53f3538de5b0e";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -118,8 +118,14 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
         "native/event_log.h",
         include_bytes!("../native/event_log.h"),
     ),
-    ("native/event_log_codec.cc", include_bytes!("../native/event_log_codec.cc")),
-    ("native/event_log_codec.h", include_bytes!("../native/event_log_codec.h")),
+    (
+        "native/event_log_codec.cc",
+        include_bytes!("../native/event_log_codec.cc"),
+    ),
+    (
+        "native/event_log_codec.h",
+        include_bytes!("../native/event_log_codec.h"),
+    ),
     (
         "native/execution.cc",
         include_bytes!("../native/execution.cc"),
@@ -184,6 +190,22 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ),
     ("native/network.cc", include_bytes!("../native/network.cc")),
     ("native/network.h", include_bytes!("../native/network.h")),
+    (
+        "native/network_values.cc",
+        include_bytes!("../native/network_values.cc"),
+    ),
+    (
+        "native/network_values.h",
+        include_bytes!("../native/network_values.h"),
+    ),
+    (
+        "native/packet_socket.cc",
+        include_bytes!("../native/packet_socket.cc"),
+    ),
+    (
+        "native/packet_socket.h",
+        include_bytes!("../native/packet_socket.h"),
+    ),
     (
         "native/network_control.cc",
         include_bytes!("../native/network_control.cc"),
@@ -282,6 +304,22 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     ),
     ("native/video.cc", include_bytes!("../native/video.cc")),
     ("native/video.h", include_bytes!("../native/video.h")),
+    (
+        "native/desktop_frame.cc",
+        include_bytes!("../native/desktop_frame.cc"),
+    ),
+    (
+        "native/desktop_frame.h",
+        include_bytes!("../native/desktop_frame.h"),
+    ),
+    (
+        "native/desktop_memory.cc",
+        include_bytes!("../native/desktop_memory.cc"),
+    ),
+    (
+        "native/desktop_memory.h",
+        include_bytes!("../native/desktop_memory.h"),
+    ),
     (
         "native/video_bitrate.cc",
         include_bytes!("../native/video_bitrate.cc"),

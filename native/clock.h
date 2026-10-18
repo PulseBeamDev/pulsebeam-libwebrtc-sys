@@ -11,9 +11,10 @@ class NativeEnvironment;
 class NativeClock final {
  public:
   explicit NativeClock(std::shared_ptr<webrtc::Clock> clock, ClockKind kind = ClockKind::Provider,
-      bool monotonic = false) noexcept;
+      bool monotonic = false, const webrtc::Clock* sdk_identity = nullptr) noexcept;
   ~NativeClock();
   const std::shared_ptr<webrtc::Clock>& clock() const noexcept;
+  const webrtc::Clock* sdk_identity() const noexcept;
   bool simulated() const noexcept;
   bool owned_simulated() const noexcept;
   bool real_time() const noexcept;
@@ -23,6 +24,7 @@ class NativeClock final {
   std::shared_ptr<webrtc::Clock> clock_;
   ClockKind kind_;
   bool monotonic_;
+  const webrtc::Clock* sdk_identity_;
 };
 std::unique_ptr<NativeClock> new_provider_clock(rust::Box<RustClockProvider> provider, bool monotonic) noexcept;
 std::unique_ptr<NativeClock> new_simulated_clock(std::int64_t initial_time_us,

@@ -606,6 +606,8 @@ _bridge-objects flavor target stage definitions_file:
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\event_log_codec.cc" "/Fo$bridge_native\\obj\\event_log_codec.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\execution.cc" "/Fo$bridge_native\\obj\\execution.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network.cc" "/Fo$bridge_native\\obj\\network.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\network_values.cc" "/Fo$bridge_native\\obj\\network_values.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\packet_socket.cc" "/Fo$bridge_native\\obj\\packet_socket.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\clock.cc" "/Fo$bridge_native\\obj\\clock.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\metronome.cc" "/Fo$bridge_native\\obj\\metronome.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\certificate_generator.cc" "/Fo$bridge_native\\obj\\certificate_generator.$suffix"
@@ -641,6 +643,8 @@ _bridge-objects flavor target stage definitions_file:
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\tls.cc" "/Fo$bridge_native\\obj\\tls.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\data_channel.cc" "/Fo$bridge_native\\obj\\data_channel.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\video.cc" "/Fo$bridge_native\\obj\\video.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\desktop_frame.cc" "/Fo$bridge_native\\obj\\desktop_frame.$suffix"
+      MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\desktop_memory.cc" "/Fo$bridge_native\\obj\\desktop_memory.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\audio.cc" "/Fo$bridge_native\\obj\\audio.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\native\\probe.cc" "/Fo$bridge_native\\obj\\probe.$suffix"
       MSYS2_ARG_CONV_EXCL='*' "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" /c "$root_native\\vendor\\cxx\\src\\cxx.cc" "/Fo$bridge_native\\obj\\cxx.$suffix"
@@ -650,6 +654,8 @@ _bridge-objects flavor target stage definitions_file:
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/event_log_codec.cc" -o "$bridge/obj/event_log_codec.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/execution.cc" -o "$bridge/obj/execution.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/network.cc" -o "$bridge/obj/network.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/network_values.cc" -o "$bridge/obj/network_values.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/packet_socket.cc" -o "$bridge/obj/packet_socket.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/clock.cc" -o "$bridge/obj/clock.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/metronome.cc" -o "$bridge/obj/metronome.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/certificate_generator.cc" -o "$bridge/obj/certificate_generator.$suffix"
@@ -685,12 +691,14 @@ _bridge-objects flavor target stage definitions_file:
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/tls.cc" -o "$bridge/obj/tls.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/data_channel.cc" -o "$bridge/obj/data_channel.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/video.cc" -o "$bridge/obj/video.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/desktop_frame.cc" -o "$bridge/obj/desktop_frame.$suffix"
+      "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/desktop_memory.cc" -o "$bridge/obj/desktop_memory.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/audio.cc" -o "$bridge/obj/audio.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/native/probe.cc" -o "$bridge/obj/probe.$suffix"
       "$cxx" "${args[@]}" "${include[@]}" "${defs[@]}" -c "{{ root }}/vendor/cxx/src/cxx.cc" -o "$bridge/obj/cxx.$suffix"
     fi
     if test "{{ target }}" = windows-x86_64; then "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\llvm-readobj" --file-headers "$bridge_native\\obj\\bridge.obj" | grep -F 'Format: COFF-x86-64' >/dev/null; fi
-    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/event_log.$suffix" "$bridge/obj/event_log_codec.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/clock.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/video_bitrate.$suffix" "$bridge/obj/video_metadata.$suffix" "$bridge/obj/video_codec_callbacks.$suffix" "$bridge/obj/encoded_image.$suffix" "$bridge/obj/raw_video_frame.$suffix" "$bridge/obj/live_frame_transformer.$suffix" "$bridge/obj/frame_transformer.$suffix" "$bridge/obj/video_codec_values.$suffix" "$bridge/obj/video_encoder_selector.$suffix" "$bridge/obj/network_predictor.$suffix" "$bridge/obj/fec.$suffix" "$bridge/obj/network_control.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/media_values.$suffix" "$bridge/obj/audio_frame_values.$suffix" "$bridge/obj/audio_processor.$suffix" "$bridge/obj/audio_device.$suffix" "$bridge/obj/audio_echo_config.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/stats.$suffix" "$bridge/obj/media_stream.$suffix" "$bridge/obj/transport.$suffix" "$bridge/obj/rtc_error.$suffix" "$bridge/obj/string_builder.$suffix" "$bridge/obj/rtp_values.$suffix" "$bridge/obj/local_network_permission.$suffix" "$bridge/obj/metronome.$suffix" "$bridge/obj/certificate_generator.$suffix" "$bridge/obj/async_dns.$suffix" "$bridge/obj/socket_address.$suffix" "$bridge/obj/task_queue_provider.$suffix" "$bridge/obj/tls.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/audio.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
+    printf '%s\n' "$bridge/obj/bridge.$suffix" "$bridge/obj/event_log.$suffix" "$bridge/obj/event_log_codec.$suffix" "$bridge/obj/execution.$suffix" "$bridge/obj/clock.$suffix" "$bridge/obj/network.$suffix" "$bridge/obj/network_values.$suffix" "$bridge/obj/packet_socket.$suffix" "$bridge/obj/video_bitrate.$suffix" "$bridge/obj/video_metadata.$suffix" "$bridge/obj/video_codec_callbacks.$suffix" "$bridge/obj/encoded_image.$suffix" "$bridge/obj/raw_video_frame.$suffix" "$bridge/obj/live_frame_transformer.$suffix" "$bridge/obj/frame_transformer.$suffix" "$bridge/obj/video_codec_values.$suffix" "$bridge/obj/video_encoder_selector.$suffix" "$bridge/obj/network_predictor.$suffix" "$bridge/obj/fec.$suffix" "$bridge/obj/network_control.$suffix" "$bridge/obj/codec.$suffix" "$bridge/obj/media_values.$suffix" "$bridge/obj/audio_frame_values.$suffix" "$bridge/obj/audio_processor.$suffix" "$bridge/obj/audio_device.$suffix" "$bridge/obj/audio_echo_config.$suffix" "$bridge/obj/peer.$suffix" "$bridge/obj/stats.$suffix" "$bridge/obj/media_stream.$suffix" "$bridge/obj/transport.$suffix" "$bridge/obj/rtc_error.$suffix" "$bridge/obj/string_builder.$suffix" "$bridge/obj/rtp_values.$suffix" "$bridge/obj/local_network_permission.$suffix" "$bridge/obj/metronome.$suffix" "$bridge/obj/certificate_generator.$suffix" "$bridge/obj/async_dns.$suffix" "$bridge/obj/socket_address.$suffix" "$bridge/obj/task_queue_provider.$suffix" "$bridge/obj/tls.$suffix" "$bridge/obj/data_channel.$suffix" "$bridge/obj/video.$suffix" "$bridge/obj/desktop_frame.$suffix" "$bridge/obj/desktop_memory.$suffix" "$bridge/obj/audio.$suffix" "$bridge/obj/probe.$suffix" "$bridge/obj/cxx.$suffix"
 
 _link-flags flavor target:
     #!/usr/bin/env bash

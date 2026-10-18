@@ -329,13 +329,10 @@ pub(crate) struct RustFrameTransformerProvider {
     provider: Option<Arc<dyn FrameTransformerProvider>>,
     failures: FrameTransformerFailureObserver,
 }
-fn discard_panic(payload: Box<dyn std::any::Any + Send>) {
-    if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-        std::mem::forget(secondary);
-    }
-}
+use crate::panic_payload::discard as discard_panic;
 impl Drop for RustFrameTransformerProvider {
     fn drop(&mut self) {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))) {
             self.failures.record();
             discard_panic(payload);
@@ -346,6 +343,7 @@ fn invoke_provider(
     provider: &RustFrameTransformerProvider,
     operation: impl FnOnce(&dyn FrameTransformerProvider),
 ) {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
         operation(
             provider

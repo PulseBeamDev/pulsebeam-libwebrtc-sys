@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <climits>
 #include <string>
+#include <optional>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include "openssl/digest.h"
@@ -29,17 +31,53 @@ rust::Vec<FfiTlsCertificateStats> Stats(std::unique_ptr<webrtc::SSLCertificateSt
 }
 class RustTlsVerifier final : public webrtc::SSLCertificateVerifier {
  public:
-  explicit RustTlsVerifier(rust::Box<RustTlsCertificateVerifier> verifier) : verifier_(std::move(verifier)) {}
+  explicit RustTlsVerifier(std::shared_ptr<NativeTlsVerifier> verifier) : verifier_(std::move(verifier)) {}
   bool Verify(const webrtc::SSLCertificate& certificate) override {
-    return rust_tls_certificate_verify(*verifier_, std::make_unique<NativeTlsCertificate>(certificate.Clone()));
+    auto lease = verifier_;
+    return lease->Verify(certificate);
   }
   bool VerifyChain(const webrtc::SSLCertChain& chain) override {
-    return rust_tls_certificate_verify_chain(*verifier_, std::make_unique<NativeTlsCertificateChain>(chain.Clone()));
+    auto lease = verifier_;
+    return lease->VerifyChain(chain);
   }
+  const std::shared_ptr<NativeTlsVerifier>& backing() const { return verifier_; }
  private:
-  rust::Box<RustTlsCertificateVerifier> verifier_;
+  std::shared_ptr<NativeTlsVerifier> verifier_;
 };
 }
+struct NativeTlsVerifier::State {
+  explicit State(rust::Box<RustTlsCertificateVerifier> value) : source(std::move(value)) {}
+  explicit State(std::unique_ptr<webrtc::SSLCertificateVerifier> value) : native(std::move(value)) {}
+  std::optional<rust::Box<RustTlsCertificateVerifier>> source;
+  std::unique_ptr<webrtc::SSLCertificateVerifier> native;
+  std::mutex native_mutex;
+};
+NativeTlsVerifier::NativeTlsVerifier(rust::Box<RustTlsCertificateVerifier> source) noexcept
+    : state_(std::make_unique<State>(std::move(source))) {}
+NativeTlsVerifier::NativeTlsVerifier(std::unique_ptr<webrtc::SSLCertificateVerifier> source) noexcept
+    : state_(std::make_unique<State>(std::move(source))) {}
+NativeTlsVerifier::~NativeTlsVerifier() = default;
+bool NativeTlsVerifier::Verify(const webrtc::SSLCertificate& certificate) const {
+  if (state_->source) return rust_tls_certificate_verify(**state_->source, std::make_unique<NativeTlsCertificate>(certificate.Clone()));
+  std::lock_guard lock(state_->native_mutex);
+  return state_->native->Verify(certificate);
+}
+bool NativeTlsVerifier::VerifyChain(const webrtc::SSLCertChain& chain) const {
+  if (state_->source) return rust_tls_certificate_verify_chain(**state_->source, std::make_unique<NativeTlsCertificateChain>(chain.Clone()));
+  std::lock_guard lock(state_->native_mutex);
+  return state_->native->VerifyChain(chain);
+}
+bool NativeTlsVerifier::Failed() const noexcept { return state_->source && rust_tls_certificate_verifier_failed(**state_->source); }
+std::shared_ptr<NativeTlsVerifier> retain_binding_peer_tls_verifier(webrtc::SSLCertificateVerifier* verifier) noexcept {
+  // This helper is called only by the private factory installed in peer.cc.
+  // SDK PeerConnection fills TURN options from its dependency verifier, which
+  // this binding creates exclusively through the proxy below. No pointer/ID
+  // registry or reinterpretation of arbitrary external verifiers is used.
+  return verifier ? static_cast<RustTlsVerifier*>(verifier)->backing() : nullptr;
+}
+bool tls_verifier_verify(const NativeTlsVerifier& verifier, const NativeTlsCertificate& certificate) noexcept { return verifier.Verify(certificate.certificate()); }
+bool tls_verifier_verify_chain(const NativeTlsVerifier& verifier, const NativeTlsCertificateChain& chain) noexcept { return verifier.VerifyChain(chain.chain()); }
+bool tls_verifier_failed(const NativeTlsVerifier& verifier) noexcept { return verifier.Failed(); }
 NativeTlsCertificate::NativeTlsCertificate(std::unique_ptr<webrtc::SSLCertificate> certificate) noexcept
     : certificate_(std::move(certificate)) {}
 const webrtc::SSLCertificate& NativeTlsCertificate::certificate() const noexcept { return *certificate_; }
@@ -116,6 +154,10 @@ rust::Vec<FfiTlsCertificateStats> tls_chain_stats(const NativeTlsCertificateChai
 }
 std::unique_ptr<webrtc::SSLCertificateVerifier> tls_certificate_verifier_adapter(rust::Box<RustTlsCertificateVerifier> verifier) noexcept {
   if (!tls_certificate_verifier_present(*verifier)) return nullptr;
-  return std::make_unique<RustTlsVerifier>(std::move(verifier));
+  return std::make_unique<RustTlsVerifier>(std::make_shared<NativeTlsVerifier>(std::move(verifier)));
+}
+std::unique_ptr<webrtc::SSLCertificateVerifier> owned_native_tls_certificate_verifier_adapter(std::unique_ptr<webrtc::SSLCertificateVerifier> verifier) noexcept {
+  if (!verifier) return nullptr;
+  return std::make_unique<RustTlsVerifier>(std::make_shared<NativeTlsVerifier>(std::move(verifier)));
 }
 }

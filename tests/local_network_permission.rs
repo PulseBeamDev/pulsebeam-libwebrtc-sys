@@ -1,10 +1,25 @@
 use pulsebeam_webrtc_sys::*;
 #[path = "common/panic_payload.rs"]
 mod panic_payload;
-use std::{net::{Ipv4Addr, UdpSocket}, sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}}, time::{Duration, Instant}};
+use std::{
+    net::{Ipv4Addr, UdpSocket},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode { Pending, Deny, Skip, PanicShould, PanicRequest, PanicFactory, PanicDrop }
+enum Mode {
+    Pending,
+    Deny,
+    Skip,
+    PanicShould,
+    PanicRequest,
+    PanicFactory,
+    PanicDrop,
+}
 struct Observed {
     mode: Mode,
     created: AtomicUsize,
@@ -29,16 +44,35 @@ impl LocalNetworkPermissionFactory for Factory {
     fn create(&self) -> Arc<dyn LocalNetworkPermission> {
         self.0.record();
         self.0.created.fetch_add(1, Ordering::SeqCst);
-        if self.0.mode == Mode::PanicFactory { panic_payload::raise(); }
+        if self.0.mode == Mode::PanicFactory {
+            panic_payload::raise();
+        }
         Arc::new(Permission(self.0.clone()))
     }
 }
-impl Drop for Factory { fn drop(&mut self) { self.0.factory_dropped.fetch_add(1, Ordering::SeqCst); if self.0.mode == Mode::PanicDrop { panic_payload::raise(); } } }
-impl Drop for Permission { fn drop(&mut self) { self.0.record(); self.0.dropped.fetch_add(1, Ordering::SeqCst); if self.0.mode == Mode::PanicDrop { panic_payload::raise(); } } }
+impl Drop for Factory {
+    fn drop(&mut self) {
+        self.0.factory_dropped.fetch_add(1, Ordering::SeqCst);
+        if self.0.mode == Mode::PanicDrop {
+            panic_payload::raise();
+        }
+    }
+}
+impl Drop for Permission {
+    fn drop(&mut self) {
+        self.0.record();
+        self.0.dropped.fetch_add(1, Ordering::SeqCst);
+        if self.0.mode == Mode::PanicDrop {
+            panic_payload::raise();
+        }
+    }
+}
 impl LocalNetworkPermission for Permission {
     fn should_request_permission(&self, address: &SocketAddress) -> bool {
         self.0.record();
-        if self.0.mode == Mode::PanicShould { panic_payload::raise(); }
+        if self.0.mode == Mode::PanicShould {
+            panic_payload::raise();
+        }
         self.0.mode != Mode::Skip && (address.is_private_ip() || address.is_loopback_ip())
     }
     fn request_permission(
@@ -48,8 +82,14 @@ impl LocalNetworkPermission for Permission {
     ) {
         self.0.record();
         self.0.requests.fetch_add(1, Ordering::SeqCst);
-        self.0.pending.lock().unwrap().push((address, completion.clone()));
-        if self.0.mode == Mode::PanicRequest { panic_payload::raise(); }
+        self.0
+            .pending
+            .lock()
+            .unwrap()
+            .push((address, completion.clone()));
+        if self.0.mode == Mode::PanicRequest {
+            panic_payload::raise();
+        }
         if self.0.mode == Mode::Deny {
             assert!(completion.deny());
             assert!(!completion.grant());
@@ -97,25 +137,49 @@ fn start(mode: Mode, port: u16) -> (ProductionSession, SessionPeerId, Arc<Observ
         // The pinned default peer factory installs this provider in the ICE
         // transport, not in its BasicPortAllocator's STUN-server queries.
         let remote = session.create_peer(PeerConfiguration::default()).unwrap();
-        session.create_channel(remote, "permission", DataChannelConfiguration::default()).unwrap();
+        session
+            .create_channel(remote, "permission", DataChannelConfiguration::default())
+            .unwrap();
         let operation = session.create_offer(remote, false).unwrap();
         let offer = finish(&mut session, remote, operation, &observed_actor).unwrap();
-        let mid = offer.sdp.lines().find_map(|line| line.strip_prefix("a=mid:")).unwrap().to_owned();
-        let dependencies = PeerConnectionDependencies::default().local_network_permission_factory(Factory(observed_actor.clone()));
-        let peer = session.create_peer_with_dependencies(RtcConfiguration::default(), dependencies).unwrap();
+        let mid = offer
+            .sdp
+            .lines()
+            .find_map(|line| line.strip_prefix("a=mid:"))
+            .unwrap()
+            .to_owned();
+        let dependencies = PeerConnectionDependencies::default()
+            .local_network_permission_factory(Factory(observed_actor.clone()));
+        let peer = session
+            .create_peer_with_dependencies(RtcConfiguration::default(), dependencies)
+            .unwrap();
         let operation = session.set_remote_description(peer, offer).unwrap();
         finish(&mut session, peer, operation, &observed_actor);
         let operation = session.create_answer(peer).unwrap();
         let answer = finish(&mut session, peer, operation, &observed_actor).unwrap();
         let operation = session.set_local_description(peer, answer).unwrap();
         finish(&mut session, peer, operation, &observed_actor);
-        assert_eq!(session.add_ice_candidate_sync(peer, IceCandidate {
-            sdp_mid: mid, sdp_mline_index: 0,
-            candidate: format!("candidate:1 1 UDP 2122260223 127.0.0.1 {port} typ host"),
-        }).unwrap(), IceCandidateDisposition::Accepted);
+        assert_eq!(
+            session
+                .add_ice_candidate_sync(
+                    peer,
+                    IceCandidate {
+                        sdp_mid: mid,
+                        sdp_mline_index: 0,
+                        candidate: format!(
+                            "candidate:1 1 UDP 2122260223 127.0.0.1 {port} typ host"
+                        ),
+                    }
+                )
+                .unwrap(),
+            IceCandidateDisposition::Accepted
+        );
         let deadline = Instant::now() + Duration::from_secs(15);
         while observed_actor.created.load(Ordering::SeqCst) == 0 {
-            assert!(Instant::now() < deadline, "native did not query remote-candidate permission");
+            assert!(
+                Instant::now() < deadline,
+                "native did not query remote-candidate permission"
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
         (session, peer)
@@ -178,7 +242,10 @@ fn actor_permission_completes_from_another_thread_and_retains_owned_addresses() 
     .join()
     .unwrap();
     let mut bytes = [0; 2048];
-    assert!(server.recv_from(&mut bytes).unwrap().0 >= 20, "grant must release native candidate connectivity checks");
+    assert!(
+        server.recv_from(&mut bytes).unwrap().0 >= 20,
+        "grant must release native candidate connectivity checks"
+    );
     retire(session, peer, &observed);
     std::thread::spawn(move || {
         assert_eq!(address.ip_address(), IpAddress::from(Ipv4Addr::LOCALHOST))
@@ -210,7 +277,13 @@ fn retire_pending(mode: Mode) {
 }
 #[test]
 fn denial_and_provider_panics_reject_native_candidate_checks_while_skip_bypasses_request() {
-    for mode in [Mode::Deny, Mode::PanicShould, Mode::PanicRequest, Mode::PanicFactory, Mode::Skip] {
+    for mode in [
+        Mode::Deny,
+        Mode::PanicShould,
+        Mode::PanicRequest,
+        Mode::PanicFactory,
+        Mode::Skip,
+    ] {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         server
             .set_read_timeout(Some(Duration::from_millis(300)))
@@ -241,8 +314,13 @@ fn denial_and_provider_panics_reject_native_candidate_checks_while_skip_bypasses
                 std::thread::sleep(Duration::from_millis(1));
             }
             let mut bytes = [0; 2048];
-            assert!(server.recv_from(&mut bytes).is_err(), "denial must not send connectivity checks to the candidate");
-            if matches!(mode, Mode::PanicShould | Mode::PanicFactory) { assert_eq!(observed.requests.load(Ordering::SeqCst), 0); }
+            assert!(
+                server.recv_from(&mut bytes).is_err(),
+                "denial must not send connectivity checks to the candidate"
+            );
+            if matches!(mode, Mode::PanicShould | Mode::PanicFactory) {
+                assert_eq!(observed.requests.load(Ordering::SeqCst), 0);
+            }
             retire(session, peer, &observed);
             continue;
         }

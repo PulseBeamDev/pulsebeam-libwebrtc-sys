@@ -1,9 +1,6 @@
 //! Final-owner cleanup cannot synchronously destroy its current SDK role.
 use super::*;
-use std::{
-    ops::Deref,
-    sync::{OnceLock, mpsc},
-};
+use std::ops::Deref;
 
 pub(super) struct CaptiveFactory(Option<PeerConnectionFactory>);
 impl CaptiveFactory {
@@ -23,43 +20,6 @@ impl Deref for CaptiveFactory {
         self.0
             .as_ref()
             .expect("factory is moved only during final teardown")
-    }
-}
-static CLEANUP: OnceLock<mpsc::Sender<ProductionSession>> = OnceLock::new();
-
-/// Initialize before constructing a factory, so teardown never has to create
-/// a thread (and cannot recursively drop its payload on a spawn failure).
-pub(super) fn prepare() -> Result<(), PeerError> {
-    if CLEANUP.get().is_some() {
-        return Ok(());
-    }
-    let (sender, receiver) = mpsc::channel::<ProductionSession>();
-    std::thread::Builder::new()
-        .name("webrtc-cleanup".into())
-        .spawn(move || {
-            while let Ok(owner) = receiver.recv() {
-                // User-owned provider destructors must not kill future cleanup.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(owner)));
-            }
-        })
-        .map_err(|e| {
-            error(
-                PeerErrorKind::NativeConstruction,
-                &format!("session cleanup executor: {e}"),
-            )
-        })?;
-    // Concurrent constructors may race. The losing channel is closed and its
-    // empty worker exits; only the published worker ever receives resources.
-    let _ = CLEANUP.set(sender);
-    Ok(())
-}
-pub(super) fn defer(owner: ProductionSession) {
-    let sender = CLEANUP.get().expect("prepared before factory construction");
-    if let Err(failed) = sender.send(owner) {
-        // This requires the persistent executor to have terminated despite
-        // panic containment. Never free live SDK resources from its callback.
-        eprintln!("session cleanup executor unavailable; retaining native resources for safety");
-        std::mem::forget(failed.0);
     }
 }
 impl ProductionSession {
@@ -111,6 +71,16 @@ impl ProductionSession {
             senders: std::mem::take(&mut self.senders),
             receivers: std::mem::take(&mut self.receivers),
             sources: std::mem::take(&mut self.sources),
+            #[cfg(feature = "native")]
+            desktop_options: std::mem::take(&mut self.desktop_options),
+            #[cfg(feature = "native")]
+            desktop_metadata: std::mem::take(&mut self.desktop_metadata),
+            #[cfg(feature = "native")]
+            camera_options: std::mem::take(&mut self.camera_options),
+            #[cfg(feature = "native")]
+            camera_device_info: std::mem::take(&mut self.camera_device_info),
+            video_bitrate_allocator_factory: self.video_bitrate_allocator_factory.take(),
+            retirement: self.retirement.take(),
             peers: std::mem::take(&mut self.peers),
             input: self.input.take(),
             factory: self.factory.take(),

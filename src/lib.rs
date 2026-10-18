@@ -1,6 +1,12 @@
 //! Low-level Rust integration with PulseBeam's pinned libwebrtc artifact.
 
 mod async_dns;
+mod owned_dns_resolver;
+pub use owned_dns_resolver::{
+    DnsResolverContext, DnsResolverOperationError, DnsResolverQuery, OwnedDnsResolver,
+    OwnedDnsResolverResult,
+};
+pub(crate) use owned_dns_resolver::{RustDnsCallback, owned_dns_callback_fire};
 mod audio;
 mod audio_source_options;
 mod audio_source_view;
@@ -140,7 +146,8 @@ pub use async_dns::{
 pub(crate) use async_dns::{
     RustAsyncDnsFactory, RustAsyncDnsResolver, RustAsyncDnsResult, async_dns_factory_create,
     async_dns_factory_create_and_resolve, async_dns_factory_present, async_dns_result_address,
-    async_dns_result_error, async_dns_result_identity, async_dns_result_view, async_dns_start,
+    async_dns_result_error, async_dns_result_failed, async_dns_result_identity,
+    async_dns_result_view, async_dns_source_failed, async_dns_start,
 };
 pub use certificate_generator::{
     CertificateCompletion, CertificateCompletionError, CertificateGenerator,
@@ -178,13 +185,26 @@ pub(crate) use fec::{
 };
 mod network_control;
 pub use network_control::{
-    NetworkController, NetworkControllerConfig, NetworkControllerEnvironment,
+    GoogCcFactoryConfig, NetworkController, NetworkControllerConfig, NetworkControllerEnvironment,
     NetworkControllerFactory, NetworkControllerFactoryProvider, NetworkControllerFailure,
 };
 pub(crate) use network_control::{
     RustNetworkController, RustNetworkControllerFactory, network_controller_create,
-    network_controller_ecn, network_controller_factory_present, network_controller_interval,
-    network_controller_invalid, network_controller_update,
+    network_controller_ecn, network_controller_factory_present, network_controller_factory_retain,
+    network_controller_goog_cc_estimator, network_controller_goog_cc_predictor,
+    network_controller_goog_cc_rfc8888, network_controller_interval, network_controller_invalid,
+    network_controller_is_goog_cc, network_controller_update,
+};
+mod network_state_estimator;
+pub use network_state_estimator::{
+    NetworkStateEstimator, NetworkStateEstimatorFactory, NetworkStateEstimatorFactoryProvider,
+    NetworkStateEstimatorFailure,
+};
+pub(crate) use network_state_estimator::{
+    RustNetworkStateEstimator, RustNetworkStateEstimatorFactory, network_estimator_create,
+    network_estimator_estimate, network_estimator_factory_present, network_estimator_feedback,
+    network_estimator_invalid, network_estimator_present, network_estimator_received,
+    network_estimator_route,
 };
 mod network_control_values;
 /// Network-controller input, distinct from a received simulated socket packet.
@@ -508,9 +528,12 @@ pub use transport::{
 };
 mod encoded_video;
 mod event_log;
-mod event_log_creation;
 mod event_log_codec;
-pub use event_log_codec::{RtcEventCodecError, RtcEventLogParseStatus, RtcEventParsedRecords, LoggedAlrStateEvent, LoggedAudioPlayoutEvent, LoggedBweDelayBasedUpdate, LoggedStartEvent, LoggedStopEvent};
+mod event_log_creation;
+pub use event_log_codec::{
+    LoggedAlrStateEvent, LoggedAudioPlayoutEvent, LoggedBweDelayBasedUpdate, LoggedStartEvent,
+    LoggedStopEvent, RtcEventCodecError, RtcEventLogParseStatus, RtcEventParsedRecords,
+};
 mod event_log_dependency;
 mod event_log_rtp;
 mod event_log_values;
@@ -519,8 +542,93 @@ pub use event_log_rtp::*;
 pub use event_log_values::*;
 mod execution;
 mod field_trials;
+mod mdns;
 mod network;
 mod network_monitor;
+pub use mdns::{
+    MdnsCompletionError, MdnsNameCompletion, MdnsOperationError, MdnsRemovalCompletion,
+    MdnsResponder, MdnsResponderProvider,
+};
+pub(crate) use mdns::{
+    RustMdnsCallback, RustMdnsResponder, mdns_callback_bind, mdns_callback_fire,
+    mdns_source_any_failed, mdns_source_create, mdns_source_failed, mdns_source_remove,
+    mdns_source_retire,
+};
+mod network_manager;
+pub use network_manager::{
+    NetworkEnumerationPermission, NetworkManager, NetworkManagerContext, NetworkManagerEvent,
+    NetworkManagerFactory, NetworkManagerFactoryProvider, NetworkManagerObservationError,
+    NetworkManagerObservationSource, NetworkManagerSignals, NetworkManagerStats,
+    NetworkManagerSubscription,
+};
+pub(crate) use network_manager::{
+    RustManagerCallback, RustNetworkManager, RustNetworkManagerFactory, manager_callback_fire,
+    network_manager_create, network_manager_default_address, network_manager_dump,
+    network_manager_factory_present, network_manager_failed, network_manager_initialize,
+    network_manager_mdns, network_manager_networks, network_manager_permission,
+    network_manager_present, network_manager_set_vpn, network_manager_start, network_manager_stop,
+};
+mod listen_socket;
+pub use listen_socket::{
+    AcceptedPacketSocket, ListenSocket, ListenSocketContext, ListenSocketEvents, ListenSocketState,
+    PacketSocketAcceptError, PacketSocketAcceptStatus, PacketSocketAcceptTicket,
+};
+pub(crate) use listen_socket::{
+    RustAcceptCreator, RustListenSocket, listen_create_accepted, listen_socket_failed,
+    listen_socket_local, listen_socket_present, listen_socket_state,
+};
+mod packet_socket_factory;
+pub use packet_socket_factory::{
+    PacketSocketFactory, PacketSocketFactoryImplementation, PacketSocketTcpOptions,
+};
+pub(crate) use packet_socket_factory::{
+    RustPacketSocketFactory, socket_factory_create_dns, socket_factory_create_listener,
+    socket_factory_create_packet, socket_factory_present,
+};
+mod owned_listen_socket;
+pub use owned_listen_socket::{ListenSocketSubscription, OwnedListenSocket};
+pub(crate) use owned_listen_socket::{RustListenCallback, listen_callback_fire};
+mod packet_socket_runtime;
+pub use packet_socket_runtime::{PacketSocketRole, PacketSocketRuntime, PacketSocketRuntimeError};
+mod owned_packet_socket;
+pub use owned_packet_socket::OwnedPacketSocket;
+pub(crate) use owned_packet_socket::RustSocketRole;
+mod packet_socket_observation;
+pub use packet_socket_observation::{
+    PacketSocketEvent, PacketSocketEventKind, PacketSocketSubscription,
+};
+pub(crate) use packet_socket_observation::{RustSocketCallback, socket_callback_fire};
+mod packet_socket;
+pub use packet_socket::{
+    PacketSocket, PacketSocketContext, PacketSocketEventError, PacketSocketEvents,
+    PacketSocketOptionError,
+};
+pub(crate) use packet_socket::{
+    RustPacketSocket, packet_socket_close, packet_socket_error, packet_socket_get_option,
+    packet_socket_local, packet_socket_present, packet_socket_send, packet_socket_send_to,
+    packet_socket_set_error, packet_socket_set_option, packet_socket_source_failed,
+    packet_socket_state,
+};
+mod packet_socket_values;
+pub use packet_socket_values::{
+    AsyncSocketPacketOptions, DscpCodePoint, PacketDecryptionInfo, PacketInfo,
+    PacketInfoProtocol as SocketPacketInfoProtocol, PacketSocketFlags, PacketSocketOption,
+    PacketSocketState, PacketSocketValueError, PacketTimeUpdateParams,
+    PacketType as SocketPacketType, ReceivedIpPacket, SentPacketInfo,
+};
+mod network_values;
+pub use network_values::{
+    IpNetworkMask, Network, NetworkChangeInProgress, NetworkChangeKind, NetworkChangeSubscription,
+    NetworkCostGuess, NetworkValueError,
+};
+pub(crate) use network_values::{
+    RustNetworkCallback, network_callback_failed, network_callback_fire,
+};
+mod default_local_address;
+pub use default_local_address::{DefaultLocalAddressProvider, DefaultLocalAddressProviderHandle};
+pub(crate) use default_local_address::{
+    RustDefaultLocalAddressProvider, default_address_failed, default_address_get,
+};
 mod ntp_time;
 pub use ntp_time::{NtpTime, Q32x32, Uq32x32};
 mod time_delta;
@@ -558,7 +666,6 @@ mod clock;
 pub use clock::{Clock, ClockProvider, ClockTimeBounds, RealTimeClockUnavailable, SimulatedClock};
 pub(crate) use clock::{
     RustClockProvider, clock_provider_convert_ntp, clock_provider_current_time,
-    real_time_clock_convert_ntp,
 };
 pub use network_monitor::{
     NetworkAdapterType, NetworkBindingResult, NetworkChangeNotifier, NetworkInterfaceInfo,
@@ -589,10 +696,13 @@ pub use socket_address::{
 mod tls;
 pub use peer_dependencies::PeerConnectionDependencies;
 pub(crate) use tls::{
-    RustTlsCertificateVerifier, rust_tls_certificate_verify, rust_tls_certificate_verify_chain,
-    tls_certificate_verifier_present,
+    RustTlsCertificateVerifier, rust_tls_certificate_verifier_failed, rust_tls_certificate_verify,
+    rust_tls_certificate_verify_chain, tls_certificate_verifier_present,
 };
-pub use tls::{TlsCertificate, TlsCertificateChain, TlsCertificateStats, TlsCertificateVerifier};
+pub use tls::{
+    SocketTlsVerifier, TlsCertificate, TlsCertificateChain, TlsCertificateStats,
+    TlsCertificateVerifier,
+};
 mod production;
 mod sender_parameters;
 pub use sender_parameters::SenderParametersOperation;
@@ -615,6 +725,57 @@ pub use raw_video_frame::{
 };
 pub use source_encoded_video::{RecordableVideoFrame, VideoSourceEncodedSink};
 pub use video_sink_wants::{VideoSinkAggregates, VideoSinkFrameSize, VideoSinkWants};
+mod camera_options;
+mod camera_sink;
+mod desktop_frame;
+mod desktop_memory;
+#[cfg(feature = "native")]
+pub use desktop_memory::{
+    DesktopMemory, DesktopMemoryFactory, DesktopMemoryFactoryHandle, DesktopMemoryInfo,
+};
+use desktop_memory::{
+    RustDesktopMemoryFactory, RustDesktopMemoryLease, desktop_memory_factory_create,
+    desktop_memory_factory_present,
+};
+mod desktop_metadata;
+#[cfg(feature = "native")]
+pub use desktop_metadata::{DesktopCaptureMetadata, DesktopCaptureMetadataSnapshot};
+mod desktop_receiver;
+#[cfg(feature = "native")]
+pub use camera_options::{
+    CameraCaptureOptions, CameraInitializationObserver, CameraInitializationObserverHandle,
+    CameraInitializationStatus, CameraOptionSettings,
+};
+use camera_options::{RustCameraInitializationObserver, camera_options_initialized};
+#[cfg(feature = "native")]
+pub use camera_sink::{RawCameraFrame, RawCameraFrameSnapshot, RawCameraSink, RawCameraSinkHandle};
+use camera_sink::{RustRawCameraSink, camera_raw_frame, camera_raw_sink_present};
+#[cfg(feature = "native")]
+pub use desktop_frame::{
+    CapturedDesktopFrame, DesktopFrame, DesktopFrameInfo, DesktopFrameMetadata,
+    DesktopFrameSnapshot, DesktopRect, DesktopSharedMemoryInfo,
+};
+#[cfg(feature = "native")]
+pub use desktop_receiver::{
+    DesktopCaptureReceiver, DesktopCaptureReceiverHandle, DesktopCaptureResult,
+    DesktopSelectionObserver, DesktopSelectionObserverHandle,
+};
+use desktop_receiver::{
+    RustDesktopCaptureReceiver, RustDesktopSelectionObserver, desktop_receiver_present,
+    desktop_receiver_result, desktop_receiver_start, desktop_selection_notify,
+    desktop_selection_present,
+};
+#[cfg(feature = "native")]
+mod camera_device_info;
+#[cfg(feature = "native")]
+mod desktop_capture;
+#[cfg(feature = "native")]
+pub use camera_device_info::{CameraDeviceInfo, CameraDeviceName, CameraDeviceNameCapacities};
+#[cfg(feature = "native")]
+pub use desktop_capture::{
+    DesktopCaptureKind, DesktopCaptureOptions, DesktopCaptureSettings, DesktopScreenCastStream,
+    DesktopXDisplay, PipeWireCaptureSettings,
+};
 
 pub(crate) use codec::{
     RustVideoDecoder, RustVideoDecoderFactory, RustVideoEncoder, RustVideoEncoderFactory,
@@ -636,17 +797,27 @@ pub use event_log::{
 };
 pub use event_log::{EventLogError, EventLogOutput, EventLogOutputPeriod, EventLogOutputSink};
 mod event_log_product;
+#[cfg(test)]
+mod provider_callback_admission_tests;
 mod provider_panic;
-pub use event_log_product::{RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation, RtcEventLogUtility};
-pub(crate) use event_log_product::{RustEventLogRetention, RustEventLogProductStop, event_log_product_stopped};
 pub(crate) use event_log::{
     RustEventLogOutput, event_log_output_active, event_log_output_flush, event_log_output_write,
 };
 pub(crate) use event_log::{
-    RustRtcEventLog, RustRtcEventLogFactory, rust_event_log_create, rust_event_log_log,
-    rust_event_log_failed, rust_event_log_present, rust_event_log_start, rust_event_log_stop, rust_event_log_stop_async,
+    RustRtcEventLog, RustRtcEventLogFactory, rust_event_log_create, rust_event_log_failed,
+    rust_event_log_log, rust_event_log_present, rust_event_log_start, rust_event_log_stop,
+    rust_event_log_stop_async,
 };
-pub(crate) use execution::{RustTask, RustEnvironmentFactoryRetention, RustEnvironmentFactoryRandomness, environment_factory_has_randomness, environment_factory_randomness, run_task};
+pub use event_log_product::{
+    RtcEventLogFactoryHandle, RtcEventLogHandle, RtcEventLogStopOperation, RtcEventLogUtility,
+};
+pub(crate) use event_log_product::{
+    RustEventLogProductStop, RustEventLogRetention, event_log_product_stopped,
+};
+pub(crate) use execution::{
+    RustEnvironmentFactoryRandomness, RustEnvironmentFactoryRetention, RustTask,
+    environment_factory_has_randomness, environment_factory_randomness, run_task,
+};
 pub use field_trials::{FieldTrials, FieldTrialsError, FieldTrialsSnapshot, FieldTrialsView};
 pub(crate) use field_trials::{
     RustFieldTrials, field_trials_present, rust_field_trials_copy, rust_field_trials_lookup,
@@ -694,11 +865,10 @@ pub use encoded_video::{
     EncodedVideoSource, H264AccessUnit, H264SourceProfile,
 };
 pub use execution::{
-    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder, EnvironmentFactory,
-    EnvironmentClockError,
-    MAX_CONTROLLED_TIME, ManualClock, NetworkThread, PumpResult, QueuePriority, RandomnessLease,
-    RandomnessLeaseError, SignalingThread, SystemClock, TaskQueue, TaskQueueFactory,
-    ThreadStartError, WorkerThread, WorldAcquireError,
+    BuildEnvironmentError, ControlledPeerDriver, ControlledWorld, Environment, EnvironmentBuilder,
+    EnvironmentClockError, EnvironmentFactory, MAX_CONTROLLED_TIME, ManualClock, NetworkThread,
+    PumpResult, QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread, SystemClock,
+    TaskQueue, TaskQueueFactory, ThreadStartError, WorkerThread, WorldAcquireError,
 };
 pub use network::{
     ControlledSimulatedNetwork, NetworkAddress, NetworkEndpoint, NetworkError,
@@ -706,13 +876,13 @@ pub use network::{
     ReceivedPacket, SimulatedNetwork, SimulatedUdpSocket,
 };
 pub use peer::{
-    BandwidthEstimationSettings, CandidatePairStats, ConnectionState, DataChannelMessageDirection,
-    DataChannelStats, IceCandidate, IceCandidateBytes, IceCandidateDisposition, IceGatheringState,
-    IceServer, IceTransportPolicy, InboundRtpStats, OfferAnswerOptions, OperationCompletion,
-    OperationId, OutboundRtpStats, PeerConfiguration, PeerConnection, PeerConnectionEvent,
-    PeerConnectionFactory, PeerConnectionFactoryBuilder, PeerDataChannelMessage,
-    PeerDescriptionBytes, PeerDescriptions, PeerError, PeerErrorBytes, PeerErrorKind,
-    PeerEventObservation, PeerIceConnectionState, PeerIceSnapshot, PeerStatsRecord,
+    BandwidthEstimationSettings, CallAdmissionStats, CandidatePairStats, ConnectionState,
+    DataChannelMessageDirection, DataChannelStats, IceCandidate, IceCandidateBytes,
+    IceCandidateDisposition, IceGatheringState, IceServer, IceTransportPolicy, InboundRtpStats,
+    OfferAnswerOptions, OperationCompletion, OperationId, OutboundRtpStats, PeerConfiguration,
+    PeerConnection, PeerConnectionEvent, PeerConnectionFactory, PeerConnectionFactoryBuilder,
+    PeerDataChannelMessage, PeerDescriptionBytes, PeerDescriptions, PeerError, PeerErrorBytes,
+    PeerErrorKind, PeerEventObservation, PeerIceConnectionState, PeerIceSnapshot, PeerStatsRecord,
     PeerStatsSnapshot, SessionDescription, SessionDescriptionBytes, SessionDescriptionType,
     SignalingState, TransportStats,
 };
@@ -724,24 +894,27 @@ pub use peer_configuration::{
 pub use production::{
     ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioObserverId,
     SessionAudioProcessorId, SessionAudioSourceViewId, SessionAudioTrackProcessorId,
-    SessionChannelId, SessionDecodedImageCallbackId, SessionDtlsTransportId, SessionDtmfError,
-    SessionDtmfSenderId, SessionEncodedImageCallbackId, SessionEncodedImageId,
-    SessionEncodedVideoBufferId, SessionEvent, SessionFecOverrideId, SessionFrameDecryptorId,
-    SessionFrameEncryptorId, SessionFrameTransformerId, SessionIceTransportId,
-    SessionLocalMediaStreamId, SessionMediaStreamId, SessionMediaStreamObserverId,
-    SessionMediaTrackId, SessionPeerId, SessionRawVideoBufferId, SessionRawVideoFrameId,
-    SessionReceiverId, SessionSctpTransportId, SessionSctpTransportInformation, SessionSenderId,
-    SessionSenderParametersOperationId, SessionSframeDecrypterId, SessionSframeEncrypterId,
-    SessionSourceId, SessionTrackId, SessionTrackSourceId, SessionTransceiverId,
-    SessionTransportError, SessionVideoBufferPreparationId, SessionVideoDecoderId,
-    SessionVideoEncoderId, SessionVideoEncoderSelectorId, SessionVideoObserverId,
-    SessionVideoSinkId, SessionVideoSourceEncodedSinkId, SessionVideoSourceViewId,
-    SessionWritableEncodedBufferId, SessionWritableI420BufferId,
+    SessionCameraDeviceInfoId, SessionCameraOptionsId, SessionChannelId,
+    SessionDecodedImageCallbackId, SessionDesktopMetadataId, SessionDesktopOptionsId,
+    SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEncodedImageCallbackId,
+    SessionEncodedImageId, SessionEncodedVideoBufferId, SessionEvent, SessionFecOverrideId,
+    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionFrameTransformerId,
+    SessionIceTransportId, SessionLocalMediaStreamId, SessionMediaStreamId,
+    SessionMediaStreamObserverId, SessionMediaTrackId, SessionPeerId, SessionRawVideoBufferId,
+    SessionRawVideoFrameId, SessionReceiverId, SessionSctpTransportId,
+    SessionSctpTransportInformation, SessionSenderId, SessionSenderParametersOperationId,
+    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTrackId,
+    SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
+    SessionVideoBufferPreparationId, SessionVideoDecoderId, SessionVideoEncoderId,
+    SessionVideoEncoderSelectorId, SessionVideoObserverId, SessionVideoSinkId,
+    SessionVideoSourceEncodedSinkId, SessionVideoSourceViewId, SessionWritableEncodedBufferId,
+    SessionWritableI420BufferId,
 };
 #[cfg(feature = "native")]
 pub use video::{
-    CameraCapture, CameraCaptureStatus, CameraDevice, CameraFormat, CameraPixelFormat,
-    ScreenCapture, ScreenCaptureStatus, ScreenSource, WindowCapture, WindowSource,
+    CameraCapture, CameraCaptureStatus, CameraControlError, CameraDevice, CameraFormat,
+    CameraPixelFormat, CameraSettings, ScreenCapture, ScreenCaptureStatus, ScreenSource,
+    WindowCapture, WindowSource,
 };
 pub use video::{
     DecodeTargetIndication, EncodedReceivedVideoFrame, EncodedVideoSink, MediaType,
@@ -1795,6 +1968,11 @@ mod ffi {
         cross_traffic_ratio: f64,
     }
     #[derive(Default)]
+    struct FfiNcOptionalEstimate {
+        present: bool,
+        value: FfiNcNetworkStateEstimate,
+    }
+    #[derive(Default)]
     struct FfiNcMessage {
         network_availability: FfiNcNetworkAvailability,
         network_route_change: FfiNcNetworkRouteChange,
@@ -2122,8 +2300,86 @@ mod ffi {
     struct FfiScreenSource {
         id: i64,
         name: String,
+        display_id: i64,
     }
 
+    #[derive(Default)]
+    struct FfiDesktopOptions {
+        use_update_notifications: bool,
+        disable_effects: bool,
+        detect_updated_region: bool,
+        prefer_cursor_embedded: bool,
+        pipewire_supported: bool,
+        allow_pipewire: bool,
+        width: u32,
+        height: u32,
+        pipewire_use_damage_region: bool,
+        x11_supported: bool,
+        has_x_display: bool,
+        has_screencast_stream: bool,
+        has_full_screen_window_detector: bool,
+    }
+    #[derive(Default)]
+    struct FfiDesktopRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[derive(Default)]
+    struct FfiDesktopFrameInfo {
+        width: i32,
+        height: i32,
+        stride: i32,
+        pixel_format: u32,
+        left: i32,
+        top: i32,
+        scale_factor: f32,
+        rect_valid: bool,
+        rect: FfiDesktopRect,
+        dpi_x: i32,
+        dpi_y: i32,
+        has_device_scale: bool,
+        device_scale: f32,
+        may_contain_cursor: bool,
+        capture_time_ms: i64,
+        capturer_id: u32,
+        icc_profile: Vec<u8>,
+        updated_region: Vec<FfiDesktopRect>,
+        has_cpu_data: bool,
+        has_texture: bool,
+        has_shared_memory: bool,
+        shared_memory_size: usize,
+        shared_memory_id: i32,
+        shared_memory_has_handle: bool,
+    }
+    #[derive(Default)]
+    struct FfiDesktopBytes {
+        status: u8,
+        bytes: Vec<u8>,
+    }
+    struct FfiDesktopMemoryInfo {
+        size: usize,
+        id: i32,
+        has_handle: bool,
+    }
+    struct FfiDesktopFd {
+        fd: i32,
+        error: i32,
+    }
+    #[derive(Default)]
+    struct FfiDesktopMetadata {
+        session_handle: String,
+        pipewire_stream_node_id: u32,
+        has_proxy: bool,
+        has_cancellable: bool,
+    }
+    #[derive(Default)]
+    struct FfiDesktopControl {
+        status: u8,
+        flag: bool,
+        sources: Vec<FfiScreenSource>,
+    }
     struct FfiCameraFormat {
         width: u32,
         height: u32,
@@ -2131,9 +2387,59 @@ mod ffi {
         pixel_format: i32,
     }
 
+    #[derive(Default)]
+    struct FfiCameraSettings {
+        width: i32,
+        height: i32,
+        max_fps: i32,
+        pixel_format: i32,
+        interlaced: bool,
+    }
+    #[derive(Default)]
+    struct FfiCameraControl {
+        status: u8,
+        native_result: i32,
+        flag: bool,
+        device_name: String,
+        settings: FfiCameraSettings,
+    }
+    #[derive(Default)]
+    struct FfiCameraDeviceControl {
+        status: u8,
+        native_result: i32,
+        orientation: u16,
+        matched_index: i32,
+        capabilities: Vec<FfiCameraSettings>,
+    }
+    #[derive(Default)]
+    struct FfiCameraInfoRequest {
+        kind: u8,
+        index: u32,
+        id: String,
+        title: String,
+        name_capacity: u32,
+        unique_capacity: u32,
+        product_present: bool,
+        product_capacity: u32,
+        x: u32,
+        y: u32,
+        settings: FfiCameraSettings,
+    }
+    #[derive(Default)]
+    struct FfiCameraInfoReply {
+        status: u8,
+        native_result: i32,
+        count: u32,
+        rotation: u16,
+        settings: FfiCameraSettings,
+        name: Vec<u8>,
+        unique_id: Vec<u8>,
+        product_id: Vec<u8>,
+    }
     struct FfiCameraDevice {
         name: String,
         id: String,
+        product_id: String,
     }
 
     struct FfiAudioDevice {
@@ -2563,6 +2869,121 @@ mod ffi {
         use_obsolete_sctp_sdp: bool,
     }
 
+    struct FfiNetworkHandle {
+        network: SharedPtr<NativeNetwork>,
+    }
+    struct FfiIpNetworkMask {
+        ip: Vec<u8>,
+        prefix_length: i32,
+    }
+    struct FfiDefaultLocalAddress {
+        present: bool,
+        ip: Vec<u8>,
+    }
+    struct FfiCallAdmissionStats {
+        has_call: bool,
+        live: bool,
+        clock_bounds: FfiClockTimeBounds,
+        rtp_arrival_rejections: u64,
+    }
+    struct FfiOwnedDnsStart {
+        status: u8,
+        query: UniquePtr<NativeDnsQuery>,
+    }
+    struct FfiOwnedDnsResult {
+        status: u8,
+        result: UniquePtr<NativeOwnedDnsResult>,
+    }
+    struct FfiOwnedSocketResult {
+        status: u8,
+        code: i32,
+        value: i32,
+        address: UniquePtr<NativeSocketAddress>,
+    }
+    struct FfiListenSubscriptionResult {
+        status: u8,
+        subscription: UniquePtr<NativeListenSocketSubscription>,
+    }
+    struct FfiSocketSubscriptionResult {
+        status: u8,
+        subscription: UniquePtr<NativePacketSocketSubscription>,
+    }
+    struct FfiSocketObservation {
+        kind: u8,
+        error: i32,
+        sent: FfiSocketSentPacket,
+        address: UniquePtr<NativeSocketAddress>,
+        packet: FfiSocketReceivedPacket,
+    }
+    struct FfiSocketTcpOptions {
+        options: i32,
+        alpn: Vec<FfiRtpByteString>,
+        curves: Vec<FfiRtpByteString>,
+        verifier: SharedPtr<NativeTlsVerifier>,
+    }
+    struct FfiSocketCreateRequest {
+        kind: u8,
+        local: UniquePtr<NativeSocketAddress>,
+        remote: UniquePtr<NativeSocketAddress>,
+        min_port: u16,
+        max_port: u16,
+        tcp: FfiSocketTcpOptions,
+    }
+    struct FfiSocketAcceptResult {
+        status: u8,
+        ticket: SharedPtr<NativePacketSocketAccept>,
+        socket: UniquePtr<NativeAcceptedPacketSocket>,
+    }
+    struct FfiSocketOptionResult {
+        code: i32,
+        value: i32,
+    }
+    struct FfiSocketPacketInfo {
+        included_in_feedback: bool,
+        included_in_allocation: bool,
+        is_media: bool,
+        packet_type: i32,
+        protocol: i32,
+        has_network_id: bool,
+        network_id: u16,
+        packet_size_bytes: usize,
+        turn_overhead_bytes: usize,
+        ip_overhead_bytes: usize,
+    }
+    struct FfiSocketPacketOptions {
+        dscp: i32,
+        ect_1: bool,
+        packet_id: i64,
+        extension_id: i32,
+        auth_key: Vec<u8>,
+        auth_tag_len: i32,
+        packet_index: i64,
+        info: FfiSocketPacketInfo,
+        batchable: bool,
+        last_packet_in_batch: bool,
+    }
+    struct FfiSocketSentPacket {
+        packet_id: i64,
+        send_time_ms: i64,
+        info: FfiSocketPacketInfo,
+    }
+    struct FfiSocketReceivedPacket {
+        payload: Vec<u8>,
+        address: UniquePtr<NativeSocketAddress>,
+        has_arrival: bool,
+        arrival_us: i64,
+        ecn: u8,
+        decryption: u8,
+    }
+    struct FfiInterfaceAddress {
+        ip: Vec<u8>,
+        flags: i32,
+    }
+    struct FfiNetworkCostGuess {
+        adapter: i32,
+        vpn: bool,
+        slice: i32,
+    }
     struct FfiNetworkInterfaceInfo {
         adapter_type: i32,
         underlying_type_for_vpn: i32,
@@ -3372,6 +3793,35 @@ mod ffi {
         fn mixer_source_ssrc(source: &RustMixerSource, valid: &mut bool) -> i32;
         fn mixer_source_rate(source: &RustMixerSource, valid: &mut bool) -> i32;
         fn mixer_source_invalid(source: &RustMixerSource);
+        type RustDesktopMemoryFactory;
+        type RustDesktopMemoryLease;
+        fn desktop_memory_factory_present(source: &RustDesktopMemoryFactory) -> bool;
+        fn desktop_memory_factory_create(
+            source: &RustDesktopMemoryFactory,
+            size: usize,
+        ) -> UniquePtr<NativeDesktopMemory>;
+        type RustDesktopCaptureReceiver;
+        type RustDesktopSelectionObserver;
+        fn desktop_receiver_present(source: &RustDesktopCaptureReceiver) -> bool;
+        fn desktop_receiver_start(source: &RustDesktopCaptureReceiver);
+        fn desktop_receiver_result(
+            source: &RustDesktopCaptureReceiver,
+            result: i32,
+            frame: UniquePtr<NativeDesktopFrame>,
+        );
+        fn desktop_selection_present(source: &RustDesktopSelectionObserver) -> bool;
+        fn desktop_selection_notify(source: &RustDesktopSelectionObserver, event: u8);
+        type RustCameraInitializationObserver;
+        fn camera_options_initialized(source: &RustCameraInitializationObserver, status: i32);
+        type RustRawCameraSink;
+        fn camera_raw_sink_present(source: &RustRawCameraSink) -> bool;
+        fn camera_raw_frame(
+            source: &RustRawCameraSink,
+            bytes: &mut [u8],
+            settings: FfiCameraSettings,
+            rotation: u16,
+            capture_time: i64,
+        ) -> i32;
         type RustCallerAudioDecoderCall;
         type RustCallerParsedFrame;
         fn audio_caller_decoder_scalar_callback(
@@ -3600,6 +4050,129 @@ mod ffi {
         ) -> Vec<u16>;
         fn neteq_provider_sync_buffer_size(source: &RustNetEqProvider) -> i32;
         fn neteq_receive_time_safe(minimum: i64, maximum: i64, receive: i64) -> bool;
+        type RustDefaultLocalAddressProvider;
+        fn default_address_get(
+            source: &RustDefaultLocalAddressProvider,
+            family: i32,
+        ) -> FfiDefaultLocalAddress;
+        fn default_address_failed(source: &RustDefaultLocalAddressProvider) -> bool;
+        type RustMdnsResponder;
+        type RustMdnsCallback;
+        fn mdns_source_create(
+            source: &RustMdnsResponder,
+            ip: Vec<u8>,
+            completion: SharedPtr<NativeMdnsCompletion>,
+        ) -> bool;
+        fn mdns_source_remove(
+            source: &RustMdnsResponder,
+            ip: Vec<u8>,
+            completion: SharedPtr<NativeMdnsCompletion>,
+        ) -> bool;
+        fn mdns_source_failed(source: &RustMdnsResponder) -> bool;
+        fn mdns_source_any_failed(source: &RustMdnsResponder) -> bool;
+        fn mdns_source_retire(source: &RustMdnsResponder);
+        fn mdns_callback_bind(callback: &RustMdnsCallback, source: &RustMdnsResponder);
+        fn mdns_callback_fire(source: &RustMdnsCallback, ip: Vec<u8>, name: Vec<u8>, removed: bool);
+        type RustNetworkCallback;
+        fn network_callback_failed(source: &RustNetworkCallback) -> bool;
+        fn network_callback_fire(source: &RustNetworkCallback, network: SharedPtr<NativeNetwork>);
+        type RustManagerCallback;
+        fn manager_callback_fire(source: &RustManagerCallback);
+        type RustAcceptCreator;
+        fn listen_create_accepted(
+            source: &RustListenSocket,
+            creator: Box<RustAcceptCreator>,
+            ticket: SharedPtr<NativePacketSocketAccept>,
+        ) -> bool;
+        type RustListenCallback;
+        fn listen_callback_fire(
+            callback: &RustListenCallback,
+            source: &RustPacketSocket,
+            owned: UniquePtr<NativeOwnedPacketSocket>,
+        ) -> bool;
+        type RustSocketRole;
+        type RustSocketCallback;
+        fn socket_callback_fire(source: &RustSocketCallback, event: FfiSocketObservation) -> bool;
+        type RustPacketSocketFactory;
+        fn socket_factory_present(source: &RustPacketSocketFactory) -> bool;
+        fn socket_factory_create_packet(
+            source: &RustPacketSocketFactory,
+            environment: UniquePtr<NativeEnvironment>,
+            resources: SharedPtr<NativePacketSocketResources>,
+            events: SharedPtr<NativePacketSocketEvents>,
+            request: FfiSocketCreateRequest,
+        ) -> Box<RustPacketSocket>;
+        fn socket_factory_create_listener(
+            source: &RustPacketSocketFactory,
+            environment: UniquePtr<NativeEnvironment>,
+            resources: SharedPtr<NativePacketSocketResources>,
+            events: SharedPtr<NativeListenSocketEvents>,
+            request: FfiSocketCreateRequest,
+        ) -> Box<RustListenSocket>;
+        fn socket_factory_create_dns(
+            source: &RustPacketSocketFactory,
+            environment: UniquePtr<NativeEnvironment>,
+            admitted: bool,
+        ) -> Box<RustAsyncDnsResolver>;
+        type RustListenSocket;
+        fn listen_socket_present(source: &RustListenSocket) -> bool;
+        fn listen_socket_failed(source: &RustListenSocket) -> bool;
+        fn listen_socket_state(source: &RustListenSocket) -> i32;
+        fn listen_socket_local(source: &RustListenSocket) -> UniquePtr<NativeSocketAddress>;
+        type RustPacketSocket;
+        fn packet_socket_present(source: &RustPacketSocket) -> bool;
+        fn packet_socket_source_failed(source: &RustPacketSocket) -> bool;
+        fn packet_socket_local(
+            source: &RustPacketSocket,
+            remote: bool,
+        ) -> UniquePtr<NativeSocketAddress>;
+        fn packet_socket_send(
+            source: &RustPacketSocket,
+            payload: Vec<u8>,
+            options: FfiSocketPacketOptions,
+        ) -> i32;
+        fn packet_socket_send_to(
+            source: &RustPacketSocket,
+            payload: Vec<u8>,
+            address: UniquePtr<NativeSocketAddress>,
+            options: FfiSocketPacketOptions,
+        ) -> i32;
+        fn packet_socket_close(source: &RustPacketSocket) -> i32;
+        fn packet_socket_state(source: &RustPacketSocket) -> i32;
+        fn packet_socket_get_option(
+            source: &RustPacketSocket,
+            option: i32,
+        ) -> FfiSocketOptionResult;
+        fn packet_socket_set_option(source: &RustPacketSocket, option: i32, value: i32) -> i32;
+        fn packet_socket_error(source: &RustPacketSocket) -> i32;
+        fn packet_socket_set_error(source: &RustPacketSocket, error: i32);
+        type RustNetworkManagerFactory;
+        type RustNetworkManager;
+        fn network_manager_factory_present(source: &RustNetworkManagerFactory) -> bool;
+        fn network_manager_create(
+            source: &RustNetworkManagerFactory,
+            trials: UniquePtr<NativeFieldTrials>,
+            changes: SharedPtr<NativeNetworkChange>,
+            errors: SharedPtr<NativeNetworkChange>,
+            resources: SharedPtr<NativeNetworkResources>,
+        ) -> Box<RustNetworkManager>;
+        fn network_manager_present(source: &RustNetworkManager) -> bool;
+        fn network_manager_failed(source: &RustNetworkManager) -> bool;
+        fn network_manager_initialize(source: &RustNetworkManager) -> bool;
+        fn network_manager_start(source: &RustNetworkManager);
+        fn network_manager_stop(source: &RustNetworkManager);
+        fn network_manager_networks(
+            source: &RustNetworkManager,
+            any: bool,
+        ) -> Vec<FfiNetworkHandle>;
+        fn network_manager_permission(source: &RustNetworkManager) -> bool;
+        fn network_manager_default_address(
+            source: &RustNetworkManager,
+            family: i32,
+        ) -> FfiDefaultLocalAddress;
+        fn network_manager_mdns(source: &RustNetworkManager) -> SharedPtr<NativeMdnsResponder>;
+        fn network_manager_dump(source: &RustNetworkManager);
+        fn network_manager_set_vpn(source: &RustNetworkManager, masks: Vec<FfiIpNetworkMask>);
         type RustNetworkMonitorFactory;
         type RustNetworkMonitor;
         fn network_monitor_factory_present(factory: &RustNetworkMonitorFactory) -> bool;
@@ -3626,7 +4199,9 @@ mod ffi {
         type RustEnvironmentFactoryRetention;
         type RustEnvironmentFactoryRandomness;
         fn environment_factory_has_randomness(retention: &RustEnvironmentFactoryRetention) -> bool;
-        fn environment_factory_randomness(retention: &RustEnvironmentFactoryRetention) -> Box<RustEnvironmentFactoryRandomness>;
+        fn environment_factory_randomness(
+            retention: &RustEnvironmentFactoryRetention,
+        ) -> Box<RustEnvironmentFactoryRandomness>;
         type RustEventLogProductStop;
         fn event_log_product_stopped(completion: &RustEventLogProductStop, failed: bool);
         type RustRtcEventLogFactory;
@@ -3677,6 +4252,36 @@ mod ffi {
         type RustNetworkControllerFactory;
         type RustNetworkController;
         fn network_controller_factory_present(source: &RustNetworkControllerFactory) -> bool;
+        fn network_controller_is_goog_cc(source: &RustNetworkControllerFactory) -> bool;
+        fn network_controller_goog_cc_rfc8888(source: &RustNetworkControllerFactory) -> bool;
+        fn network_controller_goog_cc_estimator(
+            source: &RustNetworkControllerFactory,
+        ) -> Box<RustNetworkStateEstimatorFactory>;
+        fn network_controller_goog_cc_predictor(
+            source: &RustNetworkControllerFactory,
+        ) -> Box<RustNetworkStatePredictorFactory>;
+        fn network_controller_factory_retain(
+            source: &RustNetworkControllerFactory,
+        ) -> Box<RustNetworkControllerFactory>;
+        type RustNetworkStateEstimatorFactory;
+        type RustNetworkStateEstimator;
+        fn network_estimator_factory_present(source: &RustNetworkStateEstimatorFactory) -> bool;
+        fn network_estimator_create(
+            source: &RustNetworkStateEstimatorFactory,
+            trials: UniquePtr<NativeFieldTrials>,
+        ) -> Box<RustNetworkStateEstimator>;
+        fn network_estimator_present(source: &RustNetworkStateEstimator) -> bool;
+        fn network_estimator_estimate(source: &RustNetworkStateEstimator) -> FfiNcOptionalEstimate;
+        fn network_estimator_feedback(
+            source: &RustNetworkStateEstimator,
+            value: FfiNcTransportPacketsFeedback,
+        );
+        fn network_estimator_received(source: &RustNetworkStateEstimator, value: FfiNcPacketResult);
+        fn network_estimator_route(
+            source: &RustNetworkStateEstimator,
+            value: FfiNcNetworkRouteChange,
+        );
+        fn network_estimator_invalid(source: &RustNetworkStateEstimator, kind: u8);
         fn network_controller_create(
             source: &RustNetworkControllerFactory,
             environment: UniquePtr<NativeEnvironment>,
@@ -3761,6 +4366,10 @@ mod ffi {
             framerate: u32,
         ) -> FfiVideoBitrateAllocation;
         fn video_bitrate_allocator_set_legacy(source: &RustVideoBitrateAllocator, enabled: bool);
+        type RustDnsCallback;
+        fn owned_dns_callback_fire(callback: Box<RustDnsCallback>);
+        fn async_dns_source_failed(source: &RustAsyncDnsResolver) -> bool;
+        fn async_dns_result_failed(source: &RustAsyncDnsResult) -> bool;
         type RustAsyncDnsFactory;
         type RustAsyncDnsResolver;
         fn async_dns_factory_present(source: &RustAsyncDnsFactory) -> bool;
@@ -3813,6 +4422,7 @@ mod ffi {
         );
         type RustTlsCertificateVerifier;
         fn tls_certificate_verifier_present(verifier: &RustTlsCertificateVerifier) -> bool;
+        fn rust_tls_certificate_verifier_failed(verifier: &RustTlsCertificateVerifier) -> bool;
         fn rust_tls_certificate_verify(
             verifier: &RustTlsCertificateVerifier,
             certificate: UniquePtr<NativeTlsCertificate>,
@@ -3828,11 +4438,6 @@ mod ffi {
         type RustClockProvider;
         fn clock_provider_current_time(provider: &RustClockProvider) -> i64;
         fn clock_provider_convert_ntp(provider: &RustClockProvider, timestamp: i64) -> u64;
-        fn real_time_clock_convert_ntp(
-            anchor_timestamp: i64,
-            anchor_ntp: u64,
-            timestamp: i64,
-        ) -> u64;
         type RustFieldTrials;
         fn field_trials_present(view: &RustFieldTrials) -> bool;
         fn rust_field_trials_lookup(view: &RustFieldTrials, key: &str) -> String;
@@ -4347,7 +4952,11 @@ mod ffi {
             maximum_time_us: i64,
         ) -> UniquePtr<NativeClock>;
         fn new_real_time_clock() -> UniquePtr<NativeClock>;
-        unsafe fn environment_clock(environment: &NativeEnvironment, selected: *const NativeClock, manual: bool) -> UniquePtr<NativeClock>;
+        unsafe fn environment_clock(
+            environment: &NativeEnvironment,
+            selected: *const NativeClock,
+            manual: bool,
+        ) -> UniquePtr<NativeClock>;
         fn clock_is_monotonic(clock: &NativeClock) -> bool;
         fn real_time_clock_native_sample(clock: &NativeClock) -> FfiClockNtpSample;
         fn advance_simulated_clock(clock: &NativeClock, delta_us: i64) -> bool;
@@ -4380,6 +4989,134 @@ mod ffi {
         include!("pulsebeam-webrtc-sys/native/event_log.h");
         include!("pulsebeam-webrtc-sys/native/event_log_codec.h");
         include!("pulsebeam-webrtc-sys/native/network.h");
+        include!("pulsebeam-webrtc-sys/native/network_values.h");
+        include!("pulsebeam-webrtc-sys/native/packet_socket.h");
+        type NativeListenSocketEvents;
+        fn listen_socket_events_in_scope(
+            resources: SharedPtr<NativePacketSocketResources>,
+            standalone: bool,
+        ) -> SharedPtr<NativeListenSocketEvents>;
+        type NativeAcceptedPacketSocket;
+        type NativePacketSocketAccept;
+        fn accepted_socket_new(
+            source: Box<RustPacketSocket>,
+            events: SharedPtr<NativePacketSocketEvents>,
+            resources: SharedPtr<NativePacketSocketResources>,
+        ) -> UniquePtr<NativeAcceptedPacketSocket>;
+        fn listen_accept(
+            events: &NativeListenSocketEvents,
+            socket: UniquePtr<NativeAcceptedPacketSocket>,
+            post: bool,
+        ) -> FfiSocketAcceptResult;
+        fn listen_post_creator(
+            events: &NativeListenSocketEvents,
+            creator: Box<RustAcceptCreator>,
+        ) -> SharedPtr<NativePacketSocketAccept>;
+        fn listen_accept_prepared(
+            events: &NativeListenSocketEvents,
+            socket: UniquePtr<NativeAcceptedPacketSocket>,
+            ticket: SharedPtr<NativePacketSocketAccept>,
+        ) -> FfiSocketAcceptResult;
+        fn listen_accept_creation_failed(ticket: &NativePacketSocketAccept, retired: bool);
+        fn listen_accept_status(ticket: &NativePacketSocketAccept) -> u8;
+        fn listen_accept_cancel(ticket: &NativePacketSocketAccept) -> bool;
+        type NativePacketSocketScope;
+        fn packet_socket_scope_new() -> UniquePtr<NativePacketSocketScope>;
+        fn packet_socket_scope_resources(
+            scope: &NativePacketSocketScope,
+        ) -> SharedPtr<NativePacketSocketResources>;
+        type NativeOwnedListenSocket;
+        type NativeListenSocketSubscription;
+        fn owned_listen_socket_new(
+            source: Box<RustListenSocket>,
+            events: SharedPtr<NativeListenSocketEvents>,
+            scope: UniquePtr<NativePacketSocketScope>,
+            role: Box<RustSocketRole>,
+        ) -> UniquePtr<NativeOwnedListenSocket>;
+        fn listen_member_call(
+            events: &NativeListenSocketEvents,
+            address: bool,
+        ) -> FfiOwnedSocketResult;
+        fn listen_observe(
+            events: &NativeListenSocketEvents,
+            ownership: bool,
+            callback: Box<RustListenCallback>,
+        ) -> FfiListenSubscriptionResult;
+        fn listen_subscription_cancel(subscription: &NativeListenSocketSubscription) -> bool;
+        fn listen_subscription_active(subscription: &NativeListenSocketSubscription) -> bool;
+        fn owned_socket_into_accepted(
+            socket: UniquePtr<NativeOwnedPacketSocket>,
+            listener: SharedPtr<NativePacketSocketResources>,
+        ) -> UniquePtr<NativeAcceptedPacketSocket>;
+        type NativeOwnedPacketSocket;
+        fn owned_packet_socket_new(
+            source: Box<RustPacketSocket>,
+            events: SharedPtr<NativePacketSocketEvents>,
+            scope: UniquePtr<NativePacketSocketScope>,
+            role: Box<RustSocketRole>,
+        ) -> UniquePtr<NativeOwnedPacketSocket>;
+        fn socket_member_call(
+            events: &NativePacketSocketEvents,
+            operation: u8,
+            payload: &[u8],
+            address: UniquePtr<NativeSocketAddress>,
+            options: FfiSocketPacketOptions,
+            option: i32,
+            value: i32,
+        ) -> FfiOwnedSocketResult;
+        type NativePacketSocketSubscription;
+        fn socket_observe(
+            events: &NativePacketSocketEvents,
+            kind: u8,
+            legacy: bool,
+            callback: Box<RustSocketCallback>,
+        ) -> FfiSocketSubscriptionResult;
+        fn socket_subscription_cancel(subscription: &NativePacketSocketSubscription) -> bool;
+        fn socket_subscription_active(subscription: &NativePacketSocketSubscription) -> bool;
+        fn socket_subscription_bound(subscription: &NativePacketSocketSubscription) -> bool;
+        type NativePacketSocketResources;
+        type NativePacketSocketEvents;
+        fn packet_socket_resources_status(resources: &NativePacketSocketResources) -> u8;
+        fn packet_socket_events_in_scope(
+            resources: SharedPtr<NativePacketSocketResources>,
+        ) -> SharedPtr<NativePacketSocketEvents>;
+        fn packet_socket_events_retire(events: &NativePacketSocketEvents);
+        fn socket_event_simple(
+            events: &NativePacketSocketEvents,
+            kind: u8,
+            error: i32,
+            post: bool,
+        ) -> u8;
+        fn socket_event_received(
+            events: &NativePacketSocketEvents,
+            packet: FfiSocketReceivedPacket,
+            post: bool,
+        ) -> u8;
+        fn socket_event_sent(
+            events: &NativePacketSocketEvents,
+            packet: FfiSocketSentPacket,
+            post: bool,
+        ) -> u8;
+        fn socket_event_address(
+            events: &NativePacketSocketEvents,
+            address: UniquePtr<NativeSocketAddress>,
+            post: bool,
+        ) -> u8;
+        fn socket_copy_information(
+            events: &NativePacketSocketEvents,
+            size: usize,
+            info: &mut FfiSocketPacketInfo,
+        ) -> u8;
+        fn socket_provider_io_error() -> i32;
+        fn socket_received_packet_copy(
+            packet: &FfiSocketReceivedPacket,
+            decryption: u8,
+        ) -> FfiSocketReceivedPacket;
+        fn socket_received_packet_legacy(
+            payload: &[u8],
+            address: &NativeSocketAddress,
+            time_us: i64,
+        ) -> FfiSocketReceivedPacket;
         type NativeNetworkChange;
         fn network_change_notify(changes: &NativeNetworkChange) -> bool;
         include!("pulsebeam-webrtc-sys/native/codec.h");
@@ -5070,6 +5807,31 @@ mod ffi {
             inputs: &[FfiNetworkPredictorInput],
         ) -> Vec<i32>;
         type NativeDnsResolutionCompletion;
+        type NativeOwnedDnsResolver;
+        type NativeDnsResolverContext;
+        type NativeOwnedDnsResult;
+        type NativeDnsQuery;
+        fn owned_dns_new(
+            source: Box<RustAsyncDnsResolver>,
+            role: Box<RustSocketRole>,
+        ) -> UniquePtr<NativeOwnedDnsResolver>;
+        fn owned_dns_context(
+            resolver: &NativeOwnedDnsResolver,
+        ) -> SharedPtr<NativeDnsResolverContext>;
+        fn owned_dns_start(
+            context: &NativeDnsResolverContext,
+            address: &NativeSocketAddress,
+            has_family: bool,
+            family: i32,
+            callback: Box<RustDnsCallback>,
+        ) -> FfiOwnedDnsStart;
+        fn owned_dns_result(context: &NativeDnsResolverContext) -> FfiOwnedDnsResult;
+        fn owned_dns_result_call(
+            result: &NativeOwnedDnsResult,
+            address: bool,
+            family: i32,
+        ) -> FfiOwnedSocketResult;
+        fn owned_dns_query_cancel(query: &NativeDnsQuery) -> bool;
         fn dns_resolution_complete(completion: &NativeDnsResolutionCompletion) -> u8;
         include!("pulsebeam-webrtc-sys/native/certificate_generator.h");
         type NativeCertificateCompletion;
@@ -5120,6 +5882,16 @@ mod ffi {
         fn socket_address_from_storage(bytes: &[u8], ipv4: bool) -> UniquePtr<NativeSocketAddress>;
         fn ip_address_from_storage(bytes: &[u8]) -> Vec<u8>;
         include!("pulsebeam-webrtc-sys/native/tls.h");
+        type NativeTlsVerifier;
+        fn tls_verifier_verify(
+            verifier: &NativeTlsVerifier,
+            certificate: &NativeTlsCertificate,
+        ) -> bool;
+        fn tls_verifier_verify_chain(
+            verifier: &NativeTlsVerifier,
+            chain: &NativeTlsCertificateChain,
+        ) -> bool;
+        fn tls_verifier_failed(verifier: &NativeTlsVerifier) -> bool;
         type NativeTlsCertificate;
         type NativeTlsCertificateChain;
         fn tls_certificate_from_pem(pem: &str) -> UniquePtr<NativeTlsCertificate>;
@@ -5181,7 +5953,12 @@ mod ffi {
         fn event_codec_add(batch: Pin<&mut NativeEventEncoding>, event: &NativeRtcEvent) -> bool;
         fn event_codec_encode(batch: &NativeEventEncoding) -> Vec<u8>;
         fn event_codec_parse(kind: u32, bytes: &[u8], batched: bool) -> FfiEventParseResult;
-        fn event_codec_status(success: bool, error: &str, file: &str, line: i32) -> FfiEventParseStatus;
+        fn event_codec_status(
+            success: bool,
+            error: &str,
+            file: &str,
+            line: i32,
+        ) -> FfiEventParseStatus;
         fn rtc_event_rtp_dependency_descriptor(
             event: &NativeRtcEvent,
             has_structure: bool,
@@ -5202,26 +5979,55 @@ mod ffi {
         ) -> UniquePtr<NativeRtcEventLogFactory>;
         type NativeRtcEventLogProduct;
         fn event_log_product_create(
-            factory: UniquePtr<NativeRtcEventLogFactory>, environment: &NativeEnvironment,
-            retention: Box<RustEventLogRetention>, controlled: bool, error: &mut u8,
+            factory: UniquePtr<NativeRtcEventLogFactory>,
+            environment: &NativeEnvironment,
+            retention: Box<RustEventLogRetention>,
+            controlled: bool,
+            error: &mut u8,
         ) -> UniquePtr<NativeRtcEventLogProduct>;
-        fn event_log_product_start(log: Pin<&mut NativeRtcEventLogProduct>,
-            output: UniquePtr<NativeEventLogOutput>, period_ms: i64) -> u8;
-        fn event_log_product_log(log: Pin<&mut NativeRtcEventLogProduct>,
-            event: UniquePtr<NativeRtcEvent>) -> u8;
+        fn event_log_product_start(
+            log: Pin<&mut NativeRtcEventLogProduct>,
+            output: UniquePtr<NativeEventLogOutput>,
+            period_ms: i64,
+        ) -> u8;
+        fn event_log_product_log(
+            log: Pin<&mut NativeRtcEventLogProduct>,
+            event: UniquePtr<NativeRtcEvent>,
+        ) -> u8;
         fn event_log_product_stop(log: Pin<&mut NativeRtcEventLogProduct>) -> u8;
-        fn event_log_product_stop_async(log: Pin<&mut NativeRtcEventLogProduct>,
-            completion: Box<RustEventLogProductStop>) -> u8;
+        fn event_log_product_stop_async(
+            log: Pin<&mut NativeRtcEventLogProduct>,
+            completion: Box<RustEventLogProductStop>,
+        ) -> u8;
         fn event_log_product_close(log: Pin<&mut NativeRtcEventLogProduct>);
         type NativeEventLogUtility;
-        fn environment_event_log(environment: &NativeEnvironment) -> UniquePtr<NativeEventLogUtility>;
-        fn event_log_utility_start(log: Pin<&mut NativeEventLogUtility>, output: UniquePtr<NativeEventLogOutput>, period_ms: i64) -> u8;
-        fn event_log_utility_log(log: Pin<&mut NativeEventLogUtility>, event: UniquePtr<NativeRtcEvent>) -> u8;
+        fn environment_event_log(
+            environment: &NativeEnvironment,
+        ) -> UniquePtr<NativeEventLogUtility>;
+        fn event_log_utility_start(
+            log: Pin<&mut NativeEventLogUtility>,
+            output: UniquePtr<NativeEventLogOutput>,
+            period_ms: i64,
+        ) -> u8;
+        fn event_log_utility_log(
+            log: Pin<&mut NativeEventLogUtility>,
+            event: UniquePtr<NativeRtcEvent>,
+        ) -> u8;
         fn event_log_utility_stop(log: Pin<&mut NativeEventLogUtility>) -> u8;
-        fn event_log_utility_stop_async(log: Pin<&mut NativeEventLogUtility>, completion: Box<RustEventLogProductStop>, retention: Box<RustEventLogRetention>) -> u8;
+        fn event_log_utility_stop_async(
+            log: Pin<&mut NativeEventLogUtility>,
+            completion: Box<RustEventLogProductStop>,
+            retention: Box<RustEventLogRetention>,
+        ) -> u8;
         fn event_log_utility_close(log: Pin<&mut NativeEventLogUtility>);
-        fn test_event_log_sdk_dispatch(environment: &NativeEnvironment, event: UniquePtr<NativeRtcEvent>);
-        fn test_stock_event_log_environment(environment: &NativeEnvironment, retention: Box<RustEventLogRetention>) -> UniquePtr<NativeEnvironment>;
+        fn test_event_log_sdk_dispatch(
+            environment: &NativeEnvironment,
+            event: UniquePtr<NativeRtcEvent>,
+        );
+        fn test_stock_event_log_environment(
+            environment: &NativeEnvironment,
+            retention: Box<RustEventLogRetention>,
+        ) -> UniquePtr<NativeEnvironment>;
         type NativeEventLogOutput;
         fn event_log_output_native_active(output: &NativeEventLogOutput) -> bool;
         fn event_log_output_native_write(
@@ -5246,6 +6052,101 @@ mod ffi {
         type NativeSimulatedNetwork;
         type NativeNetworkEndpoint;
         type NativeNetworkManagerProvider;
+        type NativeNetwork;
+        type NativeNetworkResources;
+        type NativeManagerSubscription;
+        fn manager_observe(
+            resources: SharedPtr<NativeNetworkResources>,
+            kind: u8,
+            callback: Box<RustManagerCallback>,
+        ) -> UniquePtr<NativeManagerSubscription>;
+        fn manager_subscription_cancel(subscription: &NativeManagerSubscription) -> bool;
+        fn manager_subscription_active(subscription: &NativeManagerSubscription) -> bool;
+        fn manager_observation_retired(resources: &NativeNetworkResources) -> bool;
+        fn manager_observation_ready(resources: &NativeNetworkResources) -> bool;
+        fn manager_observation_notify(resources: &NativeNetworkResources, kind: u8) -> u8;
+        type NativeMdnsResponder;
+        type NativeMdnsCompletion;
+        fn mdns_responder_new(
+            resources: SharedPtr<NativeNetworkResources>,
+            source: Box<RustMdnsResponder>,
+        ) -> SharedPtr<NativeMdnsResponder>;
+        fn mdns_responder_retired(responder: &NativeMdnsResponder) -> bool;
+        fn mdns_responder_same(first: &NativeMdnsResponder, second: &NativeMdnsResponder) -> bool;
+        fn mdns_responder_failed(responder: &NativeMdnsResponder) -> bool;
+        fn mdns_responder_request(
+            responder: &NativeMdnsResponder,
+            ip: &[u8],
+            remove: bool,
+            callback: Box<RustMdnsCallback>,
+        ) -> u8;
+        fn mdns_complete(
+            completion: &NativeMdnsCompletion,
+            ip: &[u8],
+            name: &[u8],
+            removed: bool,
+        ) -> u8;
+        fn mdns_cancel(completion: &NativeMdnsCompletion) -> bool;
+        fn network_value_set_mdns(
+            network: &NativeNetwork,
+            provider: SharedPtr<NativeMdnsResponder>,
+        );
+        fn network_value_mdns(network: &NativeNetwork) -> SharedPtr<NativeMdnsResponder>;
+        type NativeNetworkSubscription;
+        fn network_value_subscribe(
+            network: SharedPtr<NativeNetwork>,
+            kind: u8,
+            callback: Box<RustNetworkCallback>,
+        ) -> UniquePtr<NativeNetworkSubscription>;
+        fn network_subscription_cancel(subscription: &NativeNetworkSubscription) -> bool;
+        fn network_subscription_failed(subscription: &NativeNetworkSubscription) -> bool;
+        type NativeNetworkMask;
+        type NativeDefaultLocalAddressProvider;
+        fn default_address_provider_new(
+            provider: Box<RustDefaultLocalAddressProvider>,
+        ) -> SharedPtr<NativeDefaultLocalAddressProvider>;
+        fn default_address_provider_get(
+            provider: &NativeDefaultLocalAddressProvider,
+            family: i32,
+        ) -> FfiDefaultLocalAddress;
+        fn default_address_provider_failed(provider: &NativeDefaultLocalAddressProvider) -> bool;
+        fn network_value_set_default_provider(
+            network: &NativeNetwork,
+            provider: SharedPtr<NativeDefaultLocalAddressProvider>,
+        );
+        fn network_value_default_provider(
+            network: &NativeNetwork,
+        ) -> SharedPtr<NativeDefaultLocalAddressProvider>;
+        fn network_value_new(
+            name: &[u8],
+            description: &[u8],
+            prefix: &[u8],
+            prefix_length: i32,
+            adapter: i32,
+        ) -> SharedPtr<NativeNetwork>;
+        fn network_value_clone(network: &NativeNetwork) -> SharedPtr<NativeNetwork>;
+        fn network_value_same(first: &NativeNetwork, second: &NativeNetwork) -> bool;
+        fn network_value_bytes(network: &NativeNetwork, field: u8) -> Vec<u8>;
+        fn network_value_info(network: &NativeNetwork, field: u8) -> i32;
+        fn network_value_set(network: &NativeNetwork, field: u8, value: i32) -> bool;
+        fn network_value_notify(network: &NativeNetwork, kind: u8) -> bool;
+        fn network_value_add_ip(network: &NativeNetwork, ip: &[u8], flags: i32);
+        fn network_value_ips(network: &NativeNetwork) -> Vec<FfiInterfaceAddress>;
+        fn network_value_set_ips(
+            network: &NativeNetwork,
+            ips: &[FfiInterfaceAddress],
+            already_changed: bool,
+        ) -> bool;
+        fn network_value_clear_ips(network: &NativeNetwork);
+        fn network_value_cost(network: &NativeNetwork, trials: &NativeFieldTrials) -> i32;
+        fn network_guess_cost(cost: i32) -> FfiNetworkCostGuess;
+        fn network_adapter_is_cellular(adapter: i32) -> bool;
+        fn network_make_key(name: &[u8], prefix: &[u8], prefix_length: i32) -> Vec<u8>;
+        fn network_adapter_from_name(name: &[u8]) -> i32;
+        fn network_mask_new(prefix: &[u8], length: i32) -> UniquePtr<NativeNetworkMask>;
+        fn network_mask_address(mask: &NativeNetworkMask) -> Vec<u8>;
+        fn network_mask_prefix_length(mask: &NativeNetworkMask) -> i32;
+        fn network_mask_equal(first: &NativeNetworkMask, second: &NativeNetworkMask) -> bool;
         type NativePacketSocketFactoryProvider;
         type NativeSimulatedUdpSocket;
         type NativeOutboundPacket;
@@ -5647,6 +6548,165 @@ mod ffi {
         fn factory_requires_deferred_teardown(factory: &NativePeerConnectionFactory) -> bool;
         type NativePeerConnection;
         type NativeDataChannel;
+        type NativeDesktopMemory;
+        fn desktop_memory_new(
+            size: usize,
+            id: i32,
+            heap: bool,
+            error: &mut i32,
+        ) -> UniquePtr<NativeDesktopMemory>;
+        fn desktop_memory_map(
+            fd: i32,
+            size: usize,
+            id: i32,
+            error: &mut i32,
+        ) -> UniquePtr<NativeDesktopMemory>;
+        fn desktop_memory_info(memory: &NativeDesktopMemory) -> FfiDesktopMemoryInfo;
+        fn desktop_memory_read(
+            memory: &NativeDesktopMemory,
+            offset: usize,
+            size: usize,
+        ) -> FfiDesktopBytes;
+        fn desktop_memory_write(
+            memory: Pin<&mut NativeDesktopMemory>,
+            offset: usize,
+            bytes: &[u8],
+        ) -> bool;
+        fn desktop_memory_fd(memory: &NativeDesktopMemory) -> FfiDesktopFd;
+        fn desktop_memory_retain(
+            memory: Pin<&mut NativeDesktopMemory>,
+            lease: Box<RustDesktopMemoryLease>,
+        );
+        type NativeDesktopFrame;
+        fn desktop_frame_shared(
+            width: i32,
+            height: i32,
+            stride: i32,
+            format: u32,
+            offset: usize,
+            memory: UniquePtr<NativeDesktopMemory>,
+            factory: Box<RustDesktopMemoryFactory>,
+            create: bool,
+            error: &mut u8,
+        ) -> UniquePtr<NativeDesktopFrame>;
+        fn desktop_frame_fd(frame: &NativeDesktopFrame) -> FfiDesktopFd;
+        fn desktop_frame_new(width: i32, height: i32, format: u32)
+        -> UniquePtr<NativeDesktopFrame>;
+        fn desktop_frame_copy(frame: &NativeDesktopFrame) -> UniquePtr<NativeDesktopFrame>;
+        fn desktop_frame_info(frame: &NativeDesktopFrame) -> FfiDesktopFrameInfo;
+        fn desktop_frame_write_info(
+            frame: Pin<&mut NativeDesktopFrame>,
+            info: &FfiDesktopFrameInfo,
+        ) -> u8;
+        fn desktop_frame_pixels(
+            frame: &NativeDesktopFrame,
+            pixel: bool,
+            x: i32,
+            y: i32,
+        ) -> FfiDesktopBytes;
+        fn desktop_frame_black(frame: Pin<&mut NativeDesktopFrame>, write: bool) -> u8;
+        fn desktop_frame_is_black(frame: &NativeDesktopFrame) -> u8;
+        fn desktop_frame_copy_metadata(
+            frame: Pin<&mut NativeDesktopFrame>,
+            source: &NativeDesktopFrame,
+        ) -> u8;
+        fn desktop_frame_copy_buffer(
+            frame: Pin<&mut NativeDesktopFrame>,
+            bytes: &[u8],
+            offset: usize,
+            stride: i32,
+            dest: &FfiDesktopRect,
+        ) -> u8;
+        fn desktop_frame_copy_pixels(
+            frame: Pin<&mut NativeDesktopFrame>,
+            source: &NativeDesktopFrame,
+            x: i32,
+            y: i32,
+            dest: &FfiDesktopRect,
+        ) -> u8;
+        fn desktop_frame_copy_info(
+            frame: Pin<&mut NativeDesktopFrame>,
+            source: Pin<&mut NativeDesktopFrame>,
+            move_info: bool,
+        ) -> u8;
+        fn desktop_frame_copy_intersection(
+            frame: Pin<&mut NativeDesktopFrame>,
+            source: &NativeDesktopFrame,
+            horizontal_scale: f64,
+            vertical_scale: f64,
+        ) -> u8;
+        type NativeCameraOptions;
+        fn camera_options_new(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeCameraOptions>;
+        fn camera_options_clone(options: &NativeCameraOptions) -> UniquePtr<NativeCameraOptions>;
+        fn camera_options_flags(options: &NativeCameraOptions) -> u8;
+        fn camera_options_write(options: &NativeCameraOptions, v4l2: bool, pipewire: bool) -> bool;
+        fn camera_options_set_fd(options: &NativeCameraOptions, fd: i32) -> bool;
+        fn camera_options_initialize(
+            options: &NativeCameraOptions,
+            observer: &RustCameraInitializationObserver,
+        ) -> i32;
+        type NativeCameraDeviceInfo;
+        fn camera_info_new(
+            factory: &NativePeerConnectionFactory,
+        ) -> UniquePtr<NativeCameraDeviceInfo>;
+        fn camera_info_new_with_options(
+            factory: &NativePeerConnectionFactory,
+            options: &NativeCameraOptions,
+        ) -> UniquePtr<NativeCameraDeviceInfo>;
+        fn camera_info_query(
+            info: &NativeCameraDeviceInfo,
+            request: &FfiCameraInfoRequest,
+        ) -> FfiCameraInfoReply;
+        fn camera_info_close(info: &NativeCameraDeviceInfo);
+        type NativeDesktopOptions;
+        fn desktop_options_new(
+            factory: &NativePeerConnectionFactory,
+            environment: &NativeEnvironment,
+            defaults: bool,
+            selected_environment: bool,
+        ) -> UniquePtr<NativeDesktopOptions>;
+        fn desktop_options_clone(options: &NativeDesktopOptions)
+        -> UniquePtr<NativeDesktopOptions>;
+        fn desktop_options_read(options: &NativeDesktopOptions) -> FfiDesktopOptions;
+        fn desktop_is_wayland(options: &NativeDesktopOptions) -> u8;
+        fn desktop_options_write(options: &NativeDesktopOptions, fields: &FfiDesktopOptions) -> u8;
+        fn desktop_options_time_us(options: &NativeDesktopOptions) -> i64;
+        fn desktop_options_clock_matches(
+            options: &NativeDesktopOptions,
+            clock: &NativeClock,
+        ) -> bool;
+        fn desktop_options_resource(
+            options: &NativeDesktopOptions,
+            kind: u8,
+        ) -> UniquePtr<NativeDesktopOptions>;
+        fn desktop_resource_create(
+            options: &NativeDesktopOptions,
+            kind: u8,
+            name: &str,
+        ) -> UniquePtr<NativeDesktopOptions>;
+        fn desktop_options_set_resource(
+            options: &NativeDesktopOptions,
+            kind: u8,
+            present: bool,
+            resource: &NativeDesktopOptions,
+        ) -> u8;
+        fn desktop_resource_equal(
+            a: &NativeDesktopOptions,
+            b: &NativeDesktopOptions,
+            kind: u8,
+        ) -> bool;
+        fn create_desktop_capture(
+            source: &NativeVideoSource,
+            options: &NativeDesktopOptions,
+            kind: u8,
+            select: bool,
+            id: i64,
+            receiver: Box<RustDesktopCaptureReceiver>,
+            observer: Box<RustDesktopSelectionObserver>,
+            error: &mut String,
+        ) -> UniquePtr<NativeScreenCapture>;
         type NativeScreenCapture;
         type NativeCamera;
         type NativeVideoSource;
@@ -7505,17 +8565,48 @@ mod ffi {
             clock_maximum_us: i64,
         ) -> UniquePtr<NativeEnvironment>;
         type NativeEnvironmentFactory;
-        fn new_environment_factory(bounds: FfiClockTimeBounds) -> UniquePtr<NativeEnvironmentFactory>;
-        fn environment_factory_from_environment(environment: &NativeEnvironment) -> UniquePtr<NativeEnvironmentFactory>;
-        fn clone_environment_factory(factory: &NativeEnvironmentFactory) -> UniquePtr<NativeEnvironmentFactory>;
-        fn environment_factory_set_trials(factory: Pin<&mut NativeEnvironmentFactory>, trials: Box<RustFieldTrials>);
-        fn environment_factory_set_manual_clock(factory: Pin<&mut NativeEnvironmentFactory>, clock: &NativeManualClock, bounds: FfiClockTimeBounds);
-        fn environment_factory_set_clock(factory: Pin<&mut NativeEnvironmentFactory>, clock: &NativeClock, bounds: FfiClockTimeBounds);
-        fn environment_factory_set_queues(factory: Pin<&mut NativeEnvironmentFactory>, queues: &NativeTaskQueueFactory);
-        fn environment_factory_set_log(factory: Pin<&mut NativeEnvironmentFactory>, log: Box<RustRtcEventLog>);
-        fn environment_factory_set_log_product(factory: Pin<&mut NativeEnvironmentFactory>, log: UniquePtr<NativeRtcEventLogProduct>) -> u8;
-        fn environment_factory_create(factory: &NativeEnvironmentFactory, retention: Box<RustEnvironmentFactoryRetention>) -> UniquePtr<NativeEnvironment>;
-        fn environment_default_queue_metadata(environment: &NativeEnvironment) -> UniquePtr<NativeTaskQueueFactory>;
+        fn new_environment_factory(
+            bounds: FfiClockTimeBounds,
+        ) -> UniquePtr<NativeEnvironmentFactory>;
+        fn environment_factory_from_environment(
+            environment: &NativeEnvironment,
+        ) -> UniquePtr<NativeEnvironmentFactory>;
+        fn clone_environment_factory(
+            factory: &NativeEnvironmentFactory,
+        ) -> UniquePtr<NativeEnvironmentFactory>;
+        fn environment_factory_set_trials(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            trials: Box<RustFieldTrials>,
+        );
+        fn environment_factory_set_manual_clock(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            clock: &NativeManualClock,
+            bounds: FfiClockTimeBounds,
+        );
+        fn environment_factory_set_clock(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            clock: &NativeClock,
+            bounds: FfiClockTimeBounds,
+        );
+        fn environment_factory_set_queues(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            queues: &NativeTaskQueueFactory,
+        );
+        fn environment_factory_set_log(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            log: Box<RustRtcEventLog>,
+        );
+        fn environment_factory_set_log_product(
+            factory: Pin<&mut NativeEnvironmentFactory>,
+            log: UniquePtr<NativeRtcEventLogProduct>,
+        ) -> u8;
+        fn environment_factory_create(
+            factory: &NativeEnvironmentFactory,
+            retention: Box<RustEnvironmentFactoryRetention>,
+        ) -> UniquePtr<NativeEnvironment>;
+        fn environment_default_queue_metadata(
+            environment: &NativeEnvironment,
+        ) -> UniquePtr<NativeTaskQueueFactory>;
         type NativeFieldTrials;
         fn field_trials_validate(configuration: &str) -> bool;
         fn environment_field_trials(
@@ -7533,7 +8624,10 @@ mod ffi {
         fn environment_time_us(environment: &NativeEnvironment) -> i64;
         fn environment_timestamp(environment: &NativeEnvironment) -> i64;
         fn environment_clock_time_bounds(environment: &NativeEnvironment) -> FfiClockTimeBounds;
-        fn bind_environment_selection(environment: UniquePtr<NativeEnvironment>, selected: &NativeEnvironment) -> UniquePtr<NativeEnvironment>;
+        fn bind_environment_selection(
+            environment: UniquePtr<NativeEnvironment>,
+            selected: &NativeEnvironment,
+        ) -> UniquePtr<NativeEnvironment>;
         fn environment_clock_identity_matches(
             environment: &NativeEnvironment,
             other: &NativeEnvironment,
@@ -7566,6 +8660,9 @@ mod ffi {
         fn test_driver_capture_cancellation(driver: &NativeDriverThread) -> bool;
         fn driver_next_deadline_us(driver: &NativeDriverThread) -> i64;
         fn driver_is_current(driver: &NativeDriverThread) -> bool;
+        fn thread_is_owned(thread: &NativeThread) -> bool;
+        fn thread_is_current(thread: &NativeThread) -> bool;
+        fn thread_requires_retirement(thread: &NativeThread) -> bool;
         fn thread_post_task(thread: &NativeThread, task: Box<RustTask>) -> bool;
         fn thread_post_native_delayed_task(
             thread: &NativeThread,
@@ -8091,11 +9188,13 @@ mod ffi {
             worker_thread: &NativeThread,
             signaling_thread: &NativeThread,
             network_manager: *const NativeNetworkManagerProvider,
+            network_manager_factory: Box<RustNetworkManagerFactory>,
             network_monitor_factory: Box<RustNetworkMonitorFactory>,
             network_predictor_factory: Box<RustNetworkStatePredictorFactory>,
             fec_factory: Box<RustFecControllerFactory>,
             network_controller_factory: Box<RustNetworkControllerFactory>,
             packet_socket_factory: *const NativePacketSocketFactoryProvider,
+            socket_factory: Box<RustPacketSocketFactory>,
             audio_encoder: *const NativeAudioEncoderFactory,
             audio_decoder: *const NativeAudioDecoderFactory,
             video_encoder: *const NativeVideoEncoderFactory,
@@ -8201,6 +9300,7 @@ mod ffi {
             config: &NativePeerConfiguration,
             index: usize,
         ) -> SharedPtr<NativeCertificate>;
+        fn peer_call_admission_stats(peer: &NativePeerConnection) -> FfiCallAdmissionStats;
         fn peer_get_configuration(
             peer: &NativePeerConnection,
         ) -> UniquePtr<NativePeerConfiguration>;
@@ -8342,6 +9442,9 @@ mod ffi {
             peer: &NativePeerConnection,
             arrival_id: u64,
         ) -> UniquePtr<NativeDataChannel>;
+        fn factory_in_native_execution_context(factory: &NativePeerConnectionFactory) -> bool;
+        fn factory_control_call_allowed(factory: &NativePeerConnectionFactory) -> bool;
+        fn peer_control_call_allowed(peer: &NativePeerConnection) -> bool;
         fn close_peer_connection(peer: &NativePeerConnection) -> bool;
         fn peer_set_native_audio_enabled(
             peer: &NativePeerConnection,
@@ -8568,12 +9671,63 @@ mod ffi {
         fn screen_capture_status(capture: &NativeScreenCapture) -> u8;
         fn screen_capture_failed_frames(capture: &NativeScreenCapture) -> u64;
         fn close_screen(capture: &NativeScreenCapture) -> bool;
+        fn desktop_control(
+            capture: &NativeScreenCapture,
+            kind: u8,
+            id: i64,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> FfiDesktopControl;
+        type NativeDesktopMetadata;
+        fn desktop_capture_metadata(
+            capture: &NativeScreenCapture,
+        ) -> UniquePtr<NativeDesktopMetadata>;
+        fn desktop_metadata_clone(
+            metadata: &NativeDesktopMetadata,
+        ) -> UniquePtr<NativeDesktopMetadata>;
+        fn desktop_metadata_read(metadata: &NativeDesktopMetadata) -> FfiDesktopMetadata;
+        fn desktop_metadata_equal(
+            a: &NativeDesktopMetadata,
+            b: &NativeDesktopMetadata,
+            cancellable: bool,
+        ) -> bool;
+        fn desktop_set_memory_factory(
+            capture: &NativeScreenCapture,
+            source: Box<RustDesktopMemoryFactory>,
+        ) -> u8;
+        fn desktop_set_receiver(
+            capture: &NativeScreenCapture,
+            source: Box<RustDesktopCaptureReceiver>,
+        ) -> u8;
+        fn desktop_set_selection_observer(
+            capture: &NativeScreenCapture,
+            source: Box<RustDesktopSelectionObserver>,
+        ) -> u8;
         fn camera_devices(devices: &mut Vec<FfiCameraDevice>, error: &mut String) -> bool;
+        fn camera_device_control(
+            device_id: &str,
+            kind: u8,
+            settings: &FfiCameraSettings,
+        ) -> FfiCameraDeviceControl;
         fn camera_formats(
             device_id: &str,
             formats: &mut Vec<FfiCameraFormat>,
             error: &mut String,
         ) -> bool;
+        fn create_camera(
+            source: &NativeVideoSource,
+            device_id: &str,
+            error: &mut String,
+        ) -> UniquePtr<NativeCamera>;
+        fn create_camera_with_options(
+            source: &NativeVideoSource,
+            options: &NativeCameraOptions,
+            device_id: &str,
+            error: &mut String,
+        ) -> UniquePtr<NativeCamera>;
+        fn camera_set_raw_sink(camera: &NativeCamera, source: Box<RustRawCameraSink>) -> u8;
         fn open_camera(
             source: &NativeVideoSource,
             device_id: &str,
@@ -8584,6 +9738,13 @@ mod ffi {
         ) -> UniquePtr<NativeCamera>;
         fn camera_capture_status(camera: &NativeCamera, stale_after_ms: u64) -> u8;
         fn close_camera(camera: &NativeCamera) -> bool;
+        fn camera_control(
+            camera: &NativeCamera,
+            kind: u8,
+            rotation: u16,
+            flag: bool,
+            settings: &FfiCameraSettings,
+        ) -> FfiCameraControl;
         fn create_video_source(
             factory: &NativePeerConnectionFactory,
         ) -> UniquePtr<NativeVideoSource>;

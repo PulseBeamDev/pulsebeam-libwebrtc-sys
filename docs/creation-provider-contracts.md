@@ -1,8 +1,647 @@
 # Native creation-provider contracts
 
 This records implemented ownership paths and the remaining pinned dependency
-inventory. It is not a claim of complete creation-interface coverage or of
-qualification. The new provider tests have not been run.
+inventory. It is not a claim of complete creation-interface coverage.
+
+Execution status: the final Linux x86_64 non-device core/native and ASan
+core/native suites passed, along with source/package checks. Exact counts,
+completed evidence, limitations and the unresolved live-capture scope are in
+[the verification results](provider-verification-plan.md#final-results).
+Historical source-delivery notes below saying fixtures were unrun are superseded
+for the default non-device cases by those results, not for ignored live or
+prerequisite-dependent gates. Unsupported/unwired interface limitations remain
+unchanged; a passing suite does not implement those missing seams.
+
+## Opt-in native capture source progress
+
+`ProductionSession` now owns camera and desktop captures in its private source
+map under opaque SessionSourceId values. Discovery, stopped camera creation,
+explicit camera start/stop, desktop frame requests, capture status and control
+operations do not export local handles. Existing publish_video and
+replace_video_source accept these actual captured video sources. Source close
+and session shutdown stop capture before releasing source/factory role owners;
+ordinary actor migration keeps the same native objects and SDK role.
+
+Native capture creation, mutable operations and final destruction now run on
+the factory's existing signaling role. In particular, V4L2's api_checker sees
+the same sequence after actor migration. No capture executor is introduced.
+Control calls reject provider callback/forbidden role reentry before a blocking
+hop. Physical capture still rejects controlled execution before platform entry.
+
+Wayland desktop capture now pushes an isolated GLib thread-default context for
+SDK creation/control and dispatches its ready GIO work on that same existing
+signaling role. Weak delayed tasks provide bounded dispatch batches without
+retaining the actor or adding a capture executor. It never pumps the application's
+global GTK context on an SDK thread. Close first destroys the capturer, whose
+SDK PortalGuard invalidates late portal access and whose stream stops its native
+callbacks, then drains currently ready context work and retires the weak pump.
+Repeated observer enablement is idempotent rather than reaching the SDK's
+non-null/non-null Observe DCHECK.
+
+**Pinned SDK limitation, no libwebrtc patch:** the portal API exposes no count or
+completion fence for canceled asynchronous GIO operations. Draining ready work is
+not proof that future I/O completions have arrived. SDK-only GTask/context/guard
+resources may remain pending after early close; complete deterministic native
+GIO reclamation is not promised or qualified. These late callbacks must not own
+or invoke released Rust receivers or access the destroyed capturer. Do not hide
+this limitation behind a guessed timeout, a private-layout refcount probe, or
+pumping unrelated application GTK callbacks. Final qualification must distinguish
+this native cleanup limitation from Rust ownership and native pointer safety.
+
+CameraSettings preserves every VideoCaptureCapability field, including signed
+width/height/FPS, scoped pixel-format bits and interlace. Complete capability
+queries, orientation and native best-match index/settings are distinct from the
+legacy filtered CameraFormat convenience view. Device product IDs and desktop
+display IDs are preserved. CameraControlError retains signed native result codes.
+Creating a stopped camera and then start_device forwards complete settings
+without a bridge-selected best-match substitute; the SDK/backend still performs
+its own native negotiation. CaptureSettings is the SDK output, not guessed actual
+hardware geometry. stop_device does not terminally end its source; stop does.
+Rotation, apply-rotation, current-device-name and capture-started operations call
+the real SDK methods. Ordinary false results remain false. Status reports
+explicit device stop separately from failure and unavailable control contexts.
+
+Desktop controls forward source-list/select/focus/occlusion, excluded windows,
+maximum frame rate, resolution, delegated-selection presence/visibility and
+native selection-observer clear/restore. Visibility calls are requests, not
+claims that UI appeared. Unsupported delegation is distinct from ordinary false.
+With observation disabled, selection status retains its last notification.
+
+DesktopCaptureOptions now owns a real SDK value, choosing the empty/default
+constructor and either the actual selected Environment or SDK global clock.
+Its clock getter owns a delegate with independently retained leases and checks
+the native options clock's identity, not a configuration echo. Clock delegates
+record the actual SDK identity separately from their safe forwarding adapter.
+Captures retain SDK copies of the options/resources and use that options clock
+when stamping desktop video frames. Flags and PipeWire dimensions/damage policy
+are read and written through SDK accessors. X11 display and screencast stream
+leases support actual create/get/share/clear and native identity comparison;
+failed display connection is None, not a fallback. These local resources are
+role-bound. Actor options use opaque SessionDesktopOptionsId values, never local
+handles, and are cleared only after capture shutdown. The explicit screen/window/
+generic creation path uses the selected SDK factory with no fallback and forwards
+optional source/restore-token selection without source-list filtering. Existing
+legacy open helpers keep their prior policy. SDK Wayland detection is exposed.
+
+RawCameraSinkHandle installs the SDK raw callback overload, preserving mutable
+borrowed bytes, complete settings, rotation and capture time; snapshots own their
+bytes. The signed callback return passes through, but the pinned SDK ignores it.
+Registering uses actual DeRegisterCaptureDataCallback then RegisterCaptureDataCallback:
+this is deliberately non-atomic, and frames in the gap may be discarded. The SDK
+api_lock_ fences old callbacks before retirement. None restores the binding-owned
+video sink; raw mode bypasses video-source publication. Panics quarantine the
+receiver and contain hostile payload/drop behavior. Reentry is rejected before
+blocking. A focused source review found no concrete defect in this path. A
+separate options/role/clock/actor review also found no concrete source defect.
+These reviews are not build/runtime evidence.
+
+CameraDeviceInfo is now a stable SDK product, not a fresh enumeration snapshot.
+It retains its factory/signaling role across local use or private actor IDs and
+preserves NumberOfDevices, name/optional-product buffers and their caller-selected
+capacities, capability count/index lookup, orientation, best-match index/settings
+and native errors. Close and destruction release the actual SDK product on its
+role. SDK null creation remains None, distinct from a product with zero devices.
+Device name bytes exclude only the C terminator; no UTF-8 repair or truncation is
+introduced by conversion. The real Linux settings-dialog member returns native
+-1 and displays no dialog; no platform window pointer is exported. Implementation
+CreateCapabilityMap is not a public DeviceInfo root member.
+
+The former #12 missing desktop progress/serialization owner now has the isolated
+context implementation described above. Its native cancellation-drain limitation
+is explicitly separate from implemented dispatch and application graph safety;
+neither runtime nor leak qualification is claimed.
+
+An additional pinned camera-session issue was found while reconciling the
+remaining VideoCaptureOptions implementation. PipeWireSession::Cleanup holds
+callback_lock_ while StopPipeWire calls pw_thread_loop_stop; that loop can be
+inside Finish waiting for the same callback_lock_. Cleanup can therefore join a
+thread blocked by its own lock. The public options/session API exposes no loop
+quiescence or shutdown fence to repair that ordering in the binding. Backend
+private-field access and libwebrtc patches are not permitted. The remaining
+options work must distinguish this unsafe PipeWire session path from feasible
+V4L2 options/Init/factory overloads, preserve configured flags, and never replace
+a selected PipeWire camera with V4L2 or manufacture an SDK Init result.
+
+CameraCaptureOptions now owns the real SDK value on its retained signaling
+role. Empty construction and SDK copies preserve actual allow_v4l2/allow_pipewire
+accessors. Descriptor setters own a duplicated input FD and clearing removes that
+lease; the SDK has no descriptor getter, so none is invented. V4L2 initialization
+uses the actual SDK Callback virtual and reports its observed notification:
+UNAVAILABLE when disabled and SUCCESS when enabled are native initialization
+answers, not proof of physical hardware. Optional user observers are serialized,
+panic-quarantined and independently retainable. Selected PipeWire initialization
+is rejected before SDK entry with a binding UnsupportedOperation for the native
+cleanup hazard above, with no fake SDK callback/status and no fallback. Actor
+options now use SessionCameraOptionsId values for create/copy/settings/descriptor/
+Init/release. Both actual SDK options-taking Create and CreateDeviceInfo overloads
+are wired, rejecting unsafe PipeWire selection before creating a source or
+contacting a device. Returned camera/DeviceInfo products retain independent SDK
+option copies and owned descriptor leases after the original options are closed.
+Native null DeviceInfo remains None. Disabled backend flags are not substituted
+with the SDK's no-options overload.
+
+Pinned Linux limitations: FullScreenWindowDetector has no Linux capturer
+consumer and defaults are created only for macOS/Windows, so custom detector
+installation is not claimed. Other-platform-only options stay outside scope.
+Raw screen/window factories are protected SDK implementation helpers, not public
+root operations. No SDK patch or unsafe public adapter is introduced for them.
+
+DesktopCaptureReceiver and DesktopSelectionObserver registrations now implement
+the actual SDK virtual callbacks, including OnFrameCaptureStart, exact result
+values and native frame presence, and selection/cancellation/error notifications.
+The explicit callback-taking constructor installs registrations before SelectSource
+and Start. Runtime replacement retains in-flight registrations outside slot locks;
+receiver mode bypasses ordinary video publication, None restores it. Clearing a
+selection observer calls SDK Observe(nullptr), retaining the last status rather
+than inventing further notifications. Panic quarantines a receiver without
+silently restoring another consumer. Actor entrypoints take Send registrations,
+not local SDK handles.
+
+CapturedDesktopFrame owns the actual native frame and exposes shared pixels
+read-only; mutable SDK BasicDesktopFrame CPU copies are explicit. Frame wrappers
+are local, while owning snapshots contain packed pixel rows and original layout/
+geometry/timing metadata. Size, stride, FourCC, origin/rect/scale, DPI, optional
+device scale, cursor indication, capture time, capturer ID, ICC profile, updated
+regions, texture/CPU presence and shared-memory identity/size/presence come from
+actual SDK getters. Native metadata and copy/move-info, both pixel-copy overloads,
+scaled intersection, pixel lookup and black operations are forwarded with checked
+native arithmetic/bounds. Native black operations assume packed aligned positive
+rows; unsafe layouts are refused instead of calling their linear scan/memset.
+Texture-only frames remain texture-only, not fabricated CPU images. Captured
+metadata is mutable independently of shared pixels; move-info retains the SDK's
+updated-region swap semantics.
+
+GetMetadata now owns each non-null borrowed GObject with g_object_ref/unref;
+copies retain native proxy/cancellable identity without raw pointer exposure.
+Local owning metadata and private SessionDesktopMetadataId aliases outlive the
+capture as independent SDK data. The pinned portal returns empty session details;
+that actual empty value remains distinct from an artifact without GIO support.
+
+DesktopMemory owns an actual SDK SharedMemory subclass, its Linux memfd/mapping
+or explicitly selected CPU heap storage, and optional panic-contained Send Rust
+dependency leases. Allocation/mapping failure preserves errno, never falls back.
+Owned input files require monotonic F_SEAL_SHRINK before size inspection/mapping;
+undersized files/products and out-of-bounds buffer operations reject before native
+access. Native size/id/handle getters and owned FD duplication are exposed.
+SharedMemoryDesktopFrame::Create consumes DesktopMemoryFactoryHandle through the
+actual SDK virtual, including null rejection and panic/undersized quarantine.
+The preferred constructor (also covering deprecated overload semantics) accepts
+owned storage with checked padded or signed-stride row origins. Offset views
+retain the full allocation and leases; native SharedMemory data/size describe the
+rebased forward view. Captured frame FD conversion does not guess that every
+platform-specific SDK integer handle is an FD: only known owning products are
+converted. These operations allocate buffers, not physical capture devices.
+
+Pinned Linux limitation: X11 and BaseCapturerPipeWire inherit the SDK's no-op
+SetSharedMemoryFactory. The internal PipeWire stream has a separate setter, but
+that private/backend input is not forwarded by the public capturer. A selected
+factory is therefore UnsupportedOperation at capture construction/replacement,
+not fabricated installation, ignored selection or a stock substitute. Rejection
+at construction occurs before creating the video source/capturer. None retains
+the native absent/default path. Owning source/facade and actor paths share this
+behavior; standalone SDK shared-frame factory consumers genuinely use the source.
+No libwebrtc patch is made to invent Linux capture support.
+
+Capture source coverage is delivered with the recorded SDK limitations. Matching
+native builds and non-device frame/shared-memory/options/controlled-rejection
+fixtures passed the final normal and sanitizer suites. This does not qualify
+physical capture, live callback delivery, portal/session behavior or canceled
+GIO drain. Those live/prerequisite-dependent gates remain unqualified.
+
+## Owning native network values
+
+`Network` owns a stable SDK allocation on its caller sequence. Names and
+descriptions are bytes. Constructors, address-list operations, best-IP
+selection, type/VPN state, scope, ID, preference, active/ignored state, slice,
+key and debug formatting call the actual native members. `share` retains native
+identity; `Clone` calls the SDK deep clone and does not copy connected signals or
+provider links. IP replacement preserves native membership-based change
+reporting, order and duplicates. `IpNetworkMask` owns the SDK `NetworkMask`,
+retaining the supplied address and signed prefix length without truncation or
+normalization. The existing configuration-only `NetworkMask` remains unchanged.
+
+Network cost reads the supplied owning field-trial view. Adapter inference,
+cellular classification and inverse cost mapping also use the SDK. The reached
+VPN-as-underlying-VPN cost DCHECK and negative non-EOF suffix bytes reaching
+native `isdigit(char)` return typed errors; storing those values or safe
+unrecognized interface names is not rejected.
+
+`DefaultLocalAddressProviderHandle` owns a native provider adapter. Its trait
+accepts native address-family values and returns an optional owning IP value;
+Some(Unspecified) remains distinct from absence. Network's default-provider link
+retains the allocation, and returned aliases can outlive the network. Native
+Clone omits that link. Provider panic deactivates later calls, with failure
+observable on the handle; adapter-owned final release contains unwinding.
+The final non-device normal/ASan qualification includes these network values
+and default-provider fixtures.
+
+`Network::subscribe` registers tagged SDK adapter/preference/slice receivers.
+Its sequence-bound owning subscription retains the source, permits self-cancel,
+and unsubscribes on final drop. Callback and capture destruction contain
+unwinding. Cancelled callbacks remain leased through the SDK's deferred receiver
+cleanup, so closure destructors can reenter once the native Send has finished.
+Same-channel recursive notification setters and receiver additions return
+`NetworkChangeInProgress`; unchanged setters retain the SDK's early return.
+Other event channels remain independently usable. `notify_change` explicitly
+calls the native publication method with this actual network as sender, without
+changing its fields.
+
+These values are a binding foundation, not proof of native transport installation.
+Full manager observation and packet socket products remain incomplete. Simulated endpoint providers retain
+their existing behavior.
+
+## General network manager products
+
+`NetworkManagerFactory::from_provider` selects a thread-safe factory whose
+sequence-bound `NetworkManager` products are created and initialized on the
+native network role. Both local and ProductionSession builders accept this
+selection. Endpoint recipes and general factories are mutually exclusive;
+manager selection also excludes a separate stock-manager monitor selection.
+`None` or creation/initialization panic fails construction, never stock fallback.
+
+Creation receives owning environment and actual native trial views, plus
+thread-safe changed/error signals. The implementation calls Initialize because
+pinned ConnectionContext does not initialize injected managers. The provider
+must emit changed/error on Start, as required by network.h. Delivery posts to the
+existing role queue, remains active across multiple clients' balanced Start/Stop,
+and invalidates stale queued work on last Stop/restart and retirement.
+
+Enumeration returns owning Network handles. The adapter preserves returned order
+and duplicates and retains every actual native allocation until manager
+retirement. Repeat enumeration should use `share`, not deep Clone, to preserve
+the native identity contract. Permission, any-address enumeration, default-local
+address queries, dump and VPN masks dispatch to the selected product. Network
+provider links must be installed explicitly, not presumed to be added by the
+allocator. Product receivers use shared access for synchronous read reentry;
+mutable implementation state remains sequence-local.
+
+Operational panic disables that product and records aggregate registration
+failure without disabling healthy sibling products. Stop is still attempted
+after failure. SDK facade destruction marshals dependent product/network release
+to the network role, including rejected initialization. Controlled use requires
+the explicit controlled capability and existing caller-owned socket selection.
+No manager-specific executor or implicit pumping is added; calls use the
+existing network role. Production final-owner handoff is described below.
+
+### Manager observation
+
+`NetworkManagerContext::observations` returns a sequence-bound source for the
+actual manager's SDK NetworksChanged and Error callback lists. Tagged owning
+subscriptions may be registered during creation and bind to that facade before
+Initialize. Failed construction retires them without synthesizing delivery.
+The source exposes readiness/retirement separately; synchronous `notify` before
+facade construction returns NotReady. Cross-thread posted notifications continue
+through `NetworkManagerSignals` and its Start/Stop generation guard.
+
+Observation publication calls the SDK Notify members, independent of updating
+client count. Same-channel recursive Notify and receiver addition return
+DeliveryInProgress before the SDK precondition checks. Other channels remain
+usable. Self/sibling cancellation removes actual SDK receivers and retains Rust
+captures until SDK Send and receiver cleanup return. Callback and capture Drop
+panics latch failure on retained subscription metadata, without disabling the
+manager product or sibling observers. Manager retirement cancels subscriptions,
+releases their captures on the network role and clears the native facade pointer
+before releasing that role. Source aliases become inert, not facade owners.
+`NetworkManagerStats` exposes the SDK's standalone count value, not a live query.
+
+### Scoped mDNS products
+
+`NetworkManagerContext::mdns_responder` creates an owning sequence-local native
+responder backed by `MdnsResponderProvider`. Creation/removal operations expose
+native asynchronous callbacks, exact owning IP/name bytes and removal results.
+The provider owns the native name/reference-count policy; the binding generates
+no names and implements no substitute mDNS protocol. Owning completions are
+Send/Sync, mutex-guarded single-submission handles. Completion with a different
+IP is rejected without consuming the request, protecting Port's actual address
+DCHECK. Cancellation does not manufacture a name or a removal success.
+
+`Network::set_mdns_responder` installs the actual native provider link and retains
+its facade; the getter checks the real native responder identity. Shared network
+handles see that same link, while SDK deep Clone omits it. The manager product
+also exposes the native GetMdnsResponder operation. A failed or retired selected
+responder remains installed, preventing null-provider plaintext-IP fallback even
+when its network link is retained by another live consumer.
+Provider failure records a manager-local failure and emits the native error
+signal when active, without disabling unrelated manager products. Public callback
+and capture failures are observable separately from provider admission success.
+
+Manager retirement first disables notifications, then cancels outstanding mDNS
+callbacks, clears their role-dispatch pointers and retires the Rust provider on
+its creation role. Active provider frames hold immutable registration leases
+across reentrant local retirement. Retained responder/context aliases reject
+new work after retirement; completion aliases cannot revive callbacks or retain
+an SDK callback past scope close. Enrollment tracks actual weak owners and
+prunes expired entries; completed/cancelled requests remove their owner tracking.
+No hidden worker, wait, time advance or global lookup is introduced.
+
+### In-progress retirement admission
+
+Controlled dispatch/publication turns now temporarily retain actual registered
+peer and factory owners through weak dependency edges on their existing driver.
+The outer turn releases those leases after native code returns. Newly created
+owners join the active turn; nested destruction appends to an outer retirement
+batch without holding a RefCell loan through user code. Idle tracking stays weak.
+No identity lookup, new executor, implicit dispatch or time advance is added.
+These leases cover driver/cooperative-factory pumping, ticket execution and
+cancellation, network notification operations, standalone mDNS requests,
+controlled factory/peer construction and native owner destruction.
+
+`PeerConnection::close` now marks admission before SDK Close and rejects native
+provider/context callback reentry or forbidden worker/network blocking calls
+with InvalidState. Posts through `TaskQueueContext` may execute on private SDK
+queues whose deletion would wait on the running task. They retain native callback
+admission restrictions; they are not equivalent to control work on caller-owned
+queues. Ordinary caller-owned task roots retain their existing control behavior.
+`PumpResult::blocked` distinguishes rejected provider/retirement reentry from
+idle dispatch, without changing native deadlines or advancing time.
+
+This is implementation-only, not a complete manager-root or runtime parity
+claim. ProductionSession now reserves one single-use retirement worker after
+successful native factory construction. Final Drop from callback scopes, SDK
+roles or native queue contexts moves the entire exclusive graph to that worker,
+without allocating or spawning during handoff. The worker performs final native
+shutdown/destruction off graph-owned roles, then exits. It accepts no application
+commands, does not proxy normal API calls and is never used by controlled graphs.
+Ordinary caller Drop cancels/joins the unused worker only after graph teardown.
+Failure to reserve the worker fails actor construction with ResourceExhausted.
+
+Explicit session close/shutdown checks admission before observer unregistration
+or other partial cleanup. Callback scopes also cover foreign-producer readiness
+wakes, which may have no SDK queue TLS; waker invocation and final release use
+hostile-payload containment. These scopes are admission markers, not resource
+leases or proof of a specific peer/queue identity.
+
+The final lifecycle fixtures exercised owned native roles, foreign completion,
+internal event-log and actual codec queues, caller-owned queues, actor migration
+and nested final Drop. Network manager and subscription fixtures also passed.
+Conservative callback admission remains binding-side safety policy, not an
+inherent SDK locality claim. A callback marker alone is not lease or queue
+identity proof; the actual consumer/lifetime evidence is recorded separately
+in `docs/provider-verification-plan.md`.
+
+## Packet socket values and owning products
+
+The public general factory and owning product adapters are installed through the
+factory/session builders described below. Existing endpoint-bound simulated
+products remain available; conflicting selections reject rather than silently
+replace one another. Final non-device consumer/lifetime qualification is
+recorded in `docs/provider-verification-plan.md`.
+
+`AsyncSocketPacketOptions`, `PacketTimeUpdateParams`, `PacketInfo` and
+`SentPacketInfo` retain the SDK members and defaults, optional network ID, signed
+IDs/times, authentication bytes and batch flags. Packet/protocol tokens retain
+native scoped enum values. Unscoped DSCP, option, state and decryption tokens
+check representation before native conversion without normalizing representable
+unknowns. `PacketSocketFlags` retains native int bits and named TLS/DTLS flags.
+`ReceivedIpPacket` owns payload/address storage; native CopyAndSet retains its
+other metadata. The legacy path calls the SDK constructor and rejects below -1
+and INT64_MAX before its reached checks. Ordinary receive values retain missing,
+negative finite and infinite timestamps; value-copy support is not permission to
+deliver every such value into media consumers.
+
+`PacketSocket` declares the sequence-local native address/send/close/state/
+option/error operations. Native send payloads are owned before provider reentry.
+GetOption either writes its successful value or preserves the exact nonzero
+result without writing the native output. Operational panic deactivates only
+that product; Close still attempts cleanup. Product/capture destruction contains
+unwinding, and retained context metadata observes failure. The native helper for
+socket information reads the live virtual address, not a creation snapshot, and
+does not expose successful output after that provider query fails.
+
+`PacketSocketContext` describes owning environment and synchronous SDK
+notifications; its separate `PacketSocketEvents` handle queues owning values from
+other threads. Submission success is not receiver/transport success. Target and
+role loans are cleared at native product retirement, so retained aliases cannot
+revive delivery. Direct publication enters controlled owner turns; same-channel
+recursion is rejected and no submission mutex spans a provider/native callback.
+These product-frame leases are not a whole-graph or SDK facade lifetime proof.
+Receive delivery rejects decryption status 3 before the piggyback DCHECK while
+value copies preserve it. Sent delivery preserves signed times and packet sizes
+without preflighting SDK transport-feedback arithmetic. Arrival admission uses
+the actual Call receiver: nonfinite RTP time is rejected before SDK delivery for
+all RTP media types, while RTCP/control delivery is unchanged. PeerConnection's
+call_admission_stats and the actor equivalent expose saturating binding rejection
+counts, actual creation-clock bounds and Call absence/live state, not native
+RTCStats. Finite timestamps remain unchanged. Internal timestamp history and
+cumulative/shared sent accounting are libwebrtc-owned, not mirrored or constrained
+by a binding time range or traffic quota. Final boundary/lifetime evidence is
+recorded in the verification results, including the distinction between direct
+Call admission and socket arrivals normalized by the native voice channel.
+General factory/local/actor wiring is implemented below. Controlled standalone
+packet ownership and its exclusive receive source are described below.
+
+The private SDK factory scope now has a separate RAII owner: metadata aliases
+cannot postpone its retirement. It disables all resource targets before releasing
+any provider, with no locks held through user destruction. Packet entry frames
+lease the actual provider allocation; retired SDK facades no longer dereference
+a saved role. The installed general factory now owns this guard, including
+partial construction; scope retirement precedes source/environment release.
+
+Source-level ListenSocket/Context and AcceptedPacketSocket add native listener
+state/address dispatch and move-only accepted product creation. Standalone queued
+acceptance holds unclaimed products on the native role, returns the same product
+on rejected submission, and exposes atomic status/cancellation without moving
+products into Send ticket aliases. Synchronous publication uses the same actual
+SDK listener list with a single explicit ownership-taking receiver. Retirement
+cancels pending transfers; pending-product pruning rechecks every live target
+after user destruction. Passive receivers do not gain a second raw owner, and
+already claimed standalone children retain independent retirement ownership.
+Controlled/production standalone ownership and asynchronous creators are wired.
+The final non-device consumer/lifetime fixtures passed normal and ASan runs.
+
+Pinned ICE TCP limitation: the listener factory receives only a bind address,
+not TCPPort's actual Network membership. TCPPort stores an incoming socket and
+later TCPConnection repeatedly calls its live GetLocalAddress and DCHECKs that
+its IP belongs to Network()->GetIPs(). Bind-IP equality rejects legitimate
+multi-IP inputs; getter snapshots cannot guard later changes/panics and would
+not preserve the live getter contract. There is no public SDK admission hook to
+check the actual owner network before that constructor. No SDK patch, address
+synthesis, guessed network join or frozen getter is used. The private installed
+ICE handoff is therefore NativeConsumerUnavailable: context creation refuses
+before invoking a child creator, submission returns the unclaimed owned product,
+and posted creators return an explicit unavailable ticket without running the
+creator. The native dispatch path also refuses before NotifyNewConnection/raw
+ownership transfer. This limitation is separate from provider failure and does
+not disable supported standalone listener acceptance or outgoing TCP/UDP.
+
+`PacketSocketContext::subscribe` now creates owning receivers on the actual
+facade's close, ready-to-send, connect, sent and address-ready native lists.
+Creation-time registrations bind when that facade is constructed; rejected
+construction retires them without invented notifications. Native trampolines
+hold weak sources and owning tag metadata. Self/sibling cancellation disables
+delivery immediately, but native removal waits until that channel's Send returns,
+avoiding the pinned SDK's sibling pending-tag DCHECK. Tag allocations stay alive
+until actual native removal/facade destruction. Rust captures stay pinned until all enclosing native Sends
+and SDK receiver-vector cleanup return. Same-list Add/Send is rejected with
+`InProgress`, including capture cleanup; registrations are not silently queued.
+The owning callback payload copies sent metadata and addresses, not a socket or
+callback-scoped pointer. A receiver's panic/capture-Drop failure latch is local
+and survives retirement. Cancellation and Drop establish controlled owner turns.
+
+The explicit deprecated untagged connect overload is also called natively. Its
+Rust capture can be cancelled, but SDK has no corresponding native removal:
+an empty weak receiver shell remains in that facade until destruction. Repeated
+registration should use the tagged connect operation instead. This is not a
+claim that untagged SDK storage is bounded independently of socket lifetime.
+
+Socket notification admission also checks the actual SDK queue when the socket
+was created in a queue-bound network context. Same-thread cancellation from a
+different cooperative queue disables delivery immediately, then queues tagged
+removal/capture cleanup on the actual network role. It does not call the close
+list's sequence checker from the wrong queue. Null-queue creation binds the SDK
+checker to its native OS-thread domain. Factory/accepted-product creation checks
+the selected native network Thread queue rather than matching a resource name.
+These source guards do not establish whole-graph teardown safety. SDK-managed
+synchronous acceptance is implemented above, with explicit readiness and same-list
+recursion checks.
+
+`PacketSocketFactory` now exposes controlled standalone UDP/client-TCP/client-UDP
+creation, preserving explicit capability/driver/environment checks, provider None
+and provider failure without stock substitution. `OwnedPacketSocket` owns an
+actual native facade and a separate retirement scope. Its native core retains
+the exact recipe through product contexts, the selected environment and actual
+controlled driver, rather than a borrowed thread wrapper. Native operation and
+notification frames lock that exact core; callback-time shell Drop retires its
+publication/source captures but cannot destroy an active native facade. Lifecycle
+cleanup on a different cooperative queue establishes the actual SDK Thread queue
+on that same OS thread, without dispatching tasks, waiting or advancing time.
+Environment retention is released before the driver's final ownership edge.
+
+Typed address/state/send/send-to/close/option/error members now resolve the actual
+native virtual facade through `PacketSocketContext`; the owning product exposes
+those members through its context. Contexts remain non-owning, sequence-bound
+capabilities: before native binding they return NotReady, after retirement they
+return Retired, and queries cannot turn failed provider defaults into successful
+output. Addresses are owned copies, signed results and nonzero GetOption codes
+are preserved, and GetOption failure does not expose an invented output value.
+Close cleanup and error inspection remain callable after operational failure.
+SDK-managed parent-graph final-drop safety is still task #10, not established by
+these context/member leases.
+
+Only `OwnedPacketSocket::register_received` can claim the SDK's single receive
+callback. Ordinary nonexclusive subscribe does not steal an SDK peer receiver.
+A second registration returns ReceiverAlreadyRegistered, including when an old
+logically cancelled receiver still awaits native deregistration on its role.
+Self-cancellation/panic disables delivery immediately but defers destruction of
+SDK AnyInvocable storage until its invocation returns. Native trampolines contain
+weak sources and owning tag metadata; deep packet copies and the existing local
+failure latch outlive the native loan. New registration during that receive/
+cleanup frame is rejected, not implicitly deferred. Production standalone
+ownership is source-wired below; remaining factory/transitive contracts stay open. No build, test, matching artifact or runtime
+qualification was run for these batches.
+
+### Controlled owning listeners and external accepted creators
+
+`PacketSocketFactory::create_server_tcp_socket_controlled` creates an actual
+owning `OwnedListenSocket` through the selected recipe, with exact environment
+and controlled-driver retention and distinct None/panic behavior. Its context
+queries native state/local-address virtuals. `register_accept` installs exactly
+one ownership-taking receiver on the actual SDK list; `observe_accept` installs
+non-owning observers, with SDK ordering and no substitute observer collection.
+The standalone listener requires a live owner registration before publication,
+not the private TCPPort first-turn fence. New registration and recursive inline
+publication during Send/cleanup return InProgress, not deferred replacement.
+
+Each standalone accepted product has an independent owning native core, scope,
+environment and driver lease. Transfer is still bound to its actual listener's
+scope. An actual Send frame escrows unique ownership until its owner receiver
+moves it once into `OwnedPacketSocket`. Passive observers receive a non-owning
+context for that exact native argument, never a second raw-pointer owner. If the
+owner is cancelled before its turn, unclaimed escrow retires on-role. A delivered
+socket survives listener Drop; unclaimed pending products do not. Active listener
+and child frames pin actual facades through callback panic, owner Drop and SDK
+cleanup. Callback/capture failure is local and observable on the subscription.
+Cancellation defers native removal and capture destruction until Send returns,
+including retirement and capture-Drop cancellation reentry.
+
+`ListenSocketContext::events` returns a Send/Sync source whose `post_accept`
+accepts a Send creator, not a non-Send product. The existing listener role runs
+creation; a subsequent queued transfer preserves the SDK-managed receiver
+installation boundary. The shared atomic ticket remains Pending until native
+transfer, then reports Delivered/Cancelled/Retired/ProviderFailed. Cancellation
+can race a running creator; it need not undo creator side effects, but prevents
+an unclaimed transfer. Rejected, cancelled, retired and discarded creator work
+terminalizes without a hidden worker or pumping. Actual products stay in
+role-local storage. Capture Drop is panic-contained, with retained ticket failure
+diagnostics that do not overwrite a Cancelled/Retired result. Sender/ticket
+aliases cannot retain a live product or revive a retired role.
+
+The final non-device accepted-transfer and graph-lifetime fixtures passed.
+Pinned unsupported cases and admission constraints above remain limitations;
+source presence or passive observation alone is not native-consumer proof.
+
+### Production owning standalone role
+
+`PacketSocketRuntime::new` consumes the actual owning `NetworkThread` and retains
+its exact environment plus a production execution lease. Borrowed controlled
+wrappers and non-qualified/cooperative environments reject without substitution.
+`post` uses that selected SDK thread and supplies a non-Send `PacketSocketRole`;
+no local native owner is returned through a Send continuation. Callback/capture
+panic is contained and observable on the runtime. Queued work captures a weak
+runtime edge, upgrades only while executing, and is discarded if no real owner
+survives. There is no implicit runtime-to-queued-task ownership cycle.
+
+The four production standalone factory creators accept this role instead of a
+controlled driver. Packet/listener cores retain a strong runtime edge through
+actual native operations, notification and capture cleanup. Listener contexts
+hold only a weak production owner; creating accepted children upgrades it into
+an independent owning core/scope, so adopted products survive parent retirement.
+The same actual recipe dispatch and None/provider-failure behavior apply; no
+stock transport, borrowed thread facade or fake role identity is introduced.
+
+A single-use retirement worker is reserved at runtime construction. It accepts
+only final resources, never application operations. Last ownership release from
+an SDK queue/role/provider loan detaches that one handoff instead of joining on
+an SDK caller stack. Other caller Drop synchronously destroys the native role
+and cancels/joins the unused worker. Resource teardown explicitly destroys the
+actual Thread first, closes the environment next and releases the production
+lease last. Product core field order releases socket/events/scope before the
+strong role owner. Metadata aliases retain no owning runtime edge.
+
+Source review found no concrete scoped ownership/FFI defect or missing named
+packet-factory/socket/listener operation. Matching artifacts and the final
+non-device normal/ASan consumer, cancellation, lifecycle and teardown fixtures
+passed. Standalone legacy DNS is described below. This does not erase pinned
+unsupported cases or imply proof for all possible native races.
+
+## General packet socket factory source installation
+
+`PacketSocketFactory::from_provider` owns a Send + Sync
+`PacketSocketFactoryImplementation` recipe. Both
+`PeerConnectionFactoryBuilder::socket_factory` and
+`ProductionSessionBuilder::socket_factory` select it, with corresponding
+`socket_factory_provider` conveniences. The existing simulated endpoint
+`packet_socket_factory` selection remains separate and unchanged; selecting both
+is an error, not a precedence/fallback rule. Controlled capability must match
+the selected peer driver, and a panicking capability query rejects construction.
+
+The private SDK factory overrides UDP, server TCP, client TCP, client UDP and
+legacy asynchronous DNS creation. Socket contexts own the exact incoming SDK
+Environment and retain the actual recipe through active product frames and
+provider destruction. The no-environment DNS member receives the installed
+factory environment and reuses the owning DNS adapter/completion/result path.
+Each new DNS product has its own failure latch; aggregate recipe diagnostics do
+not poison another product or installation. Normal None socket rejection is
+passed to the SDK as null, never replaced with a stock socket. Consumer-required
+DNS construction instead returns the existing failed resolver after binding
+failure, with an error result rather than invented resolution success.
+
+`PacketSocketTcpOptions` owns native byte-valued ALPN/curve vectors and the
+existing open `PacketSocketFlags`. Its optional `SocketTlsVerifier` retains the
+actual verifier backing independently of socket, factory and peer retirement.
+The SDK peer dependency proxy and every verification entry frame retain that
+same backing. Thus synchronous creator verification, rejection/temporary product
+cleanup and reentrant proxy retirement do not invalidate the verifier. Rust
+callbacks run outside native locks. The internal TURN-CA verifier uses the same
+proxy, serializes its native-only calls and supplies both leaf and chain
+verification. The private SDK pointer conversion accepts only these binding
+peer dependency origins; arbitrary C++ verifiers are not reinterpreted or
+registered by guessed pointer/label identity.
+
+Source review found no concrete factory/TLS/selection signature or lifetime
+defect. Matching builds and non-device installed-socket, TLS and lifetime
+fixtures passed final normal and ASan qualification. The pinned native admission
+limitations remain explicit rather than patched or hidden by substitutes.
 
 ## Network monitor
 
@@ -92,7 +731,8 @@ configuration snapshots and update semantics remain separate from providers.
 Tests cover leaf/chain values, copy/teardown, cross-thread retained reads, default
 legacy behavior, provider conflicts and panic deactivation. A coturn-backed test
 exercises the native custom chain callback for acceptance, rejection and panic,
-then reads retained chain owners after peer retirement. They remain unrun.
+then reads retained chain owners after peer retirement. These non-device cases
+passed the final normal and ASan suites.
 
 ## Local-network permissions and address leaves
 
@@ -189,29 +829,22 @@ rather than entering checked casts or signed overflow.
 
 Tests cover signed/extreme values, float precision, infinity arithmetic,
 constructor/getter boundaries, scalar and resolution quirks, callback panic
-latching, retained environments, scheduler conflicts and actor migration. They
-remain unrun. Focused static reviews of custom provider ownership/creation and
-the time-value conversion/arithmetic guards found no concrete defect. This is
-not executable qualification.
+latching, retained environments, scheduler conflicts and actor migration. These
+non-device cases passed final normal and ASan qualification. Focused static
+reviews remain source evidence only, distinct from those completed executions.
 
 `SimulatedClock` is distinct from the bounded controlled-world `ManualClock`.
 It accepts finite signed time and signed advances, preserving atomic wrapping
 except for transitions to unreadable timestamp sentinels. NTP seconds wrap by
-native design, including the 2036 boundary. Negative fractional seconds are
-rejected before the SDK's undefined floating-to-unsigned conversion; negative
-exact seconds remain available.
+native design, including the 2036 boundary. Finite timestamp conversion delegates
+to the SDK without an additional negative-fraction admission policy.
 
-`Clock::real_time()` owns a view of the SDK singleton. A matched current-time/NTP
-sample captures its process-static calibration modulo one NTP era. Fractional
-NTP resolution is finer than a microsecond, so the original microsecond remainder
-is recovered exactly. Wide integer arithmetic then preserves every native-defined
-conversion bit, including fractional truncation and era wrapping, without reading
-private state, patching the SDK or invoking arbitrary-input signed addition.
-For finite inputs outside the SDK's defined nonnegative/signed-addition domain,
-the wrapper defines the same mapping modulo one NTP era. It does not identify
-those inputs as native-supported. Infinity returns `TimeValueError::InfiniteValue`
-from Rust queries and invalid NTP to native consumers. Simulated and custom clock
-conversion rules are unchanged.
+`Clock::real_time()` owns a view of the SDK singleton and delegates finite
+NTP conversions to that same singleton. Calibration, fractional rounding and era
+interpretation remain SDK-owned; the binding adds no matched-anchor arithmetic
+or modular extension. Infinity returns `TimeValueError::InfiniteValue` from
+built-in clock queries and invalid NTP to native consumers. Custom providers
+retain their explicit conversion contract.
 
 Construction relies on the SDK's ordinary valid-system-clock assumptions and
 returns `RealTimeClockUnavailable` while process testing time is installed.
@@ -241,7 +874,7 @@ The adapter does not drive a controlled world or replace process time hooks.
   owner or globally unique resource identifier. Its `post` method resolves the
   calling thread's live native `Current()` and compares addresses before posting
   asynchronously. `post_delayed` adds exact native delays and precision choices
-  with backend-aware conversion checks. A retained snapshot cannot post off that queue's current
+  without preflighting SDK backend arithmetic. A retained snapshot cannot post off that queue's current
   execution scope. Address reuse retains address-equality semantics; a snapshot
   is not a persistent resource identity. Admission can return `NotCurrent` or
   `QueueUnavailable`; accepted work can still be canceled by native shutdown.
@@ -264,15 +897,9 @@ The adapter does not drive a controlled world or replace process time hooks.
   custom scheduler without deadline arithmetic. The pinned standalone Location
   is empty; Chromium's extended source-location type is not in this artifact.
   Custom schedulers remain responsible for timing and progress.
-- `TaskQueue::post_delayed_native` also supports built-in runtimes. Linux default
-  stdlib queues accept both infinities, every finite negative value, and finite
-  positives through `(i64::MAX - 999_999_999) / 1000` microseconds. Positive
-  values beyond that bound can overflow the SDK's POSIX nanosecond wait
-  arithmetic and return `UnsupportedNativeDelay`. This check requires no stale
-  wrapper timestamp sample: native SystemTime stores an i64 nanosecond clock
-  divided into microseconds, Timestamp addition uses microseconds, and the wait
-  bound leaves room for the entire normalized `tv_nsec` range. Minus infinity
-  is already due; plus infinity remains indefinitely pending until retirement.
+- `TaskQueue::post_delayed_native` also supports built-in runtimes. SDK stdlib
+  queues receive native signed/infinite values unchanged and own deadline/wait
+  arithmetic. The binding imposes no numeric scheduling horizon.
 - Cooperative queues accept all finite signed delays. Negative values clamp to
   zero; the native scheduler discards deadlines beyond its manual-clock domain
   while holding its scheduler mutex. Infinity cannot pass its native finite
@@ -280,17 +907,11 @@ The adapter does not drive a controlled world or replace process time hooks.
   native void posting API, not acknowledgement of execution or indefinite
   retention. No autonomous progress is introduced.
 - `NetworkThread`, `WorkerThread` and `SignalingThread` expose the same native
-  delay/precision operation, with the SDK Thread backend's distinct domain:
-  finite microseconds in `[-1998, i32::MAX * 1000]`. The small negative interval
-  rounds to zero under the SDK's truncating millisecond conversion; more
-  negative values violate its nonnegative TimeAfter contract. Larger positives
-  overflow its signed int millisecond conversion. Both infinities are rejected.
-  Borrowed controlled threads use the cooperative domain instead. Both
-  precision modes retain actual backend behavior, including Thread's upward
-  millisecond rounding. Current-queue snapshots apply the same restrictions
-  without exporting a queue owner. Unsupported conversions have inspectable
-  errors before posting; existing Duration conveniences reject unsafe finite
-  conversions rather than entering native overflow.
+  delay/precision operation. SDK threads receive native values unchanged and own
+  their millisecond rounding and queue arithmetic. Borrowed controlled threads
+  require finite delays under the cooperative scheduling contract. Current-queue
+  snapshots apply those same rules without exporting a queue owner. Duration
+  conveniences still require representability as a finite native TimeDelta.
 - Callback panics are contained and latch factory/product diagnostics. A failed
   public product cannot be created successfully; SDK factory creation receives
   a non-null rejecting product. A rejecting runtime cannot promise SDK progress
@@ -435,12 +1056,59 @@ Providers must supply caller-driven progress, and the driver must pump after
 completion. The per-peer factory resolves remote hostname ICE candidates;
 STUN/TURN server resolution uses the selected packet-socket factory instead.
 
+### Owning standalone legacy DNS
+
+`PacketSocketFactory::create_async_dns_resolver` accepts an explicit production
+`PacketSocketRole`; its controlled counterpart validates the selected driver,
+clock/queues and factory capability. Both create `OwnedDnsResolver` through the
+actual selected recipe and retain its exact owning environment, factory and role.
+Creation panic returns a typed error, not a successful failed substitute. The
+installed SDK-required non-null failure path remains separate and unchanged.
+Per-product failure is independent of aggregate recipe diagnostics.
+
+`DnsResolverContext` is a sequence-local, non-owning operation capability. Both
+Start overloads and result lookup invoke actual native virtuals. The owning
+standalone facade enforces the SDK's single-name-query lifecycle with an explicit
+AlreadyStarted result; this does not claim portable repeat-Start support. Native
+operation frames pin the actual product/role through provider and capture Drop
+reentry. Reentrant operation loans reject before the provider's mutable mutex.
+Controlled entry establishes its actual SDK Thread queue while making native
+calls, so completion posts to the existing driver without pumping or time change.
+
+`DnsResolverQuery` owns the native callback registration. Cancel/Drop suppresses
+only the pending notification, not provider-owned I/O; query status distinguishes
+pending, delivered and callback/capture failure. Retire/cancel races preserve the
+existing post-only completion contract and never invoke Rust callbacks under
+submission locks. Callback and capture Drop panic is contained and observable.
+Contexts/query metadata cannot own the native resolver or revive its retired role.
+
+`OwnedDnsResolverResult` owns the actual returned SDK result object and its role
+lease independently of the resolver. Queries remain live native virtual calls,
+not completion-time snapshots. Missing family returns None, while signed resolver
+errors remain exact; provider failure is a separate typed error rather than a
+successful fabricated error/address value. Factory ownership survives through
+native result destruction. Shared result wrappers preserve the actual allocation,
+and result-operation admission prevents same-object recursive calls. The bridge
+also tracks actual Rust provider loans before mutex acquisition, preventing
+same-resource recursive lock deadlock across distinct native wrappers without
+removing ordinary cross-thread serialization.
+
+Focused source lifecycle and pinned public API reviews found no concrete scoped
+DNS defect or remaining missing #9 operation. These source paths and all new
+callback/result/role lifetime boundaries still require combined compilation,
+actual-consumer and sanitizer qualification. No runtime/build pass is claimed.
+
 ## Video bitrate allocator factories and products
 
 `PeerConnectionDependencies::video_bitrate_allocator_factory` retains a shared
 `VideoBitrateAllocatorFactory`. The provider convenience builder constructs
 the same registration. Omission leaves the native per-peer default untouched;
-`builtin()` explicitly selects the SDK helper. A caller factory may independently
+`builtin()` explicitly selects the SDK helper. `ProductionSessionBuilder` also
+accepts a default video bitrate allocator factory/provider for subsequently
+created peers. An explicit per-peer dependency takes precedence; absence of both
+retains native stock selection. The actor retains this default across migration
+and releases it after peer dependents but before its role-owner factory. This
+source wiring has not been runtime qualified. A caller factory may independently
 select `VideoBitrateAllocatorProduct::NativeBuiltin` for an individual product,
 without replacing or narrowing the custom allocator contract.
 
@@ -479,19 +1147,28 @@ Controlled registration adds no threads, timers or autonomous progress.
 Providers must do caller-controlled synchronous work. Local and production
 actor peer creation forward the same owned dependency.
 
-Source review and unrun coverage include both allocation overloads, infinity
-and signed-value preservation, inactive codec slots, arbitrary format
+Source review and final executed coverage include both allocation overloads,
+infinity and signed-value preservation, inactive codec slots, arbitrary format
 parameters, non-Sync factory/products, serialized factory failure, overflow,
 panic/destructor containment and actual native video encoder rate consumption.
-Builds, runtime acceptance and sanitizer qualification remain deferred.
+Matching builds and the final non-device normal/ASan suites passed.
 
 ## Network-state predictor factories and products
 
-Local and production factory builders accept
-`network_state_predictor_factory` registrations or the provider convenience
-builder. The native peer factory owns the adapter for the complete lifetime
-of its borrowed CallConfig predictor-factory references. An absent registration
-preserves native omission; no stock predictor is silently substituted.
+Install predictors through an explicit `NetworkControllerFactory::goog_cc`
+selection with `GoogCcFactoryConfig::network_state_predictor_factory`. That
+owning adapter supplies the actual SDK factory's borrowed predictor pointer and
+retains its owner through native factory destruction. Native products retain
+independent provider state. An absent optional predictor preserves omission;
+no stock predictor is silently substituted.
+
+The older local/production `network_state_predictor_factory` builder slot is
+rejected with `InvalidParameter`: the pinned SDK copies that dependency into
+CallConfig but its default send-side GoogCC construction does not consume it.
+An injected custom controller also does not consume it automatically. Accepting
+that setter as installed functionality would be misleading. Explicit GoogCC
+selection requires the injection trial and explicit RFC 8888 negotiation state,
+not an inferred default or silently enabled field trial.
 
 `NetworkStatePredictorFactoryProvider::create_network_state_predictor` returns
 a nullable owned `NetworkStatePredictor` product, exactly like the SDK. Products
@@ -517,10 +1194,11 @@ The pinned header describes this native interface as work in progress and
 mentions Initialize in commentary, but declares no Initialize method. The
 bridge implements the actual factory and Update declarations only.
 
-Unrun coverage includes the actual native adapter factory/product calls after
+Executed coverage includes actual native adapter factory/product calls after
 factory retirement, signed extreme timestamps, sentinel/unknown states,
 non-Sync factory/products, nullable products and callback/destructor panics.
-Real congestion-control runtime and consolidated qualification remain pending.
+Installed congestion-control consumer fixtures and the consolidated non-device
+normal/ASan suites passed; see the verification results for exact scope.
 
 ## FEC factories, controllers and protection callbacks
 
@@ -568,18 +1246,20 @@ This is a source-lifetime proof, not a runtime or sanitizer qualification claim.
 Invalid native packet-mask/rate requests return errors before sender access.
 Factory/controller panics latch fail-closed state; an already-entered concurrent
 controller callback rechecks failure before accepting its result. Failed rate
-calculations return zero and failed mask selection returns false. The SDK's
-video-send caller requires a non-null controller, so factory panic yields a
+calculations return zero and failed mask selection returns false. Successful
+encoder-target results pass through unchanged; native protection/budget arithmetic
+is libwebrtc's responsibility. The SDK's video-send caller requires a non-null
+controller, so factory panic yields a
 non-null rejecting adapter, never a silently successful stock controller.
 Provider destruction and native completion wakes contain Rust panics.
 
 Registration and async dispatch add no native threads, timers, runtime or
 caller executor. Controlled progress stays with the caller's existing worker.
-Unrun coverage includes native factory/product independence, every controller
-payload, signed/unknown values, native callback outputs, sender-lock rejection,
+Executed coverage includes native factory/product independence, controller
+payloads, signed/unknown values, native callback outputs, sender-lock rejection,
 invalid requests, retention/retirement, cancellation, concurrent panic failure,
-and real video-path worker dispatch. Builds, runtime and sanitizer qualification
-remain deferred.
+and real video-path worker dispatch. Matching builds and final non-device
+normal/ASan suites passed.
 
 ## Owned network-controller factories and products
 
@@ -618,22 +1298,16 @@ rate/window calculations, probe comparison and update presence are exposed.
 Checked pacing arithmetic returns typed errors instead of overflowing native
 microbits.
 
-Returned updates are validated before the SDK consumes them. Finite unit
-sentinels, invalid one-sided magnitudes, negative/minus-infinite congestion
-windows, unsafe pacing arithmetic, zero pacing rates (unsafe with admitted RTP),
-probe arithmetic/count budgets (including recurring packet overshoot), rounded
-zero-byte probe bursts, unsafe queued probe timestamp differences, invalid target
-rates/loss/congestion reduction
-ratios, and unrepresentable RTT/BWE-period conversions latch typed failure.
-Zero pacing windows use the native one-second rate window; padding above data
-rate remains valid and is capped by native pacing. Infinite congestion windows
-remain valid. A positive-infinite process interval preserves native disabled
-periodic processing. Probe byte budgets use the standard PeerConnection root's
-1500-byte RTP/FEC/padding ceiling and its accepted transport overhead below 500
-bytes. This proof does not cover an independently constructed raw Call or future
-caller-exposed MTU setter. Timestamp validation conservatively retains the last
-six issued probe times, matching the pinned queue's maximum possible occupancy;
-completed probes can make this history larger than the actual remaining queue.
+Returned updates preserve native fields and optional/default values. Direct unit
+construction rejects malformed kind tags, negative finite one-sided magnitudes
+and reserved sentinel collisions with typed InvalidUnits failure. Beyond those
+representation requirements, pacing, probe/rate arithmetic, congestion-window
+interpretation and target-rate calculations remain SDK-owned. The binding keeps
+no probe history and imposes no burst/count budget, timestamp-span restriction or
+field-trial-derived numeric admission. Zero pacing windows retain the native
+one-second rate window; SDK pacing interprets padding and data rates. A nonfinite
+process interval preserves native disabled periodic processing; finite intervals
+must satisfy the scheduling boundary's nonnegative-delay requirement.
 
 Panics in creation, interval/capability queries, product updates and provider
 destruction are contained. Native consumers requiring a non-null controller
@@ -643,11 +1317,84 @@ already engine-owned packets retain the last valid pacing configuration.
 Clearing pacing while those packets are enqueued would violate native packet
 admission assertions.
 
-Unrun coverage includes every callback and nested value, native output
+Executed coverage includes callbacks and nested values, native output
 consumption snapshots, factory/product independence, retained environments,
 panic/invalid-value failure outcomes, explicit root trial gating, native
-feedback/pacing helpers, and an injected-controller video send path. Builds,
-runtime and sanitizer qualification remain deferred.
+feedback/pacing helpers, and an injected-controller video send path requiring
+actual encoder invocation and a native sent-packet callback. Matching builds
+and final non-device normal/ASan suites passed.
+
+## Actual Call RTP boundary
+
+ObservedMediaFactory retains the selected native environment and matches its
+clock object to the actual CallConfig environment before transferring durable
+bounds. ObservedCall owns the selected SDK Call, intercepts its PacketReceiver
+and preserves the actual packet and stream implementations. CallAdmissionStats
+exposes bounds from that identity-checked creation context, live/absent state and
+a saturating nonfinite-arrival rejection count, not RTCStats or effective BWE state.
+
+RTP requires a finite arrival at the native delivery boundary. Finite timestamps,
+including negative/default values, pass through unchanged regardless of creation
+clock bounds. RTCP/control packets do not enter this check. Worker delays,
+per-media receive statistics, BWE/TWCC history, receive-time correction and sent
+accounting remain libwebrtc-owned. No binding timestamp envelope, clock/history
+subtraction check, byte quota or receive-time field-trial rejection is imposed.
+Per-peer trial overrides and inherited factory defaults retain native precedence.
+Creation-clock bounds are diagnostic metadata, not an admission profile.
+
+Matching-runtime qualification must observe native forwarding, selected clock
+identity, ordinary trial-enabled creation, retained observations after close and
+callback/owner retirement. It does not certify libwebrtc's internal arithmetic.
+
+## Owning native GoogCC selection and network-state estimators
+
+`NetworkControllerFactory::goog_cc(GoogCcFactoryConfig)` selects the actual SDK
+GoogCcNetworkControllerFactory through the existing local/production controller
+installation path. `GoogCcFactoryConfig::new(rfc_8888_feedback_negotiated)` requires
+that native boolean explicitly. Its optional estimator and predictor factories
+are independent owning registrations. The bridge forwards Create and the actual
+SDK GetProcessInterval without implementing another congestion algorithm or
+inferring negotiation from field trials. The native factory retains its borrowed
+predictor-factory owner; returned controllers retain the Rust execution-domain
+and registration owners until after actual SDK controller destruction. The SDK
+still applies its own field-trial-controlled algorithm choices.
+
+`NetworkStateEstimatorFactoryProvider::create` receives None for a null native
+FieldTrialsView pointer, otherwise an owning copy of the actual supplied view.
+GoogCC supplies its actual controller environment's trials. Each product retains
+that view independently and implements GetCurrentEstimate, transport feedback,
+received PacketResult (the SDK-default no-op is preserved), and route changes.
+Factory and product callbacks are serialized, require Send rather than Sync,
+and must not wait for reentrant actor work. Optional product/estimate absence
+is preserved without creating a stock estimator or fabricated estimate.
+
+Factory panics disable future creation on that registration. Product panic or
+invalid output disables that product alone; observed_failure records the first
+aggregate failure without disabling healthy siblings. Destructor panics are
+contained. NetworkControllerFactory's own diagnostics are separate from child
+estimator/predictor registration diagnostics.
+
+Every estimate DataRate encoding is checked before native unit construction.
+Beyond those representation requirements, estimates pass through unchanged.
+Logging widths, probe-factor products, AIMD backoff and field-trial arithmetic
+remain libwebrtc-owned. Absent estimates, native infinity sentinels and IEEE
+diagnostic fields retain their native representations; the bridge adds no
+capacity range, estimator-quality or ordering policy.
+
+Source/ABI/ownership and focused estimator numeric reviews found no concrete
+scoped defect. No compilation or runtime evidence is claimed. Final acceptance
+must observe actual GoogCC feedback/prediction, native rates/probes/logging,
+retained products and environment views, isolated failures and migrated teardown.
+
+The pinned Call owns and registers its internal TargetTransferRateObserver before
+ObservedCall exists. CallConfig has no send-transport factory/observer seam and
+Call::Create constructs that transport internally. An application Call observer
+cannot be installed at the current boundary without changing/replacing SDK Call
+construction. No observer replacement, controller-output echo, SDK patch, or
+application-observer support is claimed here. User direction confirms no
+libwebrtc patches: this unavailable application Call hook is recorded as a pinned
+SDK construction limitation, not an unfinished injection implementation. Call's
+internal observer and actual native rate effects remain intact.
 
 ## Video factory declaration, optionality and panic boundaries
 
@@ -1093,15 +1840,15 @@ substitutes for caller-supplied interface implementations.
 | --- | --- | --- |
 | Environment field trials | Owned values and custom `FieldTrialsView` | None for this provider |
 | Environment event log | Owned custom `RtcEventLogger` | None for this provider |
-| Environment clock | System/shared manual clocks, owned custom Clock, signed/wrapping SimulatedClock, and matched-anchor real-time conversion | None for this provider |
+| Environment clock | System/shared manual clocks, owned custom Clock, signed/wrapping SimulatedClock, and native real-time conversion | None for this provider |
 | Environment task queues | Default/cooperative built-ins, owned custom factory/scheduler products, native delay domains/precision and current-queue reference posting | None for this provider |
-| Factory role threads | Selected production and controlled owned threads | Review public socket-factory injection and thread dependency seams |
-| Factory packet sockets / network manager | Endpoint-bound controlled providers | General caller-provided interfaces |
+| Factory role threads | Selected production and controlled owned threads, including owning standalone network roles | None for these provider seams |
+| Factory packet sockets / network manager | Endpoint-bound controlled and general caller-provided socket factories/products; owned network manager/providers | Pinned unsupported ICE TCP accepted-IP admission remains explicit |
 | Factory network monitor | Owned custom factory and monitors | None for this provider |
 | Factory event-log factory | Owned custom and selected built-in factory | None for this provider |
-| Factory network-state predictor | Owned factory/products and signed Update payload | Consolidated runtime qualification pending |
-| Factory FEC | Owned factory, complete concurrent controller and expiring synchronous/asynchronous protection callbacks | Consolidated runtime qualification pending |
-| Factory network controller | Owned complete factory/products and network-control message/update graph with explicit pinned trial gate | Consolidated runtime qualification pending |
+| Factory network-state predictor | Owned factory/products and signed Update payload | Final non-device normal/ASan qualification passed |
+| Factory FEC | Owned factory, complete concurrent controller and expiring synchronous/asynchronous protection callbacks | Final non-device normal/ASan qualification passed |
+| Factory network controller | Owned complete factory/products and network-control message/update graph with explicit pinned trial gate | Final non-device normal/ASan qualification passed; no public Call target-observer injection seam in this SDK |
 | Factory NetEq | Full guarded stock and serialized caller products; standalone owned factory/context creation with typed failure and exact SDK input retention; complete value/frame graph | Peer registration and complete SDK consumer arithmetic proof outstanding; qualification deferred |
 | Factory SCTP fake injection | Pinned test-only opaque factory/internal-transport seam; native connection context selects stock SCTP | Excluded as test-only; public SCTP transport info/observers remain application-surface work |
 | Factory encode/decode metronomes | Owned optional providers, exact TimeDelta periods, worker-posted one-shot tick tickets and retirement | None for this provider |
@@ -1114,7 +1861,7 @@ substitutes for caller-supplied interface implementations.
 | Peer allocator, ICE/DTLS/RTP transport | Not generally exposed | Full owned factory/product interfaces |
 | Peer local-network permissions | Owned factory/products, query overrides, asynchronous completion and actual remote ICE checks | Separate `BasicPortAllocator` factory input for STUN/relay permission checks is not wired by the default peer path |
 | Peer certificate generator | Owned asynchronous provider, reused key/certificate resources and signaling-posted completion | None for this provider |
-| Peer video bitrate allocator | Owned factories, callable products and full codec/allocation values | Consolidated runtime qualification pending |
+| Peer video bitrate allocator | Owned factories, callable products and full codec/allocation values | Final non-device normal/ASan qualification passed |
 
 The NetEq source inventory and legacy decoder capacity/lifetime constraints are
 consolidated in `plans/completion.md`. Selected builtin decoder factories

@@ -1,8 +1,9 @@
 //! Owning callback implementations for actual selected native video products.
+use crate::provider_panic::catch_provider as catch_unwind;
 use crate::{RawVideoFrame, ffi};
 use std::{
     fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -219,9 +220,8 @@ pub(crate) struct RustFecOverride {
 }
 impl Drop for RustFecOverride {
     fn drop(&mut self) {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))) {
+        if catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))).is_err() {
             self.failures.record();
-            discard_panic(payload);
         }
     }
 }
@@ -229,16 +229,17 @@ pub(crate) fn fec_override_provider_allowed(provider: &RustFecOverride, allowed:
     if provider.terminal.load(Ordering::Acquire) {
         return;
     }
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+    if catch_unwind(AssertUnwindSafe(|| {
         provider
             .provider
             .as_deref()
             .expect("live FEC provider")
             .set_fec_allowed(allowed)
-    })) {
+    }))
+    .is_err()
+    {
         provider.terminal.store(true, Ordering::Release);
         provider.failures.record();
-        discard_panic(payload);
     }
 }
 /// Full encoder output, including nullable codec-specific metadata. Encoded
@@ -319,9 +320,8 @@ pub(crate) struct RustEncodedImageSink {
 }
 impl Drop for RustEncodedImageSink {
     fn drop(&mut self) {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))) {
+        if catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))).is_err() {
             self.failures.record();
-            discard_panic(payload);
         }
     }
 }
@@ -350,10 +350,9 @@ pub(crate) fn encoded_sink_provider_frame(
             )
     })) {
         Ok(result) => result.native(),
-        Err(payload) => {
+        Err(()) => {
             provider.terminal.store(true, Ordering::Release);
             provider.failures.record();
-            discard_panic(payload);
             failed
         }
     }
@@ -367,16 +366,17 @@ pub(crate) fn encoded_sink_provider_dropped(
     if provider.terminal.load(Ordering::Acquire) {
         return;
     }
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+    if catch_unwind(AssertUnwindSafe(|| {
         provider
             .provider
             .as_deref()
             .expect("live encoded callback")
             .frame_dropped(rtp_timestamp, spatial_id, end)
-    })) {
+    }))
+    .is_err()
+    {
         provider.terminal.store(true, Ordering::Release);
         provider.failures.record();
-        discard_panic(payload);
     }
 }
 pub(crate) struct RustDecodedImageSink {
@@ -384,16 +384,10 @@ pub(crate) struct RustDecodedImageSink {
     failures: VideoCodecCallbackFailureObserver,
     terminal: AtomicBool,
 }
-fn discard_panic(payload: Box<dyn std::any::Any + Send>) {
-    if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-        std::mem::forget(secondary);
-    }
-}
 impl Drop for RustDecodedImageSink {
     fn drop(&mut self) {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))) {
+        if catch_unwind(AssertUnwindSafe(|| drop(self.provider.take()))).is_err() {
             self.failures.record();
-            discard_panic(payload);
         }
     }
 }
@@ -434,10 +428,9 @@ pub(crate) fn decoded_sink_provider_invoke(
             }
         })) {
             Ok(value) => *status = value,
-            Err(payload) => {
+            Err(()) => {
                 provider.terminal.store(true, Ordering::Release);
                 provider.failures.record();
-                discard_panic(payload);
             }
         }
     }

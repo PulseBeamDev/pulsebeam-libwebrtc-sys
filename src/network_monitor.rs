@@ -88,6 +88,9 @@ pub struct NetworkChangeNotifier {
 unsafe impl Send for NetworkChangeNotifier {}
 unsafe impl Sync for NetworkChangeNotifier {}
 impl NetworkChangeNotifier {
+    pub(crate) fn from_native(native: cxx::SharedPtr<ffi::NativeNetworkChange>) -> Self {
+        Self { native }
+    }
     /// False when the monitor is not running or has been destroyed. True means
     /// accepted for posting, not guaranteed delivery before a subsequent stop.
     pub fn notify(&self) -> bool {
@@ -187,8 +190,9 @@ impl RustNetworkMonitor {
         let Some(monitor) = &self.monitor else {
             return fallback;
         };
-        match crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| operation(monitor.as_ref())))
-        {
+        match crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| {
+            operation(monitor.as_ref())
+        })) {
             Ok(value) => value,
             Err(_) => {
                 self.failed.store(true, Ordering::Release);
@@ -232,7 +236,9 @@ pub(crate) fn network_monitor_start(monitor: &RustNetworkMonitor) -> bool {
 pub(crate) fn network_monitor_stop(monitor: &RustNetworkMonitor) {
     // Cleanup remains attempted even after a preceding callback panic.
     if let Some(value) = &monitor.monitor {
-        if crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| value.stop())).is_err() {
+        if crate::provider_panic::catch_provider(std::panic::AssertUnwindSafe(|| value.stop()))
+            .is_err()
+        {
             monitor.failed.store(true, Ordering::Release);
         }
     }

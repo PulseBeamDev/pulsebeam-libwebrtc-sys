@@ -1,5 +1,5 @@
-use crate::{FieldTrialsSnapshot, Timestamp, ffi};
 use crate::provider_panic::catch_provider as catch_unwind;
+use crate::{FieldTrialsSnapshot, Timestamp, ffi};
 use std::{
     panic::AssertUnwindSafe,
     sync::{
@@ -391,7 +391,10 @@ impl FecControllerFactory {
         self.0.failed.load(Ordering::Acquire)
     }
 }
-pub(crate) struct RustFecControllerFactory(pub Option<FecControllerFactory>, pub Option<crate::Environment>);
+pub(crate) struct RustFecControllerFactory(
+    pub Option<FecControllerFactory>,
+    pub Option<crate::Environment>,
+);
 pub(crate) struct RustFecController {
     provider: Option<Box<dyn FecController>>,
     builtin: bool,
@@ -450,9 +453,7 @@ pub(crate) fn fec_controller_create(
             builtin = true;
         } else if let Some(provider) = provider.as_deref_mut() {
             match catch_unwind(AssertUnwindSafe(|| {
-                provider.create_fec_controller(FecControllerEnvironment(
-                    environment.clone(),
-                ))
+                provider.create_fec_controller(FecControllerEnvironment(environment.clone()))
             })) {
                 Ok(FecControllerCreation::Builtin) => builtin = true,
                 Ok(FecControllerCreation::Provider(value)) => product = Some(value),

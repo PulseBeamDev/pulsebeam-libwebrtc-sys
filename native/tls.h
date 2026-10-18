@@ -39,5 +39,28 @@ std::unique_ptr<NativeTlsCertificateChain> tls_chain_clone(const NativeTlsCertif
 std::size_t tls_chain_size(const NativeTlsCertificateChain& chain) noexcept;
 std::unique_ptr<NativeTlsCertificate> tls_chain_get(const NativeTlsCertificateChain& chain, std::size_t index) noexcept;
 rust::Vec<FfiTlsCertificateStats> tls_chain_stats(const NativeTlsCertificateChain& chain) noexcept;
+// Shared backing for verifiers constructed by this binding. The SDK owns a
+// small proxy; socket creation contexts retain the actual backing independently.
+class NativeTlsVerifier final {
+ public:
+  struct State;
+  explicit NativeTlsVerifier(rust::Box<RustTlsCertificateVerifier> source) noexcept;
+  explicit NativeTlsVerifier(std::unique_ptr<webrtc::SSLCertificateVerifier> source) noexcept;
+  ~NativeTlsVerifier();
+  bool Verify(const webrtc::SSLCertificate& certificate) const;
+  bool VerifyChain(const webrtc::SSLCertChain& chain) const;
+  bool Failed() const noexcept;
+ private:
+  std::unique_ptr<State> state_;
+};
+// Private closed-origin operation: non-null inputs are the peer dependency
+// proxy made by the two adapters below, never foreign C++ verifiers.
+std::shared_ptr<NativeTlsVerifier> retain_binding_peer_tls_verifier(webrtc::SSLCertificateVerifier* verifier) noexcept;
+bool tls_verifier_verify(const NativeTlsVerifier& verifier, const NativeTlsCertificate& certificate) noexcept;
+bool tls_verifier_verify_chain(const NativeTlsVerifier& verifier, const NativeTlsCertificateChain& chain) noexcept;
+bool tls_verifier_failed(const NativeTlsVerifier& verifier) noexcept;
 std::unique_ptr<webrtc::SSLCertificateVerifier> tls_certificate_verifier_adapter(rust::Box<RustTlsCertificateVerifier> verifier) noexcept;
+// Internal TURN-CA component only. Calls are serialized and invoke no user
+// callbacks. This does not admit arbitrary externally supplied C++ verifiers.
+std::unique_ptr<webrtc::SSLCertificateVerifier> owned_native_tls_certificate_verifier_adapter(std::unique_ptr<webrtc::SSLCertificateVerifier> verifier) noexcept;
 }

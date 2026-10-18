@@ -71,22 +71,6 @@ class CooperativeScope final {
   CooperativeTaskQueue* previous_;
 };
 
-// No wrapper timestamp precheck: admission must remain safe if time advances
-// before the SDK samples it. SystemTime is an i64-ns clock converted to us;
-// Timestamp addition stores us. POSIX Event waits additionally add tv_nsec
-// (at most 999999999) to a finite remaining delay converted to ns.
-bool StdlibDelaySupported(std::int64_t bits) {
-  if (bits == INT64_MIN || bits == INT64_MAX) return true;
-#if defined(WEBRTC_WIN)
-  return bits <= (static_cast<std::int64_t>(UINT32_MAX) - 1) * 1000 - 999;
-#else
-  return bits <= (INT64_MAX - 999999999LL) / 1000;
-#endif
-}
-bool ThreadDelaySupported(std::int64_t bits) {
-  // SDK RoundUpTo(1ms) uses truncating division after adding 999us.
-  return bits >= -1998 && bits <= static_cast<std::int64_t>(INT32_MAX) * 1000;
-}
 webrtc::TimeDelta NativeDelay(std::int64_t bits) {
   return bits == INT64_MAX ? webrtc::TimeDelta::PlusInfinity()
       : bits == INT64_MIN ? webrtc::TimeDelta::MinusInfinity() : webrtc::TimeDelta::Micros(bits);
@@ -478,10 +462,8 @@ webrtc::Timestamp SharedClock::CurrentTime() {
 
 webrtc::NtpTime SharedClock::ConvertTimestampToNtpTime(
     webrtc::Timestamp timestamp) {
-  // SDK snapshots may have no Rust clock-kind metadata. Guard the intrinsic
-  // adapter too: the SDK simulated converter cannot read infinity or convert
-  // a negative fractional second to its unsigned NTP fraction.
-  if (!timestamp.IsFinite() || timestamp.us() % 1000000 < 0) return webrtc::NtpTime();
+  // Keep finite-unit representation at the boundary; conversion is SDK-owned.
+  if (!timestamp.IsFinite()) return webrtc::NtpTime();
   return state_->clock.ConvertTimestampToNtpTime(timestamp);
 }
 
@@ -798,8 +780,8 @@ bool task_queue_has_failed(const NativeTaskQueue& queue) noexcept {
 std::uint8_t post_native_delayed_task(const NativeTaskQueue& queue, std::int64_t bits, bool high_precision,
                               rust::Box<RustTask> task) noexcept {
   if (task_queue_has_failed(queue)) return 1;
-  if (!queue.state()->provider_backed && (queue.state()->cooperative
-      ? bits == INT64_MIN || bits == INT64_MAX : !StdlibDelaySupported(bits))) return 2;
+  if (!queue.state()->provider_backed && queue.state()->cooperative &&
+      (bits == INT64_MIN || bits == INT64_MAX)) return 2;
   PostNativeDelay(*queue.state()->queue, bits, high_precision, std::move(task));
   return task_queue_has_failed(queue) ? 1 : 0;
 }
@@ -810,8 +792,7 @@ bool task_queue_current_delay_supported(std::int64_t bits) noexcept {
   if (queue == controlled_driver_identity ||
       (current_cooperative_queue && current_cooperative_queue->identity() == queue))
     return bits != INT64_MIN && bits != INT64_MAX;
-  if (queue == webrtc::Thread::Current()) return ThreadDelaySupported(bits);
-  return StdlibDelaySupported(bits);
+  return true;  // SDK backends own their delay arithmetic and rounding.
 }
 
 namespace {
@@ -1363,6 +1344,15 @@ bool driver_is_current(const NativeDriverThread& driver) noexcept {
   return driver.thread() && driver.thread()->IsCurrent();
 }
 
+bool thread_is_owned(const NativeThread& thread) noexcept {
+  return thread.state() && thread.state()->owned && !thread.state()->thread->IsQuitting();
+}
+bool thread_is_current(const NativeThread& thread) noexcept {
+  return thread.thread() && thread.thread()->IsCurrent() && webrtc::TaskQueueBase::Current() == thread.thread();
+}
+bool thread_requires_retirement(const NativeThread& thread) noexcept {
+  return webrtc::TaskQueueBase::Current() || (thread.thread() && thread.thread()->IsCurrent());
+}
 bool thread_post_task(const NativeThread& thread,
                       rust::Box<RustTask> task) noexcept {
   if (!thread.state() || !thread.state()->thread ||
@@ -1387,7 +1377,7 @@ bool thread_post_delayed_task(const NativeThread& thread,
 std::uint8_t thread_post_native_delayed_task(const NativeThread& thread, std::int64_t bits, bool high_precision, rust::Box<RustTask> task) noexcept {
   if (!thread.thread() || thread.thread()->IsQuitting()) return 1;
   const bool controlled = !thread.state()->owned;
-  if (controlled ? bits == INT64_MIN || bits == INT64_MAX : !ThreadDelaySupported(bits)) return 2;
+  if (controlled && (bits == INT64_MIN || bits == INT64_MAX)) return 2;
   PostNativeDelay(*thread.thread(), bits, high_precision, std::move(task));
   return 0;
 }

@@ -3,7 +3,7 @@ use crate::{
     AudioDecoderFactory, Environment, NetEq, NetEqConfig, NetEqFailureObserver, NetEqProvider, ffi,
 };
 use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -77,6 +77,8 @@ struct FactoryState {
     panicked: AtomicBool,
     observer: NetEqFactoryFailureObserver,
 }
+use crate::provider_panic::catch_provider as catch_unwind;
+
 impl Drop for FactoryState {
     fn drop(&mut self) {
         let provider = self

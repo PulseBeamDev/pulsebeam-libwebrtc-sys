@@ -225,19 +225,14 @@ pub(crate) struct RustCallerApmDump {
     provider: Option<Box<dyn AudioProcessingDumpProvider>>,
     failure: AudioProcessingDumpFailureObserver,
 }
-pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
-    // A destructor may itself panic. Dispose its ordinary panic payload
-    // without unwinding across FFI; preserve only unknown drop types.
-    if let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-        crate::panic_payload::discard(nested);
-    }
-}
+pub(crate) use crate::panic_payload::discard as dispose_panic;
 impl RustCallerApmDump {
     fn call(
         &self,
         operation: AudioProcessingDumpOperation,
         f: impl FnOnce() -> Result<(), String>,
     ) -> bool {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         match catch_unwind(AssertUnwindSafe(f)) {
             Ok(Ok(())) => true,
             Ok(Err(message)) => {

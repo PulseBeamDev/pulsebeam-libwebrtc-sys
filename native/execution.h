@@ -344,6 +344,9 @@ bool test_driver_lifecycle_yield(
 bool test_driver_capture_cancellation(const NativeDriverThread& driver) noexcept;
 std::int64_t driver_next_deadline_us(const NativeDriverThread& driver) noexcept;
 bool driver_is_current(const NativeDriverThread& driver) noexcept;
+bool thread_is_owned(const NativeThread& thread) noexcept;
+bool thread_is_current(const NativeThread& thread) noexcept;
+bool thread_requires_retirement(const NativeThread& thread) noexcept;
 bool thread_post_task(const NativeThread& thread,
                       rust::Box<RustTask> task) noexcept;
 bool task_queue_current_delay_supported(std::int64_t bits) noexcept;

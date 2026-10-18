@@ -126,7 +126,10 @@ fn native_typed_insertion_preserves_output_on_guard_rejection() {
     let mut error = error.with_appended_sdp_video_format(&good).unwrap();
     // RTCError::message is a const-char* getter, unlike the owning builder.
     // Verify both native contracts, including the bytes retained after NUL.
-    assert_eq!(error.message_bytes(), b"before:Codec name: \xff");
+    assert_eq!(
+        error.message_bytes(),
+        b"before:Codec name: \xff, parameters: { }"
+    );
     assert_eq!(
         &error.string_builder().as_bytes()[7..],
         good.native_string_bytes().unwrap()

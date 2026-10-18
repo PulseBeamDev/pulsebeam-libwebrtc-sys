@@ -296,6 +296,7 @@ impl<P: ?Sized> FactoryState<P> {
 }
 impl<P: ?Sized> Drop for FactoryState<P> {
     fn drop(&mut self) {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let provider = self
             .provider
             .get_mut()

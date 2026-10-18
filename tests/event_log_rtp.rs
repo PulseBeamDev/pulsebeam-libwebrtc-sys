@@ -261,16 +261,30 @@ fn hdr_mastering_and_light_levels_are_native_normalized_fields() {
     assert!((hdr.primary_b.y - 0.4).abs() < 0.00001);
     assert_eq!(hdr.luminance_max, 1_000.0);
     assert!((hdr.luminance_min - 0.0001).abs() < 0.000001);
-    assert_eq!((hdr.max_content_light_level, hdr.max_frame_average_light_level), (2_000, 1_000));
+    assert_eq!(
+        (
+            hdr.max_content_light_level,
+            hdr.max_frame_average_light_level
+        ),
+        (2_000, 1_000)
+    );
 
     // Preserve an invalid HDR payload as present raw bytes, not invented
     // metadata or a missing extension. Native validation rejects >20000 nits.
     raw[4..6].copy_from_slice(&u16::MAX.to_be_bytes());
-    let (bytes, map) = packet("http://www.webrtc.org/experiments/rtp-hdrext/color-space", &raw);
+    let (bytes, map) = packet(
+        "http://www.webrtc.org/experiments/rtp-hdrext/color-space",
+        &raw,
+    );
     let invalid = RtcEvent::rtp_incoming(&bytes, &map, None).unwrap();
-    assert_eq!(invalid.rtp_extension(K::ColorSpace), Some(RtcEventRtpExtensionSnapshot {
-        kind: K::ColorSpace, raw, decoded: None,
-    }));
+    assert_eq!(
+        invalid.rtp_extension(K::ColorSpace),
+        Some(RtcEventRtpExtensionSnapshot {
+            kind: K::ColorSpace,
+            raw,
+            decoded: None,
+        })
+    );
 }
 
 #[test]

@@ -120,7 +120,10 @@ impl EventLogOutput {
     pub fn from_sink(sink: impl EventLogOutputSink) -> Self {
         Self {
             native: ffi::event_log_output_from_sink(Box::new(RustEventLogOutput {
-                state: Mutex::new(OutputState { sink: Some(Box::new(sink)), failed: false }),
+                state: Mutex::new(OutputState {
+                    sink: Some(Box::new(sink)),
+                    failed: false,
+                }),
             })),
             _exclusive: PhantomData,
         }
@@ -230,9 +233,15 @@ unsafe impl Send for RtcEvent {}
 unsafe impl Sync for RtcEvent {}
 
 impl RtcEvent {
-    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self { Self { native } }
-    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent { self.native.as_ref().expect("owned native event") }
-    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeRtcEvent> { self.native }
+    pub(crate) fn from_native(native: cxx::UniquePtr<ffi::NativeRtcEvent>) -> Self {
+        Self { native }
+    }
+    pub(crate) fn native(&self) -> &ffi::NativeRtcEvent {
+        self.native.as_ref().expect("owned native event")
+    }
+    pub(crate) fn into_native(self) -> cxx::UniquePtr<ffi::NativeRtcEvent> {
+        self.native
+    }
 
     /// Use the pinned concrete class's public `Copy` or copy constructor,
     /// preserving native ownership. Begin/end and unknown event classes have
@@ -318,7 +327,9 @@ impl EventLogEnvironment {
         native: cxx::UniquePtr<ffi::NativeEnvironment>,
         retention: Option<&crate::Environment>,
     ) -> Self {
-        Self { environment: crate::Environment::from_sdk(native, retention) }
+        Self {
+            environment: crate::Environment::from_sdk(native, retention),
+        }
     }
 
     /// The exact SDK creation environment, including identity-matched
@@ -417,7 +428,10 @@ impl<T: RtcEventLogFactory + ?Sized> RtcEventLogFactory for Arc<T> {
     }
 }
 
-pub(crate) struct RustRtcEventLogFactory(pub Option<Arc<dyn RtcEventLogFactory>>, pub crate::Environment);
+pub(crate) struct RustRtcEventLogFactory(
+    pub Option<Arc<dyn RtcEventLogFactory>>,
+    pub crate::Environment,
+);
 impl Drop for RustRtcEventLogFactory {
     fn drop(&mut self) {
         let provider = self.0.take();
@@ -432,7 +446,11 @@ pub(crate) struct RustRtcEventLog {
 }
 impl RustRtcEventLog {
     pub(crate) fn from_logger(logger: Option<Box<dyn RtcEventLogger>>) -> Box<Self> {
-        Box::new(Self { logger, failed: AtomicBool::new(false), _environment: None })
+        Box::new(Self {
+            logger,
+            failed: AtomicBool::new(false),
+            _environment: None,
+        })
     }
 }
 impl Drop for RustRtcEventLog {
@@ -441,36 +459,101 @@ impl Drop for RustRtcEventLog {
         let _ = catch_provider(|| drop(logger));
     }
 }
-pub(crate) fn rust_event_log_create(factory: &RustRtcEventLogFactory, environment: cxx::UniquePtr<ffi::NativeEnvironment>) -> Box<RustRtcEventLog> {
+pub(crate) fn rust_event_log_create(
+    factory: &RustRtcEventLogFactory,
+    environment: cxx::UniquePtr<ffi::NativeEnvironment>,
+) -> Box<RustRtcEventLog> {
     let environment = EventLogEnvironment::from_native(environment, Some(&factory.1));
-    let logger = catch_provider(|| factory.0.as_ref().map(|factory| factory.create(environment.clone()))).ok().flatten();
+    let logger = catch_provider(|| {
+        factory
+            .0
+            .as_ref()
+            .map(|factory| factory.create(environment.clone()))
+    })
+    .ok()
+    .flatten();
     let failed = logger.is_none();
-    Box::new(RustRtcEventLog { logger, failed: AtomicBool::new(failed), _environment: Some(environment) })
+    Box::new(RustRtcEventLog {
+        logger,
+        failed: AtomicBool::new(failed),
+        _environment: Some(environment),
+    })
 }
-pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool { logger.logger.is_some() }
-pub(crate) fn rust_event_log_failed(logger: &RustRtcEventLog) -> bool { logger.failed.load(Ordering::Acquire) }
-pub(crate) fn rust_event_log_start(logger: &RustRtcEventLog, output: cxx::UniquePtr<ffi::NativeEventLogOutput>, period_ms: i64) -> bool {
-    if logger.failed.load(Ordering::Acquire) || period_ms < 0 { return false; }
-    let period = if period_ms == 0 { EventLogOutputPeriod::Immediate } else { EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64)) };
-    let result = catch_provider(|| logger.logger.as_ref().is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period)));
-    match result { Ok(result) => result, Err(_) => { logger.failed.store(true, Ordering::Release); false } }
+pub(crate) fn rust_event_log_present(logger: &RustRtcEventLog) -> bool {
+    logger.logger.is_some()
+}
+pub(crate) fn rust_event_log_failed(logger: &RustRtcEventLog) -> bool {
+    logger.failed.load(Ordering::Acquire)
+}
+pub(crate) fn rust_event_log_start(
+    logger: &RustRtcEventLog,
+    output: cxx::UniquePtr<ffi::NativeEventLogOutput>,
+    period_ms: i64,
+) -> bool {
+    if logger.failed.load(Ordering::Acquire) || period_ms < 0 {
+        return false;
+    }
+    let period = if period_ms == 0 {
+        EventLogOutputPeriod::Immediate
+    } else {
+        EventLogOutputPeriod::Periodic(Duration::from_millis(period_ms as u64))
+    };
+    let result = catch_provider(|| {
+        logger
+            .logger
+            .as_ref()
+            .is_some_and(|logger| logger.start(EventLogOutput::from_native(output), period))
+    });
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            logger.failed.store(true, Ordering::Release);
+            false
+        }
+    }
 }
 pub(crate) fn rust_event_log_stop(logger: &RustRtcEventLog) {
-    if catch_provider(|| { if let Some(logger) = &logger.logger { logger.stop(); } }).is_err() {
+    if catch_provider(|| {
+        if let Some(logger) = &logger.logger {
+            logger.stop();
+        }
+    })
+    .is_err()
+    {
         logger.failed.store(true, Ordering::Release);
     }
 }
-pub(crate) fn rust_event_log_stop_async(logger: &RustRtcEventLog, completion: cxx::UniquePtr<ffi::NativeEventLogStop>) {
+pub(crate) fn rust_event_log_stop_async(
+    logger: &RustRtcEventLog,
+    completion: cxx::UniquePtr<ffi::NativeEventLogStop>,
+) {
     if catch_provider(|| {
         let completion = EventLogStopCompletion { native: completion };
-        if let Some(logger) = &logger.logger { logger.stop_async(completion); }
-    }).is_err() { logger.failed.store(true, Ordering::Release); }
+        if let Some(logger) = &logger.logger {
+            logger.stop_async(completion);
+        }
+    })
+    .is_err()
+    {
+        logger.failed.store(true, Ordering::Release);
+    }
 }
-pub(crate) fn rust_event_log_log(logger: &RustRtcEventLog, event: cxx::UniquePtr<ffi::NativeRtcEvent>) {
-    if logger.failed.load(Ordering::Acquire) { return; }
+pub(crate) fn rust_event_log_log(
+    logger: &RustRtcEventLog,
+    event: cxx::UniquePtr<ffi::NativeRtcEvent>,
+) {
+    if logger.failed.load(Ordering::Acquire) {
+        return;
+    }
     if catch_provider(|| {
-        if let Some(logger) = &logger.logger { logger.log(RtcEvent { native: event }); }
-    }).is_err() { logger.failed.store(true, Ordering::Release); }
+        if let Some(logger) = &logger.logger {
+            logger.log(RtcEvent { native: event });
+        }
+    })
+    .is_err()
+    {
+        logger.failed.store(true, Ordering::Release);
+    }
 }
 
 struct OutputState {
@@ -514,15 +597,29 @@ pub(crate) fn event_log_output_write(output: &RustEventLogOutput, bytes: &[u8]) 
         return false;
     }
     let result = catch_provider(|| {
-        state.sink.as_mut().is_some_and(|sink| sink.is_active() && sink.write(bytes))
-    }).unwrap_or(false);
+        state
+            .sink
+            .as_mut()
+            .is_some_and(|sink| sink.is_active() && sink.write(bytes))
+    })
+    .unwrap_or(false);
     state.failed = !result;
     result
 }
 
 pub(crate) fn event_log_output_flush(output: &RustEventLogOutput) {
-    let mut state = output.state.lock().unwrap_or_else(|error| error.into_inner());
-    if !state.failed && catch_provider(|| { if let Some(sink) = &mut state.sink { sink.flush(); } }).is_err() {
+    let mut state = output
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !state.failed
+        && catch_provider(|| {
+            if let Some(sink) = &mut state.sink {
+                sink.flush();
+            }
+        })
+        .is_err()
+    {
         state.failed = true;
     }
 }

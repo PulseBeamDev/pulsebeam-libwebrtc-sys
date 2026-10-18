@@ -1267,6 +1267,7 @@ pub struct RustVideoDecoder {
 pub(crate) use crate::panic_payload::discard as discard_panic_payload;
 // No application destructor or panic-payload destructor may unwind through CXX.
 fn contained_video_drop<T>(value: T) -> bool {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     match catch_unwind(AssertUnwindSafe(|| drop(value))) {
         Ok(()) => true,
         Err(payload) => {
@@ -2060,6 +2061,7 @@ pub(crate) fn encoder_factory_selector(
     factory: &RustVideoEncoderFactory,
     valid: &mut bool,
 ) -> cxx::UniquePtr<ffi::NativeOwnedVideoEncoderSelector> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     *valid = false;
     if factory.terminal.load(Ordering::Acquire) {
         return cxx::UniquePtr::null();
@@ -2091,6 +2093,7 @@ pub(crate) fn encoder_factory_selector(
 pub(crate) fn encoder_factory_formats(
     factory: &RustVideoEncoderFactory,
 ) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if factory.terminal.load(Ordering::Acquire) {
         return crate::video_factory_values::native_failed_formats();
     }
@@ -2115,6 +2118,7 @@ pub(crate) fn encoder_factory_formats(
 pub(crate) fn encoder_factory_implementations(
     factory: &RustVideoEncoderFactory,
 ) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if factory.terminal.load(Ordering::Acquire) {
         return crate::video_factory_values::native_failed_formats();
     }
@@ -2144,6 +2148,7 @@ pub(crate) fn encoder_factory_query(
     resolution: cxx::UniquePtr<ffi::NativeRtpResolution>,
     legacy: bool,
 ) -> ffi::FfiVideoFactorySupport {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     use crate::VideoFactoryQueryError;
     if factory.terminal.load(Ordering::Acquire) {
         return crate::video_factory_values::ffi_support(Err(
@@ -2188,6 +2193,7 @@ pub(crate) fn encoder_factory_create(
     retention: &crate::video_factory_values::RustVideoFactoryEnvironment,
     format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
 ) -> Box<RustVideoEncoder> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if factory.terminal.load(Ordering::Acquire) {
         return Box::new(RustVideoEncoder {
             codec: None,
@@ -2248,6 +2254,7 @@ fn with_encoder_status(
     encoder: &mut RustVideoEncoder,
     operation: impl FnOnce(&mut dyn VideoEncoder) -> Result<i32, CodecError>,
 ) -> i32 {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if encoder.terminal.load(Ordering::Acquire) {
         return CODEC_ERROR;
     }
@@ -2436,6 +2443,7 @@ pub(crate) fn encoder_release(encoder: &mut RustVideoEncoder) -> i32 {
 pub(crate) fn encoder_get_info_value(
     encoder: &RustVideoEncoder,
 ) -> cxx::UniquePtr<ffi::NativeVideoEncoderInfo> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let Some(codec) = encoder
         .codec
         .as_deref()
@@ -2460,6 +2468,7 @@ pub(crate) fn encoder_factory_report_codec_info_failure(factory: &RustVideoEncod
 }
 #[cfg(test)]
 pub(crate) fn encoder_get_info(encoder: &RustVideoEncoder) -> ffi::FfiEncoderInfo {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     encoder
         .codec
         .as_deref()
@@ -2505,6 +2514,7 @@ fn encoder_info_to_ffi(info: VideoEncoderInfo) -> ffi::FfiEncoderInfo {
 pub(crate) fn decoder_factory_formats(
     factory: &RustVideoDecoderFactory,
 ) -> cxx::UniquePtr<ffi::NativeSdpVideoFormatList> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if factory.terminal.load(Ordering::Acquire) {
         return crate::video_factory_values::native_failed_formats();
     }
@@ -2533,6 +2543,7 @@ pub(crate) fn decoder_factory_query(
     resolution: cxx::UniquePtr<ffi::NativeRtpResolution>,
     legacy: bool,
 ) -> ffi::FfiVideoFactorySupport {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     use crate::VideoFactoryQueryError;
     if factory.terminal.load(Ordering::Acquire) {
         return crate::video_factory_values::ffi_support(Err(
@@ -2570,6 +2581,7 @@ pub(crate) fn decoder_factory_create(
     retention: &crate::video_factory_values::RustVideoFactoryEnvironment,
     format: cxx::UniquePtr<ffi::NativeSdpVideoFormat>,
 ) -> Box<RustVideoDecoder> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if factory.terminal.load(Ordering::Acquire) {
         return Box::new(RustVideoDecoder {
             codec: None,
@@ -2623,6 +2635,7 @@ fn with_decoder_status(
     decoder: &mut RustVideoDecoder,
     operation: impl FnOnce(&mut dyn VideoDecoder) -> Result<i32, CodecError>,
 ) -> i32 {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if decoder.terminal.load(Ordering::Acquire) {
         return CODEC_ERROR;
     }
@@ -2654,6 +2667,7 @@ pub(crate) fn decoder_configure_value(
     status == CODEC_OK && configured
 }
 pub(crate) fn decoder_implementation_name(decoder: &RustVideoDecoder, valid: &mut bool) -> Vec<u8> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     *valid = false;
     let Some(codec) = decoder
         .codec
@@ -2678,6 +2692,7 @@ pub(crate) fn decoder_implementation_name(decoder: &RustVideoDecoder, valid: &mu
 pub(crate) fn decoder_get_info_value(
     decoder: &RustVideoDecoder,
 ) -> cxx::UniquePtr<ffi::NativeVideoDecoderInfo> {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     let Some(codec) = decoder
         .codec
         .as_deref()
@@ -2760,6 +2775,7 @@ pub(crate) fn decoder_release(decoder: &mut RustVideoDecoder) -> i32 {
 }
 #[cfg(test)]
 fn decoder_get_info(decoder: &RustVideoDecoder) -> ffi::FfiDecoderInfo {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     decoder
         .codec
         .as_deref()

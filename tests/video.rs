@@ -2178,21 +2178,51 @@ fn injected_network_controller_drives_native_video_without_an_additional_owner()
         .collect();
     transceiver.set_codec_preferences(&codecs).unwrap();
     drop(pair.negotiate());
-    source
-        .push_frame(&VideoFrame::i420(16, 16, synthetic_i420(16, 16), 2_000_000, 90_000).unwrap())
-        .unwrap();
-    let observed = (0..2_000_000).any(|_| {
+    // Native encoder/pacer work is asynchronous and may discard a startup
+    // frame. Feed at camera cadence instead of racing millions of simulated
+    // milliseconds past real worker timers after submitting just one frame.
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(15);
+    let mut next_frame = started;
+    let mut frame_index = 0u32;
+    let observed = loop {
+        let now = std::time::Instant::now();
+        if now >= next_frame {
+            source
+                .push_frame(
+                    &VideoFrame::i420(
+                        16,
+                        16,
+                        synthetic_i420(16, 16),
+                        2_000_000 + i64::from(frame_index) * 33_000,
+                        90_000 + frame_index * 2_970,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            frame_index += 1;
+            next_frame = now + Duration::from_millis(33);
+        }
         pair.progress();
-        counters.encode.load(Ordering::SeqCst) > 0
+        if counters.encode.load(Ordering::SeqCst) > 0
             && observations
                 .callbacks
                 .lock()
                 .unwrap()
                 .contains(&"sent_packet")
-    });
+        {
+            break true;
+        }
+        if now >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
     assert!(
         observed,
-        "injected native controller did not encode/send a packet"
+        "injected native controller did not encode/send: encodes={} callbacks={:?}",
+        counters.encode.load(Ordering::SeqCst),
+        observations.callbacks.lock().unwrap().as_slice(),
     );
     assert!(!registration.has_failed());
     assert!(observations.creates.load(Ordering::SeqCst) > 0);

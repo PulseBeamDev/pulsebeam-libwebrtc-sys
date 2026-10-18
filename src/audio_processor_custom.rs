@@ -264,6 +264,7 @@ impl RustApmCustomModule {
         operation: AudioProcessingCustomOperation,
         f: impl FnOnce(&mut Provider) -> Result<T, String>,
     ) -> Option<T> {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let Some(_scope) = Scope::enter(self as *const Self as usize) else {
             self.failure
                 .record(operation, AudioProcessingCustomFailureKind::Reentrant);
@@ -292,6 +293,7 @@ impl RustApmCustomModule {
         }
     }
     fn dispose(&mut self) -> bool {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let provider = self
             .provider
             .get_mut()

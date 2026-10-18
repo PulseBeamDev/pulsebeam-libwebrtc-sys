@@ -200,6 +200,8 @@ pub enum VideoTrackState {
 pub struct ScreenSource {
     pub id: i64,
     pub name: String,
+    /// Native display identity, including the SDK invalid-display sentinel.
+    pub display_id: i64,
 }
 
 /// A window shares the desktop capturer's ID and title representation. On
@@ -250,8 +252,179 @@ impl ScreenCapture {
         &self.source
     }
 
+    fn control(
+        &self,
+        kind: u8,
+        id: i64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<ffi::FfiDesktopControl, PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        let reply = ffi::desktop_control(
+            self.native.as_ref().expect("validated desktop capture"),
+            kind,
+            id,
+            x,
+            y,
+            width,
+            height,
+        );
+        let kind = match reply.status {
+            1 => Some(PeerErrorKind::Closed),
+            2 => Some(PeerErrorKind::UnsupportedOperation),
+            3 => Some(PeerErrorKind::InvalidParameter),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Err(PeerError {
+                kind,
+                message: "desktop control unavailable".into(),
+            });
+        }
+        Ok(reply)
+    }
+    pub fn sources(&self) -> Result<Vec<ScreenSource>, PeerError> {
+        let reply = self.control(0, 0, 0, 0, 0, 0)?;
+        if !reply.flag {
+            return Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message: "native desktop source enumeration failed".into(),
+            });
+        }
+        Ok(reply
+            .sources
+            .into_iter()
+            .map(|source| ScreenSource {
+                id: source.id,
+                name: source.name,
+                display_id: source.display_id,
+            })
+            .collect())
+    }
+    /// Preserve native rejection as false; never select another source.
+    pub fn select_source(&mut self, id: i64) -> Result<bool, PeerError> {
+        Ok(self.control(1, id, 0, 0, 0, 0)?.flag)
+    }
+    pub fn focus_selected_source(&mut self) -> Result<bool, PeerError> {
+        Ok(self.control(2, 0, 0, 0, 0, 0)?.flag)
+    }
+    pub fn is_occluded(&self, x: i32, y: i32) -> Result<bool, PeerError> {
+        Ok(self.control(3, 0, x, y, 0, 0)?.flag)
+    }
+    pub fn set_excluded_window(&mut self, id: i64) -> Result<(), PeerError> {
+        self.control(4, id, 0, 0, 0, 0).map(|_| ())
+    }
+    pub fn set_max_frame_rate(&mut self, rate: u32) -> Result<(), PeerError> {
+        self.control(5, 0, 0, 0, rate, 0).map(|_| ())
+    }
+    pub fn update_resolution(&mut self, width: u32, height: u32) -> Result<(), PeerError> {
+        self.control(6, 0, 0, 0, width, height).map(|_| ())
+    }
+    pub fn has_delegated_selection(&self) -> Result<bool, PeerError> {
+        Ok(self.control(7, 0, 0, 0, 0, 0)?.flag)
+    }
+    /// These operations request visibility, not a claim that UI was displayed.
+    pub fn ensure_selection_visible(&mut self) -> Result<(), PeerError> {
+        self.control(8, 0, 0, 0, 0, 0).map(|_| ())
+    }
+    pub fn ensure_selection_hidden(&mut self) -> Result<(), PeerError> {
+        self.control(9, 0, 0, 0, 0, 0).map(|_| ())
+    }
+    /// Clear or restore the native observer backing selection status. With it
+    /// disabled, status retains its last notification rather than polling UI.
+    pub fn set_selection_observation(&mut self, enabled: bool) -> Result<(), PeerError> {
+        self.control(if enabled { 10 } else { 11 }, 0, 0, 0, 0, 0)
+            .map(|_| ())
+    }
+    /// SDK GetMetadata. None means the artifact has no GIO metadata interface;
+    /// a supported backend's actual empty value is Some, never fabricated data.
+    pub fn metadata(&self) -> Result<Option<crate::DesktopCaptureMetadata>, PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        if self.status() == ScreenCaptureStatus::Closed {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "desktop capture is closed".into(),
+            });
+        }
+        let native =
+            ffi::desktop_capture_metadata(self.native.as_ref().expect("validated desktop capture"));
+        Ok((!native.is_null()).then(|| crate::DesktopCaptureMetadata::new(native)))
+    }
+    /// Pinned Linux capturers inherit a no-op SDK setter. Some is explicitly
+    /// UnsupportedOperation rather than fake installation or a stock allocator.
+    /// None calls the native optional setter without claiming allocation support.
+    pub fn set_shared_memory_factory(
+        &mut self,
+        factory: Option<&crate::DesktopMemoryFactoryHandle>,
+    ) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        let status = ffi::desktop_set_memory_factory(
+            self.native.as_ref().expect("validated desktop capture"),
+            crate::desktop_memory::RustDesktopMemoryFactory::new(factory),
+        );
+        Self::callback_status(status)
+    }
+    /// Replace the SDK frame consumer. Some bypasses ordinary video publication;
+    /// None restores it. Replacement is atomic per event, not per pending request.
+    /// Already executing callbacks retain their previous registration.
+    pub fn set_receiver(
+        &mut self,
+        receiver: Option<&crate::DesktopCaptureReceiverHandle>,
+    ) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        let status = ffi::desktop_set_receiver(
+            self.native.as_ref().expect("validated desktop capture"),
+            crate::desktop_receiver::RustDesktopCaptureReceiver::new(receiver),
+        );
+        Self::callback_status(status)
+    }
+    /// Calls SDK Observe(nullptr) before registering a new observer. None clears
+    /// native observation, including automatic selection-status updates.
+    pub fn set_selection_observer(
+        &mut self,
+        observer: Option<&crate::DesktopSelectionObserverHandle>,
+    ) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        let status = ffi::desktop_set_selection_observer(
+            self.native.as_ref().expect("validated desktop capture"),
+            crate::desktop_receiver::RustDesktopSelectionObserver::new(observer),
+        );
+        Self::callback_status(status)
+    }
+    fn callback_status(status: u8) -> Result<(), PeerError> {
+        match status {
+            0 => Ok(()),
+            1 => Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "desktop capture is closed".into(),
+            }),
+            _ => Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "SDK desktop callback operation unavailable".into(),
+            }),
+        }
+    }
+    /// Call SDK CaptureFrame without filtering terminal selection/capture
+    /// statuses. Acceptance is not capture success; the actual result is sent
+    /// to the selected receiver, or processed by the ordinary video sink.
+    pub fn request_frame(&self) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
+        if ffi::screen_capture_next_frame(self.native.as_ref().expect("validated desktop capture"))
+        {
+            Ok(())
+        } else {
+            Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "desktop capture is closed".into(),
+            })
+        }
+    }
+    /// Convenience policy rejects terminal statuses before requesting a frame.
     /// Capture and conversion failures are accumulated by [`Self::failed_frames`].
     pub fn capture_next_frame(&self) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
         let native = self.native.as_ref().expect("validated desktop capture");
         match self.status() {
             ScreenCaptureStatus::Closed => {
@@ -321,6 +494,7 @@ impl ScreenCapture {
 
     /// Stop capture and end the associated video source. Repeated stops succeed.
     pub fn stop(&mut self) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
         let stopped = self.native.as_ref().is_some_and(ffi::close_screen);
         let source_stopped = self.source.close().is_ok();
         (stopped && source_stopped)
@@ -358,6 +532,8 @@ pub enum CameraPixelFormat {
     Mjpeg,
     Bgra,
     Nv12,
+    /// Unknown signed scoped-enum bits, retained without normalization.
+    UnknownValue(i32),
 }
 
 #[cfg(feature = "native")]
@@ -377,10 +553,104 @@ impl CameraPixelFormat {
             11 => Self::Mjpeg,
             12 => Self::Bgra,
             13 => Self::Nv12,
-            _ => Self::Unknown,
+            0 => Self::Unknown,
+            value => Self::UnknownValue(value),
+        }
+    }
+    pub fn native_bits(self) -> i32 {
+        match self {
+            Self::Unknown => 0,
+            Self::I420 => 1,
+            Self::Iyuv => 2,
+            Self::Rgb24 => 3,
+            Self::Bgr24 => 4,
+            Self::Argb => 5,
+            Self::Abgr => 6,
+            Self::Rgb565 => 7,
+            Self::Yuy2 => 8,
+            Self::Yv12 => 9,
+            Self::Uyvy => 10,
+            Self::Mjpeg => 11,
+            Self::Bgra => 12,
+            Self::Nv12 => 13,
+            Self::UnknownValue(value) => value,
         }
     }
 }
+
+/// Exact pinned VideoCaptureCapability, including signed settings and interlace.
+#[cfg(feature = "native")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CameraSettings {
+    pub width: i32,
+    pub height: i32,
+    pub max_fps: i32,
+    pub pixel_format: CameraPixelFormat,
+    pub interlaced: bool,
+}
+#[cfg(feature = "native")]
+impl Default for CameraSettings {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            max_fps: 0,
+            pixel_format: CameraPixelFormat::Unknown,
+            interlaced: false,
+        }
+    }
+}
+#[cfg(feature = "native")]
+impl CameraSettings {
+    pub(crate) fn native(&self) -> ffi::FfiCameraSettings {
+        ffi::FfiCameraSettings {
+            width: self.width,
+            height: self.height,
+            max_fps: self.max_fps,
+            pixel_format: self.pixel_format.native_bits(),
+            interlaced: self.interlaced,
+        }
+    }
+    pub(crate) fn from_native(value: ffi::FfiCameraSettings) -> Self {
+        Self {
+            width: value.width,
+            height: value.height,
+            max_fps: value.max_fps,
+            pixel_format: CameraPixelFormat::from_native(value.pixel_format),
+            interlaced: value.interlaced,
+        }
+    }
+}
+#[cfg(feature = "native")]
+#[derive(Debug)]
+pub enum CameraControlError {
+    Binding(PeerError),
+    Closed,
+    Unsupported,
+    InvalidSettings,
+    SinkFailed,
+    Native(i32),
+}
+#[cfg(feature = "native")]
+impl CameraControlError {
+    pub(crate) fn check(status: u8, native_result: i32) -> Result<(), Self> {
+        match status {
+            1 => Err(Self::Closed),
+            2 => Err(Self::Unsupported),
+            3 => Err(Self::InvalidSettings),
+            _ if native_result != 0 => Err(Self::Native(native_result)),
+            _ => Ok(()),
+        }
+    }
+}
+#[cfg(feature = "native")]
+impl std::fmt::Display for CameraControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "camera control failed: {self:?}")
+    }
+}
+#[cfg(feature = "native")]
+impl std::error::Error for CameraControlError {}
 
 /// A capture format advertised by a native camera.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -398,6 +668,7 @@ pub struct CameraFormat {
 pub struct CameraDevice {
     pub name: String,
     pub id: String,
+    pub product_id: String,
 }
 
 /// Observable camera delivery state. `Stalled` means no frame arrived within
@@ -410,6 +681,11 @@ pub enum CameraCaptureStatus {
     Stalled,
     Closed,
     Failed,
+    /// Sampling would require a forbidden synchronous SDK role hop. This is
+    /// not device failure; sample again from an ordinary control context.
+    ControlUnavailable,
+    /// Explicit StopCapture succeeded; the source is not terminally closed.
+    Stopped,
 }
 
 /// A running camera bound to a caller-owned video source. Capture stops on
@@ -418,34 +694,137 @@ pub enum CameraCaptureStatus {
 pub struct CameraCapture {
     native: cxx::UniquePtr<ffi::NativeCamera>,
     source: VideoSource,
+    _options: Option<crate::CameraCaptureOptions>,
 }
 
 #[cfg(feature = "native")]
 impl CameraCapture {
     pub(crate) fn new(native: cxx::UniquePtr<ffi::NativeCamera>, source: VideoSource) -> Self {
-        Self { native, source }
+        Self {
+            native,
+            source,
+            _options: None,
+        }
+    }
+
+    pub(crate) fn with_options(mut self, options: crate::CameraCaptureOptions) -> Self {
+        self._options = Some(options);
+        self
     }
 
     pub fn source(&self) -> &VideoSource {
         &self.source
     }
 
+    fn control(
+        &self,
+        kind: u8,
+        rotation: u16,
+        flag: bool,
+        settings: &CameraSettings,
+    ) -> Result<ffi::FfiCameraControl, CameraControlError> {
+        self.source
+            .inner
+            ._factory
+            .check_control_call()
+            .map_err(CameraControlError::Binding)?;
+        let reply = ffi::camera_control(
+            self.native.as_ref().expect("validated camera"),
+            kind,
+            rotation,
+            flag,
+            &settings.native(),
+        );
+        CameraControlError::check(reply.status, reply.native_result)?;
+        Ok(reply)
+    }
+    /// Native CaptureSettings output, not an inferred hardware configuration.
+    pub fn settings(&self) -> Result<CameraSettings, CameraControlError> {
+        Ok(CameraSettings::from_native(
+            self.control(0, 0, false, &CameraSettings::default())?
+                .settings,
+        ))
+    }
+    pub fn current_device_name(&self) -> Result<String, CameraControlError> {
+        Ok(self
+            .control(1, 0, false, &CameraSettings::default())?
+            .device_name)
+    }
+    pub fn capture_started(&self) -> Result<bool, CameraControlError> {
+        Ok(self.control(2, 0, false, &CameraSettings::default())?.flag)
+    }
+    pub fn set_capture_rotation(
+        &mut self,
+        rotation: crate::VideoRotation,
+    ) -> Result<(), CameraControlError> {
+        self.control(3, rotation as u16, false, &CameraSettings::default())
+            .map(|_| ())
+    }
+    /// Preserve the native success boolean, including ordinary false.
+    pub fn set_apply_rotation(&mut self, enabled: bool) -> Result<bool, CameraControlError> {
+        Ok(self
+            .control(4, 0, enabled, &CameraSettings::default())?
+            .flag)
+    }
+    pub fn apply_rotation(&self) -> Result<bool, CameraControlError> {
+        Ok(self.control(5, 0, false, &CameraSettings::default())?.flag)
+    }
+    /// Stop only the device. Unlike stop(), this does not end the video source.
+    pub fn stop_device(&mut self) -> Result<(), CameraControlError> {
+        self.control(6, 0, false, &CameraSettings::default())
+            .map(|_| ())
+    }
+    /// Replace the SDK callback mode using deregister/register, not an atomic
+    /// swap. Frames in the gap may be discarded. Some installs a mutable raw
+    /// receiver, bypassing video-source delivery; None restores the video sink
+    /// which publishes frames into source(). Callback return codes are ignored
+    /// by this SDK. Deregistration fences in-flight callbacks before old Drop.
+    pub fn set_raw_sink(
+        &mut self,
+        sink: Option<crate::RawCameraSinkHandle>,
+    ) -> Result<(), CameraControlError> {
+        self.source
+            .inner
+            ._factory
+            .check_control_call()
+            .map_err(CameraControlError::Binding)?;
+        if sink
+            .as_ref()
+            .is_some_and(crate::RawCameraSinkHandle::has_failed)
+        {
+            return Err(CameraControlError::SinkFailed);
+        }
+        let status = ffi::camera_set_raw_sink(
+            self.native.as_ref().expect("validated camera"),
+            crate::camera_sink::RustRawCameraSink::new(sink),
+        );
+        CameraControlError::check(status, 0)
+    }
+    /// Forward complete native settings without choosing another capability.
+    pub fn start_device(&mut self, settings: &CameraSettings) -> Result<(), CameraControlError> {
+        self.control(7, 0, false, settings).map(|_| ())
+    }
     /// Detect stopped delivery after `stale_after` without assuming the cause.
     /// A capture may be `Starting` until its first frame, or `Stalled` if no
     /// frame arrives in time (including after a device disappears).
     pub fn status(&self, stale_after: std::time::Duration) -> CameraCaptureStatus {
+        if self.source.inner._factory.check_control_call().is_err() {
+            return CameraCaptureStatus::ControlUnavailable;
+        }
         let millis = stale_after.as_millis().min(u128::from(u64::MAX)) as u64;
         match ffi::camera_capture_status(self.native.as_ref().expect("validated camera"), millis) {
             0 => CameraCaptureStatus::Starting,
             1 => CameraCaptureStatus::Streaming,
             2 => CameraCaptureStatus::Stalled,
             3 => CameraCaptureStatus::Closed,
+            5 => CameraCaptureStatus::Stopped,
             _ => CameraCaptureStatus::Failed,
         }
     }
 
     /// Stop the device and end its video source. Reports a device stop failure.
     pub fn stop(&mut self) -> Result<(), PeerError> {
+        self.source.inner._factory.check_control_call()?;
         let stopped = self.native.as_ref().is_some_and(ffi::close_camera);
         let source_stopped = self.source.close().is_ok();
         (stopped && source_stopped)

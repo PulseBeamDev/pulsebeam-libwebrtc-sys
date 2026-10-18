@@ -24,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -51,12 +52,14 @@
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
 #include "modules/video_capture/video_capture.h"
 #include "modules/video_capture/video_capture_factory.h"
+#include "modules/video_capture/video_capture_options.h"
 #include "modules/desktop_capture/desktop_capturer.h"
 #include "modules/desktop_capture/delegated_source_list_controller.h"
 #include "modules/desktop_capture/desktop_frame.h"
 #include "modules/desktop_capture/desktop_capture_options.h"
 #if defined(WEBRTC_USE_PIPEWIRE)
 #include "modules/desktop_capture/linux/wayland/base_capturer_pipewire.h"
+#include <glib.h>
 #endif
 #include "libyuv/convert.h"
 #include "rtc_base/time_utils.h"
@@ -64,6 +67,7 @@
 #include "pc/video_track_source.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
+#include "pulsebeam-webrtc-sys/native/clock.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
 #include "pulsebeam-webrtc-sys/native/transport.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
@@ -294,10 +298,35 @@ class ScreenFrameSink final : public webrtc::DesktopCapturer::Callback {
  public:
   ScreenFrameSink(webrtc::scoped_refptr<PushVideoSource> source,
                   const std::atomic<bool>& source_closed,
-                  std::atomic<std::uint8_t>& status)
-      : source_(std::move(source)), source_closed_(source_closed), status_(status) {}
+                  std::atomic<std::uint8_t>& status,
+                  webrtc::Clock* clock)
+      : source_(std::move(source)), source_closed_(source_closed), status_(status), clock_(clock) {}
+  void SetReceiver(rust::Box<RustDesktopCaptureReceiver> source) {
+    std::shared_ptr<rust::Box<RustDesktopCaptureReceiver>> next;
+    if (desktop_receiver_present(*source)) next = std::make_shared<rust::Box<RustDesktopCaptureReceiver>>(std::move(source));
+    { std::lock_guard lock(receiver_mutex_); receiver_.swap(next); }
+  }
+  void OnFrameCaptureStart() override {
+    auto receiver = Receiver();
+    if (receiver) desktop_receiver_start(**receiver);
+  }
   void OnCaptureResult(webrtc::DesktopCapturer::Result result,
                        std::unique_ptr<webrtc::DesktopFrame> frame) override {
+    if (auto receiver = Receiver()) {
+      if (result != webrtc::DesktopCapturer::Result::SUCCESS || !frame) {
+        if (result == webrtc::DesktopCapturer::Result::ERROR_PERMANENT) {
+          auto current = status_.load();
+          while (current != 6 && !status_.compare_exchange_weak(current, 4)) {}
+        }
+        Failed();
+      } else {
+        auto current = status_.load();
+        while (current != 2 && current != 3 && current != 4 && current != 6 &&
+               !status_.compare_exchange_weak(current, 2)) {}
+      }
+      desktop_receiver_result(**receiver, static_cast<std::int32_t>(result), wrap_desktop_frame(std::move(frame)));
+      return;
+    }
     if (source_closed_.load()) return;
     if (result != webrtc::DesktopCapturer::Result::SUCCESS || !frame) {
       if (result == webrtc::DesktopCapturer::Result::ERROR_PERMANENT) {
@@ -316,9 +345,13 @@ class ScreenFrameSink final : public webrtc::DesktopCapturer::Callback {
     const int height = frame->size().height();
     // Portal/accelerated capturers can return texture-backed frames with no
     // CPU buffer. Do not dereference them or interpret non-ARGB pixels as ARGB.
-    if (width <= 0 || height <= 0 || width > 4096 || height > 4096 ||
+    const std::int64_t stride = frame->stride();
+    const std::int64_t absolute_stride = stride < 0 ? -stride : stride;
+    if (width <= 0 || height <= 0 || width > INT32_MAX / 4 ||
+        width > INT32_MAX / height / 4 ||
         !frame->data() || frame->pixel_format() != webrtc::FOURCC_ARGB ||
-        frame->stride() < width * webrtc::DesktopFrame::kBytesPerPixel) {
+        absolute_stride < std::int64_t(width) * webrtc::DesktopFrame::kBytesPerPixel ||
+        absolute_stride > INT32_MAX / height) {
       Failed();
       return;
     }
@@ -334,7 +367,7 @@ class ScreenFrameSink final : public webrtc::DesktopCapturer::Callback {
     if (status_.load() == 6) return;
     source_->Push(webrtc::VideoFrame::Builder()
                       .set_video_frame_buffer(std::move(buffer))
-                      .set_timestamp_us(webrtc::TimeMicros()).build());
+                      .set_timestamp_us(clock_->CurrentTime().us()).build());
   }
   std::uint64_t failed_frames() const { return failed_frames_.load(); }
  private:
@@ -346,7 +379,13 @@ class ScreenFrameSink final : public webrtc::DesktopCapturer::Callback {
   webrtc::scoped_refptr<PushVideoSource> source_;
   const std::atomic<bool>& source_closed_;
   std::atomic<std::uint8_t>& status_;
+  webrtc::Clock* clock_;  // Borrowed from the owning capture's retained options.
   std::atomic<std::uint64_t> failed_frames_{0};
+  std::shared_ptr<rust::Box<RustDesktopCaptureReceiver>> Receiver() {
+    std::lock_guard lock(receiver_mutex_); return receiver_;
+  }
+  std::mutex receiver_mutex_;
+  std::shared_ptr<rust::Box<RustDesktopCaptureReceiver>> receiver_;
 };
 
 class ScreenSelectionObserver final
@@ -354,18 +393,31 @@ class ScreenSelectionObserver final
  public:
   explicit ScreenSelectionObserver(std::atomic<std::uint8_t>& status)
       : status_(status) {}
+  void SetObserver(rust::Box<RustDesktopSelectionObserver> source) {
+    std::shared_ptr<rust::Box<RustDesktopSelectionObserver>> next;
+    if (desktop_selection_present(*source)) next = std::make_shared<rust::Box<RustDesktopSelectionObserver>>(std::move(source));
+    { std::lock_guard lock(observer_mutex_); observer_.swap(next); }
+  }
   void OnSelection() override {
     std::uint8_t pending = 0;
     status_.compare_exchange_strong(pending, 1);
+    Notify(0);
   }
-  void OnCancelled() override { SetUnlessSessionClosed(3); }
-  void OnError() override { SetUnlessSessionClosed(4); }
+  void OnCancelled() override { SetUnlessSessionClosed(3); Notify(1); }
+  void OnError() override { SetUnlessSessionClosed(4); Notify(2); }
  private:
+  void Notify(std::uint8_t event) {
+    std::shared_ptr<rust::Box<RustDesktopSelectionObserver>> observer;
+    { std::lock_guard lock(observer_mutex_); observer = observer_; }
+    if (observer) desktop_selection_notify(**observer, event);
+  }
   void SetUnlessSessionClosed(std::uint8_t value) {
     auto current = status_.load();
     while (current != 6 && !status_.compare_exchange_weak(current, value)) {}
   }
   std::atomic<std::uint8_t>& status_;
+  std::mutex observer_mutex_;
+  std::shared_ptr<rust::Box<RustDesktopSelectionObserver>> observer_;
 };
 
 #if defined(WEBRTC_USE_PIPEWIRE)
@@ -389,6 +441,30 @@ class ObservablePipeWireCapturer final : public webrtc::BaseCapturerPipeWire {
   const std::atomic<bool>& closed_;
 };
 #endif
+
+class RawCameraFrameSink final : public webrtc::RawVideoSinkInterface {
+ public:
+  RawCameraFrameSink(rust::Box<RustRawCameraSink> source,
+      std::atomic<std::int64_t>& last_frame, std::atomic<bool>& seen)
+      : source_(std::move(source)), last_frame_(last_frame), seen_(seen) {}
+  std::int32_t OnRawFrame(std::uint8_t* bytes, std::size_t size,
+      const webrtc::VideoCaptureCapability& settings, webrtc::VideoRotation rotation,
+      std::int64_t capture_time) override {
+    last_frame_.store(webrtc::TimeMicros()); seen_.store(true);
+    FfiCameraSettings value{};
+    value.width = settings.width; value.height = settings.height;
+    value.max_fps = settings.maxFPS; value.pixel_format = static_cast<std::int32_t>(settings.videoType);
+    value.interlaced = settings.interlaced;
+    std::uint8_t empty = 0;
+    if (!bytes && size) return -1;
+    return camera_raw_frame(*source_, {bytes ? bytes : &empty, size}, value,
+        static_cast<std::uint16_t>(rotation), capture_time);
+  }
+ private:
+  rust::Box<RustRawCameraSink> source_;
+  std::atomic<std::int64_t>& last_frame_;
+  std::atomic<bool>& seen_;
+};
 
 class CameraFrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
@@ -616,21 +692,539 @@ webrtc::scoped_refptr<webrtc::VideoTrackInterface> VideoTrack(
 
 }  // namespace
 
-struct NativeScreenCapture::State {
+struct NativeDesktopOptions::State {
+  webrtc::Thread* role = nullptr;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  std::optional<webrtc::DesktopCaptureOptions> value;
+#endif
+};
+NativeDesktopOptions::NativeDesktopOptions(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeDesktopOptions::~NativeDesktopOptions() {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  if (state_->role && !state_->role->IsCurrent())
+    state_->role->BlockingCall([&] { state_->value.reset(); });
+  else state_->value.reset();
+#endif
+}
+const std::unique_ptr<NativeDesktopOptions::State>& NativeDesktopOptions::state() const noexcept { return state_; }
+
+std::unique_ptr<NativeDesktopOptions> desktop_options_new(
+    const NativePeerConnectionFactory& factory, const NativeEnvironment& environment,
+    bool defaults, bool selected_environment) noexcept {
+  auto* role = factory.signaling_thread();
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] {
+    return desktop_options_new(factory, environment, defaults, selected_environment);
+  });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeDesktopOptions::State>();
+  state->role = role;
+  if (selected_environment) state->value = defaults
+      ? webrtc::DesktopCaptureOptions::CreateDefault(environment.environment())
+      : webrtc::DesktopCaptureOptions(environment.environment());
+  else state->value = defaults ? webrtc::DesktopCaptureOptions::CreateDefault()
+                              : webrtc::DesktopCaptureOptions();
+  return std::make_unique<NativeDesktopOptions>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+std::unique_ptr<NativeDesktopOptions> desktop_options_clone(const NativeDesktopOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_clone(options); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeDesktopOptions::State>();
+  state->role = role; state->value = options.state()->value;
+  return std::make_unique<NativeDesktopOptions>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+std::uint8_t desktop_is_wayland(const NativeDesktopOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_is_wayland(options); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS) && (defined(WEBRTC_USE_PIPEWIRE) || defined(WEBRTC_USE_X11))
+  return webrtc::DesktopCapturer::IsRunningUnderWayland() ? 1 : 0;
+#else
+  return 2;
+#endif
+}
+FfiDesktopOptions desktop_options_read(const NativeDesktopOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_read(options); });
+  FfiDesktopOptions result{};
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  const auto& value = *options.state()->value;
+  result.use_update_notifications = value.use_update_notifications();
+  result.disable_effects = value.disable_effects();
+  result.detect_updated_region = value.detect_updated_region();
+  result.prefer_cursor_embedded = value.prefer_cursor_embedded();
+  result.has_full_screen_window_detector = bool(value.full_screen_window_detector());
+#if defined(WEBRTC_USE_X11)
+  result.x11_supported = true; result.has_x_display = bool(value.x_display());
+#endif
+#if defined(WEBRTC_USE_PIPEWIRE)
+  result.pipewire_supported = true;
+  result.allow_pipewire = value.allow_pipewire();
+  result.width = value.get_width(); result.height = value.get_height();
+  result.pipewire_use_damage_region = value.pipewire_use_damage_region();
+  result.has_screencast_stream = bool(value.screencast_stream());
+#endif
+#endif
+  return result;
+}
+std::uint8_t desktop_options_write(const NativeDesktopOptions& options, const FfiDesktopOptions& fields) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_write(options, fields); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+#if !defined(WEBRTC_USE_PIPEWIRE)
+  if (fields.pipewire_supported) return 2;
+#endif
+  auto& value = *options.state()->value;
+  value.set_use_update_notifications(fields.use_update_notifications);
+  value.set_disable_effects(fields.disable_effects);
+  value.set_detect_updated_region(fields.detect_updated_region);
+  value.set_prefer_cursor_embedded(fields.prefer_cursor_embedded);
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (fields.pipewire_supported) {
+    value.set_allow_pipewire(fields.allow_pipewire);
+    value.set_width(fields.width); value.set_height(fields.height);
+    value.set_pipewire_use_damage_region(fields.pipewire_use_damage_region);
+  }
+#endif
+  return 0;
+#else
+  return 2;
+#endif
+}
+std::int64_t desktop_options_time_us(const NativeDesktopOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_time_us(options); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  return options.state()->value->clock().CurrentTime().us();
+#else
+  return 0;
+#endif
+}
+bool desktop_options_clock_matches(const NativeDesktopOptions& options, const NativeClock& clock) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_clock_matches(options, clock); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  return &options.state()->value->clock() == clock.sdk_identity();
+#else
+  return false;
+#endif
+}
+std::unique_ptr<NativeDesktopOptions> desktop_options_resource(const NativeDesktopOptions& options, std::uint8_t kind) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_resource(options, kind); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeDesktopOptions::State>();
+  state->role = role; state->value.emplace();
+  const auto& value = *options.state()->value;
+#if defined(WEBRTC_USE_X11)
+  if (kind == 0 && value.x_display()) { state->value->set_x_display(value.x_display()); return std::make_unique<NativeDesktopOptions>(std::move(state)); }
+#endif
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (kind == 1 && value.screencast_stream()) { state->value->set_screencast_stream(value.screencast_stream()); return std::make_unique<NativeDesktopOptions>(std::move(state)); }
+#endif
+#endif
+  return nullptr;
+}
+std::unique_ptr<NativeDesktopOptions> desktop_resource_create(const NativeDesktopOptions& options, std::uint8_t kind, rust::Str name) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_resource_create(options, kind, name); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeDesktopOptions::State>();
+  state->role = role; state->value.emplace();
+#if defined(WEBRTC_USE_X11)
+  if (kind == 0) {
+    const std::string display_name(name.data(), name.size());
+    if (display_name.find('\0') != std::string::npos) return nullptr;
+    auto display = webrtc::SharedXDisplay::Create(display_name);
+    if (!display) return nullptr;
+    state->value->set_x_display(std::move(display));
+    return std::make_unique<NativeDesktopOptions>(std::move(state));
+  }
+#endif
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (kind == 1) {
+    auto stream = webrtc::SharedScreenCastStream::CreateDefault();
+    if (!stream) return nullptr;
+    state->value->set_screencast_stream(std::move(stream));
+    return std::make_unique<NativeDesktopOptions>(std::move(state));
+  }
+#endif
+#endif
+  return nullptr;
+}
+std::uint8_t desktop_options_set_resource(const NativeDesktopOptions& options, std::uint8_t kind, bool present, const NativeDesktopOptions& resource) noexcept {
+  if (options.state()->role != resource.state()->role) return 3;
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_options_set_resource(options, kind, present, resource); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto& value = *options.state()->value;
+#if defined(WEBRTC_USE_X11)
+  if (kind == 0) { value.set_x_display(present ? resource.state()->value->x_display() : nullptr); return 0; }
+#endif
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (kind == 1) { value.set_screencast_stream(present ? resource.state()->value->screencast_stream() : nullptr); return 0; }
+#endif
+#endif
+  return 2;
+}
+bool desktop_resource_equal(const NativeDesktopOptions& a, const NativeDesktopOptions& b, std::uint8_t kind) noexcept {
+  if (a.state()->role != b.state()->role) return false;
+  auto* role = a.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return desktop_resource_equal(a, b, kind); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+#if defined(WEBRTC_USE_X11)
+  if (kind == 0) return a.state()->value->x_display().get() == b.state()->value->x_display().get();
+#endif
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (kind == 1) return a.state()->value->screencast_stream().get() == b.state()->value->screencast_stream().get();
+#endif
+#endif
+  return false;
+}
+
+// The SDK portal uses GIO's thread-default context but supplies no pump.
+// Use an isolated context on the existing SDK role: pumping the global GTK
+// context here could dispatch unrelated UI callbacks on the wrong OS thread.
+// No new executor or process-global binding registry is introduced. The SDK's
+// PortalGuard gates late callbacks after retirement. The SDK does not expose
+// cancellation-completion accounting; Stop drains ready work, not future I/O.
+// See the documented native limitation for SDK-only pending GTask resources.
+class CaptureGlibContext final : public std::enable_shared_from_this<CaptureGlibContext> {
+ public:
+  explicit CaptureGlibContext(webrtc::Thread* role) : role_(role) {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    context_ = g_main_context_new();
+#endif
+  }
+  ~CaptureGlibContext() {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    g_main_context_unref(context_);
+#endif
+  }
+  static std::shared_ptr<CaptureGlibContext> Create(webrtc::Thread* role) {
+    auto result = std::make_shared<CaptureGlibContext>(role);
+    result->Schedule();
+    return result;
+  }
+  bool IsCurrent() const {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    return role_->IsCurrent() && g_main_context_is_owner(context_);
+#else
+    return false;
+#endif
+  }
+  class Scope {
+   public:
+    explicit Scope(const CaptureGlibContext* owner) : owner_(owner) {
+      (void)owner_;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      if (owner_) g_main_context_push_thread_default(owner_->context_);
+#endif
+    }
+    ~Scope() {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      if (owner_) g_main_context_pop_thread_default(owner_->context_);
+#endif
+    }
+   private:
+    const CaptureGlibContext* owner_;
+  };
+  template <typename F> auto Call(F&& call) const -> std::invoke_result_t<F> {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    auto invoke = [&]() -> std::invoke_result_t<F> {
+      Scope scope(this);
+      return std::forward<F>(call)();
+    };
+    return role_->IsCurrent() ? invoke() : role_->BlockingCall(invoke);
+#else
+    return std::forward<F>(call)();
+#endif
+  }
+  void Stop() {
+    active_.store(false);
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    // Called on the role after SDK destruction invalidates PortalGuard and
+    // joins stream callbacks. Ready cancellation/unsubscribe work is safe to
+    // dispatch. An empty queue is NOT proof that all asynchronous I/O finished.
+    while (g_main_context_iteration(context_, false)) {}
+#endif
+  }
+ private:
+  void Schedule() {
+    (void)role_;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    std::weak_ptr<CaptureGlibContext> weak = shared_from_this();
+    role_->PostDelayedTask([weak] {
+      auto owner = weak.lock();
+      if (!owner || !owner->active_.load()) return;
+      // A bounded batch lets other SDK queue work run even when GIO stays ready.
+      // This context contains SDK portal work only, never application GTK work.
+      if (g_main_context_acquire(owner->context_)) {
+        {
+          Scope scope(owner.get());
+          for (unsigned i = 0; i < 32 && owner->active_.load(); ++i)
+            if (!g_main_context_iteration(owner->context_, false)) break;
+        }
+        g_main_context_release(owner->context_);
+      }
+      if (owner->active_.load()) owner->Schedule();
+    }, webrtc::TimeDelta::Millis(2));
+#endif
+  }
+  webrtc::Thread* role_;
+  std::atomic<bool> active_{true};
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  GMainContext* context_;
+#endif
+};
+
+struct NativeScreenCapture::State {
+  webrtc::Thread* role = nullptr;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  std::optional<webrtc::DesktopCaptureOptions> options;
+  std::shared_ptr<CaptureGlibContext> context;
   std::unique_ptr<webrtc::DesktopCapturer> capturer;
   std::unique_ptr<ScreenFrameSink> sink;
   std::unique_ptr<ScreenSelectionObserver> selection;
+  bool observing_selection = false;
 #endif
   std::atomic<std::uint8_t> status{0};
   std::uint64_t final_failed_frames = 0;
   std::atomic<bool> closed{false};
+  ~State() {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    // Also covers failed construction after observer installation. The SDK
+    // must retire borrowed sink/observer pointers before those members die.
+    capturer.reset();
+    if (context) context->Stop();
+#endif
+  }
 };
 
+struct NativeCameraOptions::State {
+  webrtc::Thread* role = nullptr;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+  std::unique_ptr<webrtc::VideoCaptureOptions> value;
+#endif
+};
+NativeCameraOptions::NativeCameraOptions(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeCameraOptions::~NativeCameraOptions() {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+  auto release = [&] { state_->value.reset(); };
+  if (state_->role && !state_->role->IsCurrent()) state_->role->BlockingCall(release);
+  else release();
+#endif
+}
+const std::unique_ptr<NativeCameraOptions::State>& NativeCameraOptions::state() const noexcept { return state_; }
+std::unique_ptr<NativeCameraOptions> camera_options_new(const NativePeerConnectionFactory& factory) noexcept {
+  auto* role = factory.signaling_thread();
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_new(factory); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+  auto state = std::make_unique<NativeCameraOptions::State>();
+  state->role = role;
+  state->value = std::make_unique<webrtc::VideoCaptureOptions>();
+  return std::make_unique<NativeCameraOptions>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+std::unique_ptr<NativeCameraOptions> camera_options_clone(const NativeCameraOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_clone(options); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+  auto state = std::make_unique<NativeCameraOptions::State>();
+  state->role = role;
+  state->value = std::make_unique<webrtc::VideoCaptureOptions>(*options.state()->value);
+  return std::make_unique<NativeCameraOptions>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+std::uint8_t camera_options_flags(const NativeCameraOptions& options) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_flags(options); });
+  std::uint8_t flags = 0;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+  if (options.state()->value->allow_v4l2()) flags |= 1;
+#if defined(WEBRTC_USE_PIPEWIRE)
+  flags |= 2;
+  if (options.state()->value->allow_pipewire()) flags |= 4;
+#endif
+#endif
+  return flags;
+}
+bool camera_options_write(const NativeCameraOptions& options, bool v4l2, bool pipewire) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_write(options, v4l2, pipewire); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if !defined(WEBRTC_USE_PIPEWIRE)
+  if (pipewire) return false;
+#else
+  options.state()->value->set_allow_pipewire(pipewire);
+#endif
+  options.state()->value->set_allow_v4l2(v4l2);
+  return true;
+#else
+  return false;
+#endif
+}
+bool camera_options_set_fd(const NativeCameraOptions& options, std::int32_t fd) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_set_fd(options, fd); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && defined(WEBRTC_USE_PIPEWIRE)
+  options.state()->value->set_pipewire_fd(fd);
+  return true;
+#else
+  return false;
+#endif
+}
+std::int32_t camera_options_initialize(const NativeCameraOptions& options, const RustCameraInitializationObserver& observer) noexcept {
+  auto* role = options.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_initialize(options, observer); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(WEBRTC_USE_PIPEWIRE)
+  // SDK Cleanup holds callback_lock_ while joining the loop. Finish on that
+  // loop can wait on the same lock; no public quiescence fence repairs this.
+  // Reject before Init creates any session, never substitute a V4L2 product.
+  if (options.state()->value->allow_pipewire()) return -2;
+#endif
+  struct Callback final : webrtc::VideoCaptureOptions::Callback {
+    explicit Callback(const RustCameraInitializationObserver& source) : source(source) {}
+    void OnInitialized(webrtc::VideoCaptureOptions::Status status) override {
+      result = static_cast<std::int32_t>(status);
+      camera_options_initialized(source, result);
+    }
+    const RustCameraInitializationObserver& source;
+    std::int32_t result = -1;
+  } callback(observer);
+  options.state()->value->Init(&callback);
+  return callback.result;
+#else
+  return -1;
+#endif
+}
+
+struct NativeCameraDeviceInfo::State {
+  webrtc::Thread* role = nullptr;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> info;
+#endif
+};
+NativeCameraDeviceInfo::NativeCameraDeviceInfo(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeCameraDeviceInfo::~NativeCameraDeviceInfo() { camera_info_close(*this); }
+const std::unique_ptr<NativeCameraDeviceInfo::State>& NativeCameraDeviceInfo::state() const noexcept { return state_; }
+void camera_info_close(const NativeCameraDeviceInfo& info) noexcept {
+  auto* role = info.state()->role;
+  if (role && !role->IsCurrent()) { role->BlockingCall([&] { camera_info_close(info); }); return; }
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  info.state()->info.reset();
+#endif
+}
+std::unique_ptr<NativeCameraDeviceInfo> camera_info_new(const NativePeerConnectionFactory& factory) noexcept {
+  auto* role = factory.signaling_thread();
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_info_new(factory); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeCameraDeviceInfo::State>();
+  state->role = role;
+  state->info.reset(webrtc::VideoCaptureFactory::CreateDeviceInfo());
+  if (!state->info) return nullptr;
+  return std::make_unique<NativeCameraDeviceInfo>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+std::unique_ptr<NativeCameraDeviceInfo> camera_info_new_with_options(const NativePeerConnectionFactory& factory, const NativeCameraOptions& options) noexcept {
+  auto* role = factory.signaling_thread();
+  if (role != options.state()->role) return nullptr;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_info_new_with_options(factory, options); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (options.state()->value->allow_pipewire()) return nullptr;
+#endif
+  auto state = std::make_unique<NativeCameraDeviceInfo::State>();
+  state->role = role;
+  state->info.reset(webrtc::VideoCaptureFactory::CreateDeviceInfo(options.state()->value.get()));
+  if (!state->info) return nullptr;
+  return std::make_unique<NativeCameraDeviceInfo>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+FfiCameraInfoReply camera_info_query(const NativeCameraDeviceInfo& info, const FfiCameraInfoRequest& request) noexcept {
+  auto* role = info.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_info_query(info, request); });
+  FfiCameraInfoReply reply{};
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto* actual = info.state()->info.get();
+  if (!actual) { reply.status = 1; return reply; }
+  const std::string id(request.id.data(), request.id.size()), title(request.title.data(), request.title.size());
+  if (id.find('\0') != std::string::npos || title.find('\0') != std::string::npos) { reply.status = 3; return reply; }
+  webrtc::VideoCaptureCapability cap{};
+  switch (request.kind) {
+    case 0: reply.count = actual->NumberOfDevices(); break;
+    case 1: {
+      std::vector<char> name(request.name_capacity), unique(request.unique_capacity), product(request.product_present ? request.product_capacity : 0);
+      char empty = 0;
+      reply.native_result = actual->GetDeviceName(request.index,
+          name.empty() ? &empty : name.data(), request.name_capacity,
+          unique.empty() ? &empty : unique.data(), request.unique_capacity,
+          request.product_present ? (product.empty() ? &empty : product.data()) : nullptr,
+          request.product_present ? request.product_capacity : 0);
+      auto copy = [](const std::vector<char>& input, rust::Vec<std::uint8_t>& output) {
+        for (auto byte : input) { if (byte == 0) break; output.push_back(static_cast<std::uint8_t>(byte)); }
+      };
+      copy(name, reply.name); copy(unique, reply.unique_id); copy(product, reply.product_id);
+      break;
+    }
+    case 2: {
+      const auto count = actual->NumberOfCapabilities(id.c_str());
+      if (count < 0) reply.native_result = count; else reply.count = static_cast<std::uint32_t>(count);
+      break;
+    }
+    case 3: reply.native_result = actual->GetCapability(id.c_str(), request.index, cap); break;
+    case 4: {
+      auto rotation = webrtc::kVideoRotation_0;
+      reply.native_result = actual->GetOrientation(id.c_str(), rotation);
+      reply.rotation = static_cast<std::uint16_t>(rotation);
+      break;
+    }
+    case 5: {
+      const auto& s = request.settings;
+      if (s.width < 0 || s.height < 0 || s.max_fps < 0 ||
+          s.width > INT32_MAX / 4 || (s.height != 0 && s.width > INT32_MAX / s.height / 4)) {
+        reply.status = 3; return reply;
+      }
+      webrtc::VideoCaptureCapability wanted{};
+      wanted.width = s.width; wanted.height = s.height; wanted.maxFPS = s.max_fps;
+      wanted.videoType = static_cast<webrtc::VideoType>(s.pixel_format); wanted.interlaced = s.interlaced;
+      const auto index = actual->GetBestMatchedCapability(id.c_str(), wanted, cap);
+      if (index < 0) reply.native_result = index; else reply.count = static_cast<std::uint32_t>(index);
+      break;
+    }
+    case 6: reply.native_result = actual->DisplayCaptureSettingsDialogBox(id.c_str(), title.c_str(), nullptr, request.x, request.y); break;
+    default: reply.status = 3; break;
+  }
+  reply.settings.width = cap.width; reply.settings.height = cap.height;
+  reply.settings.max_fps = cap.maxFPS; reply.settings.pixel_format = static_cast<std::int32_t>(cap.videoType);
+  reply.settings.interlaced = cap.interlaced;
+#else
+  reply.status = 2;
+#endif
+  return reply;
+}
+
 struct NativeCamera::State {
+  webrtc::Thread* role = nullptr;
+  bool device_stopped = false;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   webrtc::scoped_refptr<webrtc::VideoCaptureModule> module;
   std::unique_ptr<CameraFrameSink> sink;
+  std::unique_ptr<RawCameraFrameSink> raw_sink;
   std::atomic<std::int64_t> last_frame_us{0};
   std::atomic<bool> frame_seen{false};
 #endif
@@ -1240,6 +1834,7 @@ bool screen_sources(bool windows, rust::Vec<FfiScreenSource>& screens,
     FfiScreenSource screen{};
     screen.id = static_cast<std::int64_t>(source.id);
     screen.name = source.title;
+    screen.display_id = source.display_id;
     screens.push_back(std::move(screen));
   }
   return true;
@@ -1248,9 +1843,77 @@ bool screen_sources(bool windows, rust::Vec<FfiScreenSource>& screens,
   return false;
 #endif
 }
-std::unique_ptr<NativeScreenCapture> open_screen(
+static std::unique_ptr<NativeScreenCapture> create_desktop_capture_impl(
+    const NativeVideoSource& source, const NativeDesktopOptions& options,
+    std::uint8_t kind, bool select, std::int64_t id,
+    std::shared_ptr<CaptureGlibContext> context,
+    rust::Box<RustDesktopCaptureReceiver>& receiver,
+    rust::Box<RustDesktopSelectionObserver>& observer, rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  if (source.state()->closed.load() || !source.state()->source) { error = "desktop source is closed"; return nullptr; }
+  const auto& value = *options.state()->value;
+#if defined(WEBRTC_USE_PIPEWIRE)
+  const auto width = value.get_width(), height = value.get_height();
+  if (width > INT32_MAX / 4 || height > INT32_MAX ||
+      (height != 0 && width > INT32_MAX / height / 4)) {
+    error = "desktop dimensions exceed native signed image arithmetic"; return nullptr;
+  }
+  if (value.allow_pipewire() && webrtc::BaseCapturerPipeWire::IsSupported() && !value.screencast_stream()) {
+    error = "PipeWire requires a retained screencast stream"; return nullptr;
+  }
+#endif
+  std::unique_ptr<webrtc::DesktopCapturer> capturer;
+  if (kind == 0) capturer = webrtc::DesktopCapturer::CreateScreenCapturer(value);
+  else if (kind == 1) capturer = webrtc::DesktopCapturer::CreateWindowCapturer(value);
+  else if (kind == 2) capturer = webrtc::DesktopCapturer::CreateGenericCapturer(value);
+  if (!capturer) { error = "selected SDK desktop factory is unavailable"; return nullptr; }
+  auto state = std::make_unique<NativeScreenCapture::State>();
+  state->role = role; state->options = value; state->context = std::move(context);
+  state->capturer = std::move(capturer);
+  state->sink = std::make_unique<ScreenFrameSink>(source.state()->source, source.state()->closed, state->status, &state->options->clock());
+  state->sink->SetReceiver(std::move(receiver));
+  if (auto* delegated = state->capturer->GetDelegatedSourceListController()) {
+    state->selection = std::make_unique<ScreenSelectionObserver>(state->status);
+    state->selection->SetObserver(std::move(observer));
+    delegated->Observe(state->selection.get());
+    state->observing_selection = true;
+  } else {
+    if (desktop_selection_present(*observer)) { error = "selected SDK capturer has no delegated selection controller"; return nullptr; }
+    state->status.store(1);
+  }
+  if (select && !state->capturer->SelectSource(static_cast<webrtc::DesktopCapturer::SourceId>(id))) {
+    error = "SDK rejected the selected desktop source"; return nullptr;
+  }
+  state->capturer->Start(state->sink.get());
+  return std::make_unique<NativeScreenCapture>(std::move(state));
+#else
+  error = "desktop capture requires a native artifact"; return nullptr;
+#endif
+}
+
+std::unique_ptr<NativeScreenCapture> create_desktop_capture(
+    const NativeVideoSource& source, const NativeDesktopOptions& options,
+    std::uint8_t kind, bool select, std::int64_t id,
+    rust::Box<RustDesktopCaptureReceiver> receiver,
+    rust::Box<RustDesktopSelectionObserver> observer, rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
+  if (role != options.state()->role) { error = "desktop options belong to another SDK role"; return nullptr; }
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  if (options.state()->value->allow_pipewire() && webrtc::BaseCapturerPipeWire::IsSupported()) {
+    if (!role) { error = "Wayland progress requires a retained SDK role"; return nullptr; }
+    auto context = CaptureGlibContext::Create(role);
+    return context->Call([&] { return create_desktop_capture_impl(source, options, kind, select, id, context, receiver, observer, error); });
+  }
+#endif
+  auto create = [&] { return create_desktop_capture_impl(source, options, kind, select, id, nullptr, receiver, observer, error); };
+  return role && !role->IsCurrent() ? role->BlockingCall(create) : create();
+}
+
+static std::unique_ptr<NativeScreenCapture> open_screen_impl(
     const NativeVideoSource& source, std::int64_t screen_id, bool window,
-    rust::String& error) noexcept {
+    std::shared_ptr<CaptureGlibContext> context, rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   if (source.state()->closed.load() || !source.state()->source) {
     error = "desktop source is closed";
@@ -1258,6 +1921,9 @@ std::unique_ptr<NativeScreenCapture> open_screen(
   }
   auto options = webrtc::DesktopCaptureOptions::CreateDefault();
   auto state = std::make_unique<NativeScreenCapture::State>();
+  state->role = role;
+  state->options = options;
+  state->context = std::move(context);
   std::unique_ptr<webrtc::DesktopCapturer> capturer;
 #if defined(WEBRTC_USE_PIPEWIRE)
   if (webrtc::BaseCapturerPipeWire::IsSupported()) {
@@ -1283,10 +1949,11 @@ std::unique_ptr<NativeScreenCapture> open_screen(
     return nullptr;
   }
   state->sink = std::make_unique<ScreenFrameSink>(
-      source.state()->source, source.state()->closed, state->status);
+      source.state()->source, source.state()->closed, state->status, &state->options->clock());
   if (auto* delegated = capturer->GetDelegatedSourceListController()) {
     state->selection = std::make_unique<ScreenSelectionObserver>(state->status);
     delegated->Observe(state->selection.get());
+    state->observing_selection = true;
   } else {
     state->status.store(1);
   }
@@ -1298,7 +1965,33 @@ std::unique_ptr<NativeScreenCapture> open_screen(
   return nullptr;
 #endif
 }
+std::unique_ptr<NativeScreenCapture> open_screen(
+    const NativeVideoSource& source, std::int64_t screen_id, bool window,
+    rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_PIPEWIRE) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  if (webrtc::BaseCapturerPipeWire::IsSupported()) {
+    if (!role) { error = "Wayland progress requires a retained SDK role"; return nullptr; }
+    auto context = CaptureGlibContext::Create(role);
+    return context->Call([&] { return open_screen_impl(source, screen_id, window, context, error); });
+  }
+#endif
+  auto create = [&] { return open_screen_impl(source, screen_id, window, nullptr, error); };
+  return role && !role->IsCurrent() ? role->BlockingCall(create) : create();
+}
 bool screen_capture_next_frame(const NativeScreenCapture& capture) noexcept {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto context = capture.state()->context;
+  if (context && !context->IsCurrent()) return context->Call([&] { return screen_capture_next_frame(capture); });
+  CaptureGlibContext::Scope scope(context.get());
+#endif
+  auto* role = capture.state()->role;
+  if (
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      !context &&
+#endif
+      role && !role->IsCurrent())
+    return role->BlockingCall([&] { return screen_capture_next_frame(capture); });
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   if (capture.state()->closed.load() || !capture.state()->capturer) return false;
   capture.state()->capturer->CaptureFrame();
@@ -1313,6 +2006,18 @@ std::uint8_t screen_capture_status(const NativeScreenCapture& capture) noexcept 
 }
 std::uint64_t screen_capture_failed_frames(const NativeScreenCapture& capture) noexcept {
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto context = capture.state()->context;
+  if (context && !context->IsCurrent()) return context->Call([&] { return screen_capture_failed_frames(capture); });
+  CaptureGlibContext::Scope scope(context.get());
+#endif
+  auto* role = capture.state()->role;
+  if (
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      !context &&
+#endif
+      role && !role->IsCurrent())
+    return role->BlockingCall([&] { return screen_capture_failed_frames(capture); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   return capture.state()->sink ? capture.state()->sink->failed_frames()
                                : capture.state()->final_failed_frames;
 #else
@@ -1320,14 +2025,203 @@ std::uint64_t screen_capture_failed_frames(const NativeScreenCapture& capture) n
 #endif
 }
 bool close_screen(const NativeScreenCapture& capture) noexcept {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto context = capture.state()->context;
+  if (context && !context->IsCurrent()) return context->Call([&] { return close_screen(capture); });
+  CaptureGlibContext::Scope scope(context.get());
+#endif
+  auto* role = capture.state()->role;
+  if (
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      !context &&
+#endif
+      role && !role->IsCurrent())
+    return role->BlockingCall([&] { return close_screen(capture); });
   if (capture.state()->closed.exchange(true)) return true;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   capture.state()->capturer.reset();
   capture.state()->final_failed_frames = capture.state()->sink->failed_frames();
   capture.state()->sink.reset();
   capture.state()->selection.reset();
+  capture.state()->options.reset();
+  if (context) context->Stop();
+  capture.state()->context.reset();
 #endif
   return true;
+}
+
+template <typename F> auto OnDesktopCaptureRole(const NativeScreenCapture& capture, F&& call) -> std::invoke_result_t<F> {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto context = capture.state()->context;
+  if (context) return context->Call(std::forward<F>(call));
+#endif
+  auto* role = capture.state()->role;
+  return role && !role->IsCurrent() ? role->BlockingCall(std::forward<F>(call)) : std::forward<F>(call)();
+}
+struct NativeDesktopMetadata::State {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_GIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  webrtc::DesktopCaptureMetadata value;
+  ~State() {
+    if (value.session_details.proxy) g_object_unref(value.session_details.proxy);
+    if (value.session_details.cancellable) g_object_unref(value.session_details.cancellable);
+  }
+#endif
+};
+NativeDesktopMetadata::NativeDesktopMetadata(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+NativeDesktopMetadata::~NativeDesktopMetadata() = default;
+const std::unique_ptr<NativeDesktopMetadata::State>& NativeDesktopMetadata::state() const noexcept { return state_; }
+std::unique_ptr<NativeDesktopMetadata> desktop_capture_metadata(const NativeScreenCapture& capture) noexcept {
+  return OnDesktopCaptureRole(capture, [&]() -> std::unique_ptr<NativeDesktopMetadata> {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_GIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    if (capture.state()->closed.load() || !capture.state()->capturer) return nullptr;
+    auto state = std::make_unique<NativeDesktopMetadata::State>();
+    state->value = capture.state()->capturer->GetMetadata();
+    // SessionDetails contains borrowed GObjects, not owning smart pointers.
+    if (state->value.session_details.proxy) g_object_ref(state->value.session_details.proxy);
+    if (state->value.session_details.cancellable) g_object_ref(state->value.session_details.cancellable);
+    return std::make_unique<NativeDesktopMetadata>(std::move(state));
+#else
+    return nullptr;
+#endif
+  });
+}
+std::unique_ptr<NativeDesktopMetadata> desktop_metadata_clone(const NativeDesktopMetadata& metadata) noexcept {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_GIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto state = std::make_unique<NativeDesktopMetadata::State>();
+  state->value = metadata.state()->value;
+  if (state->value.session_details.proxy) g_object_ref(state->value.session_details.proxy);
+  if (state->value.session_details.cancellable) g_object_ref(state->value.session_details.cancellable);
+  return std::make_unique<NativeDesktopMetadata>(std::move(state));
+#else
+  return nullptr;
+#endif
+}
+FfiDesktopMetadata desktop_metadata_read(const NativeDesktopMetadata& metadata) noexcept {
+  FfiDesktopMetadata out{};
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_GIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  const auto& value = metadata.state()->value.session_details;
+  out.session_handle = value.session_handle; out.pipewire_stream_node_id = value.pipewire_stream_node_id;
+  out.has_proxy = value.proxy != nullptr; out.has_cancellable = value.cancellable != nullptr;
+#endif
+  return out;
+}
+bool desktop_metadata_equal(const NativeDesktopMetadata& a, const NativeDesktopMetadata& b, bool cancellable) noexcept {
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_USE_GIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  const auto& x = a.state()->value.session_details; const auto& y = b.state()->value.session_details;
+  return cancellable ? x.cancellable && x.cancellable == y.cancellable : x.proxy && x.proxy == y.proxy;
+#else
+  return false;
+#endif
+}
+std::uint8_t desktop_set_memory_factory(const NativeScreenCapture& capture, rust::Box<RustDesktopMemoryFactory> source) noexcept {
+  return OnDesktopCaptureRole(capture, [&]() -> std::uint8_t {
+    if (capture.state()->closed.load()) return 1;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
+    // Pinned Linux screen/window/PipeWire capturers inherit the base no-op.
+    // A selected provider cannot be represented as installed. None may still
+    // call the SDK's actual optional setter; it makes no allocation promise.
+    if (desktop_memory_factory_present(*source)) return 2;
+    capture.state()->capturer->SetSharedMemoryFactory(nullptr);
+    return 0;
+#else
+    return 2;
+#endif
+  });
+}
+std::uint8_t desktop_set_receiver(const NativeScreenCapture& capture, rust::Box<RustDesktopCaptureReceiver> source) noexcept {
+  return OnDesktopCaptureRole(capture, [&]() -> std::uint8_t {
+    if (capture.state()->closed.load()) return 1;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    capture.state()->sink->SetReceiver(std::move(source)); return 0;
+#else
+    return 2;
+#endif
+  });
+}
+std::uint8_t desktop_set_selection_observer(const NativeScreenCapture& capture, rust::Box<RustDesktopSelectionObserver> source) noexcept {
+  return OnDesktopCaptureRole(capture, [&]() -> std::uint8_t {
+    const auto& state = capture.state();
+    if (state->closed.load()) return 1;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+    auto* delegated = state->capturer->GetDelegatedSourceListController();
+    if (!delegated) return 2;
+    if (state->observing_selection) { delegated->Observe(nullptr); state->observing_selection = false; }
+    const bool present = desktop_selection_present(*source);
+    state->selection->SetObserver(std::move(source));
+    if (present) { delegated->Observe(state->selection.get()); state->observing_selection = true; }
+    return 0;
+#else
+    return 2;
+#endif
+  });
+}
+
+FfiDesktopControl desktop_control(const NativeScreenCapture& capture, std::uint8_t kind,
+    std::int64_t id, std::int32_t x, std::int32_t y,
+    std::uint32_t width, std::uint32_t height) noexcept {
+  const auto& state = capture.state();
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto context = state->context;
+  if (context && !context->IsCurrent()) return context->Call([&] { return desktop_control(capture, kind, id, x, y, width, height); });
+  CaptureGlibContext::Scope scope(context.get());
+#endif
+  if (
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+      !context &&
+#endif
+      state->role && !state->role->IsCurrent())
+    return state->role->BlockingCall([&] { return desktop_control(capture, kind, id, x, y, width, height); });
+  FfiDesktopControl reply{};
+  if (state->closed.load()) { reply.status = 1; return reply; }
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto* capturer = state->capturer.get();
+  if (!capturer) { reply.status = 1; return reply; }
+  switch (kind) {
+    case 0: {
+      webrtc::DesktopCapturer::SourceList sources;
+      reply.flag = capturer->GetSourceList(&sources);
+      if (reply.flag) for (const auto& source : sources) {
+        FfiScreenSource item{};
+        item.id = static_cast<std::int64_t>(source.id);
+        item.name = source.title;
+        item.display_id = source.display_id;
+        reply.sources.push_back(std::move(item));
+      }
+      break;
+    }
+    case 1: reply.flag = capturer->SelectSource(static_cast<webrtc::DesktopCapturer::SourceId>(id)); break;
+    case 2: reply.flag = capturer->FocusOnSelectedSource(); break;
+    case 3: reply.flag = capturer->IsOccluded(webrtc::DesktopVector(x, y)); break;
+    case 4: capturer->SetExcludedWindow(static_cast<webrtc::WindowId>(id)); break;
+    case 5: capturer->SetMaxFrameRate(width); break;
+    case 6:
+      if (width > INT32_MAX / 4 || height > INT32_MAX ||
+          (height != 0 && width > INT32_MAX / height / 4)) reply.status = 3;
+      else capturer->UpdateResolution(width, height);
+      break;
+    case 7: reply.flag = capturer->GetDelegatedSourceListController() != nullptr; break;
+    case 8: case 9: case 10: case 11: {
+      auto* delegated = capturer->GetDelegatedSourceListController();
+      if (!delegated) { reply.status = 2; break; }
+      if (kind == 8) delegated->EnsureVisible();
+      else if (kind == 9) delegated->EnsureHidden();
+      else {
+        const bool enable = kind == 10;
+        // SDK Observe requires clearing the prior observer before registering.
+        // A repeated setter must not reach its non-null/non-null DCHECK.
+        if (enable != state->observing_selection) {
+          delegated->Observe(enable ? state->selection.get() : nullptr);
+          state->observing_selection = enable;
+        }
+      }
+      break;
+    }
+    default: reply.status = 3; break;
+  }
+#else
+  reply.status = 2;
+#endif
+  return reply;
 }
 
 bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
@@ -1342,7 +2236,8 @@ bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
   for (std::uint32_t i = 0; i < info->NumberOfDevices(); ++i) {
     char name[webrtc::kVideoCaptureDeviceNameLength] = {};
     char id[webrtc::kVideoCaptureUniqueNameLength] = {};
-    if (info->GetDeviceName(i, name, sizeof(name), id, sizeof(id)) != 0) {
+    char product[webrtc::kVideoCaptureProductIdLength] = {};
+    if (info->GetDeviceName(i, name, sizeof(name), id, sizeof(id), product, sizeof(product)) != 0) {
       devices.clear();
       error = "camera device lookup failed";
       return false;
@@ -1350,6 +2245,7 @@ bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
     FfiCameraDevice device{};
     device.name = name;
     device.id = id;
+    device.product_id = product;
     devices.push_back(std::move(device));
   }
   return true;
@@ -1357,6 +2253,54 @@ bool camera_devices(rust::Vec<FfiCameraDevice>& devices,
   error = "camera enumeration requires a supported native artifact";
   return false;
 #endif
+}
+
+FfiCameraDeviceControl camera_device_control(rust::Str device_id, std::uint8_t kind,
+    const FfiCameraSettings& requested) noexcept {
+  FfiCameraDeviceControl reply{};
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  const std::string id(device_id.data(), device_id.size());
+  if (id.empty() || id.find('\0') != std::string::npos) { reply.status = 3; return reply; }
+  std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> info(webrtc::VideoCaptureFactory::CreateDeviceInfo());
+  if (!info) { reply.status = 2; return reply; }
+  auto append = [&](const webrtc::VideoCaptureCapability& value) {
+    FfiCameraSettings cap{};
+    cap.width = value.width; cap.height = value.height; cap.max_fps = value.maxFPS;
+    cap.pixel_format = static_cast<std::int32_t>(value.videoType);
+    cap.interlaced = value.interlaced;
+    reply.capabilities.push_back(std::move(cap));
+  };
+  if (kind == 0) {
+    const auto count = info->NumberOfCapabilities(id.c_str());
+    if (count < 0) { reply.native_result = count; return reply; }
+    for (int index = 0; index < count; ++index) {
+      webrtc::VideoCaptureCapability value;
+      reply.native_result = info->GetCapability(id.c_str(), index, value);
+      if (reply.native_result != 0) { reply.capabilities.clear(); return reply; }
+      append(value);
+    }
+  } else if (kind == 1) {
+    webrtc::VideoRotation value = webrtc::kVideoRotation_0;
+    reply.native_result = info->GetOrientation(id.c_str(), value);
+    if (reply.native_result == 0) reply.orientation = static_cast<std::uint16_t>(value);
+  } else if (kind == 2) {
+    if (requested.width < 0 || requested.height < 0 || requested.max_fps < 0 ||
+        std::int64_t{requested.width} * requested.height > INT32_MAX / 4) {
+      reply.status = 3; return reply;
+    }
+    webrtc::VideoCaptureCapability input;
+    input.width = requested.width; input.height = requested.height; input.maxFPS = requested.max_fps;
+    input.videoType = static_cast<webrtc::VideoType>(requested.pixel_format);
+    input.interlaced = requested.interlaced;
+    webrtc::VideoCaptureCapability output;
+    const auto result = info->GetBestMatchedCapability(id.c_str(), input, output);
+    if (result < 0) reply.native_result = result;
+    else { reply.matched_index = result; append(output); }
+  } else reply.status = 3;
+#else
+  reply.status = 2;
+#endif
+  return reply;
 }
 
 bool camera_formats(rust::Str device_id,
@@ -1395,12 +2339,64 @@ bool camera_formats(rust::Str device_id,
 #endif
 }
 
+static std::unique_ptr<NativeCamera> create_camera_impl(const NativeVideoSource& source,
+    const NativeCameraOptions* options, rust::Str device_id, rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
+  if (options && role != options->state()->role) { error = "camera options belong to another SDK role"; return nullptr; }
+  if (role && !role->IsCurrent())
+    return role->BlockingCall([&] { return create_camera_impl(source, options, device_id, error); });
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  const std::string id(device_id.data(), device_id.size());
+  if (source.state()->closed.load() || !source.state()->source ||
+      id.empty() || id.find('\0') != std::string::npos) {
+    error = "invalid camera source or device id"; return nullptr;
+  }
+#if defined(WEBRTC_LINUX)
+#if defined(WEBRTC_USE_PIPEWIRE)
+  if (options && options->state()->value->allow_pipewire()) {
+    error = "pinned PipeWire camera session lacks safe shutdown ordering"; return nullptr;
+  }
+#endif
+  auto module = options
+      ? webrtc::VideoCaptureFactory::Create(options->state()->value.get(), id.c_str())
+      : webrtc::VideoCaptureFactory::Create(id.c_str());
+#else
+  auto module = webrtc::VideoCaptureFactory::Create(id.c_str());
+#endif
+  if (!module) { error = "camera capture module unavailable"; return nullptr; }
+  auto state = std::make_unique<NativeCamera::State>();
+  state->role = role;
+  state->device_stopped = true;
+  state->last_frame_us.store(webrtc::TimeMicros());
+  state->sink = std::make_unique<CameraFrameSink>(source.state()->source,
+      source.state()->closed, state->last_frame_us, state->frame_seen);
+  module->RegisterCaptureDataCallback(state->sink.get());
+  state->module = std::move(module);
+  return std::make_unique<NativeCamera>(std::move(state));
+#else
+  error = "camera capture requires a supported native artifact";
+  return nullptr;
+#endif
+}
+
+std::unique_ptr<NativeCamera> create_camera(const NativeVideoSource& source,
+    rust::Str device_id, rust::String& error) noexcept {
+  return create_camera_impl(source, nullptr, device_id, error);
+}
+std::unique_ptr<NativeCamera> create_camera_with_options(const NativeVideoSource& source,
+    const NativeCameraOptions& options, rust::Str device_id, rust::String& error) noexcept {
+  return create_camera_impl(source, &options, device_id, error);
+}
 std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
                                            rust::Str device_id,
                                            std::uint32_t width,
                                            std::uint32_t height,
                                            std::uint32_t fps,
                                            rust::String& error) noexcept {
+  auto* role = source.state()->signaling_thread;
+  if (role && !role->IsCurrent()) {
+    return role->BlockingCall([&] { return open_camera(source, device_id, width, height, fps, error); });
+  }
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
   if (source.state()->closed.load() || !source.state()->source ||
       device_id.empty() || width == 0 || height == 0 || fps == 0 ||
@@ -1425,23 +2421,14 @@ std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
     error = "camera has no matching capture capability";
     return nullptr;
   }
-  auto module = webrtc::VideoCaptureFactory::Create(id.c_str());
-  if (!module) { error = "camera capture module unavailable"; return nullptr; }
-  auto state = std::make_unique<NativeCamera::State>();
-  state->last_frame_us.store(webrtc::TimeMicros());
-  auto sink = std::make_unique<CameraFrameSink>(source.state()->source,
-                                                source.state()->closed,
-                                                state->last_frame_us,
-                                                state->frame_seen);
-  module->RegisterCaptureDataCallback(sink.get());
-  if (module->StartCapture(chosen) != 0) {
-    module->DeRegisterCaptureDataCallback();
+  auto camera = create_camera(source, device_id, error);
+  if (!camera) return nullptr;
+  if (camera->state()->module->StartCapture(chosen) != 0) {
     error = "camera start failed";
     return nullptr;
   }
-  state->module = std::move(module);
-  state->sink = std::move(sink);
-  return std::make_unique<NativeCamera>(std::move(state));
+  camera->state()->device_stopped = false;
+  return camera;
 #else
   error = "camera capture requires a supported native artifact";
   return nullptr;
@@ -1450,9 +2437,12 @@ std::unique_ptr<NativeCamera> open_camera(const NativeVideoSource& source,
 std::uint8_t camera_capture_status(const NativeCamera& camera,
                                    std::uint64_t stale_after_ms) noexcept {
   const auto& state = camera.state();
+  if (state->role && !state->role->IsCurrent())
+    return state->role->BlockingCall([&] { return camera_capture_status(camera, stale_after_ms); });
   if (state->closed.load()) return 3;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
-  if (!state->module || !state->module->CaptureStarted()) return 4;
+  if (!state->module) return 4;
+  if (!state->module->CaptureStarted()) return state->device_stopped ? 5 : 4;
   const auto last = state->last_frame_us.load();
   const auto elapsed = webrtc::TimeMicros() - last;
   // Saturate instead of overflowing when an application supplies a very
@@ -1470,6 +2460,9 @@ std::uint8_t camera_capture_status(const NativeCamera& camera,
 }
 
 bool close_camera(const NativeCamera& camera) noexcept {
+  auto* role = camera.state()->role;
+  if (role && !role->IsCurrent())
+    return role->BlockingCall([&] { return close_camera(camera); });
   if (camera.state()->closed.exchange(true)) return true;
   bool stopped = true;
 #if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
@@ -1477,10 +2470,101 @@ bool close_camera(const NativeCamera& camera) noexcept {
     stopped = camera.state()->module->StopCapture() == 0;
     camera.state()->module->DeRegisterCaptureDataCallback();
     camera.state()->sink.reset();
+    camera.state()->raw_sink.reset();
     camera.state()->module = nullptr;
   }
 #endif
   return stopped;
+}
+
+std::uint8_t camera_set_raw_sink(const NativeCamera& camera, rust::Box<RustRawCameraSink> source) noexcept {
+  auto* role = camera.state()->role;
+  if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_set_raw_sink(camera, std::move(source)); });
+  if (camera.state()->closed.load()) return 1;
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  auto& state = *camera.state();
+  if (!state.module) return 1;
+  // This real SDK call clears both slots and waits for api_lock_ held by an
+  // in-flight callback. This is deliberately NOT an atomic swap or an SDK patch:
+  // frames in the unregister/register gap may be discarded by the SDK.
+  state.module->DeRegisterCaptureDataCallback();
+  auto previous = std::move(state.raw_sink);
+  if (camera_raw_sink_present(*source)) {
+    state.raw_sink = std::make_unique<RawCameraFrameSink>(std::move(source), state.last_frame_us, state.frame_seen);
+    state.module->RegisterCaptureDataCallback(state.raw_sink.get());
+  } else state.module->RegisterCaptureDataCallback(state.sink.get());
+  // No native mutex is held during arbitrary user Drop. Reentry is caught by
+  // the Rust callback scope before any SDK blocking call.
+  previous.reset();
+  return 0;
+#else
+  return 2;
+#endif
+}
+
+FfiCameraControl camera_control(const NativeCamera& camera, std::uint8_t kind,
+    std::uint16_t rotation, bool flag, const FfiCameraSettings& settings) noexcept {
+  const auto& state = camera.state();
+  if (state->role && !state->role->IsCurrent())
+    return state->role->BlockingCall([&] { return camera_control(camera, kind, rotation, flag, settings); });
+  FfiCameraControl reply{};
+  if (state->closed.load()) { reply.status = 1; return reply; }
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && !defined(WEBRTC_ANDROID) && !defined(WEBRTC_IOS)
+  if (!state->module) { reply.status = 1; return reply; }
+  switch (kind) {
+    case 0: {
+      webrtc::VideoCaptureCapability value;
+      reply.native_result = state->module->CaptureSettings(value);
+      if (reply.native_result == 0) {
+        reply.settings.width = value.width;
+        reply.settings.height = value.height;
+        reply.settings.max_fps = value.maxFPS;
+        reply.settings.pixel_format = static_cast<std::int32_t>(value.videoType);
+        reply.settings.interlaced = value.interlaced;
+      }
+      break;
+    }
+    case 1: {
+      const auto* name = state->module->CurrentDeviceName();
+      if (name) reply.device_name = name;
+      break;
+    }
+    case 2: reply.flag = state->module->CaptureStarted(); break;
+    case 3:
+      if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) { reply.status = 3; break; }
+      reply.native_result = state->module->SetCaptureRotation(static_cast<webrtc::VideoRotation>(rotation));
+      break;
+    case 4: reply.flag = state->module->SetApplyRotation(flag); break;
+    case 5: reply.flag = state->module->GetApplyRotation(); break;
+    case 6:
+      reply.native_result = state->module->StopCapture();
+      if (reply.native_result == 0) state->device_stopped = true;
+      break;
+    case 7: {
+      if (settings.width < 0 || settings.height < 0 || settings.max_fps < 0 ||
+          std::int64_t{settings.width} * settings.height > INT32_MAX / 4) {
+        reply.status = 3; break;
+      }
+      webrtc::VideoCaptureCapability value;
+      value.width = settings.width;
+      value.height = settings.height;
+      value.maxFPS = settings.max_fps;
+      value.videoType = static_cast<webrtc::VideoType>(settings.pixel_format);
+      value.interlaced = settings.interlaced;
+      reply.native_result = state->module->StartCapture(value);
+      if (reply.native_result == 0) {
+        state->device_stopped = false;
+        state->frame_seen.store(false);
+        state->last_frame_us.store(webrtc::TimeMicros());
+      }
+      break;
+    }
+    default: reply.status = 3; break;
+  }
+#else
+  reply.status = 2;
+#endif
+  return reply;
 }
 
 std::unique_ptr<NativeVideoSource> create_video_source(

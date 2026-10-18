@@ -174,6 +174,7 @@ impl FailureState {
         }
     }
     fn run<T>(&self, body: impl FnOnce() -> T) -> Option<T> {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         if self.get().is_some() {
             return None;
         }
@@ -196,6 +197,7 @@ pub(crate) struct RustFrameDecryptorProvider {
     failure: FailureState,
 }
 fn contained_drop<T>(value: T) {
+    let _callback = crate::provider_panic::ProviderCallbackScope::enter();
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
         crate::panic_payload::discard(payload);
     }

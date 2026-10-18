@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     collections::BTreeMap,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -156,6 +156,8 @@ pub(crate) struct RustNetEqProvider {
     // Drop the product before releasing Rust-only creation dependency leases.
     creation_environment: Option<crate::Environment>,
 }
+use crate::provider_panic::catch_provider as catch_unwind;
+
 impl RustNetEqProvider {
     pub(crate) fn new(
         provider: Box<dyn NetEqProvider>,

@@ -610,11 +610,13 @@ pub struct PeerConnectionFactoryBuilder {
     controlled_driver: Option<ControlledPeerDriver>,
     controlled_media: bool,
     network_manager: Option<NetworkManagerProvider>,
+    network_manager_factory: Option<crate::NetworkManagerFactory>,
     network_monitor_factory: Option<std::sync::Arc<dyn crate::NetworkMonitorFactory>>,
     network_predictor_factory: Option<crate::NetworkStatePredictorFactory>,
     fec_factory: Option<crate::FecControllerFactory>,
     network_controller_factory: Option<crate::NetworkControllerFactory>,
     packet_socket_factory: Option<PacketSocketFactoryProvider>,
+    socket_factory: Option<crate::PacketSocketFactory>,
     audio_encoder: Option<AudioEncoderFactory>,
     audio_decoder: Option<AudioDecoderFactory>,
     video_encoder: Option<VideoEncoderFactoryHandle>,
@@ -659,6 +661,9 @@ impl PeerConnectionFactoryBuilder {
     ) -> Self {
         self.fec_controller_factory(&crate::FecControllerFactory::from_provider(provider))
     }
+    /// The pinned default SDK path ignores this dependency slot. Build rejects
+    /// this registration; select NetworkControllerFactory::goog_cc with the
+    /// predictor in GoogCcFactoryConfig and explicit RFC 8888 state instead.
     pub fn network_state_predictor_factory(
         mut self,
         factory: &crate::NetworkStatePredictorFactory,
@@ -725,7 +730,10 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
-    pub(crate) fn shared_event_log_factory(mut self, factory: std::sync::Arc<dyn crate::RtcEventLogFactory>) -> Self {
+    pub(crate) fn shared_event_log_factory(
+        mut self,
+        factory: std::sync::Arc<dyn crate::RtcEventLogFactory>,
+    ) -> Self {
         self.event_log_factory = Some(factory);
         self
     }
@@ -790,11 +798,35 @@ impl PeerConnectionFactoryBuilder {
         self
     }
 
+    pub fn network_manager_factory(mut self, factory: &crate::NetworkManagerFactory) -> Self {
+        self.network_manager_factory = Some(factory.clone());
+        self
+    }
+    pub fn network_manager_provider(
+        self,
+        provider: impl crate::NetworkManagerFactoryProvider,
+    ) -> Self {
+        self.network_manager_factory(&crate::NetworkManagerFactory::from_provider(provider))
+    }
+
     pub fn network_manager(mut self, provider: NetworkManagerProvider) -> Self {
         self.network_manager = Some(provider);
         self
     }
 
+    /// Select a general factory. Products are created on the selected SDK
+    /// network role with its actual incoming Environment. Distinct from the
+    /// existing endpoint-backed packet_socket_factory selection.
+    pub fn socket_factory(mut self, factory: &crate::PacketSocketFactory) -> Self {
+        self.socket_factory = Some(factory.clone());
+        self
+    }
+    pub fn socket_factory_provider(
+        self,
+        provider: impl crate::PacketSocketFactoryImplementation,
+    ) -> Self {
+        self.socket_factory(&crate::PacketSocketFactory::from_provider(provider))
+    }
     pub fn packet_socket_factory(mut self, provider: PacketSocketFactoryProvider) -> Self {
         self.packet_socket_factory = Some(provider);
         self
@@ -903,6 +935,10 @@ impl PeerConnectionFactoryBuilder {
         self
     }
     pub fn build(mut self) -> Result<PeerConnectionFactory, PeerError> {
+        let _turn = self
+            .controlled_driver
+            .as_ref()
+            .map(ControlledPeerDriver::owner_turn);
         #[cfg(all(feature = "native", target_os = "linux"))]
         if self.audio_device_module.is_some() && self.worker_thread.is_some() {
             return Err(PeerError { kind: PeerErrorKind::AudioDeviceAdmission, message: "an owning ADM adopts its construction worker; a separate factory worker is incompatible".into() });
@@ -929,9 +965,61 @@ impl PeerConnectionFactoryBuilder {
                     .map_err(|e| native_build_error(e.to_string()))?,
             );
         }
-        if self.network_manager.is_some() && self.network_monitor_factory.is_some() {
+        if self.network_manager.is_some() && self.network_manager_factory.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "endpoint network manager and manager factory are mutually exclusive"
+                    .into(),
+            });
+        }
+        if (self.network_manager.is_some() || self.network_manager_factory.is_some())
+            && self.network_monitor_factory.is_some()
+        {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter,
                 message: "network manager and network monitor factory are mutually exclusive native dependencies".into() });
+        }
+        if self.packet_socket_factory.is_some() && self.socket_factory.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "endpoint and general socket factories are mutually exclusive".into(),
+            });
+        }
+        let controlled_socket_factory = self
+            .socket_factory
+            .as_ref()
+            .is_some_and(crate::PacketSocketFactory::is_controlled);
+        if self
+            .socket_factory
+            .as_ref()
+            .is_some_and(crate::PacketSocketFactory::creation_failed)
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::NativeConstruction,
+                message: "socket factory capability query failed".into(),
+            });
+        }
+        if self.socket_factory.is_some()
+            && controlled_socket_factory != self.controlled_driver.is_some()
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "socket factory execution selection does not match the peer driver".into(),
+            });
+        }
+        let controlled_manager_factory = self.controlled_driver.is_some()
+            && self
+                .network_manager_factory
+                .as_ref()
+                .is_some_and(crate::NetworkManagerFactory::is_controlled);
+        if self.controlled_driver.is_some()
+            && self.network_manager_factory.is_some()
+            && !controlled_manager_factory
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "controlled peers require a caller-controlled network manager factory"
+                    .into(),
+            });
         }
         if self.event_logging
             && self.event_log_factory.is_none()
@@ -1006,6 +1094,9 @@ impl PeerConnectionFactoryBuilder {
                 message: "controlled media requires a seeded world, Opus carrier/builtin Opus, direct VP8/builtin VP8 or direct H264/encoded-only reception, and no PCM processing".into(),
             });
         }
+        if self.network_predictor_factory.is_some() {
+            return Err(PeerError { kind: PeerErrorKind::InvalidParameter, message: "the pinned SDK does not consume the standalone peer-factory predictor slot; select NetworkControllerFactory::goog_cc with GoogCcFactoryConfig and explicit RFC 8888 negotiation state".into() });
+        }
         let environment = match self.environment {
             Some(environment) => environment,
             None => Environment::builder().build().map_err(native_build_error)?,
@@ -1023,14 +1114,16 @@ impl PeerConnectionFactoryBuilder {
                 || self.network_thread.is_some()
                 || self.worker_thread.is_some()
                 || self.signaling_thread.is_some()
-                || !self
-                    .network_manager
-                    .as_ref()
-                    .is_some_and(|provider| provider.is_controlled_by(driver))
-                || !self
-                    .packet_socket_factory
-                    .as_ref()
-                    .is_some_and(|provider| provider.is_controlled_by(driver))
+                || !(controlled_manager_factory
+                    || self
+                        .network_manager
+                        .as_ref()
+                        .is_some_and(|provider| provider.is_controlled_by(driver)))
+                || !(controlled_socket_factory
+                    || self
+                        .packet_socket_factory
+                        .as_ref()
+                        .is_some_and(|provider| provider.is_controlled_by(driver)))
             {
                 return Err(PeerError {
                     kind: PeerErrorKind::InvalidParameter,
@@ -1093,7 +1186,10 @@ impl PeerConnectionFactoryBuilder {
         // other non-null pointer is retained in FactoryInner and its
         // native factory is destroyed before those dependencies are dropped.
         let event_log_factory = self.event_log_factory.map(|factory| {
-            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(Some(factory), environment.clone())))
+            ffi::new_rtc_event_log_factory(Box::new(crate::RustRtcEventLogFactory(
+                Some(factory),
+                environment.clone(),
+            )))
         });
         let audio_processor = match (self.audio_processor, self.audio_processor_builder) {
             (Some(processor), _) => Some(processor),
@@ -1122,13 +1218,20 @@ impl PeerConnectionFactoryBuilder {
                 worker_thread.native(),
                 signaling_thread.native(),
                 optional_ptr(self.network_manager.as_ref().map(|value| value.native())),
+                Box::new(crate::RustNetworkManagerFactory(
+                    self.network_manager_factory,
+                    environment.clone(),
+                )),
                 Box::new(crate::RustNetworkMonitorFactory(
                     self.network_monitor_factory,
                 )),
                 Box::new(crate::RustNetworkStatePredictorFactory(
                     self.network_predictor_factory,
                 )),
-                Box::new(crate::RustFecControllerFactory(self.fec_factory, Some(environment.clone()))),
+                Box::new(crate::RustFecControllerFactory(
+                    self.fec_factory,
+                    Some(environment.clone()),
+                )),
                 Box::new(crate::RustNetworkControllerFactory(
                     self.network_controller_factory,
                     Some(environment.clone()),
@@ -1138,6 +1241,10 @@ impl PeerConnectionFactoryBuilder {
                         .as_ref()
                         .map(|value| value.native()),
                 ),
+                Box::new(crate::RustPacketSocketFactory(
+                    self.socket_factory,
+                    environment.clone(),
+                )),
                 optional_ptr(self.audio_encoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.audio_decoder.as_ref().map(|value| value.native())),
                 optional_ptr(self.video_encoder.as_ref().map(|value| value.native())),
@@ -1148,7 +1255,9 @@ impl PeerConnectionFactoryBuilder {
                 &self.native_audio_creation,
                 audio_device_module,
                 self.event_logging,
-                Box::new(crate::RustEventLogRetention { _environment: environment.clone() }),
+                Box::new(crate::RustEventLogRetention {
+                    _environment: environment.clone(),
+                }),
                 optional_ptr(
                     event_log_factory
                         .as_ref()
@@ -1192,7 +1301,7 @@ impl PeerConnectionFactoryBuilder {
             native.as_ref().expect("validated peer factory"),
             &self.options.ffi(),
         );
-        Ok(PeerConnectionFactory(Rc::new(FactoryInner {
+        let inner = Rc::new(FactoryInner {
             native,
             _environment: environment,
             _audio_device_environment: audio_device_environment,
@@ -1209,7 +1318,11 @@ impl PeerConnectionFactoryBuilder {
             _video_encoder: self.video_encoder,
             _video_decoder: self.video_decoder,
             _production_lease: production_lease,
-        })))
+        });
+        if let Some(driver) = &inner._controlled_driver {
+            driver.register_factory(&inner);
+        }
+        Ok(PeerConnectionFactory(inner))
     }
 }
 
@@ -1223,11 +1336,13 @@ impl Default for PeerConnectionFactoryBuilder {
             controlled_driver: None,
             controlled_media: false,
             network_manager: None,
+            network_manager_factory: None,
             network_monitor_factory: None,
             network_predictor_factory: None,
             fec_factory: None,
             network_controller_factory: None,
             packet_socket_factory: None,
+            socket_factory: None,
             audio_encoder: None,
             audio_decoder: None,
             video_encoder: None,
@@ -1261,7 +1376,6 @@ pub(crate) struct FactoryInner {
     _network_thread: NetworkThread,
     _worker_thread: WorkerThread,
     _signaling_thread: SignalingThread,
-    _controlled_driver: Option<ControlledPeerDriver>,
     pub(crate) controlled_media: bool,
     audio_mixer_failure: Option<crate::AudioMixerFailureObserver>,
     _network_manager: Option<NetworkManagerProvider>,
@@ -1270,10 +1384,21 @@ pub(crate) struct FactoryInner {
     _audio_decoder: Option<AudioDecoderFactory>,
     _video_encoder: Option<VideoEncoderFactoryHandle>,
     _video_decoder: Option<VideoDecoderFactoryHandle>,
+    // Keep the actual controlled role alive through retained provider drops.
+    _controlled_driver: Option<ControlledPeerDriver>,
     // Last to drop, after native factory, role threads and retained providers.
     _production_lease: Option<cxx::UniquePtr<ffi::NativeProductionLease>>,
 }
 
+impl Drop for FactoryInner {
+    fn drop(&mut self) {
+        let _turn = self
+            ._controlled_driver
+            .as_ref()
+            .map(ControlledPeerDriver::owner_turn);
+        drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
+    }
+}
 impl FactoryInner {
     pub(crate) fn native(&self) -> &ffi::NativePeerConnectionFactory {
         self.native.as_ref().unwrap()
@@ -1282,6 +1407,19 @@ impl FactoryInner {
         self._controlled_driver.is_some()
     }
 
+    pub(crate) fn check_control_call(&self) -> Result<(), PeerError> {
+        if crate::provider_panic::callback_active() {
+            return Err(PeerError { kind: PeerErrorKind::InvalidState, message: "cannot synchronously control the session from a native provider/context callback".into() });
+        }
+        if !ffi::factory_control_call_allowed(self.native.as_ref().expect("live peer factory")) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "this native role cannot synchronously control the session on signaling"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
     pub(crate) fn encoded_video_receive_only(&self) -> bool {
         self._video_decoder
             .as_ref()
@@ -1321,6 +1459,21 @@ impl FactoryInner {
 pub struct PeerConnectionFactory(Rc<FactoryInner>);
 
 impl PeerConnectionFactory {
+    // Tests dispatch on these exact graph-owned roles, not a fresh lookalike
+    // thread or an identity registry. No production/public API is introduced.
+    #[cfg(test)]
+    pub(crate) fn post_owned_role_for_test(
+        &self,
+        role: u8,
+        task: impl FnOnce() + Send + 'static,
+    ) -> bool {
+        match role {
+            0 => self.0._network_thread.post(task),
+            1 => self.0._worker_thread.post(task),
+            2 => self.0._signaling_thread.post(task),
+            _ => panic!("invalid test role"),
+        }
+    }
     pub(crate) fn requires_deferred_teardown(&self) -> bool {
         ffi::factory_requires_deferred_teardown(self.native())
     }
@@ -1336,6 +1489,10 @@ impl PeerConnectionFactory {
     pub(crate) fn codec_decoder_factory(&self) -> Option<&VideoDecoderFactoryHandle> {
         self.0._video_decoder.as_ref()
     }
+    pub(crate) fn check_control_call(&self) -> Result<(), PeerError> {
+        self.0.check_control_call()
+    }
+
     pub fn clock_timestamp(&self) -> crate::Timestamp {
         self.0._environment.timestamp()
     }
@@ -1569,6 +1726,11 @@ impl PeerConnectionFactory {
         configuration: crate::RtcConfiguration,
         dependencies: crate::PeerConnectionDependencies,
     ) -> Result<PeerConnection, PeerError> {
+        let _turn = self
+            .0
+            ._controlled_driver
+            .as_ref()
+            .map(ControlledPeerDriver::owner_turn);
         if configuration.turn_tls_ca_pem.as_deref() == Some("") {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -1616,23 +1778,27 @@ impl PeerConnectionFactory {
                 message,
             })
         } else {
+            let inner = Rc::new(PeerInner {
+                native,
+                _factory: self.0.clone(),
+                controlled_id,
+                closed: Cell::new(false),
+                pending_legacy_selector: RefCell::new(None),
+                local_streams: RefCell::new(Vec::new()),
+                stream_inputs: RefCell::new(HashMap::new()),
+                sender_tracks: RefCell::new(HashMap::new()),
+                audio_sender_tracks: RefCell::new(HashMap::new()),
+                sender_observers: RefCell::new(HashMap::new()),
+                receiver_observers: RefCell::new(HashMap::new()),
+                dtmf_senders: RefCell::new(HashMap::new()),
+                dtls_transports: RefCell::new(HashMap::new()),
+                sctp_transports: RefCell::new(HashMap::new()),
+            });
+            if let Some(driver) = &self.0._controlled_driver {
+                driver.register_peer(&inner);
+            }
             Ok(PeerConnection {
-                inner: Rc::new(PeerInner {
-                    native,
-                    _factory: self.0.clone(),
-                    controlled_id,
-                    closed: Cell::new(false),
-                    pending_legacy_selector: RefCell::new(None),
-                    local_streams: RefCell::new(Vec::new()),
-                    stream_inputs: RefCell::new(HashMap::new()),
-                    sender_tracks: RefCell::new(HashMap::new()),
-                    audio_sender_tracks: RefCell::new(HashMap::new()),
-                    sender_observers: RefCell::new(HashMap::new()),
-                    receiver_observers: RefCell::new(HashMap::new()),
-                    dtmf_senders: RefCell::new(HashMap::new()),
-                    dtls_transports: RefCell::new(HashMap::new()),
-                    sctp_transports: RefCell::new(HashMap::new()),
-                }),
+                inner,
                 next_operation_id: Cell::new(1),
             })
         }
@@ -1788,10 +1954,118 @@ impl PeerConnectionFactory {
             .map(|screen| crate::ScreenSource {
                 id: screen.id,
                 name: screen.name,
+                display_id: screen.display_id,
             })
             .collect())
     }
 
+    /// Construct real SDK options. defaults initializes native platform
+    /// resources; false is the empty SDK constructor. selected_environment
+    /// chooses this factory's actual Environment rather than the SDK global clock.
+    #[cfg(feature = "native")]
+    pub fn desktop_capture_options(
+        &self,
+        defaults: bool,
+        selected_environment: bool,
+    ) -> Result<crate::DesktopCaptureOptions, PeerError> {
+        self.require_native_capture()?;
+        let native = ffi::desktop_options_new(
+            self.native(),
+            self.0._environment.native(),
+            defaults,
+            selected_environment,
+        );
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "SDK desktop options unavailable".into(),
+            });
+        }
+        let clock = if selected_environment {
+            self.0._environment.clock().map_err(|e| PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: e.to_string(),
+            })?
+        } else {
+            crate::Clock::real_time().map_err(|e| PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: e.to_string(),
+            })?
+        };
+        Ok(crate::DesktopCaptureOptions::new(
+            native,
+            self.0.clone(),
+            clock,
+        ))
+    }
+    /// Use the selected SDK screen/window/generic factory without fallback or
+    /// source-list filtering. None preserves the native unselected/default
+    /// state; Some is forwarded even for SDK restore-token identities.
+    #[cfg(feature = "native")]
+    pub fn create_desktop_capture(
+        &self,
+        options: &crate::DesktopCaptureOptions,
+        kind: crate::DesktopCaptureKind,
+        source_id: Option<i64>,
+    ) -> Result<crate::ScreenCapture, PeerError> {
+        self.create_desktop_capture_with_callbacks(options, kind, source_id, None, None)
+    }
+    /// Install the actual SDK callback and delegated observer before selection
+    /// and Start, so synchronous initialization notifications are not missed.
+    #[cfg(feature = "native")]
+    pub fn create_desktop_capture_with_callbacks(
+        &self,
+        options: &crate::DesktopCaptureOptions,
+        kind: crate::DesktopCaptureKind,
+        source_id: Option<i64>,
+        receiver: Option<&crate::DesktopCaptureReceiverHandle>,
+        observer: Option<&crate::DesktopSelectionObserverHandle>,
+    ) -> Result<crate::ScreenCapture, PeerError> {
+        self.create_desktop_capture_with_providers(
+            options, kind, source_id, receiver, observer, None,
+        )
+    }
+    /// A selected memory factory is rejected before source creation: the pinned
+    /// Linux SDK capturers inherit the unsupported/no-op setter. Other callback
+    /// registrations are installed before native selection and Start.
+    #[cfg(feature = "native")]
+    pub fn create_desktop_capture_with_providers(
+        &self,
+        options: &crate::DesktopCaptureOptions,
+        kind: crate::DesktopCaptureKind,
+        source_id: Option<i64>,
+        receiver: Option<&crate::DesktopCaptureReceiverHandle>,
+        observer: Option<&crate::DesktopSelectionObserverHandle>,
+        memory_factory: Option<&crate::DesktopMemoryFactoryHandle>,
+    ) -> Result<crate::ScreenCapture, PeerError> {
+        self.require_native_capture()?;
+        options.compatible(&self.0)?;
+        if memory_factory.is_some() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "pinned Linux capturers do not consume SharedMemoryFactory".into(),
+            });
+        }
+        let source = self.create_video_source()?;
+        let mut message = String::new();
+        let native = ffi::create_desktop_capture(
+            source.native(),
+            options.value(),
+            kind.tag(),
+            source_id.is_some(),
+            source_id.unwrap_or_default(),
+            crate::desktop_receiver::RustDesktopCaptureReceiver::new(receiver),
+            crate::desktop_receiver::RustDesktopSelectionObserver::new(observer),
+            &mut message,
+        );
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message,
+            });
+        }
+        Ok(crate::ScreenCapture::new(native, source))
+    }
     /// Select a display for caller-paced capture into a regular video track.
     #[cfg(feature = "native")]
     pub fn open_screen(&self, screen_id: i64) -> Result<crate::ScreenCapture, PeerError> {
@@ -1820,6 +2094,43 @@ impl PeerConnectionFactory {
         Ok(crate::ScreenCapture::new(native, source))
     }
 
+    /// Create the real empty SDK camera-options value. Its Linux backend flags
+    /// initially remain false; no default device or session is initialized.
+    #[cfg(feature = "native")]
+    pub fn create_camera_options(&self) -> Result<crate::CameraCaptureOptions, PeerError> {
+        self.require_native_capture()?;
+        let native = ffi::camera_options_new(self.native());
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "SDK camera options unavailable".into(),
+            });
+        }
+        Ok(crate::CameraCaptureOptions::new(native, self.0.clone()))
+    }
+
+    /// Create a stable SDK DeviceInfo product. A native null result stays
+    /// None, distinct from a live product reporting zero devices.
+    #[cfg(feature = "native")]
+    pub fn create_camera_device_info(&self) -> Result<Option<crate::CameraDeviceInfo>, PeerError> {
+        self.require_native_capture()?;
+        let native = ffi::camera_info_new(self.native());
+        Ok((!native.is_null()).then(|| crate::CameraDeviceInfo::new(native, self.0.clone())))
+    }
+    /// Use the SDK options-taking DeviceInfo overload, retaining an independent
+    /// options copy through the product's final native release. Native null is None.
+    #[cfg(feature = "native")]
+    pub fn create_camera_device_info_with_options(
+        &self,
+        options: &crate::CameraCaptureOptions,
+    ) -> Result<Option<crate::CameraDeviceInfo>, PeerError> {
+        self.require_native_capture()?;
+        options.consumable(&self.0)?;
+        let selected = options.try_clone()?;
+        let native = ffi::camera_info_new_with_options(self.native(), selected.value());
+        Ok((!native.is_null())
+            .then(|| crate::CameraDeviceInfo::new(native, self.0.clone()).with_options(selected)))
+    }
     /// List physical cameras on supported native artifacts. Empty is valid
     /// and does not indicate an error on a headless host.
     #[cfg(feature = "native")]
@@ -1838,10 +2149,61 @@ impl PeerConnectionFactory {
             .map(|device| crate::CameraDevice {
                 name: device.name,
                 id: device.id,
+                product_id: device.product_id,
             })
             .collect())
     }
 
+    /// Complete capabilities without filtering signed/default/interlace fields.
+    #[cfg(feature = "native")]
+    pub fn camera_capabilities(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<crate::CameraSettings>, crate::CameraControlError> {
+        self.require_native_capture()
+            .map_err(crate::CameraControlError::Binding)?;
+        let reply =
+            ffi::camera_device_control(device_id, 0, &crate::CameraSettings::default().native());
+        crate::CameraControlError::check(reply.status, reply.native_result)?;
+        Ok(reply
+            .capabilities
+            .into_iter()
+            .map(crate::CameraSettings::from_native)
+            .collect())
+    }
+    #[cfg(feature = "native")]
+    pub fn camera_orientation(
+        &self,
+        device_id: &str,
+    ) -> Result<crate::VideoRotation, crate::CameraControlError> {
+        self.require_native_capture()
+            .map_err(crate::CameraControlError::Binding)?;
+        let reply =
+            ffi::camera_device_control(device_id, 1, &crate::CameraSettings::default().native());
+        crate::CameraControlError::check(reply.status, reply.native_result)?;
+        Ok(crate::VideoRotation::from_degrees(reply.orientation))
+    }
+    /// Native matched capability index plus complete returned settings.
+    #[cfg(feature = "native")]
+    pub fn best_camera_capability(
+        &self,
+        device_id: &str,
+        requested: &crate::CameraSettings,
+    ) -> Result<(i32, crate::CameraSettings), crate::CameraControlError> {
+        self.require_native_capture()
+            .map_err(crate::CameraControlError::Binding)?;
+        let reply = ffi::camera_device_control(device_id, 2, &requested.native());
+        crate::CameraControlError::check(reply.status, reply.native_result)?;
+        let value = reply
+            .capabilities
+            .into_iter()
+            .next()
+            .expect("successful native capability match");
+        Ok((
+            reply.matched_index,
+            crate::CameraSettings::from_native(value),
+        ))
+    }
     /// Enumerate formats advertised by a camera. Refresh after device changes.
     #[cfg(feature = "native")]
     pub fn camera_formats(&self, device_id: &str) -> Result<Vec<crate::CameraFormat>, PeerError> {
@@ -1871,6 +2233,49 @@ impl PeerConnectionFactory {
             .collect())
     }
 
+    /// Create a native camera without starting it or selecting a substitute
+    /// capability. Use start_device with complete CameraSettings explicitly.
+    #[cfg(feature = "native")]
+    pub fn create_camera(&self, device_id: &str) -> Result<crate::CameraCapture, PeerError> {
+        self.require_native_capture()?;
+        let source = self.create_video_source()?;
+        let mut message = String::new();
+        let native = ffi::create_camera(source.native(), device_id, &mut message);
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message,
+            });
+        }
+        Ok(crate::CameraCapture::new(native, source))
+    }
+    /// Use SDK Create(options, id), without starting or choosing a capability.
+    /// The selected options and descriptor lease outlive their original owner.
+    #[cfg(feature = "native")]
+    pub fn create_camera_with_options(
+        &self,
+        options: &crate::CameraCaptureOptions,
+        device_id: &str,
+    ) -> Result<crate::CameraCapture, PeerError> {
+        self.require_native_capture()?;
+        options.consumable(&self.0)?;
+        let selected = options.try_clone()?;
+        let source = self.create_video_source()?;
+        let mut message = String::new();
+        let native = ffi::create_camera_with_options(
+            source.native(),
+            selected.value(),
+            device_id,
+            &mut message,
+        );
+        if native.is_null() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Operation,
+                message,
+            });
+        }
+        Ok(crate::CameraCapture::new(native, source).with_options(selected))
+    }
     /// Open a selected camera into a regular local video source. Camera
     /// start/stop are explicit; no physical camera is required for CI.
     #[cfg(feature = "native")]
@@ -1918,7 +2323,7 @@ impl PeerConnectionFactory {
                 message: "physical video capture is unavailable in controlled execution".into(),
             });
         }
-        Ok(())
+        self.check_control_call()
     }
 
     pub fn create_video_source(&self) -> Result<VideoSource, PeerError> {
@@ -2003,6 +2408,33 @@ pub(crate) struct PeerInner {
     pub(crate) dtmf_senders: RefCell<HashMap<usize, std::rc::Weak<crate::dtmf::DtmfInner>>>,
     pub(crate) dtls_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::DtlsInner>>>,
     pub(crate) sctp_transports: RefCell<HashMap<usize, std::rc::Weak<crate::transport::SctpInner>>>,
+}
+
+impl Drop for PeerInner {
+    fn drop(&mut self) {
+        let _turn = self
+            ._factory
+            ._controlled_driver
+            .as_ref()
+            .map(ControlledPeerDriver::owner_turn);
+        self.closed.set(true);
+        drop(std::mem::replace(&mut self.native, cxx::UniquePtr::null()));
+    }
+}
+
+/// Binding admission diagnostics for the actual Call owned by this peer.
+/// Counts are saturating and are not native RTCStats packet counters. A closed
+/// Call retains its observations; a peer with no created Call returns None.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CallAdmissionStats {
+    pub live: bool,
+    /// Durable bounds retained from the exact native Call creation clock.
+    /// None means its identity/bounds could not be established, not a sample.
+    pub clock_time_bounds: Option<crate::ClockTimeBounds>,
+    /// RTP rejected for a nonfinite arrival before SDK delivery.
+    /// Control/RTCP packets are not counted. Finite values are passed unchanged;
+    /// internal clock/history arithmetic remains libwebrtc's responsibility.
+    pub rtp_arrival_rejections: u64,
 }
 
 impl PeerConnection {
@@ -2121,6 +2553,23 @@ impl PeerConnection {
         self.streams(true)
     }
 
+    pub fn call_admission_stats(&self) -> Option<CallAdmissionStats> {
+        let value = ffi::peer_call_admission_stats(self.inner.native());
+        let bounds = value.clock_bounds;
+        let clock_time_bounds = if bounds.known {
+            crate::FiniteTimestamp::from_microseconds(bounds.minimum_us)
+                .ok()
+                .zip(crate::FiniteTimestamp::from_microseconds(bounds.maximum_us).ok())
+                .and_then(|(minimum, maximum)| crate::ClockTimeBounds::new(minimum, maximum).ok())
+        } else {
+            None
+        };
+        value.has_call.then_some(CallAdmissionStats {
+            live: value.live,
+            clock_time_bounds,
+            rtp_arrival_rejections: value.rtp_arrival_rejections,
+        })
+    }
     /// Native owning SCTP transport, absent before one is created. Repeated
     /// getters and its DTLS associations share native observer registrations.
     /// Native MID lookup. No transport is guessed from a sender or SDP parse.
@@ -3049,7 +3498,9 @@ impl PeerConnection {
     /// Stop and wait until native logging has released the output. Only after
     /// return is it safe to read, replace, or modify the destination file.
     pub fn stop_event_log(&self) -> Result<(), crate::EventLogError> {
-        if self.inner.closed.get() { return Err(crate::EventLogError::Closed); }
+        if self.inner.closed.get() {
+            return Err(crate::EventLogError::Closed);
+        }
         match ffi::peer_stop_event_log(self.native()) {
             0 => Ok(()),
             1 => Err(crate::EventLogError::Closed),
@@ -3157,8 +3608,29 @@ impl PeerConnection {
     }
 
     pub fn close(&mut self) -> Result<(), PeerError> {
+        if self.inner.closed.get() {
+            return Ok(());
+        }
+        let driver = self.inner._factory._controlled_driver.as_ref();
+        // Foreign encoder/readiness callbacks may have no native queue TLS.
+        // The callback loan itself, not a thread-name/identity guess, forbids
+        // synchronous teardown that could wait for this same producer.
+        if crate::provider_panic::callback_active() {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "cannot close a peer from an active native provider/context callback; retry on a caller-owned control queue".into(),
+            });
+        }
+        if !ffi::peer_control_call_allowed(self.native()) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidState,
+                message: "this native role cannot synchronously close a peer on signaling".into(),
+            });
+        }
+        let _turn = driver.map(ControlledPeerDriver::owner_turn);
+        // Admit once before native Close can reenter user providers.
+        self.inner.closed.set(true);
         if ffi::close_peer_connection(self.native()) {
-            self.inner.closed.set(true);
             self.inner.pending_legacy_selector.borrow_mut().take();
             self.inner.sender_tracks.borrow_mut().clear();
             self.inner.audio_sender_tracks.borrow_mut().clear();
@@ -3166,6 +3638,7 @@ impl PeerConnection {
             self.inner.stream_inputs.borrow_mut().clear();
             Ok(())
         } else {
+            self.inner.closed.set(false);
             Err(PeerError {
                 kind: PeerErrorKind::Internal,
                 message: "failed to close peer connection".into(),

@@ -1,7 +1,7 @@
 //! Owned native congestion-controller injection, including callable products.
 use crate::network_control_values::*;
-use crate::{EventLogEnvironment, FieldTrialsSnapshot, TimeDelta, Timestamp, ffi};
 use crate::provider_panic::catch_provider as catch_unwind;
+use crate::{EventLogEnvironment, FieldTrialsSnapshot, TimeDelta, Timestamp, ffi};
 use std::{
     panic::AssertUnwindSafe,
     sync::{
@@ -71,19 +71,50 @@ pub enum NetworkControllerFailure {
     Panicked,
     InvalidUnits,
     InvalidProcessInterval,
-    InvalidUpdate,
 }
 fn decode_failure(value: u8) -> Option<NetworkControllerFailure> {
     match value {
         1 => Some(NetworkControllerFailure::Panicked),
         2 => Some(NetworkControllerFailure::InvalidUnits),
         3 => Some(NetworkControllerFailure::InvalidProcessInterval),
-        4 => Some(NetworkControllerFailure::InvalidUpdate),
         _ => None,
+    }
+}
+/// Exact public SDK GoogCC factory inputs. Negotiated RFC 8888 state is an
+/// explicit caller input, not guessed from field trials. This selects the SDK
+/// factory/algorithm; it does not implement a Rust congestion controller.
+#[derive(Clone)]
+pub struct GoogCcFactoryConfig {
+    pub rfc_8888_feedback_negotiated: bool,
+    pub network_state_estimator_factory: Option<crate::NetworkStateEstimatorFactory>,
+    pub network_state_predictor_factory: Option<crate::NetworkStatePredictorFactory>,
+}
+impl GoogCcFactoryConfig {
+    pub fn new(rfc_8888_feedback_negotiated: bool) -> Self {
+        Self {
+            rfc_8888_feedback_negotiated,
+            network_state_estimator_factory: None,
+            network_state_predictor_factory: None,
+        }
+    }
+    pub fn network_state_estimator_factory(
+        mut self,
+        factory: &crate::NetworkStateEstimatorFactory,
+    ) -> Self {
+        self.network_state_estimator_factory = Some(factory.clone());
+        self
+    }
+    pub fn network_state_predictor_factory(
+        mut self,
+        factory: &crate::NetworkStatePredictorFactory,
+    ) -> Self {
+        self.network_state_predictor_factory = Some(factory.clone());
+        self
     }
 }
 struct FactoryState {
     provider: Mutex<Option<Box<dyn NetworkControllerFactoryProvider>>>,
+    goog_cc: Option<GoogCcFactoryConfig>,
     failed: Arc<AtomicBool>,
     observed_failure: Arc<AtomicU8>,
 }
@@ -106,6 +137,18 @@ impl NetworkControllerFactory {
     pub fn from_provider(provider: impl NetworkControllerFactoryProvider) -> Self {
         Self(Arc::new(FactoryState {
             provider: Mutex::new(Some(Box::new(provider))),
+            goog_cc: None,
+            failed: Arc::new(AtomicBool::new(false)),
+            observed_failure: Arc::new(AtomicU8::new(0)),
+        }))
+    }
+    /// Select the actual owning SDK GoogCcNetworkControllerFactory. Install
+    /// through the same explicit injection-trial gate as custom controllers.
+    /// Child factory failures remain visible on their independent registrations.
+    pub fn goog_cc(config: GoogCcFactoryConfig) -> Self {
+        Self(Arc::new(FactoryState {
+            provider: Mutex::new(None),
+            goog_cc: Some(config),
             failed: Arc::new(AtomicBool::new(false)),
             observed_failure: Arc::new(AtomicU8::new(0)),
         }))
@@ -122,7 +165,10 @@ impl NetworkControllerFactory {
 fn report(observer: &AtomicU8, value: u8) {
     let _ = observer.compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire);
 }
-pub(crate) struct RustNetworkControllerFactory(pub Option<NetworkControllerFactory>, pub Option<crate::Environment>);
+pub(crate) struct RustNetworkControllerFactory(
+    pub Option<NetworkControllerFactory>,
+    pub Option<crate::Environment>,
+);
 pub(crate) struct RustNetworkController {
     provider: Mutex<Option<Box<dyn NetworkController>>>,
     failed: AtomicBool,
@@ -142,6 +188,40 @@ impl Drop for RustNetworkController {
 }
 pub(crate) fn network_controller_factory_present(source: &RustNetworkControllerFactory) -> bool {
     source.0.is_some()
+}
+fn goog_cc_config(source: &RustNetworkControllerFactory) -> Option<&GoogCcFactoryConfig> {
+    source
+        .0
+        .as_ref()
+        .and_then(|factory| factory.0.goog_cc.as_ref())
+}
+pub(crate) fn network_controller_is_goog_cc(source: &RustNetworkControllerFactory) -> bool {
+    goog_cc_config(source).is_some()
+}
+pub(crate) fn network_controller_goog_cc_rfc8888(source: &RustNetworkControllerFactory) -> bool {
+    goog_cc_config(source).is_some_and(|config| config.rfc_8888_feedback_negotiated)
+}
+pub(crate) fn network_controller_goog_cc_estimator(
+    source: &RustNetworkControllerFactory,
+) -> Box<crate::RustNetworkStateEstimatorFactory> {
+    Box::new(crate::RustNetworkStateEstimatorFactory(
+        goog_cc_config(source).and_then(|config| config.network_state_estimator_factory.clone()),
+    ))
+}
+pub(crate) fn network_controller_goog_cc_predictor(
+    source: &RustNetworkControllerFactory,
+) -> Box<crate::RustNetworkStatePredictorFactory> {
+    Box::new(crate::RustNetworkStatePredictorFactory(
+        goog_cc_config(source).and_then(|config| config.network_state_predictor_factory.clone()),
+    ))
+}
+pub(crate) fn network_controller_factory_retain(
+    source: &RustNetworkControllerFactory,
+) -> Box<RustNetworkControllerFactory> {
+    Box::new(RustNetworkControllerFactory(
+        source.0.clone(),
+        source.1.clone(),
+    ))
 }
 pub(crate) fn network_controller_create(
     source: &RustNetworkControllerFactory,

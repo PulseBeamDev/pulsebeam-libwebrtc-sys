@@ -172,6 +172,19 @@ cleanup caller, allowing the callback to return before its native roles retire.
 That cleanup is asynchronous; ordinary caller-thread drop remains synchronous.
 The cleanup caller does not execute application operations or controlled work.
 
+The current provider implementation reserves one single-use production cleanup
+worker after native factory construction. It accepts only a final-owner handoff
+from native execution/callback contexts, never application commands. This avoids
+waiting on or joining the SDK role that is executing that callback. Ordinary
+caller-thread destruction remains synchronous and joins the unused worker after
+native teardown. Callback-triggered Drop returns after handoff; native dependency
+release finishes asynchronously. Controlled graphs never use this worker, and
+failed reservation rejects actor construction rather than falling back. These
+lifetime paths passed the final Linux x86_64 normal core/native and ASan
+core/native non-device suites. Exact evidence and still-unqualified live capture
+gates are recorded in
+[`docs/provider-verification-plan.md`](docs/provider-verification-plan.md#final-results).
+
 Use `ProductionSession::new(ProductionSessionConfig::default())` for encoded
 Opus and data channels. For caller-fed PCM, select
 `ProductionSession::builder(config).pcm_audio()` and optionally

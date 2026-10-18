@@ -24,7 +24,9 @@ impl Readiness {
         };
         // No binding/native lock is held while invoking the executor's waker.
         if let Some(waker) = waker {
-            waker.wake();
+            // A waker can run on a foreign producer thread with no SDK queue
+            // TLS. It is still inside a native callback loan, not a control root.
+            let _ = crate::provider_panic::catch_provider(|| waker.wake());
         }
     }
 
@@ -47,11 +49,23 @@ impl Readiness {
     }
 }
 
+impl Drop for Readiness {
+    fn drop(&mut self) {
+        let waker = self
+            .0
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .waker
+            .take();
+        let _ = crate::provider_panic::catch_provider(|| drop(waker));
+    }
+}
+
 pub(crate) struct RustReadiness(pub(crate) Arc<Readiness>);
 
 pub(crate) fn notify_readiness(readiness: &RustReadiness) {
     // A custom executor waker must not unwind across the C++ callback boundary.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| readiness.0.notify()));
+    let _ = crate::provider_panic::catch_provider(|| readiness.0.notify());
 }
 
 #[cfg(test)]

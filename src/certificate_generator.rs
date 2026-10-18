@@ -1,8 +1,8 @@
-use crate::{Certificate, CertificateKeyParams, ffi};
 use crate::provider_panic::catch_provider as catch_unwind;
+use crate::{Certificate, CertificateKeyParams, ffi};
 use std::{
     fmt,
-    panic::{AssertUnwindSafe},
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},

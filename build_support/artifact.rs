@@ -1166,15 +1166,34 @@ mod tests {
     }
 
     fn fixture_archive() -> Vec<u8> {
+        // Preserve the real export's SDK/CXX/configuration identity while
+        // describing this synthetic archive's actual test-only payload bytes.
+        let sentinel = b"artifact-support-sentinel";
+        let mut manifest: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/artifact-support-manifest.json"
+        ))
+        .unwrap();
+        manifest["archive"]["sha256"] = format!("{:x}", Sha256::digest(sentinel)).into();
+        // This resolver fixture packages one synthetic notice, not the real
+        // export's license files. Describe exactly those bytes and their
+        // canonical inventory without changing the actual tracked manifest.
+        let notices = serde_json::json!([{
+            "path": "LICENSES/NOTICE.txt",
+            "sha256": format!("{:x}", Sha256::digest(b"license\n")),
+        }]);
+        manifest["licenses"]["sha256"] = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&notices).unwrap())
+        )
+        .into();
+        manifest["licenses"]["files"] = notices;
+        let manifest = serde_json::to_vec(&manifest).unwrap();
         let mut bytes = Vec::new();
         let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
         for (name, contents) in [
-            (
-                "manifest.json",
-                include_bytes!("../tests/fixtures/artifact-support-manifest.json").as_slice(),
-            ),
-            ("lib/libwebrtc.a", b"artifact-support-sentinel".as_slice()),
+            ("manifest.json", manifest.as_slice()),
+            ("lib/libwebrtc.a", sentinel.as_slice()),
             ("LICENSES/NOTICE.txt", b"license\n".as_slice()),
         ] {
             let mut header = tar::Header::new_gnu();

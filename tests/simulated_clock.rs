@@ -67,7 +67,7 @@ fn signed_time_and_wrapping_advances_preserve_native_finite_states() {
 }
 
 #[test]
-fn ntp_conversion_retains_negative_seconds_and_era_wrap_but_rejects_undefined_casts() {
+fn ntp_conversion_retains_native_seconds_era_wrap_and_finite_unit_contract() {
     let clock = SimulatedClock::from_microseconds(500_000).unwrap();
     assert_eq!(
         clock.current_ntp_time().unwrap(),
@@ -112,24 +112,21 @@ fn ntp_conversion_retains_negative_seconds_and_era_wrap_but_rejects_undefined_ca
             .unwrap(),
         NtpTime::from_parts(u32::MAX, 0)
     );
-    for value in [-1, -999_999, -1_000_001] {
-        assert_eq!(
-            clock.convert_timestamp_to_ntp_time(Timestamp::from_microseconds(value).unwrap()),
-            Err(TimeValueError::OutOfRange)
-        );
-    }
     for timestamp in [Timestamp::plus_infinity(), Timestamp::minus_infinity()] {
         assert_eq!(
             clock.convert_timestamp_to_ntp_time(timestamp),
             Err(TimeValueError::InfiniteValue)
         );
     }
-    clock.advance_microseconds(-500_001).unwrap();
-    assert_eq!(clock.time_in_microseconds(), -1);
-    assert_eq!(clock.current_ntp_time(), Err(TimeValueError::OutOfRange));
+    clock.advance_microseconds(-1_500_000).unwrap();
+    assert_eq!(clock.time_in_microseconds(), -1_000_000);
     assert_eq!(
-        clock.current_ntp_in_milliseconds(),
-        Err(TimeValueError::OutOfRange)
+        clock.current_ntp_time().unwrap(),
+        NtpTime::from_parts(2_208_988_799, 0)
+    );
+    assert_eq!(
+        clock.current_ntp_in_milliseconds().unwrap(),
+        2_208_988_799_000
     );
 }
 

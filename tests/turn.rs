@@ -449,16 +449,26 @@ fn custom_tls_verifier_owns_chain_values_and_controls_native_turn_handshake() {
     impl TlsCertificateVerifier for Verify {
         fn verify_chain(&self, chain: &TlsCertificateChain) -> bool {
             self.observed.lock().unwrap().push(chain.clone());
-            if self.panic { panic_payload::raise(); }
-            self.permit && chain.get(0).is_some_and(|leaf| leaf.to_der() == self.expected)
+            if self.panic {
+                panic_payload::raise();
+            }
+            self.permit
+                && chain
+                    .get(0)
+                    .is_some_and(|leaf| leaf.to_der() == self.expected)
         }
     }
     impl Drop for Verify {
         fn drop(&mut self) {
-            if self.panic { panic_payload::raise(); }
+            if self.panic {
+                panic_payload::raise();
+            }
         }
     }
-    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout).unwrap().trim().to_owned();
+    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
     let fixture = FixtureCertificate::new(&hostname);
     let expected = TlsCertificate::from_pem(&std::fs::read_to_string(&fixture.cert).unwrap())
         .unwrap()

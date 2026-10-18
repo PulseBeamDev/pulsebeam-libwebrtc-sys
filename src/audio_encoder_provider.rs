@@ -284,6 +284,7 @@ impl ProductState {
 }
 impl Drop for ProductState {
     fn drop(&mut self) {
+        let _callback = crate::provider_panic::ProviderCallbackScope::enter();
         let provider = self
             .provider
             .get_mut()
