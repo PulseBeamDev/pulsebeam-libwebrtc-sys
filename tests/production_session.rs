@@ -279,17 +279,48 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
     let (session, frames) = thread::spawn(move || {
         let mut session = session;
         let media_caller_thread = thread::current().id();
+        let mut packet = OpusInputFrame {
+            data: vec![0xf8, 0xff, 0xfe],
+            rtp_timestamp: 0,
+            samples_per_channel: 960,
+        };
+        // Connected is not proof of first-packet delivery. Prime both native
+        // carrier/send paths at audio cadence and require an actual received
+        // warmup frame per receiver before the two independently marked probes.
+        let warmup_level = OpusAudioLevel::new(0, true).unwrap();
+        let mut warmed = [false; 2];
+        let warmup_deadline = Instant::now() + Duration::from_secs(15);
+        while warmed != [true; 2] {
+            let warmup_time =
+                session.opus_capture_time_now(sources[0]).unwrap() - Duration::from_secs(1);
+            for source in sources {
+                session
+                    .push_opus_at_with_audio_level(source, &packet, warmup_time, warmup_level)
+                    .unwrap();
+            }
+            packet.rtp_timestamp = packet.rtp_timestamp.wrapping_add(960);
+            for (index, receiver) in receivers.iter().enumerate() {
+                while let Some(frame) = session.try_audio_frame(*receiver).unwrap() {
+                    assert_eq!(frame.data, packet.data);
+                    assert_eq!(frame.audio_level_dbov, Some(warmup_level.level_dbov()));
+                    assert_eq!(frame.voice_activity, Some(warmup_level.voice_activity()));
+                    warmed[index] = true;
+                }
+            }
+            assert!(
+                Instant::now() < warmup_deadline,
+                "Opus warmup receivers={warmed:?}"
+            );
+            if warmed != [true; 2] {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
         let capture_now = session.opus_capture_time_now(sources[0]).unwrap();
         let wall_ntp_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_micros() as i64
             + 2_208_988_800_000_000;
-        let packet = OpusInputFrame {
-            data: vec![0xf8, 0xff, 0xfe],
-            rtp_timestamp: 0,
-            samples_per_channel: 960,
-        };
         assert!(
             session
                 .push_opus_at(sources[0], &packet, capture_now + Duration::from_secs(60))
@@ -315,6 +346,11 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
         while frames.len() < 2 {
             for receiver in &receivers {
                 while let Some(frame) = session.try_audio_frame(*receiver).unwrap() {
+                    if frame.audio_level_dbov == Some(warmup_level.level_dbov()) {
+                        assert_eq!(frame.data, packet.data);
+                        assert_eq!(frame.voice_activity, Some(warmup_level.voice_activity()));
+                        continue;
+                    }
                     frames.push(frame);
                 }
             }
@@ -323,8 +359,9 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
                 // arrivals. Drain the actual media queues with a bounded wait.
                 assert!(
                     Instant::now() < deadline,
-                    "received only {} of two mapped Opus frames",
-                    frames.len()
+                    "received only {} of two mapped Opus frames; crypto calls={}",
+                    frames.len(),
+                    send_crypto_trace.calls.lock().unwrap().len()
                 );
                 thread::sleep(Duration::from_millis(1));
             }

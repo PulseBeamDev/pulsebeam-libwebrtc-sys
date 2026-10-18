@@ -1175,25 +1175,27 @@ After all implementation batches are finished:
 
 Implementation, fixture-source reconciliation, and the Linux x86_64 non-device
 runtime qualification are complete. All final runtime runs below used the same
-code/test candidate `4057d7e:5e78a44f` and fresh matching artifacts.
+code/test candidate `b657dd2:61eb91ec`, after rebasing onto main `2fd8aca`,
+and fresh matching artifacts.
 
 | Final runtime | Passed | Ignored | Completed verifier |
 | --- | ---: | ---: | --- |
-| Normal core | 768 | 3 | `be674f4f` |
-| Normal native, excluding `device_smoke` | 780 | 6 | `be674f4f` |
-| ASan core, leak detection enabled | 768 | 3 | `808602dd` |
-| ASan native, excluding `device_smoke`, leak detection enabled | 780 | 6 | `a32d2f2a` |
+| Normal core | 768 | 3 | `57b3fa79` |
+| Normal native, excluding `device_smoke` | 780 | 6 | `57b3fa79` |
+| ASan core, leak detection enabled | 768 | 3 | `3da76f4e` |
+| ASan native, excluding `device_smoke`, leak detection enabled | 780 | 6 | `c0882c94` |
 
 No sanitizer reports occurred in these final ASan runs. Ignored cases are not
 passes. The isolated decoder-frame randomness-retention case also passed its
 separate all-four-configuration run `86b9b269`. Core doctests passed `a7276a63`;
 native doctests and ASan C++/Rust-staticlib consumer smokes passed `a478a39d`.
 Normal C++/Rust-staticlib smokes passed `42f96756`; cold Git Rust-only consumers
-for both flavors passed `6838e7fa`. All 182 Python tests, all-target/all-feature
-Rust source, formatting/CXX import/whitespace and all four package provenance
-gates passed `6a439a79`. Closing all-target/all-feature source, formatting,
-CXX import/whitespace, all 182 Python tests and all four package provenance
-checks passed `4136b9d6` on unchanged code/test/native inputs.
+for both flavors passed `6838e7fa`. Those consumer/doctest runs predate the
+final rebase; production Rust/native adapter sources remain byte-identical
+(`0fe663f3`). Pre-rebase source/package/Python checks passed `6a439a79` and
+`4136b9d6`. After the rebase, all 183 Python tests passed `4f7c671b`, and final
+all-target/all-feature Rust source, formatting/CXX import/whitespace and all
+four fresh package provenance checks passed `6d6cbbbf`.
 
 This is not physical-camera, live-desktop, portal/session, optional external-VLA
 probe, or ambient-IPv6 qualification. These prerequisite-dependent gates remain
@@ -1303,3 +1305,40 @@ scope-control tool rejected recording that exclusion without a direct current
 human instruction, so those live gates remain explicitly unqualified and must
 not silently count as passed or justify whole-goal completion. Other source,
 build and non-device qualification continues.
+
+## Final rebase onto main
+
+Rebased all 16 provider commits onto local main `2fd8aca`, resolving three
+conflicts at `b657dd2`. Recovery ref:
+`backup/providers-before-wrapup-rebase-6c96a19`. The dump disposer uses the shared
+safe panic-payload discard helper; the synthetic test manifest keeps main's own
+archive/license/toolchain metadata with current CXX/native adapter identity.
+Review `51f67e48` found no scoped regression. Source/fmt/CXX and exact Rust/native
+adapter source comparison with the qualified pre-rebase tree passed `0fe663f3`.
+
+Main's Justfile changes alter the native-adapter digest. Fresh actual normal
+core/native configure/compile/exports passed `30eac698`; fresh actual ASan
+core/native exports passed `98e632ca`. All four package provenance checks passed
+`8a38b87f`. The tracked native core manifest is copied from that actual fresh
+export, not relabeled historical artifact metadata. Complete rebased ASan core
+`008945d9` and native `c6ab861b` passed with leak detection enabled.
+
+Rebased normal core `29af9952` failed only the mapped-Opus production fixture:
+no one-shot frames arrived within 15 seconds. Normal native and the subsequent
+Python command did not start. This failed run is diagnostic, not a pass. The
+same fixture passed both rebased ASan suites and five isolated normal reruns
+`93228e09`; complete normal native subsequently passed `ca91d3da`. All Python
+tests passed `4f7c671b`. Review `45ba77b3` supports a bounded paced fixture
+without claiming the log establishes a precise startup-loss cause. The fixture
+now primes both actual native paths at 20 ms cadence, requiring a received
+warmup frame from each receiver. Warmup RTP timestamps advance and capture
+times precede the two probe times. Distinct warmup levels are filtered, while
+both marked probes must still arrive with distinct SSRCs, unchanged payload,
+independent level/V bits, precise mapped capture time and native encryption/
+decryption evidence. This changes only the test, not the production send path.
+The repaired fixture passed five focused normal runs `e5bead6c`. Final complete
+normal core/native `57b3fa79`, ASan core `3da76f4e` and ASan native `c0882c94`
+all passed on the same repaired code/test candidate `b657dd2:61eb91ec` with
+fresh matching exports. Final source/fmt/CXX/whitespace and all four package
+provenance checks passed `6d6cbbbf`; all 183 Python cases passed `4f7c671b`.
+No sanitizer reports occurred. No live capture access occurred.
