@@ -148,7 +148,10 @@ runtime, including when linking a Rust-only consumer. Set
 `third_party/llvm-build/Release+Asserts/bin/clang++`, and use
 `RUSTFLAGS="-C link-arg=-fsanitize=address -C link-arg=-fuse-ld=lld"`.
 A host GNU linker cannot consume the LLVM objects in those kits. This does not
-require downstream C or C++ compilation.
+require downstream C or C++ compilation. With
+`PULSEBEAM_WEBRTC_SANITIZER=address`, `just _runtime-test` uses the pinned producer
+toolchain for both C++ smokes and Rust links. Ordinary Linux runtime qualification
+uses the host compiler without the producer checkout or sysroot.
 
 `just _runtime-test <core|native> linux-x86_64 <archive>` executes the SDK C++
 consumer, the real Rust-linked companion, and the Rust runtime suite against the

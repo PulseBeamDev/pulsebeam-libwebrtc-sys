@@ -189,6 +189,9 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
 
     def _run_runtime_test(self, temporary: Path, flavor: str, sanitizer: str | None) -> dict[str, str]:
         work, tools, log, environment = self._cargo_fixture(temporary, sanitizer)
+        # The runtime entry point must select one consistent mode for all children,
+        # even when its caller inherited artifact-only settings.
+        environment["PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY"] = "1"
         source = temporary / "artifact-source"
         source.mkdir()
         self._write_configuration(source)
@@ -205,7 +208,23 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return self._cargo_environment(log, work)
+        captured = self._cargo_environment(log, work)
+        expected_cxx = captured["clang++"] if sanitizer else str(tools / "clang++-19")
+        expected_linker = captured["clang++"] if sanitizer else str(tools / "clang-19")
+        compiler_calls = (temporary / "compiler-arguments").read_text(encoding="utf-8")
+        self.assertEqual(
+            [line for line in compiler_calls.splitlines() if line.startswith("compiler=")],
+            [f"compiler={expected_cxx}"] * 2,
+        )
+        cargo_calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            [line for line in cargo_calls if line.startswith("linker=")],
+            [f"linker={expected_linker}"] * 2
+            + [f'linker={captured["clang++"] if sanitizer else ""}'],
+        )
+        if sanitizer:
+            self.assertEqual(sum("-fsanitize=address" in line for line in cargo_calls), 3)
+        return captured
 
     def _cargo_fixture(
         self, temporary: Path, sanitizer: str | None
@@ -221,6 +240,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         # Model the new companion output so the runtime recipe can execute it.
         clang_plus_plus.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "printf 'compiler=%s\\n' \"$0\" >> \"$PULSEBEAM_TEST_COMPILER_LOG\"\n"
             "printf '%s\\n' \"$@\" >> \"$PULSEBEAM_TEST_COMPILER_LOG\"\n"
             "for ((i = 1; i <= $#; i++)); do if test \"${!i}\" = -o; then "
             "j=$((i + 1)); mkdir -p \"$(dirname \"${!j}\")\"; "
@@ -240,7 +260,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         host_clang.chmod(0o755)
         cargo = tools / "cargo"
         cargo.write_text(
-            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'linker=%s\\n' \"${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-}\" > \"$PULSEBEAM_TEST_CARGO_LOG\"\nprintf 'rustflags=%s\\n' \"${RUSTFLAGS:-}\" >> \"$PULSEBEAM_TEST_CARGO_LOG\"\n",
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'linker=%s\\n' \"${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-}\" >> \"$PULSEBEAM_TEST_CARGO_LOG\"\nprintf 'rustflags=%s\\n' \"${RUSTFLAGS:-}\" >> \"$PULSEBEAM_TEST_CARGO_LOG\"\n",
             encoding="utf-8",
         )
         cargo.chmod(0o755)

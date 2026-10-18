@@ -798,7 +798,15 @@ _runtime-test flavor target archive:
     test -f "{{ archive }}" || { echo "missing runtime artifact: {{ archive }}" >&2; exit 1; }
     artifact=$(mktemp -d); trap 'rm -rf "$artifact"' EXIT
     tar -C "$artifact" -xzf "{{ archive }}"
-    if test "{{ target }}" = linux-x86_64; then export PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY=1; fi
+    if test "{{ target }}" = linux-x86_64; then
+      # ASan qualification must use the producer toolchain and matching runtime.
+      # Only ordinary release consumers are independent of the checkout.
+      if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
+        export PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY=0
+      else
+        export PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY=1
+      fi
+    fi
     features=(); test "{{ flavor }}" = core || features=(--features native)
     src="{{ work }}/checkout/src"
     rustflags=(); linker=''; if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then
