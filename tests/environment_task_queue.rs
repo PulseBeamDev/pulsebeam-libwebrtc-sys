@@ -1,3 +1,6 @@
+#[path = "support/isolated.rs"]
+mod isolated;
+
 use pulsebeam_webrtc_sys::*;
 use std::{
     sync::{
@@ -218,6 +221,9 @@ fn cooperative_utility_keeps_original_creator_scheduler_deadlines_and_identity()
 
 #[test]
 fn public_cooperative_queue_is_not_run_by_native_lifecycle_yields() {
+    if isolated::run_in_child("public_cooperative_queue_is_not_run_by_native_lifecycle_yields") {
+        return;
+    }
     let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let manual = ManualClock::new(Duration::from_secs(1)).unwrap();
     let source = TaskQueueFactory::cooperative(&manual).unwrap();

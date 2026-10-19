@@ -1,6 +1,9 @@
 //! Safe-public-API qualification of the controlled encoded-input media path.
+#[path = "support/isolated.rs"]
+mod isolated;
 #[path = "support/mixed_h264.rs"]
 mod mixed_h264;
+
 use pulsebeam_webrtc_sys::*;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -2899,6 +2902,10 @@ fn builtin_opus_vp8_links_have_real_owned_output_and_replay() {
 
 #[test]
 fn controlled_peer_admission_and_pending_close_preserve_exact_outcomes() {
+    if isolated::run_in_child("controlled_peer_admission_and_pending_close_preserve_exact_outcomes")
+    {
+        return;
+    }
     let _guard = CONTROLLED_TEST.lock().unwrap_or_else(|e| e.into_inner());
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     {

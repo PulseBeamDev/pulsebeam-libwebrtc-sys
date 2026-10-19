@@ -13,6 +13,21 @@ pub fn gathered_local_description(
     network: &SimulatedNetwork,
     events: &mut Vec<PeerConnectionEvent>,
 ) -> SessionDescription {
+    gathered_local_description_with_progress(peer, events, || {
+        while let Some(packet) = network.next_packet() {
+            network.deliver(packet.id).unwrap();
+        }
+        clock.advance(Duration::from_millis(1)).unwrap();
+        // Threaded SDK queues use real timers as well as the simulated clock.
+        thread::sleep(Duration::from_millis(1));
+    })
+}
+
+pub fn gathered_local_description_with_progress(
+    peer: &PeerConnection,
+    events: &mut Vec<PeerConnectionEvent>,
+    mut progress: impl FnMut(),
+) -> SessionDescription {
     let mut complete = events.iter().any(|event| {
         matches!(
             event,
@@ -29,9 +44,6 @@ pub fn gathered_local_description(
                 events.push(event);
             }
         }
-        while let Some(packet) = network.next_packet() {
-            network.deliver(packet.id).unwrap();
-        }
         if complete {
             let descriptions = peer.descriptions().unwrap();
             let description = descriptions
@@ -44,10 +56,7 @@ pub fn gathered_local_description(
             );
             return description;
         }
-        clock.advance(Duration::from_millis(1)).unwrap();
-        // ICE allocation also uses RTC worker-thread timers, not only the
-        // simulated network clock. Give those threads real time to run.
-        thread::sleep(Duration::from_millis(1));
+        progress();
     }
     panic!(
         "ICE gathering did not complete under the virtual clock: events={events:#?}, descriptions={:?}",

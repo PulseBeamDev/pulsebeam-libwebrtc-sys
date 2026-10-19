@@ -1,5 +1,8 @@
 use std::{collections::BTreeSet, net::Ipv4Addr, sync::Mutex, time::Duration};
 
+#[path = "support/isolated.rs"]
+mod isolated;
+
 #[cfg(target_os = "linux")]
 fn native_thread_ids() -> BTreeSet<std::ffi::OsString> {
     std::fs::read_dir("/proc/self/task")
@@ -21,6 +24,11 @@ use pulsebeam_webrtc_sys::{
 
 #[test]
 fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
+    if isolated::run_in_child(
+        "peers_share_a_caller_pumped_thread_and_reject_threaded_configurations",
+    ) {
+        return;
+    }
     let _serial = DRIVER_TEST_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner());
@@ -644,6 +652,9 @@ fn connection_trace(event: &PeerConnectionEvent) -> Option<String> {
 
 #[test]
 fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
+    if isolated::run_in_child("two_peers_exchange_gathered_sdp_with_virtual_time_only") {
+        return;
+    }
     let _serial = DRIVER_TEST_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner());

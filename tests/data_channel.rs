@@ -1,19 +1,24 @@
-use std::{net::Ipv4Addr, thread, time::Duration};
+use std::{net::Ipv4Addr, sync::Mutex, time::Duration};
+
+// Each fixture exclusively owns the SDK's process-global seeded randomness.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 #[path = "support/non_trickle.rs"]
 mod non_trickle;
 
 use pulsebeam_webrtc_sys::{
-    DataChannel, DataChannelConfiguration, DataChannelCounters, DataChannelEvent,
-    DataChannelMessage, DataChannelMessageKind, DataChannelSendError, DataChannelSendResult,
-    DataChannelState, Environment, ManualClock, OperationId, PeerConfiguration, PeerConnection,
-    PeerConnectionEvent, PeerConnectionFactory, PeerErrorKind, RandomnessLease, SessionDescription,
-    SimulatedNetwork,
+    ControlledPeerDriver, ControlledSimulatedNetwork, DataChannel, DataChannelConfiguration,
+    DataChannelCounters, DataChannelEvent, DataChannelMessage, DataChannelMessageKind,
+    DataChannelSendError, DataChannelSendResult, DataChannelState, Environment, ManualClock,
+    OperationId, PeerConfiguration, PeerConnection, PeerConnectionEvent, PeerConnectionFactory,
+    PeerErrorKind, RandomnessLease, SessionDescription, TaskQueueFactory,
 };
 
 struct Pair {
     clock: ManualClock,
-    network: SimulatedNetwork,
+    network: ControlledSimulatedNetwork,
+    driver: ControlledPeerDriver,
+    queues: TaskQueueFactory,
     alice: PeerConnection,
     bob: PeerConnection,
     _alice_endpoint: pulsebeam_webrtc_sys::NetworkEndpoint,
@@ -24,20 +29,22 @@ impl Pair {
     fn new(seed: u64) -> Self {
         let randomness = RandomnessLease::acquire(seed).unwrap();
         let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
+        let queues = TaskQueueFactory::cooperative(&clock).unwrap();
+        let driver = ControlledPeerDriver::new(&clock).unwrap();
         let environment = Environment::builder()
-            .clock(&clock)
+            .task_queue_factory(&queues)
             .randomness(&randomness)
             .build()
             .unwrap();
-        let network = SimulatedNetwork::new(&clock).unwrap();
+        let network = ControlledSimulatedNetwork::new(&clock, &driver).unwrap();
         let alice_endpoint = network
             .register_endpoint(Ipv4Addr::new(10, 21, 0, 1).into())
             .unwrap();
         let bob_endpoint = network
             .register_endpoint(Ipv4Addr::new(10, 21, 0, 2).into())
             .unwrap();
-        let alice_factory = factory(environment.clone(), &alice_endpoint);
-        let bob_factory = factory(environment, &bob_endpoint);
+        let alice_factory = factory(environment.clone(), &alice_endpoint, &driver);
+        let bob_factory = factory(environment, &bob_endpoint, &driver);
         let alice = alice_factory
             .create_peer_connection(PeerConfiguration::default())
             .unwrap();
@@ -47,6 +54,8 @@ impl Pair {
         Self {
             clock,
             network,
+            driver,
+            queues,
             alice,
             bob,
             _alice_endpoint: alice_endpoint,
@@ -58,45 +67,49 @@ impl Pair {
         let mut alice_events = Vec::new();
         let mut bob_events = Vec::new();
         let offer = completion_description(
+            self,
             &self.alice,
             self.alice.create_offer().unwrap(),
             &mut alice_events,
         );
         completion(
+            self,
             &self.alice,
             self.alice.set_local_description(offer.clone()).unwrap(),
             &mut alice_events,
         );
-        let gathered = non_trickle::gathered_local_description(
+        let gathered = non_trickle::gathered_local_description_with_progress(
             &self.alice,
-            &self.clock,
-            &self.network,
             &mut alice_events,
+            || self.progress_transport_only(),
         );
         assert_eq!(gathered.kind, offer.kind);
         completion(
+            self,
             &self.bob,
             self.bob.set_remote_description(gathered).unwrap(),
             &mut bob_events,
         );
         let answer = completion_description(
+            self,
             &self.bob,
             self.bob.create_answer().unwrap(),
             &mut bob_events,
         );
         completion(
+            self,
             &self.bob,
             self.bob.set_local_description(answer.clone()).unwrap(),
             &mut bob_events,
         );
-        let gathered = non_trickle::gathered_local_description(
+        let gathered = non_trickle::gathered_local_description_with_progress(
             &self.bob,
-            &self.clock,
-            &self.network,
             &mut bob_events,
+            || self.progress_transport_only(),
         );
         assert_eq!(gathered.kind, answer.kind);
         completion(
+            self,
             &self.alice,
             self.alice.set_remote_description(gathered).unwrap(),
             &mut alice_events,
@@ -112,20 +125,24 @@ impl Pair {
     }
 
     fn progress_transport_only(&self) {
+        self.queues.run_ready();
+        assert!(self.driver.run_ready());
         while let Some(packet) = self.network.next_packet() {
             self.network.deliver(packet.id).unwrap();
         }
         self.clock.advance(Duration::from_millis(1)).unwrap();
-        thread::yield_now();
+        assert!(self.driver.run_ready());
     }
 }
 
 fn factory(
     environment: Environment,
     endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint,
+    driver: &ControlledPeerDriver,
 ) -> PeerConnectionFactory {
     PeerConnectionFactory::builder()
         .environment(environment)
+        .controlled_driver(driver)
         .network_manager(endpoint.network_manager().unwrap())
         .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
         .build()
@@ -137,11 +154,12 @@ fn drain_peer(peer: &PeerConnection) -> Vec<PeerConnectionEvent> {
 }
 
 fn completion(
+    pair: &Pair,
     peer: &PeerConnection,
     id: OperationId,
     side_events: &mut Vec<PeerConnectionEvent>,
 ) -> Option<SessionDescription> {
-    for _ in 0..1_000_000 {
+    for _ in 0..10_000 {
         while let Some(event) = peer.try_next_event() {
             match event {
                 PeerConnectionEvent::OperationComplete(done) if done.operation_id == id => {
@@ -150,17 +168,18 @@ fn completion(
                 event => side_events.push(event),
             }
         }
-        thread::yield_now();
+        pair.progress_transport_only();
     }
     panic!("operation {} did not complete", id.get());
 }
 
 fn completion_description(
+    pair: &Pair,
     peer: &PeerConnection,
     id: OperationId,
     side_events: &mut Vec<PeerConnectionEvent>,
 ) -> SessionDescription {
-    completion(peer, id, side_events).unwrap()
+    completion(pair, peer, id, side_events).unwrap()
 }
 
 fn drain_channel(channel: &DataChannel) -> Vec<DataChannelEvent> {
@@ -170,7 +189,7 @@ fn drain_channel(channel: &DataChannel) -> Vec<DataChannelEvent> {
 fn wait_for_open(pair: &Pair, alice: &DataChannel, bob: &DataChannel) {
     let mut alice_open = false;
     let mut bob_open = false;
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         for event in drain_channel(alice) {
             alice_open |= matches!(
@@ -195,7 +214,7 @@ fn wait_for_remote_channel(
     pair: &Pair,
     mut initial_events: Vec<PeerConnectionEvent>,
 ) -> DataChannel {
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         for event in initial_events.drain(..) {
             if let PeerConnectionEvent::DataChannel(channel) = event {
                 return channel;
@@ -221,7 +240,7 @@ fn exchange_messages(pair: &Pair, alice: &DataChannel, bob: &DataChannel) {
 
     let mut at_alice = Vec::new();
     let mut at_bob = Vec::new();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         for event in drain_channel(alice) {
             if let DataChannelEvent::Message(message) = event {
@@ -245,6 +264,7 @@ fn exchange_messages(pair: &Pair, alice: &DataChannel, bob: &DataChannel) {
 
 #[test]
 fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     {
         let pair = Pair::new(11);
         let mut alice = pair
@@ -291,6 +311,7 @@ fn remote_and_negotiated_channels_exchange_owned_bytes_deterministically() {
 
 #[test]
 fn advisory_notifications_coalesce_while_messages_remain_ordered() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(13);
     let configuration = DataChannelConfiguration {
         negotiated: true,
@@ -307,7 +328,7 @@ fn advisory_notifications_coalesce_while_messages_remain_ordered() {
         .unwrap();
     pair.negotiate();
     // Do not consume channel events during connection establishment.
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         if alice.state() == DataChannelState::Open && bob.state() == DataChannelState::Open {
             break;
@@ -332,7 +353,7 @@ fn advisory_notifications_coalesce_while_messages_remain_ordered() {
         );
         // Await each receive and local queue drain, keeping native progress
         // active without taking Alice's advisory events between sends.
-        for _ in 0..2_000_000 {
+        for _ in 0..10_000 {
             pair.progress();
             for event in drain_channel(&bob) {
                 if let DataChannelEvent::Message(message) = event {
@@ -364,6 +385,7 @@ fn advisory_notifications_coalesce_while_messages_remain_ordered() {
 
 #[test]
 fn native_stream_ids_can_be_reused_after_reset() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(14);
     let mut first = pair
         .alice
@@ -377,7 +399,7 @@ fn native_stream_ids_can_be_reused_after_reset() {
     assert_eq!(first.error(), None);
     first.close().unwrap();
     first.close().unwrap();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         if first.state() == DataChannelState::Closed
             && first_remote.state() == DataChannelState::Closed
@@ -404,6 +426,7 @@ fn native_stream_ids_can_be_reused_after_reset() {
 
 #[test]
 fn native_observer_registration_preserves_ordered_delivery() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(16);
     let alice = pair
         .alice
@@ -428,7 +451,7 @@ fn native_observer_registration_preserves_ordered_delivery() {
     bob.set_event_observation(true);
     bob.set_event_observation(true);
     let mut received = Vec::new();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress_transport_only();
         for event in drain_channel(&bob) {
             if let DataChannelEvent::Message(message) = event {
@@ -444,6 +467,7 @@ fn native_observer_registration_preserves_ordered_delivery() {
 
 #[test]
 fn owned_receive_inbox_bounds_count_and_bytes_without_closing_native_channel() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(19);
     let alice = pair
         .alice
@@ -475,7 +499,7 @@ fn owned_receive_inbox_bounds_count_and_bytes_without_closing_native_channel() {
                 DataChannelSendResult::Sent
             );
             delivered += 1;
-            for _ in 0..2_000_000 {
+            for _ in 0..10_000 {
                 pair.progress_transport_only();
                 if alias.counters().messages_received == delivered {
                     break;
@@ -516,7 +540,7 @@ fn owned_receive_inbox_bounds_count_and_bytes_without_closing_native_channel() {
             DataChannelSendResult::Sent
         );
         delivered += 1;
-        for _ in 0..2_000_000 {
+        for _ in 0..10_000 {
             pair.progress_transport_only();
             if alias.counters().messages_received == delivered {
                 break;
@@ -542,6 +566,7 @@ fn owned_receive_inbox_bounds_count_and_bytes_without_closing_native_channel() {
 
 #[test]
 fn native_pre_observer_overflow_is_an_owned_resource_error() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(15);
     let alice = pair
         .alice
@@ -568,7 +593,7 @@ fn native_pre_observer_overflow_is_an_owned_resource_error() {
             DataChannelSendResult::Sent
         );
         accepted += payload.len() as u64;
-        for _ in 0..2_000_000 {
+        for _ in 0..10_000 {
             pair.progress_transport_only();
             if alice.buffered_amount() == 0 || alice.state() == DataChannelState::Closed {
                 break;
@@ -577,7 +602,7 @@ fn native_pre_observer_overflow_is_an_owned_resource_error() {
         assert!(alice.buffered_amount() == 0 || alice.state() == DataChannelState::Closed);
     }
     assert!(accepted > DataChannel::send_queue_capacity());
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress_transport_only();
         if bob.state() == DataChannelState::Closed {
             break;
@@ -606,62 +631,67 @@ fn native_pre_observer_overflow_is_an_owned_resource_error() {
 
 #[test]
 fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
-    let pair = Pair::new(12);
-    let mut alice = pair
-        .alice
-        .create_data_channel("teardown", DataChannelConfiguration::default())
-        .unwrap();
-    let (_alice_events, bob_events) = pair.negotiate();
-    let bob = wait_for_remote_channel(&pair, bob_events);
-    wait_for_open(&pair, &alice, &bob);
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
+    {
+        let pair = Pair::new(12);
+        let mut alice = pair
+            .alice
+            .create_data_channel("teardown", DataChannelConfiguration::default())
+            .unwrap();
+        let (_alice_events, bob_events) = pair.negotiate();
+        let bob = wait_for_remote_channel(&pair, bob_events);
+        wait_for_open(&pair, &alice, &bob);
 
-    assert_eq!(
-        alice.send(DataChannelMessage::binary(vec![
-            0;
-            DataChannel::send_queue_capacity()
-                as usize
-                + 1
-        ])),
-        DataChannelSendResult::Backpressure
-    );
-    assert_eq!(
-        alice.send(DataChannelMessage::binary(vec![42; 64 * 1024])),
-        DataChannelSendResult::Sent
-    );
-    alice.close().unwrap();
-    assert_eq!(
-        alice.send(DataChannelMessage::text("during close")),
-        DataChannelSendResult::NotOpen
-    );
+        assert_eq!(
+            alice.send(DataChannelMessage::binary(vec![
+                0;
+                DataChannel::send_queue_capacity()
+                    as usize
+                    + 1
+            ])),
+            DataChannelSendResult::Backpressure
+        );
+        assert_eq!(
+            alice.send(DataChannelMessage::binary(vec![42; 64 * 1024])),
+            DataChannelSendResult::Sent
+        );
+        alice.close().unwrap();
+        assert_eq!(
+            alice.send(DataChannelMessage::text("during close")),
+            DataChannelSendResult::NotOpen
+        );
 
-    let mut saw_terminal = false;
-    for _ in 0..2_000_000 {
-        pair.progress();
-        for event in drain_channel(&alice) {
-            assert!(
-                !saw_terminal,
-                "event arrived after terminal close: {event:?}"
-            );
-            saw_terminal = matches!(
-                event,
-                DataChannelEvent::StateChanged(DataChannelState::Closed)
-            );
+        let mut saw_terminal = false;
+        for _ in 0..10_000 {
+            pair.progress();
+            for event in drain_channel(&alice) {
+                assert!(
+                    !saw_terminal,
+                    "event arrived after terminal close: {event:?}"
+                );
+                saw_terminal = matches!(
+                    event,
+                    DataChannelEvent::StateChanged(DataChannelState::Closed)
+                );
+            }
+            if saw_terminal {
+                break;
+            }
         }
-        if saw_terminal {
-            break;
-        }
-    }
-    assert!(saw_terminal);
-    for _ in 0..10_000 {
-        pair.progress();
-    }
-    assert!(alice.try_next_event().is_none());
+        assert!(saw_terminal);
+        // Dispatch pending close timers after jumping across the original 2,000s
+        // virtual horizon, rather than spinning on the host scheduler.
+        pair.clock.advance(Duration::from_secs(2000)).unwrap();
+        pair.progress_transport_only();
+        assert!(alice.try_next_event().is_none());
 
-    drop(pair.alice);
-    assert_eq!(alice.state(), DataChannelState::Closed);
-    drop(bob);
-    drop(alice);
+        drop(pair.alice);
+        assert_eq!(alice.state(), DataChannelState::Closed);
+        drop(bob);
+        drop(alice);
+    }
 
+    // Release the controlled world before exercising real worker teardown.
     for _ in 0..16 {
         let factory = PeerConnectionFactory::builder().build().unwrap();
         let peer = factory
@@ -690,6 +720,7 @@ fn close_and_drop_orders_quiesce_observers_and_reject_sends() {
 
 #[test]
 fn owning_transport_aliases_observers_and_revocable_ice_internal() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     use pulsebeam_webrtc_sys::{
         DtlsTransportEvent, DtlsTransportState, IceInternalUnavailable, SctpTransportState,
         TransportObserverError,
@@ -792,6 +823,7 @@ fn owning_transport_aliases_observers_and_revocable_ice_internal() {
 
 #[test]
 fn native_defaults_signed_reliability_and_byte_metadata_are_not_normalized_in_rust() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let factory = PeerConnectionFactory::builder().build().unwrap();
     let mut peer = factory.create_peer_connection(Default::default()).unwrap();
     let implicit = peer.create_data_channel_bytes(b"implicit", None).unwrap();
@@ -864,6 +896,7 @@ fn native_defaults_signed_reliability_and_byte_metadata_are_not_normalized_in_ru
 
 #[test]
 fn native_channel_metadata_and_stats_retain_bytes_across_actual_exchange() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(25);
     let label = b"wire\xff\0\x80";
     let protocol = b"application\xfe\0";
@@ -894,14 +927,14 @@ fn native_channel_metadata_and_stats_retain_bytes_across_actual_exchange() {
     exchange_messages(&pair, &alice, &bob);
     let operation = pair.bob.request_stats().unwrap();
     let mut snapshot = None;
-    for _ in 0..1_000_000 {
+    for _ in 0..10_000 {
+        pair.progress_transport_only();
         if let Some(PeerConnectionEvent::Stats(value)) = pair.bob.try_next_event() {
             if value.operation_id == operation {
                 snapshot = Some(value);
                 break;
             }
         }
-        thread::yield_now();
     }
     assert!(snapshot.expect("native stats result").records.iter().any(|record| matches!(record,
         pulsebeam_webrtc_sys::PeerStatsRecord::DataChannel(value)
@@ -910,6 +943,7 @@ fn native_channel_metadata_and_stats_retain_bytes_across_actual_exchange() {
 
 #[test]
 fn invalid_data_channel_configuration_is_explicit() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let factory = PeerConnectionFactory::builder().build().unwrap();
     let peer = factory
         .create_peer_connection(PeerConfiguration::default())
@@ -981,6 +1015,7 @@ fn invalid_data_channel_configuration_is_explicit() {
 
 #[test]
 fn async_native_completion_size_and_counters() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let pair = Pair::new(20);
     let mut alice = pair
         .alice
@@ -991,7 +1026,7 @@ fn async_native_completion_size_and_counters() {
     // Collect negotiation advisories while waiting for open. The shared
     // wait_for_open helper drains these events as well as state changes.
     let mut limits = Vec::new();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         for event in drain_channel(&alice) {
             if let DataChannelEvent::MaxMessageSizeChanged { max_message_size } = event {
@@ -1016,7 +1051,7 @@ fn async_native_completion_size_and_counters() {
         .unwrap();
     let mut completed = std::collections::HashMap::new();
     let mut received = Vec::new();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         for event in drain_channel(&alice) {
             if let DataChannelEvent::SendComplete(done) = event {
@@ -1053,7 +1088,7 @@ fn async_native_completion_size_and_counters() {
         .send_async(DataChannelMessage::binary(vec![0; limit + 1]))
         .unwrap();
     let mut rejection = None;
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         for event in drain_channel(&alice) {
             if let DataChannelEvent::SendComplete(done) = event {
@@ -1075,7 +1110,7 @@ fn async_native_completion_size_and_counters() {
     assert_eq!(alice.counters().messages_sent, 2);
     assert_eq!(alice.error().unwrap().kind, PeerErrorKind::Network);
     alice.close().unwrap();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         if alice.state() == DataChannelState::Closed {
             break;
@@ -1085,7 +1120,7 @@ fn async_native_completion_size_and_counters() {
     let closed = alice
         .send_async(DataChannelMessage::text("closed"))
         .unwrap();
-    for _ in 0..2_000_000 {
+    for _ in 0..10_000 {
         pair.progress();
         if let Some(DataChannelEvent::SendComplete(done)) = alice.try_next_event() {
             assert_eq!(done.send_id, closed);
@@ -1098,6 +1133,7 @@ fn async_native_completion_size_and_counters() {
 
 #[test]
 fn async_admission_and_cancellation_survive_peer_drop() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let factory = PeerConnectionFactory::builder().build().unwrap();
     let peer = factory.create_peer_connection(Default::default()).unwrap();
     let channel = peer
@@ -1127,28 +1163,23 @@ fn async_admission_and_cancellation_survive_peer_drop() {
             .kind,
         PeerErrorKind::ResourceExhausted
     );
-    for _ in 0..2_000_000 {
-        if let Some(DataChannelEvent::SendComplete(done)) = channel.try_next_event() {
-            assert!(
-                admitted.remove(&done.send_id),
-                "duplicate or unknown result"
-            );
-            assert_eq!(done.result, Err(DataChannelSendError::Canceled));
+    let settle = |admitted: &mut std::collections::HashSet<_>| {
+        // SendAsync always posts to the SDK network queue. This synchronous
+        // getter fences that same queue, including destruction of callbacks
+        // canceled after peer drop, without depending on host polling speed.
+        assert_eq!(channel.buffered_amount(), 0);
+        for event in drain_channel(&channel) {
+            if let DataChannelEvent::SendComplete(done) = event {
+                assert!(
+                    admitted.remove(&done.send_id),
+                    "duplicate or unknown result"
+                );
+                assert_eq!(done.result, Err(DataChannelSendError::Canceled));
+            }
         }
-        if admitted.is_empty() {
-            break;
-        }
-        std::thread::yield_now();
-    }
-    assert!(admitted.is_empty());
-    let next = channel.send_async(DataChannelMessage::binary([3])).unwrap();
-    for _ in 0..2_000_000 {
-        if let Some(DataChannelEvent::SendComplete(done)) = channel.try_next_event() {
-            assert_eq!(done.send_id, next);
-            assert_eq!(done.result, Err(DataChannelSendError::Canceled));
-            return;
-        }
-        std::thread::yield_now();
-    }
-    panic!("detached send never settled");
+        assert!(admitted.is_empty(), "missing completions: {admitted:?}");
+    };
+    settle(&mut admitted);
+    assert!(admitted.insert(channel.send_async(DataChannelMessage::binary([3])).unwrap()));
+    settle(&mut admitted);
 }
