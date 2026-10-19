@@ -5,6 +5,8 @@ const SOURCE_REPOSITORY: &str = "https://github.com/webrtc-sdk/webrtc.git";
 const SOURCE_REVISION: &str = "ba469aa2093ba950066258ca0a59a6fbd1295582";
 const CORE_IOS_PATCH_SHA256: &str =
     "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037";
+const ENCODER_SWITCH_PATCH_SHA256: &str =
+    "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a";
 const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
@@ -467,6 +469,8 @@ struct Source {
     revision: String,
     #[serde(default)]
     patch_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoder_switch_patch_sha256: Option<String>,
     #[serde(default)]
     state: Option<String>,
 }
@@ -535,6 +539,7 @@ struct NativeConfiguration {
     cxx: CxxProvenance,
     source_revision: String,
     source_patch_sha256: String,
+    source_encoder_switch_patch_sha256: String,
     source_state: String,
     depot_tools_revision: String,
     flavor: String,
@@ -699,6 +704,15 @@ impl ArtifactManifest {
                 return Err(format!("wrong {name}: expected {expected}, got {actual}"));
             }
         }
+        if manifest
+            .sources
+            .webrtc
+            .encoder_switch_patch_sha256
+            .as_deref()
+            != Some(ENCODER_SWITCH_PATCH_SHA256)
+        {
+            return Err("wrong WebRTC encoder-switch patch identity".into());
+        }
         let expected_source_state = if expected_flavor == "core"
             && matches!(expected_target, "ios-arm64" | "ios-simulator-arm64")
         {
@@ -780,6 +794,8 @@ impl ArtifactManifest {
             || canonical_digest(&config.cxx) != canonical_digest(&self.bridge.cxx)
             || config.source_revision != self.sources.webrtc.revision
             || Some(&config.source_patch_sha256) != self.sources.webrtc.patch_sha256.as_ref()
+            || Some(&config.source_encoder_switch_patch_sha256)
+                != self.sources.webrtc.encoder_switch_patch_sha256.as_ref()
             || Some(&config.source_state) != self.sources.webrtc.state.as_ref()
             || config.depot_tools_revision != self.sources.depot_tools.revision
             || config.flavor != self.artifact.flavor
@@ -1006,6 +1022,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_substituted_encoder_switch_patch() {
+        for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
+            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            value["sources"]["webrtc"]["encoder_switch_patch_sha256"] = replacement;
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .contains("encoder-switch patch")
+            );
+        }
+    }
+
+    #[test]
     fn maps_every_supported_cargo_target_exactly() {
         let artifact_targets = [
             "linux-x86_64",
@@ -1074,6 +1103,10 @@ mod tests {
                 "true",
             ),
             ("/native_configuration/toolchain", "unrelated compiler"),
+            (
+                "/native_configuration/source_encoder_switch_patch_sha256",
+                "substituted patch",
+            ),
             (
                 "/native_configuration/floating_point/compiler_wrapper_sha256",
                 "bad",

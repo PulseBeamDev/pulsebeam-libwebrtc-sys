@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseAuditTests(unittest.TestCase):
     def build_release(self, root: Path, targets: set[str] | None = None, *,
                       native_adapter: str | None = None, schema: int = 4,
+                      encoder_switch_patch: str | None = audit_release.ENCODER_SWITCH_PATCH_SHA256,
                       license_path: str = "LICENSES/NOTICE.txt") -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
@@ -38,6 +39,7 @@ class ReleaseAuditTests(unittest.TestCase):
                         "repository": "source-repository",
                         "revision": "source",
                         "patch_sha256": audit_release.CORE_IOS_PATCH_SHA256,
+                        "encoder_switch_patch_sha256": encoder_switch_patch,
                         "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
                     },
                     "depot_tools": {"repository": "tools-repository", "revision": "tools"},
@@ -72,6 +74,7 @@ class ReleaseAuditTests(unittest.TestCase):
                           bridge_identity=manifest["bridge"]["identity"], cxx=manifest["bridge"]["cxx"],
                           source_revision=manifest["sources"]["webrtc"]["revision"],
                           source_patch_sha256=manifest["sources"]["webrtc"]["patch_sha256"],
+                          source_encoder_switch_patch_sha256=manifest["sources"]["webrtc"]["encoder_switch_patch_sha256"],
                           source_state=manifest["sources"]["webrtc"]["state"],
                           depot_tools_revision=manifest["sources"]["depot_tools"]["revision"])
             manifest["abi"] = {"toolchain": config["toolchain"]}
@@ -113,6 +116,17 @@ class ReleaseAuditTests(unittest.TestCase):
                 root = Path(temporary)
                 checksums, lock = self.build_release(root, {"linux-x86_64"}, **kwargs)
                 with self.assertRaisesRegex(audit_release.AuditError, expected):
+                    audit_release.audit(root, checksums, lock, "linux")
+
+    def test_rejects_missing_or_substituted_runtime_patch_with_valid_checksums(self):
+        for patch in (None, "f" * 64):
+            with self.subTest(patch=patch), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checksums, lock = self.build_release(
+                    root, {"linux-x86_64"}, encoder_switch_patch=patch,
+                )
+                with self.assertRaisesRegex(audit_release.AuditError,
+                                            "source identity|encoder-switch patch"):
                     audit_release.audit(root, checksums, lock, "linux")
 
     def test_rejects_rehashed_license_paths_outside_the_notices_directory(self):

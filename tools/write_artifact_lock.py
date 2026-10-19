@@ -67,7 +67,7 @@ def validate_report(report: object, lock: dict) -> tuple[str, dict[str, str]]:
     if report["schema_version"] != 1 or report["scope"] not in {"linux", "complete"}: raise LockError("audit report must be schema 1 with linux or complete scope")
     if not isinstance(report["bridge"], dict) or report["bridge"].get("identity") != lock["bridge_identity"]: raise LockError("wrong audit bridge identity")
     sources = report["sources"]; webrtc = sources.get("webrtc") if isinstance(sources, dict) else None; depot_tools = sources.get("depot_tools") if isinstance(sources, dict) else None
-    if not isinstance(webrtc, dict) or not all(isinstance(webrtc.get(key), str) and webrtc[key] for key in ("repository", "revision", "patch_sha256")) or not isinstance(depot_tools, dict) or not all(isinstance(depot_tools.get(key), str) and depot_tools[key] for key in ("repository", "revision")): raise LockError("missing audit source identity")
+    if not isinstance(webrtc, dict) or not all(isinstance(webrtc.get(key), str) and webrtc[key] for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256")) or not isinstance(depot_tools, dict) or not all(isinstance(depot_tools.get(key), str) and depot_tools[key] for key in ("repository", "revision")): raise LockError("missing audit source identity")
     expected = expected_assets(lock, report["scope"]); assets = report["assets"]
     if not isinstance(assets, list): raise LockError("audit assets must be a list")
     seen = {}

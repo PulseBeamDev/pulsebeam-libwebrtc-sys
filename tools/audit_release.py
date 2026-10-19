@@ -20,6 +20,7 @@ SCOPES = {
     "complete": None,
 }
 CORE_IOS_PATCH_SHA256 = "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"
+ENCODER_SWITCH_PATCH_SHA256 = "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a"
 
 
 class AuditError(Exception):
@@ -98,13 +99,15 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             if not isinstance(webrtc, dict) or webrtc.get("state") != expected_state:
                 raise AuditError(f"wrong WebRTC source state in {name}")
             source_identity = {
-                "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256")},
+                "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256")},
                 "depot_tools": depot_tools,
             }
             if not all(source_identity["webrtc"].values()) or not isinstance(depot_tools, dict):
                 raise AuditError(f"missing WebRTC source identity in {name}")
             if webrtc["patch_sha256"] != CORE_IOS_PATCH_SHA256:
                 raise AuditError(f"wrong WebRTC patch identity in {name}")
+            if webrtc["encoder_switch_patch_sha256"] != ENCODER_SWITCH_PATCH_SHA256:
+                raise AuditError(f"wrong WebRTC encoder-switch patch identity in {name}")
             if common_bridge is None:
                 common_bridge, common_sources = bridge, source_identity
             elif bridge != common_bridge or source_identity != common_sources:

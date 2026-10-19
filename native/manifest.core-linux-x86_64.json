@@ -13,13 +13,14 @@
       "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
       "generated_source_sha256": "cbc8114cd4eda0b7dfa9398f3dabdd20f551843bbeb75a81b3e53f3538de5b0e"
     },
-    "native_adapter_sha256": "71116fd0ee6c6022e827d0e1be5d5e2a28f5a0a0171ce1cfd78a5dd84983b8d9"
+    "native_adapter_sha256": "db67e7844208a4b94bfbb79d0d4bd36f2d7f63fd146356a54537b63b682dce1b"
   },
   "sources": {
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
       "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+      "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
       "state": "pristine"
     },
     "depot_tools": {
@@ -33,7 +34,7 @@
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
   "native_configuration": {
-    "native_adapter_sha256": "71116fd0ee6c6022e827d0e1be5d5e2a28f5a0a0171ce1cfd78a5dd84983b8d9",
+    "native_adapter_sha256": "db67e7844208a4b94bfbb79d0d4bd36f2d7f63fd146356a54537b63b682dce1b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -48,6 +49,7 @@
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+    "source_encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
     "source_state": "pristine",
     "depot_tools_revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4",
     "flavor": "core",
@@ -141,7 +143,7 @@
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
     }
   },
-  "native_configuration_sha256": "0c32b07a950fc9f04208fae84125734191fb062d97d81f576e71c356b79f9e34",
+  "native_configuration_sha256": "1d5fc43de213dbca88e6de1713492d619939e6716cee01e67720bfa3a76fb9fa",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",

@@ -104,7 +104,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
         "schema_version": 1,
         "scope": "linux",
         "bridge": {"identity": lock["bridge_identity"]},
-        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}},
+        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037", "encoder_switch_patch_sha256": "3efb4195c6fe89e7a120cfa9ded6d8fccd99ffacf85148ff0c79e9b34550f99a"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}},
         "assets": assets,
     }
     report_path = destination / "linux-audit.json"

@@ -13,13 +13,14 @@
       "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
       "generated_source_sha256": "cbc8114cd4eda0b7dfa9398f3dabdd20f551843bbeb75a81b3e53f3538de5b0e"
     },
-    "native_adapter_sha256": "71116fd0ee6c6022e827d0e1be5d5e2a28f5a0a0171ce1cfd78a5dd84983b8d9"
+    "native_adapter_sha256": "db67e7844208a4b94bfbb79d0d4bd36f2d7f63fd146356a54537b63b682dce1b"
   },
   "sources": {
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
       "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+      "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
       "state": "pristine"
     },
     "depot_tools": {
@@ -32,7 +33,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "da971a2b0dc1659e1d82dd5af816de8df444b70ae949e9333244da8520751792",
+  "native_configuration_sha256": "22745710bfb2fb9438ef0bc9b3da32ae2b0f6d478389b95c7659a9e3d04c83eb",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -61,7 +62,7 @@
     ]
   },
   "native_configuration": {
-    "native_adapter_sha256": "71116fd0ee6c6022e827d0e1be5d5e2a28f5a0a0171ce1cfd78a5dd84983b8d9",
+    "native_adapter_sha256": "db67e7844208a4b94bfbb79d0d4bd36f2d7f63fd146356a54537b63b682dce1b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -76,6 +77,7 @@
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
+    "source_encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
     "source_state": "pristine",
     "depot_tools_revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4",
     "flavor": "core",

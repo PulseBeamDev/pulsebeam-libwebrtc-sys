@@ -793,11 +793,15 @@ This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 The immutable commit
 `ba469aa2093ba950066258ca0a59a6fbd1295582` is the current WebRTC source
 identity; `m150_release` is branch context, not an input to the build. The
-source is built without a local patch stack except for the immutable
-`patches/core-ios-remove-framework-objc.patch`: core iOS device and simulator
+source includes the pinned `patches/encoder-preference-order-fallback.patch`,
+which corrects a contradictory SDK assertion for negotiated-codec fallback
+and tests both default-fallback policies. The additional immutable
+`patches/core-ios-remove-framework-objc.patch` applies only to core iOS device and simulator
 artifacts apply that pinned delta to remove `sdk:framework_objc`; native iOS
-and every other artifact use pristine upstream source. `build.txt` and
-`manifest.json` record the patch digest and applied/pristine source state, and
+and every other artifact omit that iOS-only patch. `build.txt` and
+`manifest.json` record both patch digests and the iOS patch's applied/pristine
+state; the encoder-switch patch is always required. Source-state checks reject
+tracked WebRTC source changes outside the exact pinned patches, and
 only optimized release artifacts are published.
 
 Linux releases use two explicit phases. The independently qualified primary

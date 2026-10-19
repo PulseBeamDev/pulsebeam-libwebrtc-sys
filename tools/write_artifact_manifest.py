@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--source-repository", required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--source-patch-sha256", required=True)
+    parser.add_argument("--encoder-switch-patch-sha256", required=True)
     parser.add_argument("--source-state", choices=("applied", "pristine"), required=True)
     parser.add_argument("--depot-tools-repository", required=True)
     parser.add_argument("--depot-tools-revision", required=True)
@@ -182,6 +183,7 @@ def main():
         "cxx": cxx,
         "source_revision": args.source_revision,
         "source_patch_sha256": args.source_patch_sha256,
+        "source_encoder_switch_patch_sha256": args.encoder_switch_patch_sha256,
         "source_state": args.source_state,
         "depot_tools_revision": args.depot_tools_revision,
         "flavor": args.flavor,
@@ -213,6 +215,7 @@ def main():
                 "repository": args.source_repository,
                 "revision": args.source_revision,
                 "patch_sha256": args.source_patch_sha256,
+                "encoder_switch_patch_sha256": args.encoder_switch_patch_sha256,
                 "state": args.source_state,
             },
             "depot_tools": {
