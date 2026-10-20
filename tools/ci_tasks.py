@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path
 
 from tools import audit_release, linux_release_publication, write_artifact_lock
+from tools.release_inventory import OS_TARGETS, archive_names, source_tag
 
 
 class TaskError(Exception):
@@ -37,8 +38,9 @@ def revision(value: str) -> None:
 def release_tag(tag: str, commit: str, repository: str = linux_release_publication.CANONICAL_REPOSITORY) -> None:
     if repository != linux_release_publication.CANONICAL_REPOSITORY:
         raise TaskError(f"publication repository must be {linux_release_publication.CANONICAL_REPOSITORY!r}, got {repository!r}")
-    if not write_artifact_lock.TAG.fullmatch(tag) or tag == "v0.5.0":
+    if not write_artifact_lock.TAG.fullmatch(tag) or tag == "v0.5.0" or any(tag.endswith(f"-{os}") for os in OS_TARGETS):
         raise TaskError("invalid or prohibited tag")
+    source_tag(tag)
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
     if tag != f"v{version}":
         raise TaskError(f"release tag {tag} must match Cargo package version v{version}")
@@ -60,8 +62,8 @@ def require_success(results: list[str]) -> None:
 
 def audit(scope: str, archives: Path, checksums: Path, output: Path) -> None:
     names = sorted(path.name for path in archives.glob("webrtc-*.tar.gz") if path.is_file())
-    if scope == "linux" and names != sorted(linux_release_publication.ARCHIVES):
-        raise TaskError(f"expected exactly the two primary Linux archives; found {names}")
+    if scope in OS_TARGETS and names != sorted(archive_names(scope)):
+        raise TaskError(f"expected exactly the {scope} archives; found {names}")
     # Reject unexpected files rather than silently publishing an incomplete
     # or expanded bundle. The audit checks each archive's contents and digest.
     if scope == "complete" and len(names) != 18:
@@ -135,7 +137,7 @@ def main() -> int:
     tag.add_argument("--repository", default=linux_release_publication.CANONICAL_REPOSITORY)
     commands.add_parser("require-success").add_argument("results", nargs="+")
     audit_parser = commands.add_parser("audit")
-    audit_parser.add_argument("scope", choices=("linux", "complete"))
+    audit_parser.add_argument("scope", choices=(*OS_TARGETS, "complete"))
     audit_parser.add_argument("archives", type=Path)
     audit_parser.add_argument("checksums", type=Path)
     audit_parser.add_argument("output", type=Path)

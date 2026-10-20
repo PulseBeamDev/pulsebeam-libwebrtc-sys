@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from tools import linux_release_publication as publication
+from tools.release_inventory import OS_TARGETS, release_tag, validate_tag_identity
 
 REPOSITORY = publication.CANONICAL_REPOSITORY
 # The CLI preflight checks these exact subcommand-specific flags against gh help.
 GH_OPTIONS = {
-    "api": {"--paginate", "--jq"},
+    "api": {"--paginate", "--jq", "--method", "--raw-field"},
     "release create": {"--repo", "--draft", "--verify-tag", "--title", "--generate-notes"},
     "release upload": {"--repo"},
     "release view": {"--repo", "--json"},
@@ -36,6 +37,41 @@ def gh(*arguments: str) -> str:
 def assert_repository(repository: str) -> None:
     if repository != REPOSITORY:
         raise publication.PublicationError(f"publication repository must be {REPOSITORY!r}, got {repository!r}")
+
+
+def tag_commit(tag: str) -> str:
+    obj = json.loads(gh("api", f"repos/{REPOSITORY}/git/ref/tags/{tag}", "--jq", ".object"))
+    visited = set()
+    while obj.get("type") == "tag":
+        digest = obj.get("sha")
+        if digest in visited or len(visited) >= 10:
+            raise publication.PublicationError("ambiguous or excessively nested annotated tag")
+        validate_tag_identity(digest, None)
+        visited.add(digest)
+        obj = json.loads(gh("api", f"repos/{REPOSITORY}/git/tags/{digest}", "--jq", ".object"))
+    if obj.get("type") != "commit":
+        raise publication.PublicationError("release tag does not identify a commit")
+    validate_tag_identity(obj.get("sha"), None)
+    return obj["sha"]
+
+
+def ensure_tag(source: str, scope: str, commit: str) -> str:
+    tag = release_tag(source, scope)
+    validate_tag_identity(commit, None)
+    actual_source = tag_commit(source)
+    validate_tag_identity(commit, actual_source)
+    try:
+        derived = tag_commit(tag)
+    except subprocess.CalledProcessError as error:
+        if "HTTP 404" not in (error.stderr or ""):
+            raise
+        derived = None
+    validate_tag_identity(commit, derived)
+    if derived is None:
+        # Never force or update an existing ref. A concurrent creation fails and
+        # must be classified afresh on retry, including its commit identity.
+        gh("api", f"repos/{REPOSITORY}/git/refs", "--method", "POST", "--raw-field", f"ref=refs/tags/{tag}", "--raw-field", f"sha={commit}")
+    return tag
 
 
 def write_plan(plan: dict[str, Any], path: Path) -> None:
@@ -63,6 +99,7 @@ def download(tag: str, names: list[str], directory: Path) -> None:
 
 def classify(tag: str, repository: str, bundle: Path, output: Path) -> dict[str, Any]:
     assert_repository(repository)  # Before even reading the remote inventory.
+    publication.validate_bundle_tag(bundle, tag)
     state, names = inventory(tag)
     with tempfile.TemporaryDirectory(prefix="pulsebeam-release-") as temp:
         observed = Path(temp) / "observed"
@@ -77,9 +114,10 @@ def classify(tag: str, repository: str, bundle: Path, output: Path) -> dict[str,
 
 
 def upload(tag: str, bundle: Path, plan_file: Path) -> None:
+    publication.validate_bundle_tag(bundle, tag)
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     names = plan["upload"]
-    if not plan["finalize"] or not isinstance(names, list) or len(names) != len(set(names)) or not set(names) <= publication.EXPECTED_BUNDLE:
+    if not plan["finalize"] or not isinstance(names, list) or len(names) != len(set(names)) or not set(names) <= publication.expected_bundle(publication.bundle_scope(bundle)):
         raise publication.PublicationError("unsafe release upload plan")
     for name in names:
         if not (bundle / name).is_file():
@@ -91,6 +129,7 @@ def upload(tag: str, bundle: Path, plan_file: Path) -> None:
 
 
 def verify(tag: str, bundle: Path, output: Path) -> dict[str, Any]:
+    publication.validate_bundle_tag(bundle, tag)
     release = json.loads(gh("release", "view", tag, "--repo", REPOSITORY, "--json", "assets"))
     names = [asset["name"] for asset in release["assets"]]
     with tempfile.TemporaryDirectory(prefix="pulsebeam-release-") as temp:
@@ -113,6 +152,10 @@ def advertise(tag: str, plan_file: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
+    tag_parser = actions.add_parser("ensure-tag")
+    tag_parser.add_argument("--source-tag", required=True)
+    tag_parser.add_argument("--scope", choices=sorted(OS_TARGETS), required=True)
+    tag_parser.add_argument("--commit", required=True)
     for action in ("classify", "upload", "verify", "advertise"):
         selected = actions.add_parser(action)
         selected.add_argument("--tag", required=True)
@@ -122,7 +165,8 @@ def main() -> int:
         if action in ("upload", "advertise"): selected.add_argument("--plan", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.action == "classify": classify(args.tag, args.repository, args.bundle, args.output)
+        if args.action == "ensure-tag": print(ensure_tag(args.source_tag, args.scope, args.commit))
+        elif args.action == "classify": classify(args.tag, args.repository, args.bundle, args.output)
         elif args.action == "upload": upload(args.tag, args.bundle, args.plan)
         elif args.action == "verify": verify(args.tag, args.bundle, args.output)
         else: advertise(args.tag, args.plan)

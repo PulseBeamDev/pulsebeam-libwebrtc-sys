@@ -8,13 +8,17 @@ from pathlib import Path
 import re
 import sys
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tools.release_inventory import OS_TARGETS, validate_release_tag
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "artifacts.lock.json"
-TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = "PulseBeamDev/pulsebeam-libwebrtc-sys"
 BASE_URL = f"https://github.com/{REPOSITORY}/releases/download"
-LINUX_TARGETS = frozenset({"linux-x86_64"})
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu": "linux-x86_64",
     "aarch64-unknown-linux-gnu": "linux-arm64",
@@ -43,7 +47,7 @@ def read_checksums(path: Path) -> dict[str, str]:
 def template(lock_path: Path) -> dict:
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     if lock.get("schema_version") != 2 or set(lock) != {"schema_version", "release_scope", "bridge_identity", "artifacts"}: raise LockError("lock template must be schema 2 with explicit release_scope")
-    if lock["release_scope"] not in {"none", "linux", "complete"}: raise LockError("invalid lock release scope")
+    if lock["release_scope"] not in {"none", "complete", *OS_TARGETS}: raise LockError("invalid lock release scope")
     expected = {(cargo_target, flavor) for cargo_target in SUPPORTED_TARGETS for flavor in FLAVORS}
     selections = set()
     for item in lock["artifacts"]:
@@ -60,11 +64,11 @@ def template(lock_path: Path) -> dict:
     return lock
 
 def expected_assets(lock: dict, scope: str) -> dict[str, dict]:
-    return {item["asset_name"]: item for item in lock["artifacts"] if scope == "complete" or item["artifact_target"] in LINUX_TARGETS}
+    return {item["asset_name"]: item for item in lock["artifacts"] if scope == "complete" or item["artifact_target"] in OS_TARGETS[scope]}
 
 def validate_report(report: object, lock: dict) -> tuple[str, dict[str, str]]:
     if not isinstance(report, dict) or set(report) != {"schema_version", "scope", "bridge", "sources", "assets"}: raise LockError("invalid audit report shape")
-    if report["schema_version"] != 1 or report["scope"] not in {"linux", "complete"}: raise LockError("audit report must be schema 1 with linux or complete scope")
+    if report["schema_version"] != 1 or report["scope"] not in {"complete", *OS_TARGETS}: raise LockError("audit report must be schema 1 with an OS or complete scope")
     if not isinstance(report["bridge"], dict) or report["bridge"].get("identity") != lock["bridge_identity"]: raise LockError("wrong audit bridge identity")
     sources = report["sources"]; webrtc = sources.get("webrtc") if isinstance(sources, dict) else None; depot_tools = sources.get("depot_tools") if isinstance(sources, dict) else None
     if not isinstance(webrtc, dict) or not all(isinstance(webrtc.get(key), str) and webrtc[key] for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256")) or not isinstance(depot_tools, dict) or not all(isinstance(depot_tools.get(key), str) and depot_tools[key] for key in ("repository", "revision")): raise LockError("missing audit source identity")
@@ -98,6 +102,11 @@ def render(lock_path: Path, checksums_path: Path | None, tag: str, audit_path: P
         if checksums_path is None: raise LockError("provide --audit-report or --checksums")
         scope, checksums = "complete", read_checksums(checksums_path)
         if checksums.keys() != expected_assets(lock, scope).keys(): raise LockError("checksum set mismatch for complete release")
+    if scope in OS_TARGETS:
+        try:
+            validate_release_tag(tag, scope)
+        except ValueError as error:
+            raise LockError(str(error)) from error
     lock["release_scope"] = scope
     for item in lock["artifacts"]:
         name = item["asset_name"]

@@ -169,7 +169,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
                                 cargo_config,
                             )
 
-    def test_candidate_snapshot_populates_only_primary_linux(self):
+    def test_candidate_snapshot_populates_both_linux_architectures(self):
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
             revision = rust_only_consumer.clean_snapshot(
@@ -181,11 +181,12 @@ class RustOnlyConsumerTests(unittest.TestCase):
             self.assertEqual(lock["release_scope"], "linux")
             self.assertEqual(
                 {entry["asset_name"] for entry in lock["artifacts"] if entry["url"] is not None},
-                {"webrtc-core-linux-x86_64.tar.gz", "webrtc-native-linux-x86_64.tar.gz"},
+                {"webrtc-core-linux-x86_64.tar.gz", "webrtc-native-linux-x86_64.tar.gz",
+                 "webrtc-core-linux-arm64.tar.gz", "webrtc-native-linux-arm64.tar.gz"},
             )
-            self.assertTrue(all(entry["sha256"] is None for entry in lock["artifacts"] if entry["artifact_target"] != "linux-x86_64"))
+            self.assertTrue(all(entry["sha256"] is None for entry in lock["artifacts"] if not entry["artifact_target"].startswith("linux-")))
             report = json.loads((repository / "linux-audit.json").read_text())
-            self.assertEqual(len(report["assets"]), 2)
+            self.assertEqual(len(report["assets"]), 4)
 
     def test_modes_do_not_accept_each_others_inputs(self):
         result = subprocess.run(

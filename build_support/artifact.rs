@@ -58,7 +58,43 @@ struct SchemaTwoLock {
 enum ReleaseScope {
     None,
     Linux,
+    Macos,
+    Windows,
+    Ios,
+    Android,
     Complete,
+}
+
+impl ReleaseScope {
+    fn os(&self) -> Option<&'static str> {
+        match self {
+            Self::Linux => Some("linux"),
+            Self::Macos => Some("macos"),
+            Self::Windows => Some("windows"),
+            Self::Ios => Some("ios"),
+            Self::Android => Some("android"),
+            Self::None | Self::Complete => None,
+        }
+    }
+
+    fn contains(&self, target: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::Complete => true,
+            _ => target.split('-').next() == self.os(),
+        }
+    }
+}
+
+fn release_tag(source_tag: &str, cargo_target: &str) -> Result<String, String> {
+    validate_release_tag(source_tag)?;
+    let target = artifact_target(cargo_target)
+        .ok_or_else(|| format!("unsupported Cargo target {cargo_target}"))?;
+    let os = target
+        .split('-')
+        .next()
+        .expect("artifact target has OS prefix");
+    Ok(format!("{source_tag}-{os}"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,43 +226,27 @@ impl ArtifactLock {
             return Err("artifact lock contains unexpected selections".into());
         }
         if lock.enforce_release_scope {
-            let available = lock
-                .artifacts
-                .iter()
-                .filter(|entry| entry.url.is_some())
-                .count();
-            let expected_available = match lock.release_scope {
-                ReleaseScope::None => 0,
-                ReleaseScope::Linux => lock
-                    .artifacts
-                    .iter()
-                    .filter(|entry| entry.artifact_target == "linux-x86_64")
-                    .count(),
-                ReleaseScope::Complete => lock.artifacts.len(),
-            };
-            if available != expected_available {
+            if lock.artifacts.iter().any(|entry| {
+                entry.url.is_some() != lock.release_scope.contains(&entry.artifact_target)
+            }) {
                 return Err(format!(
-                    "release scope {:?} has {available} available selections; expected {expected_available}",
+                    "release scope {:?} contains missing or foreign selections",
                     lock.release_scope
                 ));
-            }
-            if lock.release_scope == ReleaseScope::Linux
-                && lock
-                    .artifacts
-                    .iter()
-                    .any(|entry| entry.url.is_some() != (entry.artifact_target == "linux-x86_64"))
-            {
-                return Err(
-                    "linux release scope contains non-x86_64 or missing x86_64 selections".into(),
-                );
             }
         }
         Ok(lock)
     }
 
     fn validate_tag(&self, tag: &str) -> Result<(), String> {
-        if !self.canonical_urls || self.release_scope == ReleaseScope::None {
-            return Err("release lock must use schema 2 and provide released artifacts".into());
+        let os = self
+            .release_scope
+            .os()
+            .ok_or_else(|| "release lock must identify exactly one OS release scope".to_string())?;
+        if !self.canonical_urls || !tag.ends_with(&format!("-{os}")) {
+            return Err(format!(
+                "release scope {os} does not match OS release tag {tag}"
+            ));
         }
         for entry in &self.artifacts {
             if let Some(url) = &entry.url {
@@ -259,7 +279,8 @@ fn is_canonical_release_url(url: &str, asset_name: &str) -> bool {
     !tag.is_empty()
         && asset == asset_name
         && tag.chars().enumerate().all(|(index, character)| {
-            character.is_ascii_alphanumeric() || (index > 0 && matches!(character, '.' | '_' | '-'))
+            character.is_ascii_alphanumeric()
+                || (index > 0 && matches!(character, '.' | '_' | '-' | '+'))
         })
 }
 
@@ -290,8 +311,9 @@ pub(crate) fn resolve_tagged(
     if artifact_target(cargo_target).is_none() {
         return resolve(&[], expected_bridge, cargo_target, flavor);
     }
+    let tag = release_tag(tag, cargo_target)?;
     let url = format!("{RELEASE_URL_PREFIX}{tag}/artifacts.lock.json");
-    let lock = load_release_lock(tag, &url, expected_bridge)?;
+    let lock = load_release_lock(&tag, &url, expected_bridge)?;
     resolve(&lock, expected_bridge, cargo_target, flavor)
 }
 
@@ -299,7 +321,8 @@ fn validate_release_tag(tag: &str) -> Result<(), String> {
     if !tag.starts_with('v')
         || tag.len() < 2
         || !tag.chars().enumerate().all(|(index, character)| {
-            character.is_ascii_alphanumeric() || (index > 0 && matches!(character, '.' | '_' | '-'))
+            character.is_ascii_alphanumeric()
+                || (index > 0 && matches!(character, '.' | '_' | '-' | '+'))
         })
     {
         return Err(format!("invalid release tag: {tag}"));
@@ -347,6 +370,11 @@ fn load_release_lock(tag: &str, url: &str, expected_bridge: &str) -> Result<Vec<
             Err(error) if retryable_download_error(&error) && attempt < DOWNLOAD_ATTEMPTS => {
                 std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
                 continue;
+            }
+            Err(ureq::Error::StatusCode(404)) => {
+                return Err(format!(
+                    "OS release {tag} is unavailable: {url}; retry after this OS publishes"
+                ));
             }
             Err(error) => return Err(format!("cannot retrieve release lock {url}: {error}")),
         };
@@ -418,7 +446,14 @@ pub(crate) fn resolve(
     let lock = ArtifactLock::parse_and_validate(lock_bytes, expected_bridge)?;
     let entry = lock.select(cargo_target, flavor);
     let (url, expected_sha256) = entry.released()?;
-    let cache = cache_directory()?;
+    let mut cache = cache_directory()?;
+    if let Some((tag, _)) = url
+        .strip_prefix(RELEASE_URL_PREFIX)
+        .and_then(|path| path.split_once('/'))
+    {
+        lock.validate_tag(tag)?;
+        cache = cache.join(tag);
+    }
     fs::create_dir_all(&cache).map_err(|error| {
         format!(
             "failed to create artifact cache {}: {error}",
@@ -845,34 +880,34 @@ mod tests {
                 assert_eq!(entry.artifact_target, artifact_target(target).unwrap());
             }
         }
-        assert_eq!(lock.release_scope, ReleaseScope::Linux);
+        assert_eq!(lock.release_scope, ReleaseScope::None);
     }
 
     #[test]
     fn release_scope_must_match_available_selections() {
         let lock = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
-            r#""release_scope": "linux"#,
+            r#""release_scope": "none"#,
             r#""release_scope": "complete"#,
             1,
         );
         assert!(
             ArtifactLock::parse_and_validate(lock.as_bytes(), "pulsebeam-webrtc-sys-bridge-v2")
                 .unwrap_err()
-                .contains("expected 18")
+                .contains("missing or foreign selections")
         );
     }
 
     #[test]
-    fn linux_scope_requires_exactly_primary_x86_selections() {
+    fn linux_scope_requires_both_architectures_and_flavors() {
         let valid = released_lock(
-            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1-linux/webrtc-core-linux-x86_64.tar.gz",
             &"1".repeat(64),
         );
         assert!(ArtifactLock::parse_and_validate(&valid, "pulsebeam-webrtc-sys-bridge-v2").is_ok());
         let baseline: serde_json::Value = serde_json::from_slice(&valid).unwrap();
         for (target, available) in [
             ("linux-x86_64", false),
-            ("linux-arm64", true),
+            ("linux-arm64", false),
             ("windows-x86_64", true),
         ] {
             let mut lock = baseline.clone();
@@ -884,7 +919,7 @@ mod tests {
                 .unwrap();
             if available {
                 let asset = entry["asset_name"].as_str().unwrap();
-                entry["url"] = format!("https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/{asset}").into();
+                entry["url"] = format!("https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1-linux/{asset}").into();
                 entry["sha256"] = "1".repeat(64).into();
             } else {
                 entry["url"] = serde_json::Value::Null;
@@ -946,8 +981,8 @@ mod tests {
     #[test]
     fn rejects_hybrid_unknown_and_noncanonical_lock_metadata() {
         let hybrid = String::from_utf8(LOCK.to_vec()).unwrap().replacen(
-            r#""release_scope": "linux""#,
-            r#""release_scope": "linux", "release_ready": false"#,
+            r#""release_scope": "none""#,
+            r#""release_scope": "none", "release_ready": false"#,
             1,
         );
         assert!(
@@ -1154,7 +1189,7 @@ mod tests {
         lock["release_scope"] = serde_json::Value::String("linux".into());
         for entry in lock["artifacts"].as_array_mut().unwrap() {
             let target = entry["artifact_target"].as_str().unwrap();
-            if target == "linux-x86_64" {
+            if target.starts_with("linux-") {
                 let asset = entry["asset_name"].as_str().unwrap();
                 entry["url"] = serde_json::Value::String(
                     url.replace("webrtc-core-linux-x86_64.tar.gz", asset),
@@ -1163,6 +1198,57 @@ mod tests {
             }
         }
         serde_json::to_vec(&lock).unwrap()
+    }
+
+    #[test]
+    fn release_selection_uses_cargo_target_and_rejects_foreign_scopes() {
+        for target in SUPPORTED_CARGO_TARGETS {
+            let os = artifact_target(target).unwrap().split('-').next().unwrap();
+            let tag = release_tag("v1.2.3", target).unwrap();
+            assert_eq!(tag, format!("v1.2.3-{os}"));
+            let mut value: serde_json::Value = serde_json::from_slice(LOCK).unwrap();
+            value["release_scope"] = os.into();
+            for entry in value["artifacts"].as_array_mut().unwrap() {
+                if entry["artifact_target"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("{os}-"))
+                {
+                    entry["url"] = format!(
+                        "{RELEASE_URL_PREFIX}{tag}/{}",
+                        entry["asset_name"].as_str().unwrap()
+                    )
+                    .into();
+                    entry["sha256"] = "1".repeat(64).into();
+                }
+            }
+            let lock = ArtifactLock::parse_and_validate(
+                &serde_json::to_vec(&value).unwrap(),
+                "pulsebeam-webrtc-sys-bridge-v2",
+            )
+            .unwrap();
+            lock.validate_tag(&tag).unwrap();
+            assert!(lock.validate_tag("v1.2.3").is_err());
+            assert!(lock.validate_tag("v1.2.3-foreign").is_err());
+            for entry in value["artifacts"].as_array_mut().unwrap() {
+                if entry["url"].is_null() {
+                    entry["url"] = format!(
+                        "{RELEASE_URL_PREFIX}{tag}/{}",
+                        entry["asset_name"].as_str().unwrap()
+                    )
+                    .into();
+                    entry["sha256"] = "1".repeat(64).into();
+                    break;
+                }
+            }
+            assert!(
+                ArtifactLock::parse_and_validate(
+                    &serde_json::to_vec(&value).unwrap(),
+                    "pulsebeam-webrtc-sys-bridge-v2"
+                )
+                .is_err()
+            );
+        }
     }
 
     fn fixture_archive() -> Vec<u8> {
@@ -1236,19 +1322,19 @@ mod tests {
         let root = artifact_test_root("release-lock");
         let cache = root.join("cache");
         let lock = released_lock(
-            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1-linux/webrtc-core-linux-x86_64.tar.gz",
             &"1".repeat(64),
         );
         configure_test_environment(&cache, false);
         let url = server(vec![http("200 OK", &lock)]);
         assert_eq!(
-            load_release_lock("v1", &url, "pulsebeam-webrtc-sys-bridge-v2").unwrap(),
+            load_release_lock("v1-linux", &url, "pulsebeam-webrtc-sys-bridge-v2").unwrap(),
             lock
         );
         configure_test_environment(&cache, true);
         assert_eq!(
             load_release_lock(
-                "v1",
+                "v1-linux",
                 "http://127.0.0.1:1/missing",
                 "pulsebeam-webrtc-sys-bridge-v2"
             )
@@ -1257,23 +1343,96 @@ mod tests {
         );
         assert!(
             load_release_lock(
-                "v2",
+                "v2-linux",
                 "http://127.0.0.1:1/missing",
                 "pulsebeam-webrtc-sys-bridge-v2"
             )
             .unwrap_err()
             .contains("offline release lock cache miss")
         );
-        fs::write(cache.join("release-locks/v1.json"), b"corrupt").unwrap();
+        fs::write(cache.join("release-locks/v1-linux.json"), b"corrupt").unwrap();
         assert!(
             load_release_lock(
-                "v1",
+                "v1-linux",
                 "http://127.0.0.1:1/missing",
                 "pulsebeam-webrtc-sys-bridge-v2"
             )
             .unwrap_err()
             .contains("offline release lock cache miss")
         );
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_os_release_is_not_cached_and_can_publish_later() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = artifact_test_root("release-later");
+        configure_test_environment(&root.join("cache"), false);
+        let tag = "v1.2.3-linux";
+        let lock = released_lock(
+            &format!("{RELEASE_URL_PREFIX}{tag}/webrtc-core-linux-x86_64.tar.gz"),
+            &"1".repeat(64),
+        );
+        let error = load_release_lock(
+            tag,
+            &server(vec![http("404 Not Found", b"missing")]),
+            "pulsebeam-webrtc-sys-bridge-v2",
+        )
+        .unwrap_err();
+        assert!(error.contains("OS release v1.2.3-linux is unavailable"));
+        assert!(!root.join("cache/release-locks/v1.2.3-linux.json").exists());
+        assert_eq!(
+            load_release_lock(
+                tag,
+                &server(vec![http("200 OK", &lock)]),
+                "pulsebeam-webrtc-sys-bridge-v2"
+            )
+            .unwrap(),
+            lock
+        );
+        unsafe {
+            env::remove_var(CACHE_DIR_ENV);
+            env::remove_var(OFFLINE_ENV);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_archive_cache_is_separated_by_exact_os_release_tag() {
+        let _environment = ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = artifact_test_root("release-cache-identity");
+        let cache = root.join("cache");
+        configure_test_environment(&cache, true);
+        let archive = fixture_archive();
+        let hash = format!("{:x}", Sha256::digest(&archive));
+        // A same-name archive in the old root cache must not satisfy a release.
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("webrtc-core-linux-x86_64.tar.gz"), &archive).unwrap();
+        for tag in ["v1.2.3-linux", "v1.2.4-linux"] {
+            let lock = released_lock(
+                &format!("{RELEASE_URL_PREFIX}{tag}/webrtc-core-linux-x86_64.tar.gz"),
+                &hash,
+            );
+            assert!(
+                resolve_core(&lock)
+                    .unwrap_err()
+                    .contains("offline artifact cache miss")
+            );
+            let directory = cache.join(tag);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("webrtc-core-linux-x86_64.tar.gz"), &archive).unwrap();
+            let extracted = resolve_core(&lock).unwrap();
+            assert!(extracted.starts_with(&directory));
+            assert_eq!(resolve_core(&lock).unwrap(), extracted);
+        }
         unsafe {
             env::remove_var(CACHE_DIR_ENV);
             env::remove_var(OFFLINE_ENV);
@@ -1289,21 +1448,25 @@ mod tests {
         let root = artifact_test_root("release-lock-invalid");
         configure_test_environment(&root.join("cache"), false);
         let valid = released_lock(
-            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1/webrtc-core-linux-x86_64.tar.gz",
+            "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/v1-linux/webrtc-core-linux-x86_64.tar.gz",
             &"1".repeat(64),
         );
         let mismatch = load_release_lock(
-            "v2",
+            "v2-linux",
             &server(vec![http("200 OK", &valid)]),
             "pulsebeam-webrtc-sys-bridge-v2",
         )
         .unwrap_err();
-        assert!(mismatch.contains("does not belong to tag v2"));
-        assert!(!root.join("cache/release-locks/v2.json").exists());
+        assert!(mismatch.contains("does not belong to tag v2-linux"));
+        assert!(!root.join("cache/release-locks/v2-linux.json").exists());
         assert!(
-            load_release_lock("v1", &server(vec![http("200 OK", &valid)]), "wrong-bridge")
-                .unwrap_err()
-                .contains("wrong artifact lock bridge identity")
+            load_release_lock(
+                "v1-linux",
+                &server(vec![http("200 OK", &valid)]),
+                "wrong-bridge"
+            )
+            .unwrap_err()
+            .contains("wrong artifact lock bridge identity")
         );
         let invalid_scope = String::from_utf8(valid).unwrap().replacen(
             "\"release_scope\":\"linux\"",
@@ -1312,7 +1475,7 @@ mod tests {
         );
         assert!(
             load_release_lock(
-                "v1",
+                "v1-linux",
                 &server(vec![http("200 OK", invalid_scope.as_bytes())]),
                 "pulsebeam-webrtc-sys-bridge-v2"
             )

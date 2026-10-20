@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import re
 from pathlib import Path
 import tempfile
 import unittest
 
 from tools import audit_release
+from tools.release_inventory import OS_TARGETS
 from tests.test_release_audit import ReleaseAuditTests
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,43 +18,41 @@ SPEC.loader.exec_module(write_artifact_lock)
 
 
 class ArtifactLockTests(unittest.TestCase):
-    def test_checked_in_lock_provides_both_primary_linux_flavors(self):
-        lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
-        self.assertEqual(lock["schema_version"], 2)
-        self.assertEqual(lock["release_scope"], "linux")
-        available = {entry["asset_name"]: entry for entry in lock["artifacts"] if entry["url"] is not None}
-        self.assertEqual(set(available), {
-            "webrtc-core-linux-x86_64.tar.gz",
-            "webrtc-native-linux-x86_64.tar.gz",
-        })
-        for name, entry in available.items():
-            self.assertTrue(entry["url"].startswith(
-                "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys/releases/download/"
-            ))
-            self.assertTrue(entry["url"].endswith("/" + name))
-            self.assertRegex(entry["sha256"], re.compile(r"^[0-9a-f]{64}$"))
-        self.assertTrue(all(
-            entry["url"] is None and entry["sha256"] is None
-            for entry in lock["artifacts"] if entry["asset_name"] not in available
-        ))
+    def test_checked_in_lock_is_an_unpublished_selection_template(self):
+        lock = write_artifact_lock.template(ROOT / "artifacts.lock.json")
+        self.assertEqual(lock["release_scope"], "none")
+        self.assertEqual(len(lock["artifacts"]), 18)
+        self.assertTrue(all(entry["url"] is None and entry["sha256"] is None for entry in lock["artifacts"]))
 
     def report(self, root: Path, scope: str) -> Path:
-        checksums, lock = ReleaseAuditTests().build_release(root, {"linux-x86_64"} if scope == "linux" else None)
+        checksums, lock = ReleaseAuditTests().build_release(root, OS_TARGETS.get(scope))
         report = audit_release.audit(root, checksums, lock, scope)
         path = root / "audit.json"
         path.write_text(json.dumps(report), encoding="utf-8")
         return path
 
     def render_report(self, root: Path, scope: str) -> dict:
-        return json.loads(write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "webrtc-bridge-v1", self.report(root, scope)))
+        return json.loads(write_artifact_lock.render(ROOT / "artifacts.lock.json", None, f"v1.2.3-{scope}", self.report(root, scope)))
 
-    def test_closed_linux_audit_renders_only_two_x86_64_available_entries(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            lock = self.render_report(Path(temporary), "linux")
-        self.assertEqual(lock["schema_version"], 2)
-        self.assertEqual(lock["release_scope"], "linux")
-        self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), 2)
-        self.assertTrue(all((item["url"] is None) == (item["artifact_target"] != "linux-x86_64") for item in lock["artifacts"]))
+    def test_each_os_audit_renders_exactly_its_architectures_and_flavors(self):
+        for scope, targets in OS_TARGETS.items():
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as temporary:
+                lock = self.render_report(Path(temporary), scope)
+                self.assertEqual(lock["schema_version"], 2)
+                self.assertEqual(lock["release_scope"], scope)
+                self.assertEqual(sum(item["url"] is not None for item in lock["artifacts"]), len(targets) * 2)
+                for item in lock["artifacts"]:
+                    self.assertEqual(item["url"] is not None, item["artifact_target"] in targets)
+                    if item["url"]:
+                        self.assertEqual(item["url"], f"{write_artifact_lock.BASE_URL}/v1.2.3-{scope}/{item['asset_name']}")
+
+    def test_os_audit_rejects_root_and_foreign_os_tags(self):
+        for scope in OS_TARGETS:
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as temporary:
+                report = self.report(Path(temporary), scope)
+                for tag in ("v1.2.3", "v1.2.3-other", "v1.2.3-linux-linux"):
+                    with self.assertRaises(write_artifact_lock.LockError):
+                        write_artifact_lock.render(ROOT / "artifacts.lock.json", None, tag, report)
 
     def test_closed_complete_audit_and_checksum_compatibility_are_complete(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -93,7 +91,7 @@ class ArtifactLockTests(unittest.TestCase):
             with self.assertRaisesRegex(write_artifact_lock.LockError, "malformed"):
                 write_artifact_lock.render(ROOT / "artifacts.lock.json", checksums, "tag")
             linux = self.render_report(root, "linux")
-            self.assertEqual(sum(item["url"] is not None for item in linux["artifacts"]), 2)
+            self.assertEqual(sum(item["url"] is not None for item in linux["artifacts"]), 4)
 
     def test_rejects_noncanonical_template_and_weakened_linux_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

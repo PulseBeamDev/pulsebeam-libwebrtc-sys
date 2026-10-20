@@ -114,7 +114,7 @@ class ReleaseAuditTests(unittest.TestCase):
                                  ({"schema": 3}, "schema 4")]:
             with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                checksums, lock = self.build_release(root, {"linux-x86_64"}, **kwargs)
+                checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"}, **kwargs)
                 with self.assertRaisesRegex(audit_release.AuditError, expected):
                     audit_release.audit(root, checksums, lock, "linux")
 
@@ -123,7 +123,7 @@ class ReleaseAuditTests(unittest.TestCase):
             with self.subTest(patch=patch), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 checksums, lock = self.build_release(
-                    root, {"linux-x86_64"}, encoder_switch_patch=patch,
+                    root, {"linux-x86_64", "linux-arm64"}, encoder_switch_patch=patch,
                 )
                 with self.assertRaisesRegex(audit_release.AuditError,
                                             "source identity|encoder-switch patch"):
@@ -133,14 +133,14 @@ class ReleaseAuditTests(unittest.TestCase):
         for path in ["lib/libwebrtc.a", "LICENSES/../NOTICE.txt", "LICENSES//NOTICE.txt"]:
             with self.subTest(path=path), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                checksums, lock = self.build_release(root, {"linux-x86_64"}, license_path=path)
+                checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"}, license_path=path)
                 with self.assertRaisesRegex(audit_release.AuditError, "license inventory path"):
                     audit_release.audit(root, checksums, lock, "linux")
 
     def test_rejects_duplicate_lock_selections(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             value = json.loads(lock.read_text())
             value["artifacts"].append(value["artifacts"][0])
             duplicate = root / "duplicate-lock.json"
@@ -151,29 +151,29 @@ class ReleaseAuditTests(unittest.TestCase):
     def test_accepts_exact_linux_scope_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             report = audit_release.audit(root, checksums, lock, "linux")
             self.assertEqual(report["scope"], "linux")
-            self.assertEqual(len(report["assets"]), 2)
+            self.assertEqual(len(report["assets"]), 4)
 
     def test_rejects_missing_extra_or_substituted_linux_assets(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             (root / "webrtc-core-linux-x86_64.tar.gz").unlink()
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock, "linux")
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             (root / "webrtc-core-windows-x86_64.tar.gz").write_bytes(b"not an archive")
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock, "linux")
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             lines = checksums.read_text(encoding="utf-8").splitlines()
             lines[0] = lines[0].replace("webrtc-core-linux-x86_64.tar.gz", "webrtc-core-windows-x86_64.tar.gz")
             checksums.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -183,7 +183,7 @@ class ReleaseAuditTests(unittest.TestCase):
     def test_linux_assets_cannot_pass_complete_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checksums, lock = self.build_release(root, {"linux-x86_64"})
+            checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"})
             with self.assertRaisesRegex(audit_release.AuditError, "asset sets differ"):
                 audit_release.audit(root, checksums, lock)
 

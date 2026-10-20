@@ -10,15 +10,13 @@ from pathlib import Path
 import sys
 import tarfile
 
-from tools.write_artifact_lock import read_checksums
+from tools.write_artifact_lock import LockError, read_checksums, template
+from tools.release_inventory import OS_TARGETS
 from tools.native_provenance import adapter_digest, configuration_digest, validate_configuration
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCOPES = {
-    "linux": frozenset({"linux-x86_64"}),
-    "complete": None,
-}
+SCOPES = {**OS_TARGETS, "complete": None}
 CORE_IOS_PATCH_SHA256 = "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037"
 ENCODER_SWITCH_PATCH_SHA256 = "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a"
 
@@ -53,7 +51,10 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
         targets = SCOPES[scope]
     except KeyError as error:
         raise AuditError(f"unknown release scope: {scope}") from error
-    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    try:
+        lock = template(lock_path)
+    except LockError as error:
+        raise AuditError(str(error)) from error
     expected = {
         entry["asset_name"]: entry
         for entry in lock["artifacts"]

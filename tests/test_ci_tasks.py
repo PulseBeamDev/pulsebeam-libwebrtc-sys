@@ -87,12 +87,12 @@ class CiTasksTests(unittest.TestCase):
     def test_closed_linux_audit_runs_locally(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            ReleaseAuditTests().build_release(root, {"linux-x86_64"})
+            ReleaseAuditTests().build_release(root, {"linux-x86_64", "linux-arm64"})
             (root / "SHA256SUMS").unlink()
             ci_tasks.audit("linux", root, root / "SHA256SUMS", root / "manifest.json")
             self.assertEqual(json.loads((root / "manifest.json").read_text())["scope"], "linux")
-            (root / "webrtc-core-linux-arm64.tar.gz").write_bytes(b"unexpected")
-            with self.assertRaisesRegex(ci_tasks.TaskError, "two primary"):
+            (root / "webrtc-core-windows-x86_64.tar.gz").write_bytes(b"unexpected")
+            with self.assertRaisesRegex(ci_tasks.TaskError, "exactly the linux archives"):
                 ci_tasks.audit("linux", root, root / "SHA256SUMS", root / "manifest.json")
 
     def test_candidate_uses_named_digest_not_ambiguous_grep(self):

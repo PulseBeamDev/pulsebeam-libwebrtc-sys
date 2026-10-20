@@ -97,11 +97,18 @@ For development against a matching extracted artifact:
 PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR=.work/package/webrtc-core-linux-x86_64 cargo test
 ```
 
-Without a local artifact, `build.rs` fetches `artifacts.lock.json` from the
-GitHub release named `v<crate version>`, checks its bridge identity, scope and
-exact tag-bound asset URLs, then verifies the selected archive's SHA-256 before
-safe extraction. The release lock is trusted from GitHub over HTTPS and cached
-by tag; unlike the archives, its digest is not pinned in the tagged source.
+Consumers depend on the canonical source tag `v<crate version>`. Without a
+local artifact, `build.rs` selects exactly one OS release using Cargo `TARGET`,
+not the build host: `v<crate version>-linux`, `-macos`, `-windows`, `-android`,
+or `-ios`. The `native` feature selects the flavor within that OS. It fetches
+only that release's `artifacts.lock.json`, checks its bridge identity, exact OS
+scope and tag-bound asset URLs, then verifies the selected archive's SHA-256
+before safe extraction. There is no root-tag or other-OS fallback. This layout
+applies to future matching source/resolver versions; existing source tags keep
+their original resolver and release layout.
+
+The release lock is trusted from GitHub over HTTPS and cached by exact OS tag;
+unlike the archives, its digest is not pinned in the tagged source.
 A replaced release asset and lock could therefore change what a cold consumer
 receives. Do not move tags or replace release assets.
 
@@ -109,10 +116,33 @@ The cache defaults to `$CARGO_HOME/pulsebeam-webrtc-sys/artifacts-v1`; set
 `PULSEBEAM_WEBRTC_SYS_CACHE_DIR` for a hermetic cache. `CARGO_NET_OFFLINE=true`,
 Cargo's `--offline`, or `PULSEBEAM_WEBRTC_SYS_OFFLINE=true` disables downloads;
 for offline builds, first populate both the release lock and selected archive
-while online. The checked-in lock is a producer/candidate template with all 18
-selections; it is not used by normal Git consumers. Only Linux x86_64 core and
-native are currently released. Other targets require a matching extracted
-artifact through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`.
+while online. Both archive and extraction caches are isolated by the exact OS
+release tag. The checked-in lock is an unpublished producer/candidate template
+with all 18 selections; it is not used by normal Git consumers. Each released
+lock makes available exactly both flavors of every target in its OS:
+
+| Scope | Artifact targets |
+| --- | --- |
+| `linux` | `linux-x86_64`, `linux-arm64` |
+| `macos` | `macos-x86_64`, `macos-arm64` |
+| `windows` | `windows-x86_64` |
+| `android` | `android-x86_64`, `android-arm64-v8a` |
+| `ios` | `ios-arm64`, `ios-simulator-arm64` |
+
+An OS release that has not published fails with its exact version/OS identity.
+A missing release is not cached, so retrying after publication can succeed.
+Independent availability is not a promise of atomic publication across OSes.
+Local candidate artifacts remain usable before publication, including offline,
+through `PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR`. Target declarations and scoped
+metadata alone do not establish compile/link or runtime support.
+
+Producer audit and bundle commands accept these OS scopes. `complete` remains
+a local full-matrix audit mode, not a publishable OS bundle. Bundle preparation
+re-audits the exact archive set; publication accepts matching partial drafts,
+rejects unexpected or conflicting bytes, and never repairs incomplete published
+releases by replacing assets. `just ci-release ensure-tag --source-tag v<version>
+--scope <os> --commit <sha>` creates only a missing derived tag at the source
+commit, accepts an identical existing tag, and rejects a different commit.
 
 ### Native diagnostics
 

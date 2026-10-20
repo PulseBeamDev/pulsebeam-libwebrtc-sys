@@ -90,7 +90,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     assets = []
     for index, entry in enumerate(lock["artifacts"]):
-        if entry["artifact_target"] != "linux-x86_64":
+        if not entry["artifact_target"].startswith("linux-"):
             continue
         assets.append({
             "name": entry["asset_name"],
@@ -109,10 +109,10 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
     }
     report_path = destination / "linux-audit.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
-    lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "consumer-proof", report_path))
+    lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "v0.0.0-linux", report_path))
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     for entry in lock["artifacts"]:
-        if entry["artifact_target"] == "linux-x86_64":
+        if entry["artifact_target"].startswith("linux-"):
             entry["url"] = download_url.rsplit("/", 1)[0] + "/" + entry["asset_name"]
             entry["sha256"] = digest if entry["asset_name"] == selected_asset else "1" * 64
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
@@ -518,7 +518,8 @@ def prove_released(repository: str, tag: str, target: str, flavor: str) -> None:
 
         # A corrupt archive is discarded and downloaded again when the network is available.
         cache = Path(environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"])
-        (cache / asset_name).write_bytes(b"corrupt released artifact")
+        os_tag = f"{tag}-linux"
+        (cache / os_tag / asset_name).write_bytes(b"corrupt released artifact")
         environment.pop("CARGO_NET_OFFLINE")
         environment["CARGO_TARGET_DIR"] = str(temporary_root / "repeat-download-target")
         run(["cargo", "run", "--locked"], cwd=consumer, env=environment)

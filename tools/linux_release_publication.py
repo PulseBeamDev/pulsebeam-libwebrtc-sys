@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and immutably plan publication of one closed Linux release bundle."""
+"""Prepare and immutably plan publication of one closed OS release bundle."""
 
 from __future__ import annotations
 
@@ -12,15 +12,20 @@ import sys
 from typing import Any
 
 from tools import audit_release, write_artifact_lock
+from tools.release_inventory import OS_TARGETS, archive_names, validate_release_tag
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVES = frozenset({
-    "webrtc-core-linux-x86_64.tar.gz",
-    "webrtc-native-linux-x86_64.tar.gz",
-})
-METADATA = frozenset({"SHA256SUMS", "LINUX-RELEASE-MANIFEST.json", "artifacts.lock.json", "PULSEBEAM-APACHE-2.0.txt"})
-EXPECTED_BUNDLE = ARCHIVES | METADATA
+def expected_bundle(scope: str) -> frozenset[str]:
+    return archive_names(scope) | {"SHA256SUMS", f"{scope.upper()}-RELEASE-MANIFEST.json", "artifacts.lock.json", "PULSEBEAM-APACHE-2.0.txt"}
+
+
+def bundle_scope(bundle: Path) -> str:
+    scope = write_artifact_lock.template(bundle / "artifacts.lock.json")["release_scope"]
+    if scope not in OS_TARGETS:
+        raise PublicationError("publication bundle must identify exactly one OS")
+    return scope
+
 CANONICAL_REPOSITORY = write_artifact_lock.REPOSITORY
 
 
@@ -32,11 +37,23 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def validate_bundle_tag(bundle: Path, tag: str) -> None:
+    scope = bundle_scope(bundle)
+    validate_release_tag(tag, scope)
+    lock = write_artifact_lock.template(bundle / "artifacts.lock.json")
+    for entry in lock["artifacts"]:
+        available = entry["artifact_target"] in OS_TARGETS[scope]
+        expected = f"{write_artifact_lock.BASE_URL}/{tag}/{entry['asset_name']}" if available else None
+        if entry["url"] != expected or (available and not write_artifact_lock.SHA256.fullmatch(entry["sha256"] or "")):
+            raise PublicationError("bundle lock has missing, foreign or tag-inconsistent selections")
+
+
 def bundle_inventory(bundle: Path) -> dict[str, str]:
-    found = {path.name for path in bundle.iterdir() if path.is_file()}
-    if found != EXPECTED_BUNDLE:
-        raise PublicationError(f"closed Linux bundle mismatch; missing={sorted(EXPECTED_BUNDLE - found)}, extra={sorted(found - EXPECTED_BUNDLE)}")
-    return {name: sha256(bundle / name) for name in sorted(EXPECTED_BUNDLE)}
+    expected = expected_bundle(bundle_scope(bundle))
+    found = {path.name for path in bundle.iterdir()}
+    if found != expected or any(not path.is_file() or path.is_symlink() for path in bundle.iterdir()):
+        raise PublicationError(f"closed OS bundle mismatch; missing={sorted(expected - found)}, extra={sorted(found - expected)}")
+    return {name: sha256(bundle / name) for name in sorted(expected)}
 
 
 def prepare(archives: Path, checksums: Path, audit: Path, tag: str, output: Path) -> dict[str, str]:
@@ -44,16 +61,20 @@ def prepare(archives: Path, checksums: Path, audit: Path, tag: str, output: Path
         raise PublicationError(f"publication output already exists: {output}")
     # Re-audit rather than trusting an adjacent report, then require byte-for-byte
     # agreement so the lock, checksum index, and manifest have one authority.
-    report = audit_release.audit(archives, checksums, ROOT / "artifacts.lock.json", "linux")
+    scope = json.loads(audit.read_text(encoding="utf-8"))["scope"]
+    if scope not in OS_TARGETS:
+        raise PublicationError("publication requires an OS-scoped audit")
+    validate_release_tag(tag, scope)
+    report = audit_release.audit(archives, checksums, ROOT / "artifacts.lock.json", scope)
     encoded_report = json.dumps(report, indent=2) + "\n"
     if audit.read_text(encoding="utf-8") != encoded_report:
-        raise PublicationError("Linux audit report does not match the closed archive audit")
+        raise PublicationError("OS audit report does not match the closed archive audit")
     lock = write_artifact_lock.render(ROOT / "artifacts.lock.json", None, tag, audit)
     output.mkdir()
-    for name in ARCHIVES:
+    for name in archive_names(scope):
         shutil.copyfile(archives / name, output / name)
     shutil.copyfile(checksums, output / "SHA256SUMS")
-    shutil.copyfile(audit, output / "LINUX-RELEASE-MANIFEST.json")
+    shutil.copyfile(audit, output / f"{scope.upper()}-RELEASE-MANIFEST.json")
     (output / "artifacts.lock.json").write_bytes(lock)
     shutil.copyfile(ROOT / "LICENSE", output / "PULSEBEAM-APACHE-2.0.txt")
     return bundle_inventory(output)
@@ -117,7 +138,7 @@ def main() -> int:
         else:
             print(json.dumps(result, sort_keys=True))
     except (OSError, ValueError, audit_release.AuditError, write_artifact_lock.LockError, PublicationError) as error:
-        print(f"Linux publication: {error}", file=sys.stderr)
+        print(f"OS publication: {error}", file=sys.stderr)
         return 1
     return 0
 
