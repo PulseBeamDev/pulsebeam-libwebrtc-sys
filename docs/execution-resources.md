@@ -77,16 +77,39 @@ This verifies that the default-resource observation was not just a low-resolutio
 or inactive-encoder artifact. Host/multiworker configuration is still accepted
 faithfully, not qualified for managed scheduling.
 
-For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH` to a separate JSON
-path for each invocation of the already-built test executable. Run it under the
+The same application and outer progress harness now live in
+`tests/support/managed_video.rs`; `tests/managed_vp8.rs` keeps its original test
+entry point. `tests/managed_vp9.rs` selects the stock VP9 profile-0 capability as
+an explicit media preference, not a runtime-specific codec admission rule.
+The pinned VP9 encoder maps a one-core setting to `g_threads=1`; the decoder
+caps its resolution-derived thread count at one. Libvpx enables row-MT but
+executes the final worker inline, creating pthreads only for preceding workers.
+The scoped row/tile/filter/frame-parallel paths therefore do not create physical
+workers with stock one-core settings. Explicit settings remain unchanged.
+
+The VP9 fixture qualified the same first-frame observations at 1280×720 on both
+Linux flavors: complete visible pixels, capture/RTP timestamps, logical events
+and virtual observation time matched within and across fresh processes. Eight
+VP9 lifecycles had no thread/process creation or real socket syscalls. Its
+`PULSEBEAM_VP9_HOST_WORKER_PROBE=1` negative control completed the same media
+procedure with four successful native worker creations per flavor, correctly
+rejected by the monitor. The shared-harness refactor also requalified eight VP8
+lifecycles and produced byte-identical JSON observations to the committed VP8
+baseline. Both VPx fixtures passed core ASan with leak detection.
+
+For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH` or
+`PULSEBEAM_VP9_TRACE_PATH` to a separate JSON path for each invocation of the
+corresponding already-built test executable. Run it under the
 continuous monitor described in `tools/check_controlled_lifecycle_trace.py`,
 then check each default-resource trace with `--minimum-scopes 2`. The optional
 host probe intentionally fails that monitor and must be evaluated separately.
 JSON file writes occur after all native lifecycle scopes.
 
 This evidence covers the first decoded frame and its listed observations, not
-all encoded bytes, RTP/statistics timelines, sustained media, other software
-codecs or complete replay/lifecycle closure. Those obligations remain open.
+all encoded bytes, RTP/statistics timelines, sustained media, software codecs
+beyond these VPx cases or complete replay/lifecycle closure. Explicit VP9
+settings/profiles beyond this stock profile-0 case also remain unqualified.
+Those obligations remain open.
 
 The actual Call consumer fixture in `tests/video.rs` records encoder and decoder
 initialization during negotiated raw-video transport with caller codec probes.
