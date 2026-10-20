@@ -143,14 +143,20 @@ impl<R: SessionRuntime> Call<R> {
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
-struct Observation {
-    events: Vec<String>,
+struct FrameObservation {
     width: u32,
     height: u32,
     timestamp_us: i64,
     rtp_timestamp: u32,
     visible_i420: Vec<u8>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct Observation {
+    events: Vec<String>,
+    frames: Vec<FrameObservation>,
     observed_at_us: u128,
+    media_elapsed_us: u128,
 }
 
 fn application<R: SessionRuntime>(
@@ -217,9 +223,10 @@ fn application<R: SessionRuntime>(
             };
         }
     }
-    let mut next_capture = now();
+    let media_started_at = now();
+    let mut next_capture = media_started_at;
     let mut submitted = 0;
-    let mut received = None;
+    let mut received = Vec::new();
     for _ in 0..10_000 {
         let current = now();
         if submitted < 8 && current >= next_capture {
@@ -233,29 +240,42 @@ fn application<R: SessionRuntime>(
         progress();
         call.drain();
         if let Some(frame) = call.sessions[1].try_raw_video_frame(receiver).unwrap() {
-            received = Some(frame);
-            break;
+            assert_eq!((frame.width, frame.height), (WIDTH, HEIGHT));
+            let visible_i420 = frame.buffer.as_bytes().to_vec();
+            assert_eq!(visible_i420.len(), y * 3 / 2);
+            assert!(visible_i420[..y].iter().any(|&sample| sample < 80));
+            assert!(visible_i420[..y].iter().any(|&sample| sample > 140));
+            received.push(FrameObservation {
+                width: frame.width,
+                height: frame.height,
+                timestamp_us: frame.timestamp_us,
+                rtp_timestamp: frame.rtp_timestamp,
+                visible_i420,
+            });
+            if received.len() == 2 {
+                break;
+            }
         }
     }
-    let frame = received.expect("native encode/transport/decode did not produce a frame");
-    assert_eq!((frame.width, frame.height), (WIDTH, HEIGHT));
-    let visible_i420 = frame.buffer.as_bytes().to_vec();
-    assert_eq!(visible_i420.len(), y * 3 / 2);
-    assert!(visible_i420[..y].iter().any(|&sample| sample < 80));
-    assert!(visible_i420[..y].iter().any(|&sample| sample > 140));
+    assert_eq!(
+        received.len(),
+        2,
+        "native sustained encode/transport/decode did not produce two distinct frames"
+    );
+    assert!(received[0].timestamp_us < received[1].timestamp_us);
+    assert_ne!(received[0].rtp_timestamp, received[1].rtp_timestamp);
     let observed_at_us = now().as_micros();
+    let media_elapsed_us = observed_at_us - media_started_at.as_micros();
+    assert!(media_elapsed_us >= 33_000);
     for index in 0..2 {
         call.sessions[index].close_peer(call.peers[index]).unwrap();
         call.sessions[index].shutdown().unwrap();
     }
     Observation {
         events: call.events,
-        width: frame.width,
-        height: frame.height,
-        timestamp_us: frame.timestamp_us,
-        rtp_timestamp: frame.rtp_timestamp,
-        visible_i420,
+        frames: received,
         observed_at_us,
+        media_elapsed_us,
     }
 }
 
@@ -311,12 +331,37 @@ pub fn check_replay(
         let second = run(codec_name, parameters, None);
         assert!(
             first == second,
-            "native {codec_name} replay differs: events_equal={}, pixels_equal={}, capture_us={:?}, observed_us={:?}, rtp={:?}",
+            "native {codec_name} replay differs: events_equal={}, frames_equal={}, capture_us={:?}, observed_us={:?}, rtp={:?}",
             first.events == second.events,
-            first.visible_i420 == second.visible_i420,
-            [first.timestamp_us, second.timestamp_us],
-            [first.observed_at_us, second.observed_at_us],
-            [first.rtp_timestamp, second.rtp_timestamp],
+            first.frames == second.frames,
+            [
+                first
+                    .frames
+                    .iter()
+                    .map(|frame| frame.timestamp_us)
+                    .collect::<Vec<_>>(),
+                second
+                    .frames
+                    .iter()
+                    .map(|frame| frame.timestamp_us)
+                    .collect::<Vec<_>>(),
+            ],
+            [
+                (first.observed_at_us, first.media_elapsed_us),
+                (second.observed_at_us, second.media_elapsed_us),
+            ],
+            [
+                first
+                    .frames
+                    .iter()
+                    .map(|frame| frame.rtp_timestamp)
+                    .collect::<Vec<_>>(),
+                second
+                    .frames
+                    .iter()
+                    .map(|frame| frame.rtp_timestamp)
+                    .collect::<Vec<_>>(),
+            ],
         );
         first
     };

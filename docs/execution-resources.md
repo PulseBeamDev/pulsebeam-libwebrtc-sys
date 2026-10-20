@@ -135,6 +135,32 @@ no worker/socket calls and produced JSON identical to the default. This is
 expected source-backed behavior, not evidence that explicit host resources are
 generally managed. Core ASan/leak detection passed for all four codec cases.
 
+### Post-first-frame scheduling and teardown
+
+The shared fixture now retains the first two frames returned by the raw sink,
+without duplicate filtering. It asserts increasing decoded-frame timestamps,
+distinct RTP timestamps, full-resolution visible pixels and at least 33 ms of
+virtual media time before closing both peers. The observation contains both
+frames' complete visible I420 data and timestamps, logical connection events,
+absolute virtual observation time and media elapsed time. SDK frame timestamps
+are retained unchanged; elapsed time is measured separately using the injected
+world clock, not by comparing SDK timestamps with that clock.
+
+This extends the four stock codec cases beyond their earlier first-frame
+checkpoints. Both Linux flavors replayed the two-frame observations within and
+across fresh processes. Continuous traces covered 32 complete default-resource
+lifecycles, including close/shutdown and final native drop, without thread/process
+creation or real socket syscalls. All four core ASan/leak cases also passed.
+
+The pinned receive path posts decode and post-decode work to SDK task queues.
+Its `VideoReceiveStream2::Stop` posts decoder shutdown to the decode queue and
+then performs `Event::Wait(kForever)`. The fixture reaches this synchronous
+teardown after post-first-frame progress using only caller-owned execution,
+packet delivery and virtual-time advancement. It does not establish arbitrary
+close ordering or every nested wait. In particular, two frames do not establish
+that the periodic encoder watchdog, feedback, retransmission or reconfiguration
+paths have run. No new wait hook, helper executor or native patch was added.
+
 For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH`,
 `PULSEBEAM_VP9_TRACE_PATH`, `PULSEBEAM_AV1_TRACE_PATH` or
 `PULSEBEAM_H264_TRACE_PATH` to a separate JSON path for each invocation of the
@@ -144,13 +170,14 @@ then check each default-resource trace with `--minimum-scopes 2`. The optional
 host probe intentionally fails that monitor and must be evaluated separately.
 JSON file writes occur after all native lifecycle scopes.
 
-This evidence covers the first decoded frame and its listed observations, not
-all encoded bytes, RTP/statistics timelines, sustained media, software codecs
-beyond these stock VPx/AV1 cases or complete replay/lifecycle closure. Explicit
-settings/profiles beyond these cases also remain unqualified. H.264 multi-slice
-and experimental parallel configurations are not exposed by this stock case.
-Repeated dav1d configuration ownership and reconfiguration lifecycle were not exercised by
-the first-frame AV1 case and remain specific qualification gaps.
+This evidence covers the first two decoded frames and their listed observations,
+not all encoded bytes, RTP/statistics timelines, long-running sustained media,
+software codecs beyond these stock VP8/VP9/AV1/H.264 cases or complete
+replay/lifecycle closure. Explicit settings/profiles beyond these cases also
+remain unqualified. H.264 multi-slice and experimental parallel configurations
+are not exposed by this stock case. Repeated dav1d configuration ownership and
+reconfiguration lifecycle were not exercised by the two-frame AV1 case and
+remain specific qualification gaps.
 Those obligations remain open.
 
 The actual Call consumer fixture in `tests/video.rs` records encoder and decoder
