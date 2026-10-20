@@ -1,0 +1,501 @@
+//! Real PCM capture -> stock Opus -> NetEq/raw playout with caller-owned progress.
+use pulsebeam_webrtc_sys::*;
+use serde::Serialize;
+use std::{cell::RefCell, collections::HashMap, net::IpAddr, time::Duration};
+
+struct Call<R: SessionRuntime> {
+    sessions: [Session<R>; 2],
+    peers: [SessionPeerId; 2],
+    operations: HashMap<(usize, OperationId), Option<SessionDescription>>,
+    gathered: [bool; 2],
+    connected: [bool; 2],
+    receivers: [Option<SessionReceiverId>; 2],
+    answer_transceiver: Option<SessionTransceiverId>,
+    events: Vec<String>,
+}
+
+impl<R: SessionRuntime> Call<R> {
+    fn new(runtimes: [R; 2]) -> Self {
+        let mut sessions = runtimes.map(|runtime| {
+            Session::with_runtime(runtime, SessionConfig::default())
+                .build()
+                .unwrap()
+        });
+        let peers = sessions
+            .each_mut()
+            .map(|session| session.create_peer(PeerConfiguration::default()).unwrap());
+        Self {
+            sessions,
+            peers,
+            operations: HashMap::new(),
+            gathered: [false; 2],
+            connected: [false; 2],
+            receivers: [None; 2],
+            answer_transceiver: None,
+            events: Vec::new(),
+        }
+    }
+
+    fn drain(&mut self) {
+        for index in 0..2 {
+            while let Some(event) = self.sessions[index]
+                .try_peer_event(self.peers[index])
+                .unwrap()
+            {
+                match event {
+                    SessionEvent::OperationComplete(done) => assert!(
+                        self.operations
+                            .insert((index, done.operation_id), done.result.unwrap())
+                            .is_none()
+                    ),
+                    SessionEvent::IceGatheringStateChanged(state) => {
+                        self.events.push(format!("{index}:gather:{state:?}"));
+                        self.gathered[index] = state == IceGatheringState::Complete;
+                    }
+                    SessionEvent::ConnectionStateChanged(state) => {
+                        self.events.push(format!("{index}:connection:{state:?}"));
+                        self.connected[index] = state == ConnectionState::Connected;
+                    }
+                    SessionEvent::Track {
+                        receiver,
+                        transceiver,
+                    } => {
+                        assert_eq!(
+                            self.sessions[index].receiver_media_type(receiver).unwrap(),
+                            MediaType::Audio
+                        );
+                        assert!(self.receivers[index].replace(receiver).is_none());
+                        if index == 1 {
+                            assert!(self.answer_transceiver.replace(transceiver).is_none());
+                        }
+                        self.events.push(format!("{index}:audio-track"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn finish(
+        &mut self,
+        index: usize,
+        operation: OperationId,
+        progress: &mut impl FnMut(Duration),
+    ) -> Option<SessionDescription> {
+        for _ in 0..10_000 {
+            self.drain();
+            if let Some(description) = self.operations.remove(&(index, operation)) {
+                return description;
+            }
+            progress(Duration::from_millis(1));
+        }
+        panic!("native operation stalled: peer {index}");
+    }
+
+    fn gather(
+        &mut self,
+        index: usize,
+        description: SessionDescription,
+        progress: &mut impl FnMut(Duration),
+    ) -> SessionDescription {
+        let operation = self.sessions[index]
+            .set_local_description(self.peers[index], description)
+            .unwrap();
+        self.finish(index, operation, progress);
+        for _ in 0..10_000 {
+            self.drain();
+            if self.gathered[index] {
+                let descriptions = self.sessions[index]
+                    .descriptions(self.peers[index])
+                    .unwrap();
+                return descriptions
+                    .current_local
+                    .or(descriptions.pending_local)
+                    .unwrap();
+            }
+            progress(Duration::from_millis(1));
+        }
+        panic!("native gathering stalled: peer {index}");
+    }
+
+    fn negotiate(
+        &mut self,
+        answer_source: SessionSourceId,
+        progress: &mut impl FnMut(Duration),
+    ) -> u8 {
+        let operation = self.sessions[0].create_offer(self.peers[0], false).unwrap();
+        let offer = self.finish(0, operation, progress).unwrap();
+        let opus_payload_type = offer
+            .sdp
+            .lines()
+            .find_map(|line| {
+                let (payload_type, codec) = line.strip_prefix("a=rtpmap:")?.split_once(' ')?;
+                (codec.trim() == "opus/48000/2").then(|| payload_type.parse::<u8>().unwrap())
+            })
+            .expect("stock Opus must be negotiated");
+        let offer = self.gather(0, offer, progress);
+        let operation = self.sessions[1]
+            .set_remote_description(self.peers[1], offer)
+            .unwrap();
+        self.finish(1, operation, progress);
+        // Attach the return source to the transceiver established by the
+        // offer, rather than pre-creating a separate, unassociated m-line.
+        let transceiver = self.answer_transceiver.unwrap();
+        let sender = self.sessions[1].sender(transceiver).unwrap();
+        self.sessions[1]
+            .replace_audio_source(sender, Some(answer_source), "pcm-tone-1")
+            .unwrap();
+        self.sessions[1]
+            .set_direction(transceiver, RtpTransceiverDirection::SendReceive)
+            .unwrap();
+        let operation = self.sessions[1].create_answer(self.peers[1]).unwrap();
+        let answer = self.finish(1, operation, progress).unwrap();
+        assert!(
+            answer
+                .sdp
+                .contains(&format!("a=rtpmap:{opus_payload_type} opus/48000/2"))
+        );
+        let answer = self.gather(1, answer, progress);
+        let operation = self.sessions[0]
+            .set_remote_description(self.peers[0], answer)
+            .unwrap();
+        self.finish(0, operation, progress);
+        for _ in 0..10_000 {
+            self.drain();
+            if self.connected == [true; 2] && self.receivers.iter().all(Option::is_some) {
+                return opus_payload_type;
+            }
+            progress(Duration::from_millis(1));
+        }
+        panic!(
+            "native audio negotiation incomplete: connected={:?}, receivers={:?}, events={:?}",
+            self.connected, self.receivers, self.events
+        );
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct FrameObservation {
+    observed_at_us: u128,
+    sample_rate_hz: u32,
+    channels: u8,
+    samples_per_channel: u32,
+    capture_time_ms: Option<i64>,
+    capture_time_us: Option<i64>,
+    samples: Vec<i16>,
+}
+
+#[derive(Debug, Serialize)]
+struct WirePacket {
+    id: u64,
+    kind: String,
+    source: String,
+    destination: String,
+    sender: usize,
+    deadline_us: u128,
+    observed_at_us: u128,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct PacketObservation {
+    id: u64,
+    kind: String,
+    source: String,
+    destination: String,
+    sender: usize,
+    deadline_us: u128,
+    observed_at_us: u128,
+    opus_rtp_header: Option<Vec<u8>>,
+    opus_packet_size: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct Trace {
+    observation: Observation,
+    // Keep the actual bytes, including variable crypto, without normalizing
+    // them into the replay observation. Crypto identity is outside the contract.
+    wire: Vec<WirePacket>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct Observation {
+    events: Vec<String>,
+    opus_payload_type: u8,
+    captures_at_us: Vec<u128>,
+    frames: [Vec<FrameObservation>; 2],
+    tone_frames: [usize; 2],
+    media_elapsed_us: u128,
+    packets: Vec<PacketObservation>,
+    opus_packets: [usize; 2],
+}
+
+fn has_tone(samples: &[i16], period: usize) -> bool {
+    let correlate = |lag: usize| {
+        samples.iter().zip(samples.iter().skip(lag)).fold(
+            (0i64, 0i64),
+            |(dot, energy), (&a, &b)| {
+                (
+                    dot + i64::from(a) * i64::from(b),
+                    energy + i64::from(a) * i64::from(a),
+                )
+            },
+        )
+    };
+    let (dot, energy) = correlate(period);
+    let (opposite, half_energy) = correlate(period / 2);
+    energy > 1_000_000 && dot > energy / 2 && opposite < -half_energy / 2
+}
+
+fn application<R: SessionRuntime>(
+    runtimes: [R; 2],
+    mut progress: impl FnMut(Duration),
+    mut now: impl FnMut() -> Duration,
+) -> Observation {
+    let mut call = Call::new(runtimes);
+    let sources = call
+        .sessions
+        .each_mut()
+        .map(|session| session.create_pcm_source().unwrap());
+    let transceiver = call.sessions[0]
+        .publish_pcm(
+            call.peers[0],
+            sources[0],
+            "pcm-tone-0",
+            RtpTransceiverDirection::SendReceive,
+            None,
+        )
+        .unwrap();
+    let opus = call.sessions[0]
+        .get_rtp_sender_capabilities(MediaType::Audio)
+        .unwrap()
+        .codecs()
+        .into_iter()
+        .find(|codec| codec.base_codec().name_bytes() == b"opus")
+        .expect("stock Opus encoder capability");
+    call.sessions[0]
+        .set_rtp_codec_preferences(transceiver, &[opus])
+        .unwrap();
+    let opus_payload_type = call.negotiate(sources[1], &mut progress);
+    let receivers = call.receivers.map(Option::unwrap);
+    for (index, receiver) in receivers.iter().enumerate() {
+        call.sessions[index].attach_pcm(*receiver).unwrap();
+    }
+    let tones = [1000, 1500].map(|frequency| {
+        let samples = (0..480)
+            .map(|index| {
+                if index * frequency * 2 / 48000 % 2 == 0 {
+                    12000
+                } else {
+                    -12000
+                }
+            })
+            .collect();
+        AudioPcmFrame::i16_interleaved(48000, 1, 0, samples).unwrap()
+    });
+    let mut frames: [Vec<FrameObservation>; 2] = [Vec::new(), Vec::new()];
+    let mut tone_frames = [0; 2];
+    let mut captures_at_us = Vec::new();
+    let started_at = now();
+    for step in 0..100 {
+        if step < 6 {
+            captures_at_us.push(now().as_micros());
+            for index in 0..2 {
+                let capture = call.sessions[index]
+                    .pcm_capture_time_now(sources[index])
+                    .unwrap();
+                call.sessions[index]
+                    .push_pcm_at(sources[index], &tones[index], capture)
+                    .unwrap();
+            }
+        }
+        progress(Duration::from_millis(10));
+        call.drain();
+        // Poll exactly once per receiver per 10ms step. An empty live sink can
+        // drive headless playout, so an unbounded drain would itself drive audio.
+        for index in 0..2 {
+            if let Some(frame) = call.sessions[index]
+                .try_pcm_frame(receivers[index])
+                .unwrap()
+            {
+                assert_eq!(
+                    (
+                        frame.sample_rate_hz,
+                        frame.channels,
+                        frame.samples_per_channel
+                    ),
+                    (48000, 1, 480)
+                );
+                assert_eq!(frame.samples.len(), 480);
+                if has_tone(&frame.samples, [48, 32][1 - index]) {
+                    tone_frames[index] += 1;
+                }
+                // Retain silence and any concealment, not just selected tones.
+                frames[index].push(FrameObservation {
+                    observed_at_us: now().as_micros(),
+                    sample_rate_hz: frame.sample_rate_hz,
+                    channels: frame.channels,
+                    samples_per_channel: frame.samples_per_channel,
+                    capture_time_ms: frame.capture_time_ms,
+                    capture_time_us: frame.capture_time_us,
+                    samples: frame.samples,
+                });
+            }
+        }
+        if step >= 5 && tone_frames.iter().all(|&count| count >= 3) {
+            break;
+        }
+    }
+    assert_eq!(captures_at_us.len(), 6);
+    assert!(
+        captures_at_us
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] == 10_000),
+        "PCM captures must be paced by explicit virtual 10ms steps"
+    );
+    assert!(
+        tone_frames.iter().all(|&count| count >= 3),
+        "stock PCM/Opus/NetEq did not deliver three source-correlated tone blocks per receiver: {tone_frames:?}"
+    );
+    let before_close = now();
+    let media_elapsed_us = before_close.as_micros() - started_at.as_micros();
+    assert!(media_elapsed_us >= 60_000);
+    for (index, receiver) in receivers.iter().enumerate() {
+        call.sessions[index].close_media_sink(*receiver).unwrap();
+        call.sessions[index].close_peer(call.peers[index]).unwrap();
+        call.sessions[index].shutdown().unwrap();
+    }
+    assert_eq!(now(), before_close, "teardown advanced virtual time");
+    Observation {
+        events: call.events,
+        opus_payload_type,
+        captures_at_us,
+        frames,
+        tone_frames,
+        media_elapsed_us,
+        packets: Vec::new(),
+        opus_packets: [0; 2],
+    }
+}
+
+fn opus_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
+    // SRTP retains the RTP header in the clear. Classify only the negotiated
+    // Opus PT, excluding STUN/DTLS and the RTCP type range.
+    if bytes.len() < 12
+        || bytes[0] >> 6 != 2
+        || (192..=223).contains(&bytes[1])
+        || bytes[1] & 0x7f != payload_type
+    {
+        return None;
+    }
+    let mut length = 12 + usize::from(bytes[0] & 0x0f) * 4;
+    assert!(bytes.len() >= length);
+    if bytes[0] & 0x10 != 0 {
+        assert!(bytes.len() >= length + 4);
+        let words = u16::from_be_bytes([bytes[length + 2], bytes[length + 3]]);
+        length += 4 + usize::from(words) * 4;
+    }
+    assert!(bytes.len() >= length);
+    Some(bytes[..length].to_vec())
+}
+
+fn run() -> Trace {
+    eprintln!("CONTROLLED_MEDIA_BEGIN");
+    let observation = {
+        let world = ControlledWorld::acquire(0x50434d, Duration::from_secs(7)).unwrap();
+        let network = world.create_network().unwrap();
+        let ips = ["192.0.2.1", "192.0.2.2"].map(|ip| ip.parse::<IpAddr>().unwrap());
+        let endpoints = ips.map(|ip| network.register_endpoint(ip).unwrap());
+        let runtimes = endpoints
+            .each_ref()
+            .map(|endpoint| world.runtime().unwrap().with_endpoint(endpoint).unwrap());
+        let packets = RefCell::new(Vec::new());
+        let mut observation = application(
+            runtimes,
+            |step| {
+                assert!(!world.pump(256).blocked);
+                while let Some(packet) = network.next_packet() {
+                    packets.borrow_mut().push(WirePacket {
+                        id: packet.id,
+                        kind: format!("{:?}", packet.kind),
+                        source: format!("{}:{}", packet.source.ip(), packet.source.port()),
+                        destination: format!(
+                            "{}:{}",
+                            packet.destination.ip(),
+                            packet.destination.port()
+                        ),
+                        sender: ips.iter().position(|&ip| ip == packet.source.ip()).unwrap(),
+                        deadline_us: packet.deadline.as_micros(),
+                        observed_at_us: world.now().as_micros(),
+                        payload: packet.payload.clone(),
+                    });
+                    network.deliver(packet.id).unwrap();
+                }
+                world.advance(step).unwrap();
+            },
+            || world.now(),
+        );
+        let wire = packets.into_inner();
+        for packet in &wire {
+            let header = opus_rtp_header(&packet.payload, observation.opus_payload_type);
+            let opus_packet_size = header.as_ref().map(|_| packet.payload.len());
+            if header.is_some() {
+                observation.opus_packets[packet.sender] += 1;
+            }
+            observation.packets.push(PacketObservation {
+                id: packet.id,
+                kind: packet.kind.clone(),
+                source: packet.source.clone(),
+                destination: packet.destination.clone(),
+                sender: packet.sender,
+                deadline_us: packet.deadline_us,
+                observed_at_us: packet.observed_at_us,
+                opus_rtp_header: header,
+                opus_packet_size,
+            });
+        }
+        assert!(
+            observation.opus_packets.iter().all(|&count| count >= 3),
+            "six PCM inputs must produce at least three native Opus RTP packets per sender: {:?}",
+            observation.opus_packets
+        );
+        Trace { observation, wire }
+    };
+    eprintln!("CONTROLLED_MEDIA_END");
+    observation
+}
+
+#[test]
+fn stock_pcm_opus_uses_managed_call_queues_and_replays() {
+    let first_trace = run();
+    let second_trace = run();
+    // Write only after both complete native lifecycles, including on replay
+    // failure. Retain each run's unmodified wire, not only the replay subset.
+    if let Some(path) = std::env::var_os("PULSEBEAM_PCM_TRACE_PATH") {
+        let path = std::path::PathBuf::from(path);
+        std::fs::write(&path, serde_json::to_vec(&first_trace).unwrap()).unwrap();
+        std::fs::write(
+            path.with_extension("second.json"),
+            serde_json::to_vec(&second_trace).unwrap(),
+        )
+        .unwrap();
+    }
+    let first = first_trace.observation;
+    let second = second_trace.observation;
+    let packet_difference = first
+        .packets
+        .iter()
+        .zip(&second.packets)
+        .position(|(a, b)| a != b);
+    assert!(
+        first == second,
+        "native PCM/Opus replay differs: events_equal={}, packets_equal={}, frames_equal={}, tones={:?}, packets={:?}, elapsed_us={:?}, first_packet_difference={packet_difference:?}, packet_counts={:?}",
+        first.events == second.events,
+        first.packets == second.packets,
+        first.frames == second.frames,
+        [first.tone_frames, second.tone_frames],
+        [first.opus_packets, second.opus_packets],
+        [first.media_elapsed_us, second.media_elapsed_us],
+        [first.packets.len(), second.packets.len()],
+    );
+}

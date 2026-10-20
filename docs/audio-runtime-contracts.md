@@ -133,6 +133,36 @@ recording/playout request. Empty discovery, unavailable initialization and
 failed selection remain native outcomes, not proof of physical capture or
 playout. These operations are not exposed by the headless core feature set.
 
+### Caller-driven stock PCM baseline
+
+`tests/managed_pcm.rs` uses a generic `Session<R>` application with stock Opus
+selected as an explicit codec preference. It submits six mono 48 kHz/480-sample
+PCM blocks per sender at 10 ms virtual intervals and receives raw PCM in both
+directions. The answering source attaches to the transceiver established by the
+offer, rather than a separate pre-created m-line. No prerecorded Opus input,
+custom codec or optional source processor is installed.
+
+The outer caller pumps native queues, delivers packets and advances virtual time.
+It polls each raw sink once per 10 ms step, because polling an empty live sink
+can drive headless playout. An unbounded drain is not a passive observation. The
+fixture requires at least three native Opus RTP packets per sender and three
+source-correlated tone blocks per receiver, while retaining every returned PCM
+block, including initial silence. Explicit sink/peer/session teardown must not
+advance virtual time.
+
+`PULSEBEAM_PCM_TRACE_PATH` writes the first run's JSON at the supplied path and
+the second run at that path with extension `second.json`, after both native
+lifecycles end. Compare the complete `observation` objects: native PCM samples
+and optional capture times, logical events, virtual capture/playout/delivery
+times, packet metadata and clear Opus RTP headers/sizes. The separate `wire`
+array retains unmodified packet bytes. Cryptographic identities/ciphertext are
+not replay criteria and are not rewritten or made deterministic by the fixture.
+
+This is a bounded, clean-delivery mono PCM baseline. It does not qualify optional
+source processing, every voice-engine APM configuration, multi-source mixing,
+NetEq impairment/reconfiguration, plaintext encoded Opus byte replay or
+long-running audio. Those paths require their own native consumer observations.
+
 ## Installed stock encoder controls
 
 Peer factories retain the selected stock encoder factory and wrap its actual
