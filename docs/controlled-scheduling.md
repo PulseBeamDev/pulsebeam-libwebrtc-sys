@@ -90,6 +90,23 @@ queues, enabling self-reposting caller work. Threaded posting retains its
 `Send` bound. Dispatch budgets bound task count, not the execution time of
 arbitrary caller-provided closures.
 
+### SDK thread invocation from another queue
+
+An ordinary cooperative callback has its own native task-queue identity while
+running on the driver thread. SDK `Thread::IsCurrent()` checks thread identity,
+not that task-queue identity. The managed thread's inline `BlockingCall` therefore
+scopes the requested SDK thread queue around the native operation, then restores
+the caller queue. Native invoke-policy checks and off-thread posting remain in
+the SDK implementation. The threaded runtime is unchanged; no sequence check is
+disabled and no extra thread or executor is introduced.
+
+`tests/managed_pcm_teardown.rs` closes and drops an actual stock audio graph from
+an active same-world caller queue. It checks current-queue identity before and
+after native teardown, restoration on return and no virtual-time movement.
+The [audio contracts](audio-runtime-contracts.md) describe its replay and scope.
+This does not authorize arbitrary reentry from native media/provider callbacks
+or prove teardown from an active encoder queue.
+
 ## Common media configuration
 
 Media selection is independent of runtime selection. Headless defaults use

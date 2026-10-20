@@ -228,8 +228,40 @@ This qualifies the scoped native reporting and loss observations, not every
 periodic RTT update, custom logger serialization, stock buffered-file logging,
 long-running audio, arbitrary impairment, plaintext encoded Opus byte replay or
 reconfiguration. A received SR/RR alone does not prove the separate periodic RTT
-update ran. Teardown still originates from the ordinary application actor, not
-from an active encoder queue or arbitrary nested callback.
+update ran. These reporting cases close from the ordinary application actor.
+
+### Stock audio teardown from an active caller queue
+
+`tests/managed_pcm_teardown.rs` runs the same six-block PCM/Opus application,
+then moves its graph into `TaskQueue::post_local` on a queue created by the same
+world. Sink/peer close, session shutdown and final peer/factory/Call destruction
+all occur before that callback returns. The callback must remain on its own
+queue before and after native teardown; the external caller must not remain on
+that queue afterward. Completion takes one top-level pump with no time advance.
+The ordinary cases now also check time after complete graph destruction.
+
+This exposed a native debug sequence failure in `AudioTrack::RemoveSink`:
+`Thread::IsCurrent()` accepted the driver thread but the current task queue was
+the caller queue, not signaling. The managed thread now scopes the requested
+SDK thread queue for an already-current inline `BlockingCall`, preserving the
+native invoke-policy implementation and restoring the caller queue on return.
+There is no SDK source patch, disabled check, cleanup worker or changed media
+algorithm. Matching core/native and core ASan artifacts were re-exported through
+the producer, not relabeled from old libraries.
+
+`PULSEBEAM_PCM_TEARDOWN_TRACE_PATH` retains complete first/second observations,
+including queue-entry/exit, pump count and teardown times. The selected native
+media/timing observations equal the ordinary actor-close case; the added queue
+observations replay in full within and across fresh processes and flavors.
+Eight new continuous native lifecycles showed no thread/helper-process creation
+or real socket syscalls. The native sequence checks and ASan/leak case passed
+alongside the eight earlier stock-media cases. Earlier plain, processed and
+sustained reporting/loss observations remained unchanged.
+
+This covers a distinct active caller queue, not a stop invoked from inside the
+stock encoder queue. That queue is not exposed by the inspected public stock
+Rust surface; a source-level self-wait possibility is not a demonstrated public
+runtime path. Arbitrary nested callbacks and full scheduling closure remain open.
 
 ## Installed stock encoder controls
 

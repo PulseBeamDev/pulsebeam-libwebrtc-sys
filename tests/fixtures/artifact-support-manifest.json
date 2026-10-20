@@ -13,7 +13,7 @@
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
       "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771"
+    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba"
   },
   "sources": {
     "webrtc": {
@@ -34,7 +34,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "f76fef9611d8f3698df80d781c5b937a869341a389d1befc77a2384a714a6049",
+  "native_configuration_sha256": "a42555ac11dedfed70ecce3589bfd03c84f3e298e47bd189dd143602dc5688f0",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -63,7 +63,7 @@
     ]
   },
   "native_configuration": {
-    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771",
+    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",

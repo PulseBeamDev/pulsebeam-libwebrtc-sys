@@ -13,7 +13,7 @@
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
       "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771"
+    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba"
   },
   "sources": {
     "webrtc": {
@@ -35,7 +35,7 @@
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
   "native_configuration": {
-    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771",
+    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -145,7 +145,7 @@
     },
     "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
   },
-  "native_configuration_sha256": "c18edec38538e720e380d628e4e09ee05ab9d427b5e38d34e5d250b6bdfbb375",
+  "native_configuration_sha256": "76dcbdc69edbdd99b633a00023b30d76c8e27f5a9eb393f8916685a0e5fe4a09",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",
@@ -156,7 +156,7 @@
   "archive": {
     "member": "lib/libwebrtc.a",
     "name": "webrtc",
-    "sha256": "3aadc3867b8bb843d8ea2c43594be34e7a60e5c6927df7327db4e46dcd994a5f"
+    "sha256": "885b266aaf5d01aff1bc6f8a32a448e89a70a1c97b6059da6ac8775ae89d8547"
   },
   "links": [
     {

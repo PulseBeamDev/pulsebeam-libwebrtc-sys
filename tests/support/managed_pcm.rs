@@ -1,7 +1,7 @@
 //! Real PCM capture -> stock Opus -> NetEq/raw playout with caller-owned progress.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
-use std::{cell::RefCell, collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, net::IpAddr, rc::Rc, sync::Arc, time::Duration};
 
 #[path = "pcm_periodic.rs"]
 mod periodic;
@@ -118,6 +118,19 @@ impl<R: SessionRuntime> Call<R> {
             progress(Duration::from_millis(1));
         }
         panic!("native operation stalled: peer {index}");
+    }
+
+    fn retire_graph(mut self) -> Vec<String> {
+        for (index, receiver) in self.receivers.map(Option::unwrap).iter().enumerate() {
+            self.sessions[index].close_media_sink(*receiver).unwrap();
+            self.sessions[index].close_peer(self.peers[index]).unwrap();
+            self.sessions[index].shutdown().unwrap();
+        }
+        let events = std::mem::take(&mut self.events);
+        // Final native peer/factory/Call destruction is part of this operation,
+        // not deferred to the caller after the execution context is restored.
+        drop(self);
+        events
     }
 
     fn snapshot(&mut self, index: usize, progress: &mut impl FnMut(Duration)) -> periodic::Stats {
@@ -265,6 +278,17 @@ struct Trace {
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
+struct QueueTeardown {
+    queue_name: Vec<u8>,
+    started_at_us: u128,
+    returned_at_us: u128,
+    entered_current: bool,
+    exited_current: bool,
+    caller_current_after: bool,
+    pumps: usize,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
 struct Observation {
     events: Vec<String>,
     opus_payload_type: u8,
@@ -276,6 +300,8 @@ struct Observation {
     opus_packets: [usize; 2],
     #[serde(skip_serializing_if = "Option::is_none")]
     periodic: Option<periodic::Observation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_teardown: Option<QueueTeardown>,
 }
 
 fn has_tone(samples: &[i16], period: usize) -> bool {
@@ -300,6 +326,7 @@ fn application<R: SessionRuntime>(
     processing: Option<&AudioProcessorConfig>,
     capture_blocks: usize,
     reports: Option<&Arc<periodic::Audit>>,
+    finish: impl FnOnce(Call<R>) -> Vec<String>,
     mut progress: impl FnMut(Duration),
     mut now: impl FnMut() -> Duration,
 ) -> Observation {
@@ -438,14 +465,10 @@ fn application<R: SessionRuntime>(
                 .unwrap();
         }
     }
-    for (index, receiver) in receivers.iter().enumerate() {
-        call.sessions[index].close_media_sink(*receiver).unwrap();
-        call.sessions[index].close_peer(call.peers[index]).unwrap();
-        call.sessions[index].shutdown().unwrap();
-    }
+    let events = finish(call);
     assert_eq!(now(), before_close, "teardown advanced virtual time");
     Observation {
-        events: call.events,
+        events,
         opus_payload_type,
         captures_at_us,
         frames,
@@ -454,6 +477,7 @@ fn application<R: SessionRuntime>(
         packets: Vec::new(),
         opus_packets: [0; 2],
         periodic,
+        queue_teardown: None,
     }
 }
 
@@ -479,7 +503,7 @@ fn opus_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
 }
 
 fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
-    run_case(processing, 6, false, false)
+    run_case(processing, 6, false, false, false)
 }
 
 fn run_case(
@@ -487,6 +511,7 @@ fn run_case(
     capture_blocks: usize,
     observe_periodic: bool,
     impaired: bool,
+    queued_teardown: bool,
 ) -> Trace {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let observation = {
@@ -500,11 +525,62 @@ fn run_case(
         let packets = RefCell::new(Vec::new());
         let mut sent_rtp = [0usize; 2];
         let reports = observe_periodic.then(|| Arc::new(periodic::Audit::default()));
+        let queue = queued_teardown.then(|| {
+            Rc::new(
+                world
+                    .create_queue("stock-audio-close", QueuePriority::Normal)
+                    .unwrap(),
+            )
+        });
+        let mut queue_teardown = None;
         let mut observation = application(
             runtimes,
             processing,
             capture_blocks,
             reports.as_ref(),
+            |call| {
+                let Some(queue) = queue else {
+                    return call.retire_graph();
+                };
+                assert!(!queue.is_current());
+                let started_at_us = world.now().as_micros();
+                let result = Rc::new(RefCell::new(None));
+                let completed = result.clone();
+                let callback_queue = queue.clone();
+                assert!(
+                    queue
+                        .post_local(move || {
+                            let entered_current = callback_queue.is_current();
+                            assert!(entered_current);
+                            let events = call.retire_graph();
+                            let exited_current = callback_queue.is_current();
+                            assert!(exited_current);
+                            *completed.borrow_mut() =
+                                Some((events, entered_current, exited_current));
+                        })
+                        .unwrap()
+                );
+                for pumps in 1..=10_000 {
+                    assert!(!world.pump(256).blocked);
+                    if let Some((events, entered_current, exited_current)) =
+                        result.borrow_mut().take()
+                    {
+                        assert!(!queue.is_current());
+                        assert!(!queue.has_failed());
+                        queue_teardown = Some(QueueTeardown {
+                            queue_name: queue.name_bytes(),
+                            started_at_us,
+                            returned_at_us: world.now().as_micros(),
+                            entered_current,
+                            exited_current,
+                            caller_current_after: queue.is_current(),
+                            pumps,
+                        });
+                        return events;
+                    }
+                }
+                panic!("stock audio teardown from caller queue stalled");
+            },
             |step| {
                 assert!(!world.pump(256).blocked);
                 while let Some(packet) = network.next_packet() {
@@ -546,6 +622,7 @@ fn run_case(
         if let Some(audit) = reports {
             observation.periodic.as_mut().unwrap().reports = audit.snapshot();
         }
+        observation.queue_teardown = queue_teardown;
         let wire = packets.into_inner();
         for packet in &wire {
             let header = opus_rtp_header(&packet.payload, observation.opus_payload_type);
@@ -578,9 +655,21 @@ fn run_case(
 }
 
 pub fn check_replay(processing: Option<&AudioProcessorConfig>, trace_variable: &str) {
+    check_short_replay(processing, trace_variable, false);
+}
+
+pub fn check_queued_teardown_replay(trace_variable: &str) {
+    check_short_replay(None, trace_variable, true);
+}
+
+fn check_short_replay(
+    processing: Option<&AudioProcessorConfig>,
+    trace_variable: &str,
+    queued_teardown: bool,
+) {
     let reference = processing.map(|_| run(None));
-    let first_trace = run(processing);
-    let second_trace = run(processing);
+    let first_trace = run_case(processing, 6, false, false, queued_teardown);
+    let second_trace = run_case(processing, 6, false, false, queued_teardown);
     // Write only after every complete native lifecycle, including on replay
     // failure. Retain each run's unmodified wire, not only the replay subset.
     if let Some(path) = std::env::var_os(trace_variable) {
@@ -597,6 +686,15 @@ pub fn check_replay(processing: Option<&AudioProcessorConfig>, trace_variable: &
                 serde_json::to_vec(reference).unwrap(),
             )
             .unwrap();
+        }
+    }
+    if queued_teardown {
+        for trace in [&first_trace, &second_trace] {
+            let q = trace.observation.queue_teardown.as_ref().unwrap();
+            assert_eq!(q.queue_name, b"stock-audio-close");
+            assert!(q.entered_current && q.exited_current && !q.caller_current_after);
+            assert_eq!(q.started_at_us, q.returned_at_us);
+            assert!(q.pumps > 0);
         }
     }
     if let Some(reference) = reference {
@@ -657,8 +755,8 @@ pub fn check_replay(processing: Option<&AudioProcessorConfig>, trace_variable: &
 }
 
 pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
-    let first = run_case(None, 300, true, impaired);
-    let second = run_case(None, 300, true, impaired);
+    let first = run_case(None, 300, true, impaired, false);
+    let second = run_case(None, 300, true, impaired, false);
     if let Some(path) = std::env::var_os(trace_variable) {
         let path = std::path::PathBuf::from(path);
         std::fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();

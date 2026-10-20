@@ -383,6 +383,19 @@ class ControlledThread final : public webrtc::Thread {
     if (auto* queue = std::exchange(queue_, nullptr)) queue->Delete();
   }
  protected:
+  void BlockingCallImpl(webrtc::FunctionView<void()> functor,
+                        const webrtc::Location& location) override {
+    // IsCurrent is a ThreadManager identity check, not a task-queue check.
+    // A distinct cooperative queue can run on this same caller thread. Enter
+    // the requested SDK thread sequence for its inline invocation, then restore
+    // that caller queue. Keep native invoke policy and off-thread posting intact.
+    if (IsCurrent() && webrtc::TaskQueueBase::Current() != this) {
+      CurrentTaskQueueSetter current(this);
+      webrtc::Thread::BlockingCallImpl(functor, location);
+      return;
+    }
+    webrtc::Thread::BlockingCallImpl(functor, location);
+  }
   void PostTaskImpl(absl::AnyInvocable<void() &&> task,
                     const PostTaskTraits& traits,
                     const webrtc::Location& location) override {
