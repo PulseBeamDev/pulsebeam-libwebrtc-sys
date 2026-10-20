@@ -1091,11 +1091,12 @@ subject to native build support. These options do not configure TURN TLS.
 Setting `disable_encryption` is insecure and prevents DTLS-dependent SCTP
 channels. See [factory configuration contracts](docs/factory-configuration-contracts.md).
 
-Both local factory and production-session builders accept
+Both local factory and common session builders accept
 `.execution_resources(ExecutionResources { codec_core_budget: Some(CodecCoreBudget::new(1)?), })`.
-This supplies a native Call execution default without selecting a codec profile;
-an absent budget retains host-core detection. It is not a global worker cap or
-proof of deterministic execution. See [native Call execution resources](docs/execution-resources.md).
+Without registration, caller-driven peer factories supply a one-core default and
+threaded factories retain native host detection. Explicit configurations, including
+an absent budget, remain unchanged. This does not select a codec profile, impose
+a global worker cap or qualify explicit multiworker settings for managed execution. See [native Call execution resources](docs/execution-resources.md).
 
 ## Crypto option values (Linux core and native)
 

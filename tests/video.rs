@@ -2944,26 +2944,47 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
                 || line.contains("extmap:"))
             .collect::<Vec<_>>()
     );
+    // This is a threaded SDK fixture, not a managed-execution claim. Its
+    // native queues run on elapsed time. Advancing the injected media clock
+    // 100 seconds per input frame outruns those queues and the SDK's two-second
+    // encoder inactivity timer. Keep this clock aligned with elapsed time,
+    // including capture timestamps, while the existing workers run naturally.
+    let started = Instant::now();
+    let clock_origin = pair.clock.now();
+    let progress = || {
+        let target = clock_origin + started.elapsed();
+        pair.clock
+            .advance(target.saturating_sub(pair.clock.now()))
+            .unwrap();
+        let events = (drain(&pair.alice), drain(&pair.bob));
+        while let Some(packet) = pair.network.next_packet() {
+            pair.network.deliver(packet.id).unwrap();
+        }
+        thread::yield_now();
+        events
+    };
     let mut ssrcs = std::collections::HashSet::new();
     for index in 0..12 {
+        progress();
         source
             .push_frame(
                 &VideoFrame::i420(
                     640,
                     360,
                     synthetic_i420(640, 360),
-                    2_000_000 + index * 33_333,
+                    pair.clock.now().as_micros() as i64,
                     index as u32,
                 )
                 .unwrap(),
             )
             .unwrap();
-        for _ in 0..100_000 {
-            pair.progress();
+        let next_capture = started.elapsed() + Duration::from_micros(33_333);
+        loop {
+            progress();
             while let Some(frame) = encoded.try_next_frame() {
                 ssrcs.insert(frame.ssrc);
             }
-            if ssrcs.len() == 2 {
+            if ssrcs.len() == 2 || started.elapsed() >= next_capture {
                 break;
             }
         }
@@ -2977,12 +2998,16 @@ fn video_rids_are_validated_and_fixed_before_negotiation() {
     );
     assert!(
         !ssrcs.is_empty(),
-        "at least one layer must arrive at the peer receiver"
+        "at least one layer must arrive at the peer receiver: native encodes={}, clock={:?}, settings={:?}, rates={:?}",
+        counters.encode.load(Ordering::SeqCst),
+        pair.clock.now(),
+        counters.encoder_settings.lock().unwrap(),
+        counters.encoder_rates.lock().unwrap(),
     );
     let operation = pair.alice.request_stats().unwrap();
     let snapshot = (0..100_000)
         .find_map(|_| {
-            pair.progress().0.into_iter().find_map(|event| match event {
+            progress().0.into_iter().find_map(|event| match event {
                 PeerConnectionEvent::Stats(stats) if stats.operation_id == operation => Some(stats),
                 _ => None,
             })

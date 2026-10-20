@@ -494,7 +494,7 @@ unsafe impl Send for Session<ThreadedRuntime> {}
 /// A threaded instantiation never imports an affine driver or local handle.
 pub struct SessionBuilder<R: SessionRuntime = ThreadedRuntime> {
     runtime: R,
-    execution_resources: crate::ExecutionResources,
+    execution_resources: Option<crate::ExecutionResources>,
     config: ProductionSessionConfig,
     audio_encoder_factory: Option<AudioEncoderFactory>,
     audio_decoder_factory: Option<AudioDecoderFactory>,
@@ -529,10 +529,12 @@ pub struct SessionBuilder<R: SessionRuntime = ThreadedRuntime> {
 }
 
 impl<R: SessionRuntime> SessionBuilder<R> {
-    /// Select the same native Call resource defaults as the local factory.
-    /// This does not opt into a codec whitelist or modify media selection.
+    /// Explicit native Call resources, independent of media selection.
+    /// Without registration, the selected runtime supplies its factory default:
+    /// one core for caller-driven execution, native host detection for threaded.
+    /// An explicit unset budget still requests native host detection.
     pub fn execution_resources(mut self, resources: crate::ExecutionResources) -> Self {
-        self.execution_resources = resources;
+        self.execution_resources = Some(resources);
         self
     }
 
@@ -844,7 +846,7 @@ impl<R: SessionRuntime> Session<R> {
             audio_encoder_factory: None,
             audio_decoder_factory: None,
             pcm_audio: true,
-            execution_resources: crate::ExecutionResources::default(),
+            execution_resources: None,
             audio_processing: None,
             audio_processor_builder: None,
             audio_mixer_sources: None,
@@ -1065,11 +1067,13 @@ impl<R: SessionRuntime> Session<R> {
             None => AudioDecoderFactory::builtin_opus().map_err(codec_error)?,
         };
         let mut builder = runtime::configure(&mut runtime, PeerConnectionFactory::builder())
-            .execution_resources(execution_resources)
             .audio_encoder_factory(selected_audio_encoder)
             .audio_decoder_factory(selected_audio_decoder)
             .readiness(readiness.clone())
             .event_logging(event_logging);
+        if let Some(resources) = execution_resources {
+            builder = builder.execution_resources(resources);
+        }
         if let Some(config) = audio_processing {
             builder = builder.audio_processing(config);
         }

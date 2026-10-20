@@ -633,15 +633,17 @@ pub struct PeerConnectionFactoryBuilder {
     audio_processor_builder: Option<crate::BuiltinAudioProcessorBuilder>,
     audio_mixer: Option<crate::AudioMixer>,
     options: crate::FactoryOptions,
-    execution_resources: crate::ExecutionResources,
+    execution_resources: Option<crate::ExecutionResources>,
     readiness: Option<std::sync::Arc<crate::readiness::Readiness>>,
 }
 
 impl PeerConnectionFactoryBuilder {
-    /// Select native Call execution-resource defaults without changing media
-    /// implementations or standalone caller codec settings.
+    /// Explicit native Call resource configuration, without changing media
+    /// implementations or standalone codec settings. Without registration,
+    /// caller-driven factories default to one core and threaded factories use
+    /// native host detection. Registering an unset budget preserves host detection.
     pub fn execution_resources(mut self, resources: crate::ExecutionResources) -> Self {
-        self.execution_resources = resources;
+        self.execution_resources = Some(resources);
         self
     }
 
@@ -1234,7 +1236,11 @@ impl PeerConnectionFactoryBuilder {
                     .as_ref()
                     .map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
                 optional_ptr(readiness.as_ref().and_then(|value| value.as_ref())),
-                self.execution_resources.codec_core_budget_bits(),
+                crate::ExecutionResources::resolve(
+                    self.execution_resources,
+                    self.controlled_driver.is_some(),
+                )
+                .codec_core_budget_bits(),
                 &self.audio_processing.map_or(
                     ffi::FfiAudioProcessingConfig {
                         enabled: false,
@@ -1298,7 +1304,7 @@ impl Default for PeerConnectionFactoryBuilder {
             worker_thread: None,
             signaling_thread: None,
             controlled_driver: None,
-            execution_resources: crate::ExecutionResources::default(),
+            execution_resources: None,
             network_manager: None,
             network_manager_factory: None,
             network_monitor_factory: None,

@@ -1,9 +1,10 @@
 # Native Call execution resources
 
 `ExecutionResources` supplies execution defaults independently of codec and source
-selection. Both `PeerConnectionFactory::builder()` and
-`ProductionSession::builder(config)` accept `.execution_resources(resources)`.
-The selection is not specific to real or simulated execution.
+selection. Both `PeerConnectionFactory::builder()` and the common
+`Session::with_runtime(runtime, config)` builder accept
+`.execution_resources(resources)`. Runtime policy supplies a default only when
+no resource configuration was registered.
 
 ```rust
 use pulsebeam_webrtc_sys::{CodecCoreBudget, ExecutionResources};
@@ -15,9 +16,11 @@ let resources = ExecutionResources {
 ```
 
 `CodecCoreBudget` accepts every positive native `int` and rejects zero and negative
-values without constructing native resources. An absent budget preserves native
-host-core detection. This is a default for native Calls, not a global setting or a
-process-wide worker cap. Backends may use fewer cores, impose their own limits or
+values without constructing native resources. With no configuration registration,
+caller-driven peer factories select one core and threaded factories preserve
+native host-core detection. An explicitly registered configuration is never
+rewritten, including an explicit absent budget requesting native host detection.
+This is a default for native Calls, not a global setting or a process-wide worker cap. Backends may use fewer cores, impose their own limits or
 manage workers independently. It is not proof that all workers are caller-owned.
 
 ## Native boundary
@@ -42,11 +45,48 @@ scope remains Linux x86_64 core/native.
 
 ## Boundaries
 
-The resource setting does not remove the existing controlled-media admission
-restrictions, turn `ProductionSession` into a common real/sim owner, pump queues,
-close synchronous-wait or teardown gaps, or make arbitrary caller/native/hardware
-providers deterministic. Those require their own execution and ownership support.
-Existing mode-specific constructors are not a substitute for that common path.
+`Session<R>` already provides common construction and the former media-profile
+admission flag is removed. Resource defaults do not select media implementations,
+pump queues, close every synchronous-wait/teardown gap or qualify every backend.
+Explicit budgets greater than one and explicit host detection remain scheduling
+qualification gaps for managed core workflows, not automatic determinism opt-outs
+or upstream-unavailable cases. Standalone codec settings remain unchanged.
+
+In the pinned Linux VP8 implementation, the encoder's native `NumberOfThreads`
+returns one for a one-core setting at every resolution; host-derived counts can
+select multiple workers above VGA. Libvpx creates encoding/filter pthreads only
+for its multithreaded path. The VP8 decoder independently fixes its thread count
+to one. This concrete dependency motivates the default policy. Source review and a
+resource-selector unit test alone are not qualification.
+
+`tests/managed_vp8.rs` now exercises two actual native Calls with stock VP8,
+caller-supplied 1280×720 input, native transport and native decoding. With no
+resource registration, both Linux flavors produced the first full-resolution
+decoded frame and replayed its complete visible I420 pixels, RTP/capture
+timestamps, logical connection events and virtual observation time. Repeated
+runs inside each process and serialized observations from two fresh processes
+matched. Continuous syscall traces from acquisition through final native drop
+covered eight default-resource lifecycles in total, with zero thread/process
+creation or real socket syscalls. Core ASan with leak detection also passed.
+
+The fixture's optional `PULSEBEAM_VP8_HOST_WORKER_PROBE=1` negative control
+explicitly registers an absent budget. On the qualification host (20 detected
+cores), the same application completed with three successful native worker
+creation calls per flavor; the lifecycle checker correctly rejected that trace.
+This verifies that the default-resource observation was not just a low-resolution
+or inactive-encoder artifact. Host/multiworker configuration is still accepted
+faithfully, not qualified for managed scheduling.
+
+For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH` to a separate JSON
+path for each invocation of the already-built test executable. Run it under the
+continuous monitor described in `tools/check_controlled_lifecycle_trace.py`,
+then check each default-resource trace with `--minimum-scopes 2`. The optional
+host probe intentionally fails that monitor and must be evaluated separately.
+JSON file writes occur after all native lifecycle scopes.
+
+This evidence covers the first decoded frame and its listed observations, not
+all encoded bytes, RTP/statistics timelines, sustained media, other software
+codecs or complete replay/lifecycle closure. Those obligations remain open.
 
 The actual Call consumer fixture in `tests/video.rs` records encoder and decoder
 initialization during negotiated raw-video transport with caller codec probes.
