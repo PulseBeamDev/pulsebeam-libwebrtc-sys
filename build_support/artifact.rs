@@ -1305,6 +1305,9 @@ mod tests {
 
     fn configure_test_environment(cache: &Path, offline: bool) {
         unsafe {
+            // Runtime qualification supplies a real override to Cargo. Cache tests
+            // must exercise their fixtures rather than inherit that bypass.
+            env::remove_var(ARTIFACT_DIR_ENV);
             env::set_var(CACHE_DIR_ENV, cache);
             if offline {
                 env::set_var(OFFLINE_ENV, "1");
@@ -1410,8 +1413,16 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let root = artifact_test_root("release-cache-identity");
         let cache = root.join("cache");
-        configure_test_environment(&cache, true);
         let archive = fixture_archive();
+        let inherited = root.join("runtime-override");
+        fs::create_dir(&inherited).unwrap();
+        let bundled = root.join("runtime-override.tar.gz");
+        fs::write(&bundled, &archive).unwrap();
+        extract_safely(&bundled, &inherited).unwrap();
+        unsafe {
+            env::set_var(ARTIFACT_DIR_ENV, &inherited);
+        }
+        configure_test_environment(&cache, true);
         let hash = format!("{:x}", Sha256::digest(&archive));
         // A same-name archive in the old root cache must not satisfy a release.
         fs::create_dir_all(&cache).unwrap();
