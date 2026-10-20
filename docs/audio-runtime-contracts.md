@@ -158,10 +158,36 @@ times, packet metadata and clear Opus RTP headers/sizes. The separate `wire`
 array retains unmodified packet bytes. Cryptographic identities/ciphertext are
 not replay criteria and are not rewritten or made deterministic by the fixture.
 
-This is a bounded, clean-delivery mono PCM baseline. It does not qualify optional
-source processing, every voice-engine APM configuration, multi-source mixing,
-NetEq impairment/reconfiguration, plaintext encoded Opus byte replay or
-long-running audio. Those paths require their own native consumer observations.
+### Explicit builtin source processing
+
+The same application and outer harness live in `tests/support/managed_pcm.rs`.
+`tests/managed_pcm_processing.rs` explicitly selects
+`BuiltinAudioProcessorBuilder::new().config(config)` with the native APM
+pre-amplifier enabled at gain 2.0. It runs an unprocessed reference and two
+processed applications with unchanged input tones, pacing, Opus selection and
+receive polling. Over equal virtual media durations and returned block counts,
+received PCM energy must exceed twice the reference energy in both directions.
+This is an installed-processing/output witness, not a config readback or an
+exact amplitude assertion after lossy encoding and native playout.
+
+The source processes an owned input copy through the installed APM before
+passing it to the native source sinks and Opus send path. Managed factories use
+the current caller-owned driver for the default worker role, so this ordinary
+caller-side `worker_thread()->BlockingCall` takes the SDK's direct `IsCurrent`
+branch. Push and teardown must not advance virtual time. This does not establish
+all posted-wait or nested-callback variants of `BlockingCall`.
+
+`PULSEBEAM_PCM_PROCESSING_TRACE_PATH` writes the same first/second trace format
+as the plain fixture, plus the unprocessed run at extension `reference.json`.
+Complete processed PCM, timing, events and clear RTP observations are replay
+criteria; all raw wire bytes remain separately retained. Optional source echo,
+noise and gain choices retain their existing native processing/admission rules.
+No custom DSP, runtime mode-specific algorithm or new wait hook is installed.
+
+These are bounded, clean-delivery mono PCM cases. They do not qualify every
+voice-engine APM configuration, multi-source mixing, NetEq impairment/
+reconfiguration, plaintext encoded Opus byte replay or long-running audio.
+Those paths require their own native consumer observations.
 
 ## Installed stock encoder controls
 
