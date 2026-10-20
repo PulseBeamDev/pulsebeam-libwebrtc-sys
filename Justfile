@@ -55,6 +55,7 @@ check:
     python3 -m unittest tests/test_linux_workflows.py
     python3 -m unittest tests/test_cxx_provenance.py
     python3 -m unittest tests/test_native_provenance.py tests/test_native_cc_wrapper.py tests/test_native_compile_commands.py
+    python3 -m unittest tests/test_sdk_coverage.py
     python3 -m unittest tests/test_consumer_metadata.py
     python3 -m unittest tests/test_artifact_lock.py
     python3 -m unittest tests/test_release_audit.py

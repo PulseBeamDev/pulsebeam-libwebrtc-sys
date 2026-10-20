@@ -1,0 +1,210 @@
+{
+  "schema": 1,
+  "sdk_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
+  "header_availability": {
+    "modules/utility/include/helpers_android.h": {
+      "availability": "non_linux",
+      "reason": "The SDK builds this JNI utility only for Android.",
+      "evidence": [
+        {"tree": "sdk", "path": "modules/utility/BUILD.gn", "anchor": "if (is_android) {\n    visibility = [ \"*\" ]\n    sources = [\n      \"include/helpers_android.h\",\n      \"include/jvm_android.h\","}
+      ]
+    },
+    "modules/utility/include/jvm_android.h": {
+      "availability": "non_linux",
+      "reason": "The SDK builds this JVM utility only for Android.",
+      "evidence": [
+        {"tree": "sdk", "path": "modules/utility/BUILD.gn", "anchor": "if (is_android) {\n    visibility = [ \"*\" ]\n    sources = [\n      \"include/helpers_android.h\",\n      \"include/jvm_android.h\","}
+      ]
+    },
+    "rtc_base/win32.h": {
+      "availability": "non_linux",
+      "reason": "The SDK explicitly rejects including this header outside Windows builds.",
+      "evidence": [
+        {"tree": "sdk", "path": "rtc_base/win32.h", "anchor": "#error \"Only #include this header in Windows builds\""}
+      ]
+    },
+    "rtc_base/win32_socket_init.h": {
+      "availability": "non_linux",
+      "reason": "The SDK explicitly rejects including this header outside Windows builds.",
+      "evidence": [
+        {"tree": "sdk", "path": "rtc_base/win32_socket_init.h", "anchor": "#error \"Only #include this header in Windows builds\""}
+      ]
+    }
+  },
+  "configuration_mappings": [],
+  "retained_capabilities": [
+    {
+      "name": "Linux camera device information and capture",
+      "semantics": "Retain the existing CameraDeviceInfo, camera option/provider, format selection and camera capture APIs. The upstream roots are modules/video_capture/video_capture.h, video_capture_factory.h and video_capture_options.h, outside native-api.md's directory list. This is not a claim to expose every implementation header in modules/video_capture.",
+      "rust": [
+        {"tree": "repository", "path": "src/camera_device_info.rs", "anchor": "pub fn number_of_devices("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn create_camera_options("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "state->info.reset(webrtc::VideoCaptureFactory::CreateDeviceInfo(options.state()->value.get()));"},
+        {"tree": "sdk", "path": "modules/video_capture/video_capture_factory.h", "anchor": "class RTC_EXPORT VideoCaptureFactory"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/device_smoke.rs", "anchor": "fn camera_enumeration_and_invalid_selection_need_no_hardware()"}
+      ]
+    },
+    {
+      "name": "Linux desktop capture options, providers and frames",
+      "semantics": "Retain existing screen/window/generic capture, options, source-list callbacks, provider and frame APIs. The public consumer roots are modules/desktop_capture/desktop_capturer.h, desktop_frame.h, desktop_capture_options.h and delegated_source_list_controller.h; the existing PipeWire lifecycle bridge additionally uses linux/wayland/base_capturer_pipewire.h. Physical display/portal behavior is an explicit native boundary, not deterministic simulation or a complete binding product for every desktop_capture implementation class.",
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn create_desktop_capture_with_providers("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn open_screen("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "if (kind == 0) capturer = webrtc::DesktopCapturer::CreateScreenCapturer(value);"},
+        {"tree": "sdk", "path": "modules/desktop_capture/desktop_capturer.h", "anchor": "class RTC_EXPORT DesktopCapturer"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/device_smoke.rs", "anchor": "fn camera_enumeration_and_invalid_selection_need_no_hardware()"}
+      ]
+    }
+  ],
+  "mappings": [
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@E@MediaType#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Idiomatic equivalent: PeerConnection::add_transceiver(kind, &RtpTransceiverInit::default()). The pinned no-init overload itself delegates to the init overload with native defaults. This row describes the declaration path, not runtime-wide media admission or shared real/sim construction.",
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_transceiver("},
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "impl Default for RtpTransceiverInit"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"},
+        {"tree": "sdk", "path": "pc/peer_connection.cc", "anchor": "return AddTransceiver(media_type, RtpTransceiverInit());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/rtp_transceiver_init.rs", "anchor": "fn init_defaults_copy_assignment_and_complete_owned_children()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn trackless_creation_installs_full_init_and_preserves_native_normalization()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@E@MediaType#&1$@N@webrtc@S@RtpTransceiverInit#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Trackless kind-plus-init creation passes the complete native value and preserves native error and normalization behavior. Plan B and invalid consumed enum/video numeric representations have separate safety errors. Factory/runtime policy is not qualified by this declaration mapping.",
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_transceiver("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn add_transceiver("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn trackless_creation_installs_full_init_and_preserves_native_normalization()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn native_rejections_and_binding_safety_failures_are_distinct_and_non_mutating()"},
+        {"tree": "repository", "path": "tests/production_session.rs", "anchor": "fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@S@scoped_refptr>#$@N@webrtc@S@MediaStreamTrackInterface#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Typed local audio/video tracks can use the full-init entry with native defaults; SDK track-only creation delegates to the init overload.",
+      "gaps": ["No arbitrary owning MediaTrack input path for this overload. Typed local source wrappers do not implement every valid native track case."],
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_audio_transceiver_with_init("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/audio.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
+        {"tree": "sdk", "path": "pc/peer_connection.cc", "anchor": "return AddTransceiver(track, RtpTransceiverInit());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@S@scoped_refptr>#$@N@webrtc@S@MediaStreamTrackInterface#&1$@N@webrtc@S@RtpTransceiverInit#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Full owning initialization is installed into native typed local audio/video track creation; independent field snapshots retain native normalization.",
+      "gaps": ["No arbitrary owning MediaTrack input path for this overload. The source-ID-based actor publication path also does not supply arbitrary native tracks."],
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_audio_transceiver_with_init("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn publish_audio_with_init("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/audio.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
+        {"tree": "repository", "path": "tests/production_session.rs", "anchor": "fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init()"}
+      ]
+    },
+    {
+      "declaration": "api/rtp_transceiver_interface.h#c:@N@webrtc@S@RtpTransceiverInit",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Owning native aggregate with native defaults, independent Clone/clone_from and complete native child-value copies; distinct Debug output is explicitly Rust metadata, not a native formatter.",
+      "rust": [
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub struct RtpTransceiverInit"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/rtp_transceiver_init.rs", "anchor": "fn init_defaults_copy_assignment_and_complete_owned_children()"}
+      ]
+    },
+    {
+      "declaration": "api/rtp_transceiver_interface.h#c:@N@webrtc@S@RtpTransceiverInit@FI@direction",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Exact native direction identity, including unknown raw metadata; invalid consumed directions are rejected separately for lifetime safety.",
+      "rust": [
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn direction("},
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn set_direction("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/rtp_transceiver_init.rs", "anchor": "fn init_defaults_copy_assignment_and_complete_owned_children()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn native_rejections_and_binding_safety_failures_are_distinct_and_non_mutating()"}
+      ]
+    },
+    {
+      "declaration": "api/rtp_transceiver_interface.h#c:@N@webrtc@S@RtpTransceiverInit@FI@stream_ids",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Owning byte-vector IDs preserve empty strings, arbitrary bytes, duplicates and order in metadata. Actual installation preserves the SDK's own normalization and SDP behavior.",
+      "rust": [
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn stream_ids("},
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn set_stream_ids("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/rtp_transceiver_init.rs", "anchor": "fn init_defaults_copy_assignment_and_complete_owned_children()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn trackless_creation_installs_full_init_and_preserves_native_normalization()"}
+      ]
+    },
+    {
+      "declaration": "api/rtp_transceiver_interface.h#c:@N@webrtc@S@RtpTransceiverInit@FI@send_encodings",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Independent full native RtpEncodingParameters copies, including optional values and fields outside the legacy DTO; native installation, rather than local metadata setters, performs normalization.",
+      "rust": [
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn send_encodings("},
+        {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "pub fn set_send_encodings("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/rtp_transceiver_init.rs", "anchor": "fn init_defaults_copy_assignment_and_complete_owned_children()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn trackless_creation_installs_full_init_and_preserves_native_normalization()"}
+      ]
+    }
+  ]
+}

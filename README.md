@@ -1676,9 +1676,12 @@ Upgrade CXX as one reviewable change:
 
 ## Acceptance coverage
 
-See [the capability-to-API/test matrix](docs/capability-matrix.md) for the
-approved Linux scope, the public Rust surfaces, proven paths, and open gaps.
-The table below describes repository jobs, not proof of every capability.
+The [pinned native SDK inventory and mapping](docs/native-sdk-coverage.md)
+defines the Linux x86_64 declaration scope independently of existing bindings.
+The [focused capability-to-API/test matrix](docs/capability-matrix.md) describes
+selected Rust surfaces, native consumer paths and their limits; it is not a
+complete SDK ledger. The table below describes repository jobs, not proof of
+every capability.
 
 | Contract | Automated job or release check |
 |---|---|
