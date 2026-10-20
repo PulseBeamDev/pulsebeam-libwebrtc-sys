@@ -6,12 +6,16 @@ fn main() {
     assert!(ice.receiving_timeout.is_none());
     assert!(ice.resolved_defaults().receiving_timeout.is_some());
     let candidate = pulsebeam_webrtc_sys::TransportCandidate::parse(
-        b"candidate:consumer 1 udp 2122260223 127.0.0.1 43210 typ host generation 0"
-    ).unwrap();
+        b"candidate:consumer 1 udp 2122260223 127.0.0.1 43210 typ host generation 0",
+    )
+    .unwrap();
     candidate.verify().unwrap();
     assert_eq!(candidate.properties().foundation, b"consumer");
     assert_eq!(candidate.properties().id, candidate.clone().properties().id);
-    assert_eq!(pulsebeam_webrtc_sys::IcePacketOptions::default().packet_id, -1);
+    assert_eq!(
+        pulsebeam_webrtc_sys::IcePacketOptions::default().packet_id,
+        -1
+    );
     assert_eq!(
         pulsebeam_webrtc_sys::bridge_identity(),
         "pulsebeam-webrtc-sys-bridge-v2"
@@ -24,35 +28,39 @@ fn main() {
     assert_eq!(environment.now(), Duration::from_secs(7));
     clock.advance(Duration::from_millis(5)).unwrap();
     assert_eq!(environment.now(), Duration::from_millis(7_005));
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         let encoder = pulsebeam_webrtc_sys::VideoEncoderFactoryHandle::builtin().unwrap();
         let decoder = pulsebeam_webrtc_sys::VideoDecoderFactoryHandle::builtin().unwrap();
-        let format = pulsebeam_webrtc_sys::VideoCodecFormat::new("H264")
-            .with_parameter("profile-level-id", "42e01f")
-            .with_parameter("packetization-mode", "1")
-            .with_parameter("level-asymmetry-allowed", "1");
-        assert!(
-            encoder
-                .supported_formats()
-                .iter()
-                .any(|format| format.name == "H264")
-        );
-        assert!(
-            decoder
-                .supported_formats()
-                .iter()
-                .any(|format| format.name == "H264")
-        );
-        assert!(encoder.query_support(&format, None, None).supported);
-        assert!(decoder.query_support(&format, false, None).supported);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let format = pulsebeam_webrtc_sys::VideoCodecFormat::new("H264")
+                .with_parameter("profile-level-id", "42e01f")
+                .with_parameter("packetization-mode", "1")
+                .with_parameter("level-asymmetry-allowed", "1");
+            assert!(
+                encoder
+                    .supported_formats()
+                    .iter()
+                    .any(|format| format.name == "H264")
+            );
+            assert!(
+                decoder
+                    .supported_formats()
+                    .iter()
+                    .any(|format| format.name == "H264")
+            );
+            assert!(encoder.query_support(&format, None, None).supported);
+            assert!(decoder.query_support(&format, false, None).supported);
+        }
         let factory = pulsebeam_webrtc_sys::PeerConnectionFactory::builder()
             .environment(environment)
             .video_encoder_factory(encoder)
             .video_decoder_factory(decoder)
             .build()
             .unwrap();
-        let stream = factory.create_local_media_stream(b"cold-stream\0\xff").unwrap();
+        let stream = factory
+            .create_local_media_stream(b"cold-stream\0\xff")
+            .unwrap();
         assert_eq!(stream.id(), b"cold-stream\0\xff");
         assert!(stream.audio_tracks().is_empty());
         let mut peer = factory
@@ -61,6 +69,7 @@ fn main() {
         assert!(peer.senders().is_empty());
         assert!(peer.receivers().is_empty());
         assert!(peer.transceivers().unwrap().is_empty());
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         assert!(
             peer.video_sender_capabilities()
                 .unwrap()

@@ -5,6 +5,7 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         clang-19 \
+        libclang-rt-19-dev \
         cmake \
         coturn \
         curl \

@@ -46,7 +46,7 @@ class RustOnlyConsumerTests(unittest.TestCase):
                 path = root / "fixture.tar.gz"
                 with tarfile.open(path, "w:gz") as archive:
                     for name, contents in [
-                        ("manifest.json", json.dumps({"licenses": {"files": [{"path": notice}]}}).encode()),
+                        ("manifest.json", json.dumps({"archive": {"member": "lib/libwebrtc.a"}, "licenses": {"files": [{"path": notice}]}}).encode()),
                         ("lib/libwebrtc.a", b"archive"), (notice, b"notice"),
                     ]:
                         member = tarfile.TarInfo(name)

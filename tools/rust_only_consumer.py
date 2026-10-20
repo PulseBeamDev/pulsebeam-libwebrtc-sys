@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -22,17 +23,16 @@ ROOT = Path(__file__).resolve().parents[1]
 CONSUMER = ROOT / "consumer/rust-only"
 PUBLIC_REPOSITORY = "https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git"
 REVISION = re.compile(r"[0-9a-f]{40}")
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-COORDINATES = {
-    ("linux-x86_64", "core"): ("x86_64-unknown-linux-gnu", "webrtc-core-linux-x86_64.tar.gz"),
-    ("linux-x86_64", "native"): ("x86_64-unknown-linux-gnu", "webrtc-native-linux-x86_64.tar.gz"),
-    ("linux-arm64", "core"): ("aarch64-unknown-linux-gnu", "webrtc-core-linux-arm64.tar.gz"),
-    ("linux-arm64", "native"): ("aarch64-unknown-linux-gnu", "webrtc-native-linux-arm64.tar.gz"),
-}
-
 sys.path.insert(0, str(ROOT))
 from tools import write_artifact_lock
+from tools.release_inventory import OS_TARGETS, release_tag, source_tag
+
+COORDINATES = {
+    (artifact, flavor): (cargo, f"webrtc-{flavor}-{artifact}.tar.gz")
+    for cargo, artifact in write_artifact_lock.SUPPORTED_TARGETS.items()
+    for flavor in ("core", "native")
+}
 
 
 class ProofError(Exception):
@@ -43,14 +43,16 @@ def coordinate(target: str, flavor: str) -> tuple[str, str]:
     try:
         return COORDINATES[(target, flavor)]
     except KeyError:
-        raise ProofError(f"unsupported Linux selection: {target} {flavor}") from None
+        raise ProofError(f"unsupported artifact selection: {target} {flavor}") from None
 
 
 def render_consumer_manifest(repository: str, revision: str, target: str, flavor: str, *, tag: bool = False) -> str:
     coordinate(target, flavor)
     if tag:
-        if not TAG.fullmatch(revision):
-            raise ProofError(f"invalid release tag: {revision}")
+        try:
+            source_tag(revision)
+        except ValueError as error:
+            raise ProofError(f"invalid release tag: {revision}") from error
     elif not REVISION.fullmatch(revision):
         raise ProofError(f"revision is not an exact 40-character lowercase Git revision: {revision}")
     features = ', features = ["native"]' if flavor == "native" else ""
@@ -81,38 +83,39 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
             continue
         relative = Path(os.fsdecode(encoded))
         source = ROOT / relative
-        if not source.is_file():
-            continue
+        if source.is_symlink() or not source.is_file():
+            raise ProofError(f"snapshot input is not a regular file: {relative}")
         output = destination / relative
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, output)
     lock_path = destination / "artifacts.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    scope = target.split('-')[0]
     assets = []
     for index, entry in enumerate(lock["artifacts"]):
-        if not entry["artifact_target"].startswith("linux-"):
+        if entry["artifact_target"] not in OS_TARGETS[scope]:
             continue
         assets.append({
             "name": entry["asset_name"],
             "sha256": digest if entry["asset_name"] == selected_asset else "1" * 64,
             "native_configuration_sha256": f"{index + 1:064x}",
             "license_inventory_sha256": f"{index + 101:064x}",
-            "source_state": "pristine",
+            "source_state": "applied" if entry["flavor"] == "core" and scope == "ios" else "pristine",
             "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
         })
     report = {
         "schema_version": 1,
-        "scope": "linux",
+        "scope": scope,
         "bridge": {"identity": lock["bridge_identity"]},
-        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037", "encoder_switch_patch_sha256": "3efb4195c6fe89e7a120cfa9ded6d8fccd99ffacf85148ff0c79e9b34550f99a"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}},
+        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037", "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}},
         "assets": assets,
     }
-    report_path = destination / "linux-audit.json"
+    report_path = destination / f"{scope}-audit.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
-    lock_path.write_bytes(write_artifact_lock.render(lock_path, None, "v0.0.0-linux", report_path))
+    lock_path.write_bytes(write_artifact_lock.render(lock_path, None, release_tag("v0.0.0", scope), report_path))
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     for entry in lock["artifacts"]:
-        if entry["artifact_target"].startswith("linux-"):
+        if entry["artifact_target"] in OS_TARGETS[scope]:
             entry["url"] = download_url.rsplit("/", 1)[0] + "/" + entry["asset_name"]
             entry["sha256"] = digest if entry["asset_name"] == selected_asset else "1" * 64
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
@@ -125,7 +128,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
 
 
 def extract_artifact(source_artifact: Path, destination: Path) -> None:
-    wanted = {"manifest.json", "lib/libwebrtc.a"}
+    wanted = {"manifest.json"}
     with tarfile.open(source_artifact, "r:gz") as archive:
         manifest_member = archive.getmember("manifest.json")
         if not manifest_member.isfile():
@@ -134,12 +137,19 @@ def extract_artifact(source_artifact: Path, destination: Path) -> None:
         if manifest_source is None:
             raise ProofError("cannot read artifact manifest")
         manifest = json.load(manifest_source)
+        archive_member = manifest.get("archive", {}).get("member")
+        if archive_member not in {"lib/libwebrtc.a", "lib/webrtc.lib"}:
+            raise ProofError("invalid native archive member")
+        wanted.add(archive_member)
         for notice in manifest["licenses"]["files"]:
             path = Path(notice["path"])
-            if path.is_absolute() or not path.parts or path.parts[0] != "LICENSES" or ".." in path.parts:
+            if "\\" in notice["path"] or path.is_absolute() or not path.parts or path.parts[0] != "LICENSES" or ".." in path.parts:
                 raise ProofError("invalid artifact notice path")
             wanted.add(path.as_posix())
-        members = {member.name: member for member in archive.getmembers() if member.name in wanted}
+        selected = [member for member in archive.getmembers() if member.name in wanted]
+        members = {member.name: member for member in selected}
+        if len(members) != len(selected):
+            raise ProofError("artifact contains duplicate consumer payload members")
         if set(members) != wanted:
             raise ProofError("artifact is missing its manifest, native archive or inventoried notices")
         for name in sorted(wanted):
@@ -155,33 +165,69 @@ def extract_artifact(source_artifact: Path, destination: Path) -> None:
                 shutil.copyfileobj(source, sink)
 
 
+def configure_target_environment(environment: dict[str, str], cargo_target: str) -> None:
+    target = write_artifact_lock.SUPPORTED_TARGETS[cargo_target]
+    flags = environment.get("CARGO_ENCODED_RUSTFLAGS")
+    flags = flags.split("\x1f") if flags is not None else shlex.split(environment.get("RUSTFLAGS", ""))
+    if target == "linux-arm64":
+        linker_key = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"
+        if not environment.get(linker_key):
+            linker = shutil.which("clang-19") or shutil.which("clang")
+            if not linker:
+                raise ProofError("Linux ARM64 consumer requires Clang with compiler-rt and LLD")
+            environment[linker_key] = linker
+        flags += ["-C", "link-arg=-fuse-ld=lld", "-C", "link-arg=--rtlib=compiler-rt", "-C", "link-arg=--unwindlib=none"]
+    elif target.startswith("android-"):
+        linker_key = f"CARGO_TARGET_{cargo_target.upper().replace('-', '_')}_LINKER"
+        if not environment.get(linker_key):
+            ndk = environment.get("ANDROID_NDK_HOME")
+            if not ndk:
+                raise ProofError("Android consumer requires ANDROID_NDK_HOME or its Cargo target linker")
+            triple = "x86_64" if target == "android-x86_64" else "aarch64"
+            linker = Path(ndk) / f"toolchains/llvm/prebuilt/linux-x86_64/bin/{triple}-linux-android26-clang"
+            if not linker.is_file():
+                raise ProofError(f"missing Android API 26 linker: {linker}")
+            environment[linker_key] = str(linker)
+        flags += ["-C", "link-arg=--unwindlib=none"]
+    elif target.startswith(("macos-", "ios-")):
+        if target.startswith("macos-"):
+            environment["MACOSX_DEPLOYMENT_TARGET"] = "12.0"
+            sdk = "macosx"
+        else:
+            environment["IPHONEOS_DEPLOYMENT_TARGET"] = "18.0"
+            sdk = "iphonesimulator" if target == "ios-simulator-arm64" else "iphoneos"
+        environment["SDKROOT"] = run(["xcrun", "--sdk", sdk, "--show-sdk-path"], cwd=ROOT, capture=True).stdout.strip()
+        if not environment["SDKROOT"] or not Path(environment["SDKROOT"]).is_dir():
+            raise ProofError(f"missing {sdk} SDK")
+    elif target == "windows-x86_64":
+        flags += ["-C", "target-feature=+crt-static"]
+    environment.pop("RUSTFLAGS", None)
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
+
+
+def write_sentinel(directory: Path, name: str, marker: Path) -> Path:
+    windows = platform.system() == "Windows"
+    sentinel = directory / (name + ".cmd" if windows else name)
+    if windows:
+        contents = f'@echo off\necho %0 %* >> "{marker}"\necho {name} invocation is forbidden in the Rust-only consumer proof 1>&2\nexit /b 97\n'
+    else:
+        contents = ("#!/bin/sh\n"
+                    f"printf '%s\\n' \"$0 $*\" >> {shlex.quote(str(marker))}\n"
+                    f"echo '{name} invocation is forbidden in the Rust-only consumer proof' >&2\n"
+                    "exit 97\n")
+    sentinel.write_text(contents, encoding="utf-8")
+    sentinel.chmod(0o755)
+    return sentinel
+
+
 def cold_consumer_environment(marker: Path, sentinel_directory: Path, work: Path, cargo_target: str) -> dict[str, str]:
     sentinel_directory.mkdir()
-    sentinels = {}
-    for language in ("c", "cxx"):
-        sentinel = sentinel_directory / language
-        sentinel.write_text(
-            "#!/bin/sh\n"
-            f"printf '%s\\n' \"$0 $*\" >> {str(marker)!r}\n"
-            "echo 'C/C++ compiler invocation is forbidden in the Rust-only consumer proof' >&2\n"
-            "exit 97\n",
-            encoding="utf-8",
-        )
-        sentinel.chmod(0o755)
-        sentinels[language] = str(sentinel)
+    sentinels = {language: str(write_sentinel(sentinel_directory, language, marker)) for language in ("c", "cxx")}
     environment = os.environ.copy()
     for name in ("PULSEBEAM_WEBRTC_SYS_SKIP_LINK", "PULSEBEAM_WEBRTC_SYS_CANDIDATE_LOCK", "PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR", "PULSEBEAM_WEBRTC_SYS_OFFLINE", "CARGO_NET_OFFLINE"):
         environment.pop(name, None)
     for tool in ("gn", "ninja"):
-        sentinel = sentinel_directory / tool
-        sentinel.write_text(
-            "#!/bin/sh\n"
-            f"printf '%s\\n' \"$0 $*\" >> {str(marker)!r}\n"
-            f"echo '{tool} invocation is forbidden in the Rust-only consumer proof' >&2\n"
-            "exit 97\n",
-            encoding="utf-8",
-        )
-        sentinel.chmod(0o755)
+        write_sentinel(sentinel_directory, tool, marker)
     environment["PATH"] = str(sentinel_directory) + os.pathsep + environment["PATH"]
     environment["WEBRTC_WORK"] = str(work)
     for compiler, language in (("CC", "c"), ("CXX", "cxx")):
@@ -190,6 +236,7 @@ def cold_consumer_environment(marker: Path, sentinel_directory: Path, work: Path
         environment[f"TARGET_{compiler}"] = sentinels[language]
         for suffix in (cargo_target, cargo_target.replace("-", "_")):
             environment[f"{compiler}_{suffix}"] = sentinels[language]
+    configure_target_environment(environment, cargo_target)
     return environment
 
 
@@ -256,9 +303,36 @@ def write_consumer(destination: Path, repository: str, revision: str, target: st
 
 
 def require_host(target: str) -> None:
-    expected = {"linux-x86_64": {"x86_64", "AMD64"}, "linux-arm64": {"aarch64", "arm64"}}[target]
-    if platform.system() != "Linux" or platform.machine() not in expected:
+    hosts = {
+        "linux-x86_64": ("Linux", {"x86_64", "AMD64"}),
+        "linux-arm64": ("Linux", {"aarch64", "arm64"}),
+        "windows-x86_64": ("Windows", {"AMD64", "x86_64"}),
+        "macos-x86_64": ("Darwin", {"x86_64"}),
+        "macos-arm64": ("Darwin", {"arm64"}),
+        "ios-arm64": ("Darwin", {"arm64"}),
+        "ios-simulator-arm64": ("Darwin", {"arm64"}),
+        "android-x86_64": ("Linux", {"x86_64"}),
+        "android-arm64-v8a": ("Linux", {"x86_64"}),
+    }
+    system, machines = hosts[target]
+    if platform.system() != system or platform.machine() not in machines:
         raise ProofError(f"host does not match requested target {target}")
+
+
+def consumer_command(target: str, *flags: str) -> list[str]:
+    cargo_target, _ = coordinate(target, "core")
+    # Mobile runtime is a separate emulator/simulator operation. This boundary
+    # must still produce a fully linked target executable, not cargo check.
+    action = "build" if target.split('-')[0] in {"android", "ios"} else "run"
+    return ["cargo", action, "--target", cargo_target, *flags]
+
+
+def find_build_script(target_root: Path) -> Path:
+    name = "build-script-build.exe" if platform.system() == "Windows" else "build-script-build"
+    scripts = sorted((target_root / "debug" / "build").glob(f"pulsebeam-webrtc-sys-*/{name}"))
+    if not scripts:
+        raise ProofError("consumer did not produce a pulsebeam-webrtc-sys build script")
+    return scripts[0]
 
 
 def prove_candidate(source_artifact: Path, expected_digest: str, target: str, flavor: str) -> None:
@@ -314,7 +388,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
             validate_consumer_metadata(metadata, temporary_root)
 
             # The release proof starts with no override, artifact cache, or target cache.
-            run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+            run(consumer_command(target, "--locked"), cwd=consumer, env=environment)
             if (work / "checkout").exists() or (work / "depot_tools").exists():
                 raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
 
@@ -337,13 +411,13 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
             unavailable_environment = environment.copy()
             unavailable_environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "unavailable-cache")
             expect_failure(
-                ["cargo", "run"],
+                consumer_command(target),
                 cwd=unavailable_consumer,
                 env=unavailable_environment,
                 message="unavailable in this release scope",
             )
             expect_failure(
-                [str(next((temporary_root / "target" / "debug" / "build").glob("pulsebeam-webrtc-sys-*/build-script-build")))],
+                [str(find_build_script(temporary_root / "target"))],
                 cwd=consumer,
                 env={**environment, "TARGET": "x86_64-unknown-linux-musl"},
                 message="unsupported Cargo target x86_64-unknown-linux-musl",
@@ -351,25 +425,25 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
 
             environment["PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR"] = str(artifact)
             environment["CARGO_NET_OFFLINE"] = "true"
-            run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
+            run(consumer_command(target, "--locked", "--offline"), cwd=consumer, env=environment)
 
             cache = temporary_root / "warm-cache"
             cache.mkdir()
             shutil.copy2(source_artifact, cache / asset_name)
             environment.pop("PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR")
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(cache)
-            run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
+            run(consumer_command(target, "--locked", "--offline"), cwd=consumer, env=environment)
 
             download_cache = temporary_root / "second-download-cache"
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(download_cache)
             environment.pop("CARGO_NET_OFFLINE")
-            run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+            run(consumer_command(target, "--locked"), cwd=consumer, env=environment)
 
             bad_cache = temporary_root / "bad-cache"
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(bad_cache)
             server.payload = b"not the locked artifact"
             expect_failure(
-                ["cargo", "run", "--locked"],
+                consumer_command(target, "--locked"),
                 cwd=consumer,
                 env=environment,
                 message="checksum mismatch",
@@ -379,7 +453,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
             environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(miss_cache)
             environment["CARGO_NET_OFFLINE"] = "true"
             expect_failure(
-                ["cargo", "run", "--locked", "--offline"],
+                consumer_command(target, "--locked", "--offline"),
                 cwd=consumer,
                 env=environment,
                 message="offline artifact cache miss",
@@ -388,7 +462,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
             for field, wrong, expected_message in [
                 ("bridge_identity", "wrong-bridge", "wrong bridge identity"),
                 ("flavor", "core" if flavor == "native" else "native", "wrong flavor"),
-                ("target", "linux-arm64" if target == "linux-x86_64" else "linux-x86_64", "wrong target"),
+                ("target", next(item for item in write_artifact_lock.SUPPORTED_TARGETS.values() if item != target), "wrong target"),
             ]:
                 mismatch = temporary_root / f"mismatch-{field}"
                 shutil.copytree(artifact, mismatch)
@@ -401,7 +475,7 @@ def prove_candidate(source_artifact: Path, expected_digest: str, target: str, fl
                 manifest_path.write_text(json.dumps(value), encoding="utf-8")
                 environment["PULSEBEAM_WEBRTC_SYS_ARTIFACT_DIR"] = str(mismatch)
                 expect_failure(
-                    ["cargo", "run", "--locked", "--offline"],
+                    consumer_command(target, "--locked", "--offline"),
                     cwd=consumer,
                     env=environment,
                     message=expected_message,
@@ -416,8 +490,10 @@ def validate_released(repository: str, tag: str, target: str, flavor: str) -> No
     coordinate(target, flavor)
     if repository != PUBLIC_REPOSITORY:
         raise ProofError(f"released repository must be canonical: {PUBLIC_REPOSITORY}")
-    if not TAG.fullmatch(tag):
-        raise ProofError(f"invalid release tag: {tag}")
+    try:
+        source_tag(tag)
+    except ValueError as error:
+        raise ProofError(f"invalid release tag: {tag}") from error
 
 
 def prove_released_fixture(
@@ -465,7 +541,7 @@ def prove_released_fixture(
             capture=True,
         ).stdout
         validate_consumer_metadata(metadata, temporary_root)
-        expect_failure(["cargo", "run", "--locked"], cwd=consumer, env=environment, message=message)
+        expect_failure(consumer_command(target, "--locked"), cwd=consumer, env=environment, message=message)
         if (work / "checkout").exists() or (work / "depot_tools").exists():
             raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
         if marker.exists():
@@ -496,7 +572,7 @@ def prove_released(repository: str, tag: str, target: str, flavor: str) -> None:
             capture=True,
         ).stdout
         validate_consumer_metadata(metadata, temporary_root)
-        run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+        run(consumer_command(target, "--locked"), cwd=consumer, env=environment)
         work = Path(environment["WEBRTC_WORK"])
         if (work / "checkout").exists() or (work / "depot_tools").exists():
             raise ProofError("Rust-only consumer created a Chromium checkout or depot_tools worktree")
@@ -504,13 +580,13 @@ def prove_released(repository: str, tag: str, target: str, flavor: str) -> None:
         # A released archive must be reusable offline after its verified initial download.
         environment["CARGO_NET_OFFLINE"] = "true"
         environment["CARGO_TARGET_DIR"] = str(temporary_root / "warm-target")
-        run(["cargo", "run", "--locked", "--offline"], cwd=consumer, env=environment)
+        run(consumer_command(target, "--locked", "--offline"), cwd=consumer, env=environment)
 
         cold_environment = environment.copy()
         cold_environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"] = str(temporary_root / "cold-offline-cache")
         cold_environment["CARGO_TARGET_DIR"] = str(temporary_root / "cold-offline-target")
         expect_failure(
-            ["cargo", "run", "--locked", "--offline"],
+            consumer_command(target, "--locked", "--offline"),
             cwd=consumer,
             env=cold_environment,
             message="offline release lock cache miss",
@@ -518,16 +594,13 @@ def prove_released(repository: str, tag: str, target: str, flavor: str) -> None:
 
         # A corrupt archive is discarded and downloaded again when the network is available.
         cache = Path(environment["PULSEBEAM_WEBRTC_SYS_CACHE_DIR"])
-        os_tag = f"{tag}-linux"
+        os_tag = release_tag(tag, target.split('-')[0])
         (cache / os_tag / asset_name).write_bytes(b"corrupt released artifact")
         environment.pop("CARGO_NET_OFFLINE")
         environment["CARGO_TARGET_DIR"] = str(temporary_root / "repeat-download-target")
-        run(["cargo", "run", "--locked"], cwd=consumer, env=environment)
+        run(consumer_command(target, "--locked"), cwd=consumer, env=environment)
 
-        build_scripts = temporary_root / "repeat-download-target" / "debug" / "build"
-        build_script = next(build_scripts.glob("pulsebeam-webrtc-sys-*/build-script-build"), None)
-        if build_script is None:
-            raise ProofError("released consumer did not produce a pulsebeam-webrtc-sys build script")
+        build_script = find_build_script(temporary_root / "repeat-download-target")
         expect_failure(
             [str(build_script)],
             cwd=consumer,
@@ -548,7 +621,7 @@ def main() -> int:
     released.add_argument("--repository", required=True)
     released.add_argument("--tag", required=True)
     for selection in (candidate, released):
-        selection.add_argument("--target", required=True, choices=("linux-x86_64", "linux-arm64"))
+        selection.add_argument("--target", required=True, choices=sorted(set(write_artifact_lock.SUPPORTED_TARGETS.values())))
         selection.add_argument("--flavor", required=True, choices=("core", "native"))
     args = parser.parse_args()
     try:
@@ -561,7 +634,8 @@ def main() -> int:
     except (OSError, subprocess.CalledProcessError, ProofError, json.JSONDecodeError) as error:
         print(f"Rust-only consumer proof: {error}", file=sys.stderr)
         return 1
-    print(f"Rust-only {args.mode} consumer passed for {args.target} {args.flavor}")
+    boundary = "compile/link" if args.target.split("-")[0] in {"android", "ios"} else "runtime"
+    print(f"Rust-only {args.mode} consumer {boundary} passed for {args.target} {args.flavor}")
     return 0
 
 

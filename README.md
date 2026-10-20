@@ -611,7 +611,9 @@ other failures. Wayland portal session closure has its own capture status.
 
 ## Target matrix
 
-Both flavors support every target in this matrix:
+Both flavors declare the following producer/consumer selection universe.
+A target declaration is not runtime qualification or a promise that its OS
+release is already available:
 
 | Platform | Targets | Minimum runtime |
 |---|---|---|
@@ -625,6 +627,38 @@ Each target is a separate archive built with its supported toolchain. Android
 ABIs and Apple device/simulator builds are not combined. Linux musl, 32-bit
 Android, Windows arm64, x86_64 iOS Simulator, WebAssembly, and other targets are
 deferred.
+
+### Rust-only consumer linker and SDK inputs
+
+`python3 -m tools.rust_only_consumer candidate --artifact <archive> --sha256
+<sha256> --target <target> --flavor <core|native>` checks a cold consumer, verified
+cache reuse, offline hits/misses, corrupt downloads, and local overrides against
+the selected target. `released --repository
+https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git --tag v<version>
+--target <target> --flavor <flavor>` instead consumes the actual source tag and
+its OS release with cold caches and no candidate override.
+
+Install Rust's matching target standard library before running these commands.
+Desktop proofs require a matching OS/architecture host and execute the linked
+program. Mobile proofs link a target executable without trying to run it on
+the build host; emulator/simulator execution is a separate required gate.
+
+| Target family | Standalone consumer inputs |
+| --- | --- |
+| Linux x86_64 | System C linker driver, LLD, glibc/system libraries; native also needs the X11, GLib/GIO, GBM and DRM development libraries listed in the manifest |
+| Linux ARM64 | Matching ARM64 host, Clang with compiler-rt and LLD; same flavor-specific system libraries as x86_64 |
+| Windows x86_64 | MSVC x64 linker environment and Windows SDK; the proof selects static CRT to match the archive; system libraries are supplied by the SDK |
+| macOS | Matching Intel/Apple silicon host and selected Xcode command-line SDK via `DEVELOPER_DIR`; deployment target remains 12.0 |
+| Android | Linux x86_64 host and standalone NDK via `ANDROID_NDK_HOME`; the proof selects its `<triple>-linux-android26-clang` linker and sysroot for the requested architecture |
+| iOS | Apple silicon host and selected Xcode iPhoneOS or iPhoneSimulator SDK; deployment target remains 18.0, and device/simulator selections stay separate |
+
+An explicit `CARGO_TARGET_<TRIPLE>_LINKER` can select an equivalent standalone
+linker. The consumer proof never synchronizes a producer checkout or runs GN,
+Ninja, bridge generation, or a C/C++ source compiler. Compiler sentinels are
+separate from the target linker, so allowed linking is not mistaken for source
+compilation. Windows uses native `.cmd` sentinels. Link inputs are not bundled
+application SDKs or physical-device certification. Running a desktop proof on a
+newer host does not imply execution on every supported older OS version.
 
 ## CPU video frame layout
 

@@ -1,4 +1,12 @@
 import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+from unittest.mock import patch
+
+from tools import rust_only_consumer as consumer
+from tools.release_inventory import OS_TARGETS, archive_names
 from pathlib import Path
 import re
 import sys
@@ -196,6 +204,120 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
     def _recipe(start, end):
         beginning = JUSTFILE.index(start)
         return JUSTFILE[beginning : JUSTFILE.index(end, beginning)]
+
+
+class TargetConsumerPolicyTests(unittest.TestCase):
+    targets = {
+        "linux-x86_64": "x86_64-unknown-linux-gnu",
+        "linux-arm64": "aarch64-unknown-linux-gnu",
+        "windows-x86_64": "x86_64-pc-windows-msvc",
+        "macos-x86_64": "x86_64-apple-darwin",
+        "macos-arm64": "aarch64-apple-darwin",
+        "android-x86_64": "x86_64-linux-android",
+        "android-arm64-v8a": "aarch64-linux-android",
+        "ios-arm64": "aarch64-apple-ios",
+        "ios-simulator-arm64": "aarch64-apple-ios-sim",
+    }
+
+    def test_every_target_is_linked_and_only_desktop_targets_execute(self):
+        for target, cargo in self.targets.items():
+            with self.subTest(target=target):
+                for flavor in ("core", "native"):
+                    self.assertEqual(consumer.coordinate(target, flavor), (cargo, f"webrtc-{flavor}-{target}.tar.gz"))
+                    manifest = consumer.render_consumer_manifest(consumer.PUBLIC_REPOSITORY, "v1.2.3", target, flavor, tag=True)
+                    self.assertEqual('features = ["native"]' in manifest, flavor == "native")
+                action = "build" if target.split('-')[0] in {"ios", "android"} else "run"
+                self.assertEqual(consumer.consumer_command(target, "--locked", "--offline"),
+                                 ["cargo", action, "--target", cargo, "--locked", "--offline"])
+                with self.assertRaises(consumer.ProofError):
+                    consumer.validate_released(consumer.PUBLIC_REPOSITORY, "v1.2.3-linux", target, "core")
+
+    def test_android_uses_standalone_api26_linker_not_a_host_compiler(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for target, triple in (("android-x86_64", "x86_64"), ("android-arm64-v8a", "aarch64")):
+                cargo = self.targets[target]
+                key = f"CARGO_TARGET_{cargo.upper().replace('-', '_')}_LINKER"
+                linker = root / f"toolchains/llvm/prebuilt/linux-x86_64/bin/{triple}-linux-android26-clang"
+                linker.parent.mkdir(parents=True, exist_ok=True)
+                linker.touch()
+                environment = {"ANDROID_NDK_HOME": str(root), "RUSTFLAGS": "-C debuginfo=1"}
+                consumer.configure_target_environment(environment, cargo)
+                self.assertEqual(environment[key], str(linker))
+                self.assertEqual(environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"),
+                                 ["-C", "debuginfo=1", "-C", "link-arg=--unwindlib=none"])
+                with self.assertRaisesRegex(consumer.ProofError, "Android consumer requires"):
+                    consumer.configure_target_environment({}, cargo)
+                override = {key: "/standalone-sdk/linker"}
+                consumer.configure_target_environment(override, cargo)
+                self.assertEqual(override[key], "/standalone-sdk/linker")
+
+    def test_linux_arm64_requires_a_clang_linker_and_runtime_inputs(self):
+        with patch.object(consumer.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(consumer.ProofError, "Clang with compiler-rt"):
+                consumer.configure_target_environment({}, "aarch64-unknown-linux-gnu")
+        with patch.object(consumer.shutil, "which", return_value="/sdk/clang-19"):
+            environment = {}
+            consumer.configure_target_environment(environment, "aarch64-unknown-linux-gnu")
+        self.assertEqual(environment["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"], "/sdk/clang-19")
+        self.assertIn("link-arg=--rtlib=compiler-rt", environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"))
+        self.assertIn("link-arg=--unwindlib=none", environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"))
+
+    def test_apple_uses_target_sdk_and_preserves_minima(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for target, sdk, key, minimum in (
+                ("macos-arm64", "macosx", "MACOSX_DEPLOYMENT_TARGET", "12.0"),
+                ("macos-x86_64", "macosx", "MACOSX_DEPLOYMENT_TARGET", "12.0"),
+                ("ios-arm64", "iphoneos", "IPHONEOS_DEPLOYMENT_TARGET", "18.0"),
+                ("ios-simulator-arm64", "iphonesimulator", "IPHONEOS_DEPLOYMENT_TARGET", "18.0"),
+            ):
+                with self.subTest(target=target), patch.object(consumer, "run", return_value=subprocess.CompletedProcess([], 0, temporary + "\n")) as run:
+                    environment = {key: "99.0"}
+                    consumer.configure_target_environment(environment, self.targets[target])
+                    self.assertEqual(environment[key], minimum)
+                    self.assertEqual(environment["SDKROOT"], temporary)
+                    self.assertEqual(run.call_args.args[0], ["xcrun", "--sdk", sdk, "--show-sdk-path"])
+
+    def test_missing_apple_sdk_is_not_a_silent_host_sdk_fallback(self):
+        with patch.object(consumer, "run", return_value=subprocess.CompletedProcess([], 0, "")):
+            with self.assertRaisesRegex(consumer.ProofError, "missing iphoneos SDK"):
+                consumer.configure_target_environment({}, "aarch64-apple-ios")
+
+    def test_windows_sentinels_are_cmd_files_and_keep_msvc_linker_separate(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(consumer.platform, "system", return_value="Windows"):
+            root = Path(temporary)
+            with patch.dict(os.environ, {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "link.exe"}):
+                environment = consumer.cold_consumer_environment(root / "marker", root / "sentinels", root / "no-producer", "x86_64-pc-windows-msvc")
+            self.assertEqual(environment["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"], "link.exe")
+            self.assertEqual(Path(environment["CC"]).suffix, ".cmd")
+            self.assertIn("exit /b 97", Path(environment["CC"]).read_text())
+            self.assertIn("target-feature=+crt-static", environment["CARGO_ENCODED_RUSTFLAGS"])
+            self.assertTrue((root / "sentinels/gn.cmd").is_file())
+            self.assertTrue((root / "sentinels/ninja.cmd").is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX sentinel execution")
+    def test_posix_compiler_sentinel_fails_and_records_invocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sentinel = consumer.write_sentinel(root, "cxx", root / "marker")
+            result = subprocess.run([str(sentinel), "-c", "forbidden.cc"], capture_output=True)
+            self.assertEqual(result.returncode, 97)
+            self.assertIn("-c forbidden.cc", (root / "marker").read_text())
+
+    def test_candidate_snapshots_have_only_the_selected_os_coordinates(self):
+        for scope, targets in OS_TARGETS.items():
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                target = sorted(targets)[0]
+                asset = f"webrtc-core-{target}.tar.gz"
+                consumer.clean_snapshot(root, f"http://127.0.0.1:1/{asset}", "a" * 64, target, "core")
+                lock = json.loads((root / "artifacts.lock.json").read_text())
+                self.assertEqual(lock["release_scope"], scope)
+                self.assertEqual({entry["asset_name"] for entry in lock["artifacts"] if entry["url"]}, archive_names(scope))
+                report = json.loads((root / f"{scope}-audit.json").read_text())
+                for evidence in report["assets"]:
+                    expected = "applied" if scope == "ios" and evidence["name"].startswith("webrtc-core-") else "pristine"
+                    self.assertEqual(evidence["source_state"], expected)
 
 
 if __name__ == "__main__":
