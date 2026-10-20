@@ -608,7 +608,6 @@ pub struct PeerConnectionFactoryBuilder {
     worker_thread: Option<WorkerThread>,
     signaling_thread: Option<SignalingThread>,
     controlled_driver: Option<ControlledPeerDriver>,
-    controlled_media: bool,
     network_manager: Option<NetworkManagerProvider>,
     network_manager_factory: Option<crate::NetworkManagerFactory>,
     network_monitor_factory: Option<std::sync::Arc<dyn crate::NetworkMonitorFactory>>,
@@ -747,9 +746,9 @@ impl PeerConnectionFactoryBuilder {
     }
 
     /// Supply the pinned built-in event-log factory. Disabled by default.
-    /// Native field trials can disable the implementation. Its synchronous
-    /// peer stop operation requires independently progressing native queues,
-    /// so it is not compatible with a caller-pumped controlled driver.
+    /// Native field trials can disable the implementation. Runtime-bound
+    /// managed factories retire its queues on their creator, using native-ready
+    /// lifecycle progress for the SDK's synchronous stop operation.
     pub fn event_logging(mut self, enabled: bool) -> Self {
         self.event_logging = enabled;
         self
@@ -778,16 +777,6 @@ impl PeerConnectionFactoryBuilder {
     /// environment built with this driver's clock and cooperative queues.
     pub fn controlled_driver(mut self, driver: &ControlledPeerDriver) -> Self {
         self.controlled_driver = Some(driver.clone());
-        self
-    }
-
-    /// Opt into controlled Opus and admitted direct encoded-video profiles.
-    /// Requires a seeded world, Opus carrier and builtin Opus decoding, plus
-    /// direct VP8 with builtin VP8 decoding or direct H264 with the input's
-    /// encoded-only receive factory. H264 decoding is not provided.
-    /// Unsupported factories and processing/devices are rejected before work.
-    pub fn controlled_media(mut self) -> Self {
-        self.controlled_media = true;
         self
     }
 
@@ -1029,15 +1018,6 @@ impl PeerConnectionFactoryBuilder {
                     .into(),
             });
         }
-        if self.event_logging
-            && self.event_log_factory.is_none()
-            && self.controlled_driver.is_some()
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "built-in peer event logging waits synchronously for its output queue during stop and close; caller-pumped queues cannot progress during that wait".into(),
-            });
-        }
         // Reserve before constructing any production queues or threads. This
         // also prevents a controlled world from being acquired concurrently.
         let production_lease = if self.controlled_driver.is_none() {
@@ -1074,34 +1054,6 @@ impl PeerConnectionFactoryBuilder {
                 message: "Opus-frame factories cannot share a platform microphone or PCM audio processing module".into(),
             });
         }
-        if self.controlled_media
-            && (!self
-                .controlled_driver
-                .as_ref()
-                .is_some_and(ControlledPeerDriver::is_seeded)
-                || !self
-                    .audio_encoder
-                    .as_ref()
-                    .is_some_and(AudioEncoderFactory::supports_opus_frames)
-                || !self
-                    .audio_decoder
-                    .as_ref()
-                    .is_some_and(AudioDecoderFactory::is_builtin_opus)
-                || !self
-                    .video_encoder
-                    .as_ref()
-                    .zip(self.video_decoder.as_ref())
-                    .is_some_and(|(encoder, decoder)| {
-                        (encoder.is_direct_vp8() && decoder.is_builtin_vp8())
-                            || (encoder.is_direct_h264() && decoder.is_encoded_h264_receive())
-                    })
-                || has_audio_processing)
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::InvalidParameter,
-                message: "controlled media requires a seeded world, Opus carrier/builtin Opus, direct VP8/builtin VP8 or direct H264/encoded-only reception, and no PCM processing".into(),
-            });
-        }
         if self.network_predictor_factory.is_some() {
             return Err(PeerError { kind: PeerErrorKind::InvalidParameter, message: "the pinned SDK does not consume the standalone peer-factory predictor slot; select NetworkControllerFactory::goog_cc with GoogCcFactoryConfig and explicit RFC 8888 negotiation state".into() });
         }
@@ -1117,8 +1069,6 @@ impl PeerConnectionFactoryBuilder {
         if let Some(driver) = &self.controlled_driver {
             if !driver.is_current()
                 || !environment.uses_controlled_clock(driver.clock())
-                || self.native_audio
-                || has_audio_processing
                 || self.network_thread.is_some()
                 || self.worker_thread.is_some()
                 || self.signaling_thread.is_some()
@@ -1135,7 +1085,7 @@ impl PeerConnectionFactoryBuilder {
             {
                 return Err(PeerError {
                     kind: PeerErrorKind::InvalidParameter,
-                    message: "controlled peers need their creator thread, matching cooperative clock/queues and packet providers, no native audio and no separate WebRTC threads".into(),
+                    message: "controlled peers need their creator thread, matching cooperative clock/queues and packet providers, and no separate WebRTC threads".into(),
                 });
             }
         } else if self
@@ -1153,6 +1103,12 @@ impl PeerConnectionFactoryBuilder {
                     .into(),
             });
         }
+        let environment = match &self.controlled_driver {
+            Some(driver) => environment
+                .bind_driver(driver)
+                .map_err(native_build_error)?,
+            None => environment,
+        };
         let network_thread = match (self.network_thread, &self.controlled_driver) {
             (Some(thread), _) => thread,
             (None, Some(driver)) => NetworkThread::from_native(driver.borrow_thread()),
@@ -1318,7 +1274,6 @@ impl PeerConnectionFactoryBuilder {
             _worker_thread: worker_thread,
             _signaling_thread: signaling_thread,
             _controlled_driver: self.controlled_driver,
-            controlled_media: self.controlled_media,
             audio_mixer_failure,
             _network_manager: self.network_manager,
             _packet_socket_factory: self.packet_socket_factory,
@@ -1343,7 +1298,6 @@ impl Default for PeerConnectionFactoryBuilder {
             worker_thread: None,
             signaling_thread: None,
             controlled_driver: None,
-            controlled_media: false,
             execution_resources: crate::ExecutionResources::default(),
             network_manager: None,
             network_manager_factory: None,
@@ -1386,7 +1340,6 @@ pub(crate) struct FactoryInner {
     _network_thread: NetworkThread,
     _worker_thread: WorkerThread,
     _signaling_thread: SignalingThread,
-    pub(crate) controlled_media: bool,
     audio_mixer_failure: Option<crate::AudioMixerFailureObserver>,
     _network_manager: Option<NetworkManagerProvider>,
     _packet_socket_factory: Option<PacketSocketFactoryProvider>,
@@ -1437,7 +1390,7 @@ impl FactoryInner {
     }
 
     pub(crate) fn media_capture_time(&self) -> Option<std::time::Duration> {
-        if self.controlled_media {
+        if self._controlled_driver.is_some() {
             self.controlled_time()
         } else if self._controlled_driver.is_none() && self._environment.uses_system_clock() {
             Some(self._environment.now())
@@ -2323,16 +2276,10 @@ impl PeerConnectionFactory {
         Ok(crate::CameraCapture::new(native, source))
     }
 
-    // Even enumeration can open devices, contact a display server or prompt a
-    // portal. Reject before validation, source creation or any platform call.
+    // These methods explicitly select a physical backend. The caller accepts
+    // its external effects, regardless of the surrounding runtime selection.
     #[cfg(feature = "native")]
     fn require_native_capture(&self) -> Result<(), PeerError> {
-        if self.0._controlled_driver.is_some() {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "physical video capture is unavailable in controlled execution".into(),
-            });
-        }
         self.check_control_call()
     }
 
@@ -2821,15 +2768,6 @@ impl PeerConnection {
             kind: PeerErrorKind::InvalidParameter,
             message: message.into(),
         };
-        if self.inner._factory._controlled_driver.is_some()
-            && (!self.inner._factory.controlled_media || !track.is_admitted_controlled_video())
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled source profile is not admitted".into(),
-            }
-            .into());
-        }
         if !track.is_local_to(&self.inner._factory) {
             return Err(fail("track must belong to this factory").into());
         }
@@ -2915,15 +2853,6 @@ impl PeerConnection {
                 message: "AddTransceiver requires Unified Plan in the native SDK".into(),
             });
         }
-        if self.inner._factory._controlled_driver.is_some()
-            && (!self.inner._factory.controlled_media || !track.is_admitted_controlled_video())
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled video requires an admitted direct VP8/H264 media profile"
-                    .into(),
-            });
-        }
         if !track.is_local_to(&self.inner._factory) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -2998,15 +2927,6 @@ impl PeerConnection {
             }
             .into());
         }
-        if self.inner._factory._controlled_driver.is_some()
-            && (!self.inner._factory.controlled_media || !track.is_opus_frames())
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled audio requires the admitted Opus-carrier media profile".into(),
-            }
-            .into());
-        }
         if !track.belongs_to(&self.inner._factory) {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
@@ -3056,14 +2976,6 @@ impl PeerConnection {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidParameter,
                 message: "AddTransceiver requires Unified Plan in the native SDK".into(),
-            });
-        }
-        if self.inner._factory._controlled_driver.is_some()
-            && (!self.inner._factory.controlled_media || !track.is_opus_frames())
-        {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled audio requires the admitted Opus-carrier media profile".into(),
             });
         }
         if self.inner.closed.get() {
@@ -3332,11 +3244,9 @@ impl PeerConnection {
     }
     fn set_local_description_auto_impl(&self, legacy: bool) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        let allow_media = self.inner._factory._controlled_driver.is_none()
-            || self.inner._factory.controlled_media;
         Self::operation_admission(
             id,
-            ffi::peer_set_local_description_auto(self.native(), id.0, allow_media, legacy),
+            ffi::peer_set_local_description_auto(self.native(), id.0, legacy),
         )
     }
 
@@ -3366,17 +3276,13 @@ impl PeerConnection {
         legacy: bool,
     ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        let status = if self.controlled_media_sdp(&description) {
-            ffi::peer_reject_controlled_media(self.native(), id.0)
-        } else {
-            ffi::peer_set_local_description(
-                self.native(),
-                id.0,
-                description.kind as u8,
-                &description.sdp,
-                legacy,
-            )
-        };
+        let status = ffi::peer_set_local_description(
+            self.native(),
+            id.0,
+            description.kind as u8,
+            &description.sdp,
+            legacy,
+        );
         Self::operation_admission(id, status)
     }
 
@@ -3405,17 +3311,13 @@ impl PeerConnection {
         legacy: bool,
     ) -> Result<OperationId, PeerError> {
         let id = self.next_operation();
-        let status = if self.controlled_media_sdp(&description) {
-            ffi::peer_reject_controlled_media(self.native(), id.0)
-        } else {
-            ffi::peer_set_remote_description(
-                self.native(),
-                id.0,
-                description.kind as u8,
-                &description.sdp,
-                legacy,
-            )
-        };
+        let status = ffi::peer_set_remote_description(
+            self.native(),
+            id.0,
+            description.kind as u8,
+            &description.sdp,
+            legacy,
+        );
         Self::operation_admission(id, status)
     }
 
@@ -3782,15 +3684,6 @@ impl PeerConnection {
                 message: "failed to close peer connection".into(),
             })
         }
-    }
-
-    fn controlled_media_sdp(&self, description: &SessionDescriptionBytes) -> bool {
-        self.inner._factory._controlled_driver.is_some()
-            && !self.inner._factory.controlled_media
-            && description
-                .sdp
-                .split(|byte| *byte == b'\n')
-                .any(|line| line.starts_with(b"m=video ") || line.starts_with(b"m=audio "))
     }
 
     fn next_operation(&self) -> OperationId {

@@ -8,7 +8,7 @@ Native authority: pinned WebRTC `api/rtc_event_log/rtc_event_log{,_factory_inter
 
 `Environment::builder().event_log(logger)` installs a caller-defined logger in the native owning environment leaf. Native environment copies retain that leaf. A peer-specific factory can supersede this logger through the pinned native environment composition semantics. Without a peer-specific factory, the environment logger can be shared by multiple peers; output coordination belongs to the supplied logger, not a fabricated binding-level per-peer logger.
 
-`ProductionSession::builder(config)` accepts `environment_event_log`, `event_log_factory`, and the built-in `event_logging` selection without importing local handles. `start_peer_event_log` consumes an owned output and accepts either the native default period or an explicit period. `stop_peer_event_log` waits for native output shutdown. The corresponding local peer operations are `start_event_log` and `stop_event_log`. These operations marshal through the peer's native roles and can be used after moving the production actor.
+`Session::with_runtime(runtime, config)` accepts `environment_event_log`, `event_log_factory`, and the built-in `event_logging` selection without importing local handles. `ProductionSession::builder(config)` is the threaded compatibility alias. `start_peer_event_log` consumes an owned output and accepts either the native default period or an explicit period. `stop_peer_event_log` waits for native output shutdown. The corresponding local peer operations are `start_event_log` and `stop_event_log`. These operations marshal through the peer's native roles and can be used after moving the production actor.
 
 ## Exact environment utility
 
@@ -35,11 +35,16 @@ Completion is published after deferred delivery and after provider unwind has
 latched failure. Custom controlled pending stops retain their resources without
 waiting, advancing time or creating an executor. Stock controls retain native
 sequence checks and reject synchronous control on their own output queue.
-Production close of an initiating view may wait for native completion. If the
-last SDK logger owner is released on its own output queue, stock destruction is
-retired on a one-off production thread so the native queue join cannot self-wait.
-That retirement retains creation SDK/Rust resources and production admission
-until destruction finishes. No custom or controlled logger uses this thread.
+Threaded close of an initiating view may wait for native completion. If its
+last SDK logger owner is released on its own output queue, threaded stock
+destruction uses an off-output-queue retirement thread so the queue cannot
+self-join. This retains creation resources and threaded admission through teardown.
+A runtime-bound managed logger instead retains storage in its creator's native
+retirement table. Releasing a view/product never waits on a binding-owned
+condition variable for its managed output callback. The callback retains its
+logger and environment; final creator scope teardown drains native-ready
+lifecycle work, then destroys storage on the creator without advancing time or
+starting a thread. Release owning aliases before exiting that scope.
 
 An event-log factory creation context contains the SDK environment *before* its
 new product is installed. Its getter therefore returns the previous SDK logger,
@@ -59,7 +64,7 @@ Standalone `start`, `log`, `stop`, `stop_async` and `close` require exclusive ow
 
 `stop_async` returns a runtime-neutral, move-only Send completion supporting `try_take` and `Future`. Calls reject with `StopPending` until native completion. Dropping the observer does not cancel admitted output shutdown. A callback completed during provider unwinding is reported only after the failure is latched, never as fabricated successful output release. Completion success follows the native output-release callback. After completion, the same owner can start another output. Close is idempotent and rejects subsequent operations.
 
-Stock products reserve production before native queue creation and reject cooperative execution or coexistence with an active controlled world. Production final release may join pending output shutdown, as the SDK destructor does; it never destroys a stock logger on its own output queue. Custom controlled products with a pending async stop retain the logger and environment until caller completion rather than waiting, driving a clock, or creating an executor. Providers must eventually release output and complete or drop their stop token.
+Stock products use a bound creator retirement scope when present; otherwise they reserve exclusive threaded execution before native queue creation. A bare cooperative environment has no guaranteed creator-side quiescence authority and returns the local `MissingRuntimeAuthority` error, not an upstream unsupported-codec result. Process-global threaded/managed exclusivity remains. Threaded final release may join output shutdown, as the SDK destructor does. Managed stock products and custom pending stops retain their logger/environment until actual completion rather than blocking a released view, advancing time or creating an executor. Providers must eventually release output and complete or drop their stop token.
 
 ## Outputs and values
 
@@ -93,7 +98,7 @@ With `panic=unwind`, callback and factory/logger/output destruction panics are c
 
 ## Controlled execution
 
-The built-in logger's synchronous stop posts to its output task queue and waits. That cannot be used with a caller-pumped cooperative queue without deadlocking. The current built-in selection therefore rejects that controlled combination on evidenced native dependency grounds.
+The built-in logger's synchronous stop posts to its actual SDK output queue and waits. A runtime-bound managed environment uses the existing native-ready yield policy for supported lifecycle dependencies and a creator retirement table for aliases and final storage. It is not rejected solely for cooperative execution. `tests/session_runtime.rs` exercises stock selection through the same application procedure in both runtimes; `tests/runtime_alias_retirement.rs` installs a real stock logger and covers foreign last-alias release, pending async output with no preparatory pump, caught dependency-drop panic, final creator destruction and hook reacquisition. Matching Linux core/native and core ASan passed these cases. This is lifecycle evidence, not full codec/processing replay qualification.
 
 A custom factory or environment logger can be used with controlled execution if its own work and outputs remain caller-controlled. It must not start autonomous threads, use physical sockets, depend on wall-clock progress, or retain stop completions without caller-controlled progress. The binding does not claim to make arbitrary externally supplied provider work deterministic.
 

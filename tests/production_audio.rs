@@ -29,9 +29,12 @@ fn pcm(timestamp: i64) -> AudioPcmFrame {
 }
 
 #[test]
-fn pcm_selection_is_explicit_and_preserves_the_encoded_default() {
+fn encoded_selection_is_explicit_and_preserves_the_pcm_default() {
     let _lock = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let mut encoded = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut encoded = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     assert!(
         !encoded
             .audio_processing_state()
@@ -42,12 +45,12 @@ fn pcm_selection_is_explicit_and_preserves_the_encoded_default() {
     let encoded_source = encoded.create_opus_source(1).unwrap();
     assert!(
         ProductionSession::builder(ProductionSessionConfig::default())
+            .encoded_audio()
             .audio_processing(AudioProcessingConfig::default())
             .build()
             .is_err()
     );
     let mut raw = ProductionSession::builder(ProductionSessionConfig::default())
-        .pcm_audio()
         .audio_processing(AudioProcessingConfig::default())
         .build()
         .unwrap();

@@ -75,7 +75,7 @@ impl fmt::Display for SessionTransportError {
 }
 impl std::error::Error for SessionTransportError {}
 
-impl ProductionSession {
+impl<R: SessionRuntime> Session<R> {
     fn insert_dtls(
         &mut self,
         peer: SessionPeerId,

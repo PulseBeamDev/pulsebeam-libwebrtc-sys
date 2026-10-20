@@ -3,7 +3,7 @@
 use super::*;
 use crate::*;
 
-impl ProductionSession {
+impl<R: SessionRuntime> Session<R> {
     pub fn video_encoder_formats(&mut self) -> Result<Vec<SdpVideoFormat>, PeerError> {
         self.check_open()?;
         self.factory

@@ -682,16 +682,10 @@ impl EncodedAudioSource {
         self.push_opus_with_time(frame, Some(capture_time), None)
     }
 
-    /// In the controlled media profile, use the current world time for capture.
-    /// Otherwise preserve the original timestamp-free production carrier API.
+    /// Use caller-controlled capture time when the selected runtime provides
+    /// that mapping; otherwise preserve the timestamp-free native carrier API.
     pub fn push_opus(&self, frame: &OpusInputFrame) -> Result<(), OpusInputError> {
-        let capture_time = self.source.inner._factory.controlled_media.then(|| {
-            self.source
-                .inner
-                ._factory
-                .controlled_time()
-                .expect("controlled media clock")
-        });
+        let capture_time = self.source.inner._factory.controlled_time();
         self.push_opus_with_time(frame, capture_time, None)
     }
 
@@ -704,13 +698,7 @@ impl EncodedAudioSource {
         frame: &OpusInputFrame,
         level: OpusAudioLevel,
     ) -> Result<(), OpusInputError> {
-        let capture_time = self.source.inner._factory.controlled_media.then(|| {
-            self.source
-                .inner
-                ._factory
-                .controlled_time()
-                .expect("controlled media clock")
-        });
+        let capture_time = self.source.inner._factory.controlled_time();
         self.push_opus_with_time(frame, capture_time, Some(level))
     }
 
@@ -1112,14 +1100,6 @@ impl crate::RtpSender {
                 });
             }
             track.check_peer_dependency(&self.peer)?;
-            if self.peer._factory.uses_controlled_execution()
-                && (!self.peer._factory.controlled_media || !track.is_opus_frames())
-            {
-                return Err(PeerError {
-                    kind: PeerErrorKind::UnsupportedOperation,
-                    message: "controlled audio replacement requires admitted Opus input".into(),
-                });
-            }
         }
         let accepted = match track {
             Some(track) => ffi::rtp_sender_set_audio_track(self.native(), track.native()),

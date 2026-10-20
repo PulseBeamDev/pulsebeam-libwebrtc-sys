@@ -1,4 +1,4 @@
-# Caller-driven scheduling and prerecorded media
+# Caller-driven runtime services and media
 
 `ControlledWorld::acquire(seed, initial_time)` acquires the process-global
 WebRTC clock and non-cryptographic random generator together. Conflicting
@@ -6,18 +6,29 @@ acquisition leaves active hooks untouched. A world is sequence-bound, as are
 its peers, networks and queues. Production peers and parallel worlds must not
 coexist with it. Crypto keys, certificates and ciphertext are not seeded.
 
-Use `world.create_network()` and register an endpoint for each peer. Supply
-that endpoint's network-manager and packet-socket providers to
-`world.peer_factory_builder()`. The builder supplies the matching environment
-and driver. Retain the **endpoint owner** for the intended link lifetime:
-provider recipes retain state, but dropping or closing the endpoint explicitly
-shuts down its link. Mixing providers from different endpoints or networks, or
-using a closed endpoint, fails before native peer construction.
+The common application uses `Session::with_runtime(runtime, config)` for both
+threaded and caller-driven execution. The outer harness acquires the world,
+uses `world.create_network()` and registers an endpoint for each peer, then
+supplies `world.runtime()?.with_endpoint(&endpoint)?` to that application.
+The runtime supplies the matching environment and native role execution.
+Standalone consumers use `runtime.environment_factory()` followed by
+`runtime.create_environment(&factory)` after configuring SDK selections.
+The lower-level `world.peer_factory_builder()` remains available for direct
+native factory use, without a separate media profile.
+
+Retain the **endpoint owner** for the intended link lifetime: provider recipes
+retain state, but dropping or closing the endpoint explicitly shuts down its
+link. Mixing providers from different endpoints or networks, or using a closed
+endpoint, fails before native peer construction.
 
 Queues created with `world.create_queue` retain the driver, just as peer
 factories and controlled networks do. Dropping the world handle alone does not
 invalidate those resources. The final retained driver tears down on the calling
-thread and restores the global hooks.
+thread and restores the global hooks. SDK environment copies retain native
+scope tickets rather than an affine Rust driver. Release those aliases and
+their dependent products before closing the final caller-owned runtime scope;
+creator teardown drains their native-ready retirement work without adding an
+executor or advancing time.
 
 ## Time
 
@@ -79,27 +90,35 @@ queues, enabling self-reposting caller work. Threaded posting retains its
 `Send` bound. Dispatch budgets bound task count, not the execution time of
 arbitrary caller-provided closures.
 
-## Explicit media profile
+## Common media configuration
 
-Ordinary controlled peers still reject media. Opt in with
-`PeerConnectionFactoryBuilder::controlled_media()` and all four selections:
+Media selection is independent of runtime selection. Headless defaults use
+stock builtin audio/video factories and raw PCM/video inputs; native processing,
+trackless receivers and stock logging do not require a simulated source flag.
+The obsolete `controlled_media` constructor method has been removed, not
+replaced with a second whitelist. Ordinary builder options select codecs,
+processing, providers and explicit native devices. The `core` artifact does not
+expose physical-device APIs. Explicit native-only services preserve their actual
+behavior and are outside caller-controlled deterministic execution when they
+bypass the selected runtime dependencies.
 
-- `AudioEncoderFactory::with_opus_frames()` for prerecorded Opus carriers;
-- `AudioDecoderFactory::builtin_opus()` for the pinned software Opus decoder;
-- `EncodedVideoInput::new_for_format(VideoCodecFormat::new("VP8"))` and its
-  `encoder_factory()` for direct prerecorded VP8 input;
-- `VideoDecoderFactoryHandle::builtin_vp8()` for the pinned libvpx VP8 decoder.
+Construction support does not yet qualify every built-in software backend for
+deterministic caller-only execution. Codec-owned workers, nested dependencies
+and full raw-media replay remain open qualification work. See the
+[capability matrix](capability-matrix.md) for bounded evidence rather than a
+blanket deterministic-media claim.
 
-The profile requires a seeded world. It rejects raw-input/software compression,
-H.264 or other encoded-video formats, substitute/unavailable decoders, PCM
-processing, physical devices and separately threaded configurations. Codec
-names alone are insufficient: sealed binding provenance determines admission.
-The core build does not expose physical-device APIs. Builtin VP8 configuration
-forces one libvpx decoding thread. Production defaults remain threaded and do
-not acquire these profile guarantees.
+## Explicit encoded input
 
-Create `EncodedAudioSource` and encoded audio tracks using the admitted peer
-factory, and create VP8 sources/tracks through the same `EncodedVideoInput`.
+Prerecorded input remains an optional native adapter, not a simulation mode.
+Select `AudioEncoderFactory::with_opus_frames()` for Opus carriers, or use
+`SessionBuilder::encoded_audio()` on the common session builder. Select an
+`EncodedVideoInput` and its encoder factory for supported encoded video.
+The corresponding receive factory determines whether decoding or encoded-only
+receipt is supported. These adapters retain their actual format/metadata
+constraints in both runtimes, without constraining ordinary stock raw sources.
+Create `EncodedAudioSource` and tracks through that configured factory, and
+encoded video sources/tracks through the selected `EncodedVideoInput`.
 Capture timestamps are explicit: `push_opus_at(frame, Duration)` accepts a
 microsecond world timestamp and a separate 48 kHz RTP timestamp;
 `push_opus(frame)` uses the current controlled-world time. Opus capture time
@@ -127,8 +146,8 @@ input `stream_id()` identifies the local producer, not a wire receiver ID.
 Owned output remains valid after source/peer/world destruction and is passive,
 so it can be read elsewhere without driving native work.
 
-`RtpSender::set_track` replaces or detaches an admitted VP8 producer on a stable
-sender. `RtpTransceiver::stop` requires SDP renegotiation; adding a new producer
+`RtpSender::set_track` replaces or detaches a compatible video producer on a
+stable sender. `RtpTransceiver::stop` requires SDP renegotiation; adding a new producer
 and negotiating again exposes a new receiver identity. Unrelated streams remain
 active. `request_keyframe` submits a sender/receiver request; its success does
 not mean a frame was generated. `take_keyframe_request()` reads and clears
@@ -156,7 +175,7 @@ and byte-identical cryptographic output are not promised.
 
 ## Qualification evidence
 
-The safe fixture exercises two observed peers, distinguishable bidirectional
+The focused encoded-media fixture exercises two observed peers, distinguishable bidirectional
 Opus/VP8, gathered SDP, clean/impaired IPv4 and IPv6, exact in-process and
 fresh-process replay, video replacement/receiver recreation, source-keyed
 keyframe feedback, bounded input, invalid configuration/media and close/drop
@@ -170,8 +189,10 @@ Harness worker creation outside these markers is not library creation. Initial
 and final thread snapshots are not used as proof. A watchdog only detects hangs
 and never drives progress.
 
-The controlled-simulation acceptance contract and remaining qualification gates
-are consolidated in `plans/completion.md`. That single plan distinguishes
-historical baseline evidence from pending source/artifact, sanitizer and
-production regression qualification. Source inspection or an earlier artifact
-is not substitute runtime evidence.
+Common-construction, native alias teardown and standalone APM/mixing/G711/logging
+fixtures also exercise the same application procedure with both runtimes. These
+bounded constructor/lifecycle results do not qualify all media backends, NetEq,
+VoIP or the full public SDK surface. See the
+[capability matrix](capability-matrix.md) and
+[audio runtime contracts](audio-runtime-contracts.md) for current limitations.
+Source inspection or an earlier artifact is not substitute runtime evidence.

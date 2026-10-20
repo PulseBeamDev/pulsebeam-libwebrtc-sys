@@ -35,6 +35,7 @@ class CapturedDriverTasks final {
 };
 
 struct RustTask;
+struct RustRuntimeEnvironmentRetention;
 struct RustTaskQueueFactory;
 class NativeClock;
 struct RustReadiness;
@@ -318,6 +319,9 @@ std::unique_ptr<NativeTaskQueueFactory> environment_task_queue_factory(
     const NativeEnvironment& environment, const NativeTaskQueueFactory& selected) noexcept;
 std::unique_ptr<NativeEnvironment> bind_environment_selection(
     std::unique_ptr<NativeEnvironment> environment, const NativeEnvironment& selected) noexcept;
+std::unique_ptr<NativeEnvironment> bind_driver_environment(
+    const NativeDriverThread& driver, const NativeEnvironment& environment,
+    rust::Box<RustRuntimeEnvironmentRetention> retained) noexcept;
 std::unique_ptr<NativeEnvironment> clone_environment(
     const NativeEnvironment& environment) noexcept;
 std::int64_t environment_time_us(const NativeEnvironment& environment) noexcept;

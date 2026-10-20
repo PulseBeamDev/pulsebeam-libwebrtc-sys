@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "36cb394bdfaa622e8c0ee2b0923ec96604ea1d0f9697a0216828f11c2b127849",
-      "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
-      "generated_source_sha256": "a34b33c236d5eaacff0c13a21c4b304502e801e3543df86191d32b8017f91bd4"
+      "bridge_source_sha256": "a11370f3d223edf6a071dce043ea9d56f059a9c4010f7e76342884cefc13fa8b",
+      "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
+      "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "e5329b73554848407ff125459b51482f617966eff1658121e176184d75d9ef8b"
+    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771"
   },
   "sources": {
     "webrtc": {
@@ -35,7 +35,7 @@
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
   "native_configuration": {
-    "native_adapter_sha256": "e5329b73554848407ff125459b51482f617966eff1658121e176184d75d9ef8b",
+    "native_adapter_sha256": "f021ad9abe36b754cb3418878436b755ca85e398ac999c3b45a73fae68682771",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -44,9 +44,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "36cb394bdfaa622e8c0ee2b0923ec96604ea1d0f9697a0216828f11c2b127849",
-      "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
-      "generated_source_sha256": "a34b33c236d5eaacff0c13a21c4b304502e801e3543df86191d32b8017f91bd4"
+      "bridge_source_sha256": "a11370f3d223edf6a071dce043ea9d56f059a9c4010f7e76342884cefc13fa8b",
+      "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
+      "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
@@ -79,7 +79,7 @@
       "rtc_system_openh264": "false",
       "rtc_enable_protobuf": "true",
       "rtc_include_internal_audio_device": "false",
-      "cc_wrapper": "/home/linuxbrew/.linuxbrew/opt/python@3.15/bin/python3.15 /home/lukas/wt/pulsebeam-libwebrtc-sys/providers/tools/native_cc_wrapper.py --contract-sha256 75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d /home/linuxbrew/.linuxbrew/bin/sccache",
+      "cc_wrapper": "/home/linuxbrew/.linuxbrew/opt/python@3.15/bin/python3.15 /home/lukas/wt/pulsebeam-libwebrtc-sys/native-fidelity/unified-runtime/tools/native_cc_wrapper.py --contract-sha256 75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d /home/linuxbrew/.linuxbrew/bin/sccache",
       "target_os": "linux",
       "target_cpu": "x64",
       "use_sysroot": "true",
@@ -145,7 +145,7 @@
     },
     "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
   },
-  "native_configuration_sha256": "63dad10a210ec96c06f55bc159b5b595580f4d6ccd35dd1e5aa9b1b5a1c43be1",
+  "native_configuration_sha256": "c18edec38538e720e380d628e4e09ee05ab9d427b5e38d34e5d250b6bdfbb375",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",
@@ -156,7 +156,7 @@
   "archive": {
     "member": "lib/libwebrtc.a",
     "name": "webrtc",
-    "sha256": "e3885a0ceef6d9c007130f063db7a519155d0e55d4c1274e75a4af655977ed0f"
+    "sha256": "3aadc3867b8bb843d8ea2c43594be34e7a60e5c6927df7327db4e46dcd994a5f"
   },
   "links": [
     {

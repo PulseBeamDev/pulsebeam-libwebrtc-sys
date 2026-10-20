@@ -266,59 +266,21 @@ impl Drop for Manager {
         self.link.manager_dropped.fetch_add(1, Ordering::SeqCst);
     }
 }
-// Capture an actual SDK creation environment, preserving the world's private
-// clock/queue identities instead of reconstructing them from sampled time.
-struct CaptureEnvironment(Arc<Mutex<Option<Environment>>>);
-struct EmptyManager;
-impl NetworkManager for EmptyManager {
-    fn start_updating(&self) {}
-    fn stop_updating(&self) {}
-    fn networks(&self) -> Vec<Network> {
-        Vec::new()
-    }
-    fn any_address_networks(&self) -> Vec<Network> {
-        Vec::new()
-    }
-}
-impl NetworkManagerFactoryProvider for CaptureEnvironment {
-    fn create(&self, context: NetworkManagerContext) -> Option<Box<dyn NetworkManager>> {
-        *self.0.lock().unwrap() = Some(context.environment());
-        Some(Box::new(EmptyManager))
-    }
-    fn is_controlled(&self) -> bool {
-        true
-    }
-}
-
 struct Harness {
-    world: ControlledWorld,
-    queues: TaskQueueFactory,
-    driver: ControlledPeerDriver,
+    // Rust fields drop in declaration order. Release all SDK context aliases
+    // before the final driver/world owner drains creator-side retirement.
     environment: Environment,
+    queues: TaskQueueFactory,
     link: Arc<Link>,
+    driver: ControlledPeerDriver,
+    world: ControlledWorld,
 }
 impl Harness {
     fn new() -> Self {
         let world = ControlledWorld::acquire(0x84, Duration::from_secs(1)).unwrap();
         let link = Arc::new(Link::default());
-        let captured = Arc::new(Mutex::new(None));
-        let bootstrap = world
-            .peer_factory_builder()
-            .unwrap()
-            .network_manager_provider(CaptureEnvironment(captured.clone()))
-            .socket_factory_provider(Sockets {
-                ip: Ipv4Addr::new(10, 84, 0, 254),
-                link: link.clone(),
-            })
-            .build()
-            .unwrap();
-        let base = captured
-            .lock()
-            .unwrap()
-            .take()
-            .expect("SDK did not create the selected manager");
-        let queues = base.task_queue_factory().unwrap();
-        let mut selected = EnvironmentFactory::from_environment(&base).unwrap();
+        let runtime = world.runtime().unwrap();
+        let mut selected = runtime.environment_factory().unwrap();
         selected
             .set_field_trials(
                 FieldTrials::parse(concat!(
@@ -330,8 +292,8 @@ impl Harness {
                 .unwrap(),
             )
             .unwrap();
-        let environment = selected.create().unwrap();
-        drop(bootstrap);
+        let environment = runtime.create_environment(&selected).unwrap();
+        let queues = environment.task_queue_factory().unwrap();
         let driver = world.driver().clone();
         Self {
             world,
@@ -408,8 +370,7 @@ impl Harness {
                 .audio_encoder_factory(AudioEncoderFactory::with_opus_frames().unwrap())
                 .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
                 .video_encoder_factory(encoder)
-                .video_decoder_factory(VideoDecoderFactoryHandle::builtin_vp8().unwrap())
-                .controlled_media();
+                .video_decoder_factory(VideoDecoderFactoryHandle::builtin_vp8().unwrap());
         }
         (builder.build().unwrap(), sockets, managers)
     }

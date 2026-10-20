@@ -2,6 +2,7 @@
 #include "pulsebeam-webrtc-sys/native/clock.h"
 #include "pulsebeam-webrtc-sys/native/event_log.h"
 #include "pulsebeam-webrtc-sys/native/task_queue_provider.h"
+#include "pulsebeam-webrtc-sys/native/runtime_retirement.h"
 
 #include <algorithm>
 #include <atomic>
@@ -220,6 +221,16 @@ struct NativeManualClock::State {
   std::mutex factories_mutex;
   std::vector<std::weak_ptr<NativeTaskQueueFactory::State>> factories;
   std::atomic<std::uint64_t> next_sequence{0};
+  std::mutex retirement_mutex;
+  std::weak_ptr<NativeRuntimeRetirement> retirement;
+  void WakeRetirement() {
+    std::shared_ptr<NativeRuntimeRetirement> owner;
+    {
+      std::lock_guard lock(retirement_mutex);
+      owner = retirement.lock();
+    }
+    if (owner) owner->Wake();
+  }
 };
 
 struct NativeTaskQueueFactory::State {
@@ -411,6 +422,10 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
       : thread(std::move(value)), clock(std::move(clock_state)), seeded(seeded) {
     webrtc::SetClockForTesting(&clock);
     yield_policy = std::make_unique<webrtc::ScopedYieldPolicy>(this);
+    {
+      std::lock_guard lock(clock.state->retirement_mutex);
+      clock.state->retirement = retirement;
+    }
   }
   void YieldExecution() override {
     // Supported Event waits have finite engine-owned ready dependencies.
@@ -428,6 +443,19 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
     // Pending captures can release native peers/codec queues. Destroy them
     // while the driver is still current and cooperative lifecycle yields work.
     static_cast<ControlledThread*>(thread.get())->ClearPending();
+    // Keep the actual native driver, yield policy and global hooks alive until
+    // every SDK Environment alias and installed affine resource has retired.
+    // Only native-ready lifecycle work is dispatched; time never advances.
+    for (;;) {
+      const auto generation = retirement->generation();
+      retirement->Drain();
+      if (retirement->empty()) break;
+      const auto progress = PumpClock(clock.state,
+          std::numeric_limits<std::size_t>::max(), nullptr, true);
+      retirement->Drain();
+      if (retirement->empty()) break;
+      if (progress == 0) retirement->Wait(generation);
+    }
     controlled_driver_identity = nullptr;
     thread->UnwrapCurrent();
     thread.reset();
@@ -444,6 +472,8 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
   std::unique_ptr<webrtc::Thread> thread;
   Clock clock;
   bool seeded;
+  std::shared_ptr<NativeRuntimeRetirement> retirement =
+      std::make_shared<NativeRuntimeRetirement>();
   std::unique_ptr<webrtc::ScopedYieldPolicy> yield_policy;
 };
 
@@ -475,6 +505,7 @@ void CooperativeTaskQueue::PostCaptured(absl::AnyInvocable<void() &&> task, Capt
   capture->key = TaskKey{state_->clock->clock.TimeInMicroseconds(), state_->clock->next_sequence++};
   group.tasks.push_back(capture);
   state_->tasks.emplace(capture->key, ScheduledTask{this, false, [capture] { capture->Run(); }});
+  state_->clock->WakeRetirement();
 }
 
 void CooperativeTaskQueue::PostTaskImpl(absl::AnyInvocable<void() &&> task,
@@ -487,6 +518,7 @@ void CooperativeTaskQueue::PostTaskImpl(absl::AnyInvocable<void() &&> task,
   const std::int64_t deadline = state_->clock->clock.TimeInMicroseconds();
   state_->tasks.emplace(TaskKey{deadline, state_->clock->next_sequence++},
                         ScheduledTask{this, false, std::move(task)});
+  state_->clock->WakeRetirement();
 }
 
 void CooperativeTaskQueue::PostDelayedTaskImpl(
@@ -504,6 +536,7 @@ void CooperativeTaskQueue::PostDelayedTaskImpl(
   const std::int64_t deadline = now + delta;
   state_->tasks.emplace(TaskKey{deadline, state_->clock->next_sequence++},
                         ScheduledTask{this, true, std::move(task)});
+  state_->clock->WakeRetirement();
 }
 
 void CooperativeTaskQueue::Run(absl::AnyInvocable<void() &&> task) noexcept {
@@ -1180,6 +1213,33 @@ std::unique_ptr<NativeEnvironment> bind_environment_selection(
   return environment;
 }
 
+std::unique_ptr<NativeEnvironment> bind_driver_environment(
+    const NativeDriverThread& driver, const NativeEnvironment& environment,
+    rust::Box<RustRuntimeEnvironmentRetention> retained) noexcept {
+  if (!driver.thread() || !driver.thread()->IsCurrent()) return nullptr;
+  auto original = environment.environment();
+  auto owner = driver.state()->retirement;
+  {
+    auto& registry = runtime_retirement_internal::registry();
+    std::lock_guard lock(registry.mutex);
+    auto found = registry.factories.find(&original.task_queue_factory());
+    // Clock association alone does not prove that this particular Environment
+    // owns a scope ticket. Bind unowned siblings even when clocks match.
+    if (found != registry.factories.end() && found->second.lock() == owner)
+      return clone_environment(environment);
+  }
+  const auto id = owner->Retain([retained = std::move(retained)]() mutable {
+    // Destroy the entire original Rust/native dependency set on the creator.
+    // It contains no Rc driver; the closing driver owns the retirement table.
+    (void)retained;
+  });
+  webrtc::EnvironmentFactory scoped(original);
+  scoped.Set(std::make_unique<RuntimeBoundTaskQueueFactory>(
+      original.task_queue_factory(), original.clock(), owner, id));
+  return std::make_unique<NativeEnvironment>(
+      std::make_unique<NativeEnvironment::State>(scoped.Create(), environment.state()->clock_bounds));
+}
+
 std::unique_ptr<NativeEnvironment> clone_environment(
     const NativeEnvironment& environment) noexcept {
   return std::make_unique<NativeEnvironment>(
@@ -1293,7 +1353,11 @@ std::unique_ptr<NativeDriverThread> new_seeded_driver_thread(
 std::size_t driver_pump(const NativeDriverThread& driver,
                         std::size_t budget) noexcept {
   if (!driver.thread() || !driver.thread()->IsCurrent()) return 0;
-  return PumpClock(driver.state()->clock.state, budget);
+  if (budget == 0) return 0;
+  driver.state()->retirement->Drain();
+  const auto dispatched = PumpClock(driver.state()->clock.state, budget);
+  driver.state()->retirement->Drain();
+  return dispatched;
 }
 
 bool driver_run_ready(const NativeDriverThread& driver) noexcept {

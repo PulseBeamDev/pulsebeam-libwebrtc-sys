@@ -210,7 +210,7 @@ fn controlled_pending_stop_retains_output_product_and_lease_without_progress_or_
         .unwrap();
     assert!(matches!(
         RtcEventLogFactoryHandle::builtin().create(&environment),
-        Err(EventLogError::UnsupportedControlledLogger)
+        Err(EventLogError::MissingRuntimeAuthority)
     ));
     assert_eq!(clock.now(), Duration::from_secs(10));
     assert_eq!(queues.next_deadline(), None);
@@ -262,7 +262,7 @@ fn stock_product_outputs_native_bytes_and_reserves_production_until_final_releas
     let production_environment = Environment::builder().build().unwrap();
     assert!(matches!(
         factory.create(&production_environment),
-        Err(EventLogError::UnsupportedControlledLogger)
+        Err(EventLogError::MissingRuntimeAuthority)
     ));
     drop((production_environment, world));
 }

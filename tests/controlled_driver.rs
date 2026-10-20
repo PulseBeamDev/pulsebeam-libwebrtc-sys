@@ -304,8 +304,9 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     factory.set_options(FactoryOptions::default());
     assert!(!peer.should_fire_negotiation_needed(negotiation).unwrap());
     peer.restart_ice().unwrap();
-    // Offer generation can create native receive transceivers. The automatic
-    // setter must not bypass the controlled media dependency restriction.
+    // Offer generation can create native receive transceivers. Both explicit
+    // and automatic description setters must enter the SDK, without a profile
+    // gate or a synthetic controlled-mode completion.
     let media_offer = peer
         .create_offer_with_options(pulsebeam_webrtc_sys::OfferAnswerOptions {
             receive_video: Some(1),
@@ -324,36 +325,37 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
         )
         .is_some()
     );
-    let rejected = peer.set_local_description_auto().unwrap();
-    let PeerConnectionEvent::OperationComplete(done) = peer.try_next_event().unwrap() else {
-        panic!("expected controlled automatic SDP rejection");
-    };
-    assert_eq!(done.operation_id, rejected);
-    assert_eq!(
-        done.result.unwrap_err().kind,
-        PeerErrorKind::UnsupportedOperation
+    let automatic = peer.set_local_description_auto().unwrap();
+    assert!(
+        completed(
+            &peer,
+            automatic,
+            &mut auto_events,
+            &driver,
+            &queues,
+            &clock,
+            &network
+        )
+        .is_none()
     );
     #[cfg(target_os = "linux")]
     assert!(native_thread_ids().is_subset(&threads_before));
-    // The pinned upstream video receiver synchronously waits for a task on
-    // its decode queue while applying remote SDP. The cooperative queue
-    // cannot execute that task until this call returns, so reject instead.
+    // Raw source installation uses the same native operations as threaded
+    // execution. No sealed direct-encoded source profile is required.
     let source = factory.create_video_source().unwrap();
-    let track = factory
-        .create_video_track("unsupported-video", &source)
-        .unwrap();
-    let error = peer
+    let track = factory.create_video_track("raw-video", &source).unwrap();
+    let video = peer
         .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
-        .unwrap_err();
-    assert_eq!(error.kind, PeerErrorKind::UnsupportedOperation);
+        .unwrap();
+    assert_eq!(video.media_type(), pulsebeam_webrtc_sys::MediaType::Video);
     let audio_source = factory.create_audio_source().unwrap();
     let audio_track = factory
-        .create_audio_track("unsupported-audio", &audio_source)
+        .create_audio_track("raw-audio", &audio_source)
         .unwrap();
-    let error = peer
+    let audio = peer
         .add_audio_transceiver(&audio_track, RtpTransceiverDirection::SendOnly)
-        .unwrap_err();
-    assert_eq!(error.kind, PeerErrorKind::UnsupportedOperation);
+        .unwrap();
+    assert_eq!(audio.media_type(), pulsebeam_webrtc_sys::MediaType::Audio);
     for media in ["audio", "video"] {
         for local in [true, false] {
             let description = SessionDescription {
@@ -365,17 +367,26 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
             } else {
                 peer.set_remote_description(description).unwrap()
             };
-            let PeerConnectionEvent::OperationComplete(result) = peer.try_next_event().unwrap()
-            else {
-                panic!("expected controlled {media} rejection");
-            };
-            assert_eq!(result.operation_id, rejected);
-            assert_eq!(
-                result.result.unwrap_err().kind,
-                PeerErrorKind::UnsupportedOperation
-            );
+            let result = (0..1024)
+                .find_map(|_| {
+                    driver.pump(64);
+                    while let Some(event) = peer.try_next_event() {
+                        if let PeerConnectionEvent::OperationComplete(done) = event {
+                            if done.operation_id == rejected {
+                                return Some(done);
+                            }
+                        }
+                    }
+                    None
+                })
+                .expect("native SDP parse completion");
+            // Deliberately malformed SDP reaches the real parser in both
+            // modes, instead of being replaced by UnsupportedOperation.
+            assert_eq!(result.result.unwrap_err().kind, PeerErrorKind::Syntax);
         }
     }
+    drop(audio);
+    drop(video);
     drop(audio_track);
     drop(audio_source);
     drop(track);

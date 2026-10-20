@@ -389,7 +389,10 @@ fn migrated_actor_keeps_reused_native_sender_ids_as_distinct_resources() {
         let id = session.set_remote_description(peers[0], answer).unwrap();
         events.finish(session, peers, peers[0], id);
     }
-    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let mut session = ProductionSession::builder(Default::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peers = [
         session.create_peer(Default::default()).unwrap(),
         session.create_peer(Default::default()).unwrap(),
@@ -461,7 +464,10 @@ fn migrated_actor_owns_dtmf_transport_aliases_and_revocable_ice() {
     assert_send::<DtlsTransportInformation>();
     assert_send::<DtlsTransportEvent>();
     assert_send::<SessionSctpTransportInformation>();
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let mut config = RtcConfiguration::default();
     config.options.bundle_policy = BundlePolicy::MaxBundle;
     let peers = [
@@ -1155,9 +1161,11 @@ fn received_rtx(
 
 #[test]
 fn migrated_actor_reconfigures_real_padding_probes_and_replaces_audio_tracks() {
-    let mut session = ProductionSession::new(ProductionSessionConfig {
+    let mut session = ProductionSession::builder(ProductionSessionConfig {
         video_format: Some(VideoCodecFormat::new("VP8")),
     })
+    .encoded_audio()
+    .build()
     .unwrap();
     let peers = [
         session.create_peer(Default::default()).unwrap(),

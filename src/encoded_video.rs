@@ -560,9 +560,9 @@ impl EncodedH264Source {
             || frame.width > 4096
             || frame.height > 4096
             || frame.timestamp_us < 0
-            || (self.source.controlled_media()
+            || (self.source.uses_controlled_execution()
                 && frame.timestamp_us as u128 > crate::MAX_CONTROLLED_TIME.as_micros())
-            || (self.source.controlled_media() && self.format.name == "VP8" && !valid_vp8(&frame))
+            || (self.format.name == "VP8" && !valid_vp8(&frame))
             || self
                 .last_timestamp_us
                 .get()
@@ -693,7 +693,8 @@ impl Drop for EncodedH264Source {
     }
 }
 
-// Reject structurally invalid profile input before reservation or dispatch.
+// Reject structurally invalid adapter input before reservation or dispatch,
+// independently of the selected runtime.
 // Entropy-coded corruption remains the real upstream decoder's responsibility.
 fn valid_vp8(frame: &EncodedVideoAccessUnit) -> bool {
     let data = &frame.data;

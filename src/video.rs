@@ -950,8 +950,8 @@ impl VideoSource {
         }
     }
 
-    pub(crate) fn controlled_media(&self) -> bool {
-        self.inner._factory.controlled_media
+    pub(crate) fn uses_controlled_execution(&self) -> bool {
+        self.inner._factory.uses_controlled_execution()
     }
 
     pub(crate) fn belongs_to(&self, factory: &Rc<FactoryInner>) -> bool {
@@ -2070,15 +2070,6 @@ impl RtpSender {
             });
         }
         if let Some(track) = track {
-            if self.peer._factory.uses_controlled_execution()
-                && (!self.peer._factory.controlled_media
-                    || (track.local_video().is_none() && track.local_audio().is_none()))
-            {
-                return Err(PeerError {
-                    kind: PeerErrorKind::UnsupportedOperation,
-                    message: "controlled replacement requires an admitted video source".into(),
-                });
-            }
             if !Rc::ptr_eq(track.factory(), &self.peer._factory) {
                 return Err(PeerError {
                     kind: PeerErrorKind::InvalidParameter,
@@ -2087,16 +2078,6 @@ impl RtpSender {
             }
             if let Some(video) = track.local_video() {
                 self.validate_video_replacement(video)?;
-            }
-            if self.peer._factory.controlled_media
-                && track.local_video().is_none()
-                && track.local_audio().is_none()
-            {
-                return Err(PeerError {
-                    kind: PeerErrorKind::UnsupportedOperation,
-                    message: "controlled replacement requires an admitted local media source"
-                        .into(),
-                });
             }
         }
         let accepted = match track {
@@ -2124,13 +2105,6 @@ impl RtpSender {
         Ok(true)
     }
     fn validate_video_replacement(&self, track: &VideoTrack) -> Result<(), PeerError> {
-        if self.peer._factory.controlled_media && !track.is_admitted_controlled_video() {
-            return Err(PeerError {
-                kind: PeerErrorKind::UnsupportedOperation,
-                message: "controlled sender replacement requires admitted direct VP8/H264 input"
-                    .into(),
-            });
-        }
         let encodings = self.parameters()?.encodings.len();
         if track.is_direct_encoded()
             && if track.is_direct_simulcast() {

@@ -765,7 +765,6 @@ fn run_media_with_logs(
                     .audio_decoder_factory(audio_decoders[who].clone())
                     .video_encoder_factory(input.encoder_factory())
                     .video_decoder_factory(video_decoders[who].clone())
-                    .controlled_media()
                     .build()
                     .unwrap()
             })
@@ -1806,7 +1805,6 @@ fn run_h264_profile_with_wire(
                     .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
                     .video_encoder_factory(input.encoder_factory())
                     .video_decoder_factory(decoder.clone())
-                    .controlled_media()
                     .build()
                     .unwrap()
             })
@@ -2333,7 +2331,6 @@ fn run_opus_fanout_metadata(include_level: bool) {
                 .audio_decoder_factory(decoder.clone())
                 .video_encoder_factory(input.encoder_factory())
                 .video_decoder_factory(video_decoder.clone())
-                .controlled_media()
                 .build()
                 .unwrap()
         })
@@ -2646,7 +2643,6 @@ fn controlled_simulcast_admission_is_atomic_and_bitrate_errors_are_native() {
         .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
         .video_encoder_factory(input.encoder_factory())
         .video_decoder_factory(input.encoded_receive_factory().unwrap())
-        .controlled_media()
         .build()
         .unwrap();
     let mut source = input.create_source(&factory).unwrap();
@@ -3049,16 +3045,21 @@ fn controlled_configuration_rejects_mismatched_endpoints_before_work() {
             assert_eq!(world.now(), Duration::from_secs(10));
             assert_eq!(world.next_deadline(), None);
         }
-        let error = world
+        // Omitted codecs select normal native defaults, not an unadmitted
+        // simulation profile. Merely constructing them does not supply media.
+        let defaults = world
             .peer_factory_builder()
             .unwrap()
             .network_manager(first.network_manager().unwrap())
             .packet_socket_factory(first.packet_socket_factory().unwrap())
-            .controlled_media()
             .build()
-            .err()
-            .expect("unselected codecs accepted");
-        assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+            .unwrap();
+        drop(defaults);
+        // A successful native construction may post ready cleanup. Unlike a
+        // rejected endpoint selection, it need not leave the scheduler empty
+        // before the harness runs that cleanup.
+        world.pump(1024);
+        assert_eq!(world.now(), Duration::from_secs(10));
         assert_eq!(world.next_deadline(), None);
         let input = EncodedVideoInput::new_for_format(VideoCodecFormat::new("VP8")).unwrap();
         let audio_encoder = AudioEncoderFactory::with_opus_frames().unwrap();
@@ -3074,7 +3075,6 @@ fn controlled_configuration_rejects_mismatched_endpoints_before_work() {
                 .audio_decoder_factory(audio_decoder.clone())
                 .video_encoder_factory(input.encoder_factory())
                 .video_decoder_factory(video_decoder.clone())
-                .controlled_media()
         };
         #[cfg(feature = "native")]
         {
@@ -3082,30 +3082,34 @@ fn controlled_configuration_rejects_mismatched_endpoints_before_work() {
                 .native_audio(true)
                 .build()
                 .err()
-                .expect("physical devices accepted");
+                .expect("encoded carrier admitted with a PCM microphone");
             assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
             assert_eq!(world.next_deadline(), None);
         }
-        for invalid in [
+        // These are actual codec/provider selections, not whitelist failures.
+        // The SDK remains responsible for their advertised/negotiated support.
+        for selected in [
             builder().audio_encoder_factory(AudioEncoderFactory::builtin().unwrap()),
             builder().audio_decoder_factory(AudioDecoderFactory::builtin().unwrap()),
             builder().video_encoder_factory(EncodedVideoInput::new().unwrap().encoder_factory()),
             builder()
                 .video_decoder_factory(VideoDecoderFactoryHandle::new(UnavailableVp8).unwrap()),
-            builder().audio_processing(AudioProcessingConfig::default()),
         ] {
-            let error = invalid
-                .build()
-                .err()
-                .expect("incompatible controlled profile accepted");
-            assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+            let factory = selected.build().unwrap();
+            drop(factory);
+            world.pump(1024);
             assert_eq!(world.now(), Duration::from_secs(10));
-            assert_eq!(
-                world.next_deadline(),
-                None,
-                "rejected configuration started native work"
-            );
+            assert_eq!(world.next_deadline(), None);
         }
+        // An encoded-packet carrier cannot process captured PCM in any mode.
+        let error = builder()
+            .audio_processing(AudioProcessingConfig::default())
+            .build()
+            .err()
+            .expect("encoded carrier admitted PCM processing");
+        assert_eq!(error.kind, PeerErrorKind::InvalidParameter);
+        assert_eq!(world.now(), Duration::from_secs(10));
+        assert_eq!(world.next_deadline(), None);
     }
     eprintln!("CONTROLLED_MEDIA_END");
 }

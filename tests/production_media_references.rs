@@ -35,7 +35,10 @@ fn finish(
 }
 #[test]
 fn migrated_actor_owns_native_stream_source_and_bounded_notifier_references() {
-    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let mut session = ProductionSession::builder(Default::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let left = session.create_peer(Default::default()).unwrap();
     let right = session.create_peer(Default::default()).unwrap();
     let input = session.create_opus_source(1).unwrap();

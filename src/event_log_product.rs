@@ -72,9 +72,10 @@ impl RtcEventLogFactoryHandle {
     }
 
     /// Create on this caller sequence, without creating an owner worker.
-    /// Active stock logging requires production queues. The SDK kill-switch
-    /// null product is also valid on cooperative queues. A custom logger must
-    /// obey the controlled-provider contract.
+    /// Active stock logging requires either a runtime-bound creator retirement
+    /// scope or exclusive threaded execution. A bare cooperative environment
+    /// lacks the lifecycle authority needed for native synchronous shutdown.
+    /// The SDK kill-switch null product does not require an output queue.
     pub fn create(&self, environment: &Environment) -> Result<RtcEventLogHandle, EventLogError> {
         let controlled = environment
             .cooperative_queues()
@@ -105,7 +106,7 @@ impl RtcEventLogFactoryHandle {
         }
         if native.is_null() {
             return Err(match error {
-                6 => EventLogError::UnsupportedControlledLogger,
+                6 => EventLogError::MissingRuntimeAuthority,
                 7 => EventLogError::ProviderFailed,
                 _ => EventLogError::NativeRejected,
             });
@@ -123,9 +124,10 @@ pub(crate) struct RustEventLogRetention {
 
 /// A caller-sequence native logger owner. All operations require exclusive
 /// owner access, preserving native start/stop affinity without shared handles.
-/// Production drop can wait for native output retirement, just like the SDK
-/// destructor. A pending custom controlled stop retains its resources through
-/// completion instead of waiting or creating an executor.
+/// Threaded drop can wait for native output retirement, just like the SDK
+/// destructor. With a creator retirement scope, pending stock output and custom
+/// stops retain their resources through completion instead of waiting in a
+/// released view/product or creating an executor.
 ///
 /// ```compile_fail
 /// fn send<T: Send>() {}

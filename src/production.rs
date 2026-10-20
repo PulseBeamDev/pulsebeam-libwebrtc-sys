@@ -1,4 +1,4 @@
-//! Move-only production ownership. Local handles never leave this module's
+//! Runtime-injected ownership. Local handles never leave this module's
 //! resource graph; IDs and owned values are the only application boundary.
 
 use std::{
@@ -15,7 +15,14 @@ use std::{
 #[cfg(feature = "native")]
 mod capture;
 mod retirement;
+mod runtime;
 use retirement::SessionRetirement;
+pub use runtime::{ManagedRuntime, SessionRuntime, ThreadedRuntime};
+
+/// Compatibility names for the native threaded instantiation of the shared API.
+pub type ProductionSession = Session<ThreadedRuntime>;
+pub type ProductionSessionBuilder = SessionBuilder<ThreadedRuntime>;
+pub type SessionConfig = ProductionSessionConfig;
 
 use crate::{
     AudioDecoderFactory, AudioEncoderFactory, CodecError, DataChannel, DataChannelConfiguration,
@@ -133,8 +140,9 @@ fn codec_error(value: CodecError) -> PeerError {
     }
 }
 
-/// Production uses system time, default engine role threads and headless
-/// devices. No thread-bound caller provider, factory or handle may be injected.
+/// Media configuration shared by all session runtimes. Headless defaults use
+/// stock software codecs with raw PCM/video; encoded input and physical devices
+/// are explicit selections, independent of the chosen execution services.
 #[derive(Clone, Debug, Default)]
 pub struct ProductionSessionConfig {
     /// Optional direct encoded-video format. H.264 and VP8 are accepted.
@@ -387,7 +395,7 @@ pub enum SessionEvent {
 /// fn assert_sync<T: Sync>() {}
 /// assert_sync::<pulsebeam_webrtc_sys::ProductionSession>();
 /// ```
-pub struct ProductionSession {
+pub struct Session<R: SessionRuntime = ThreadedRuntime> {
     // Observers/transports retire before endpoints, peers and role threads.
     connectivity: connectivity::ConnectivityResources,
     local_stream_observers: HashMap<SessionMediaStreamObserverId, crate::MediaStreamObserver>,
@@ -452,9 +460,11 @@ pub struct ProductionSession {
     readiness: Arc<Readiness>,
     closed: bool,
     _exclusive: PhantomData<Cell<()>>,
-    // Last to drop. This worker has no application command queue and accepts
-    // at most the one final owner, with all SDK roles/dependencies still live.
+    // Threaded-only handoff. It has no application command queue and accepts
+    // at most one final owner, with all SDK roles/dependencies still live.
     retirement: Option<SessionRetirement>,
+    // Last: retain runtime dependencies through graph destruction and cleanup.
+    runtime: Option<R>,
 }
 
 // SAFETY: the *entire* Rc graph is captive here. Construction accepts only owned
@@ -477,12 +487,13 @@ pub struct ProductionSession {
 // until freeze; native preparation callbacks retain only synchronized C++ state,
 // never the Rc graph. No opaque/custom texture producer is admitted here.
 // This rationale does NOT apply to any individual legacy/local handle.
-unsafe impl Send for ProductionSession {}
+unsafe impl Send for Session<ThreadedRuntime> {}
 
-/// Owned construction options for the production actor. Provider registrations
-/// require thread-safe owned contracts, never local native handles. Existing
-/// convenience constructors retain their defaults.
-pub struct ProductionSessionBuilder {
+/// Owned construction options for the common session. Provider registrations
+/// use owned contracts; runtime dependencies retain their appropriate affinity.
+/// A threaded instantiation never imports an affine driver or local handle.
+pub struct SessionBuilder<R: SessionRuntime = ThreadedRuntime> {
+    runtime: R,
     execution_resources: crate::ExecutionResources,
     config: ProductionSessionConfig,
     audio_encoder_factory: Option<AudioEncoderFactory>,
@@ -517,7 +528,7 @@ pub struct ProductionSessionBuilder {
     environment_factory: Option<crate::EnvironmentFactory>,
 }
 
-impl ProductionSessionBuilder {
+impl<R: SessionRuntime> SessionBuilder<R> {
     /// Select the same native Call resource defaults as the local factory.
     /// This does not opt into a codec whitelist or modify media selection.
     pub fn execution_resources(mut self, resources: crate::ExecutionResources) -> Self {
@@ -525,10 +536,17 @@ impl ProductionSessionBuilder {
         self
     }
 
-    /// Select stock PCM encoding instead of the absent-choice encoded Opus
-    /// carrier default. An explicitly selected encoder factory is unchanged.
+    /// Select stock PCM encoding, which is also the headless default.
+    /// An explicitly selected encoder factory is unchanged.
     pub fn pcm_audio(mut self) -> Self {
         self.pcm_audio = true;
+        self
+    }
+
+    /// Explicitly select the encoded Opus adapter instead of raw PCM input.
+    /// This selection is identical for threaded and caller-pumped execution.
+    pub fn encoded_audio(mut self) -> Self {
+        self.pcm_audio = false;
         self
     }
 
@@ -796,26 +814,36 @@ impl ProductionSessionBuilder {
         self
     }
 
-    pub fn build(self) -> Result<ProductionSession, PeerError> {
+    pub fn build(self) -> Result<Session<R>, PeerError> {
         if (self.temporal_fps.is_some() || self.simulcast) && self.config.video_format.is_none() {
             return Err(error(
                 PeerErrorKind::UnsupportedParameter,
                 "layered input requires a video format",
             ));
         }
-        ProductionSession::build(self)
+        Session::build(self)
     }
 }
 
-impl ProductionSession {
-    pub fn builder(config: ProductionSessionConfig) -> ProductionSessionBuilder {
-        ProductionSessionBuilder {
+impl<R: SessionRuntime> Session<R> {
+    pub fn builder(config: SessionConfig) -> SessionBuilder<R>
+    where
+        R: Default,
+    {
+        Self::with_runtime(R::default(), config)
+    }
+
+    /// One construction path for either selected runtime. The outer harness
+    /// supplies dependencies; all session operations use this same graph.
+    pub fn with_runtime(runtime: R, config: SessionConfig) -> SessionBuilder<R> {
+        SessionBuilder {
+            runtime,
             config,
             randomness: None,
             environment_factory: None,
             audio_encoder_factory: None,
             audio_decoder_factory: None,
-            pcm_audio: false,
+            pcm_audio: true,
             execution_resources: crate::ExecutionResources::default(),
             audio_processing: None,
             audio_processor_builder: None,
@@ -845,7 +873,10 @@ impl ProductionSession {
         }
     }
 
-    pub fn new(config: ProductionSessionConfig) -> Result<Self, PeerError> {
+    pub fn new(config: ProductionSessionConfig) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         Self::builder(config).build()
     }
 
@@ -853,7 +884,10 @@ impl ProductionSession {
     /// Configuration must select the supported constrained-baseline H264 format.
     /// Native DD must be negotiated and L1T3 selected on the sender before input.
     /// `fps` passes cumulative native temporal frame-rate capabilities unchanged.
-    pub fn new_l1t3(config: ProductionSessionConfig, fps: [u8; 3]) -> Result<Self, PeerError> {
+    pub fn new_l1t3(config: ProductionSessionConfig, fps: [u8; 3]) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         if config.video_format.is_none() {
             return Err(error(
                 PeerErrorKind::UnsupportedParameter,
@@ -868,7 +902,10 @@ impl ProductionSession {
     /// with matching rung geometry. Ambiguous single-encoder fallback rejects
     /// asynchronously rather than guessing an encoding. This does
     /// not extend stock libwebrtc's simultaneous simulcast receiving support.
-    pub fn new_simulcast(config: ProductionSessionConfig) -> Result<Self, PeerError> {
+    pub fn new_simulcast(config: ProductionSessionConfig) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         if config.video_format.is_none() {
             return Err(error(
                 PeerErrorKind::UnsupportedParameter,
@@ -883,7 +920,10 @@ impl ProductionSession {
     pub fn new_with_field_trials(
         config: ProductionSessionConfig,
         view: impl crate::FieldTrialsView,
-    ) -> Result<Self, PeerError> {
+    ) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         Self::builder(config).field_trials(view).build()
     }
 
@@ -892,7 +932,10 @@ impl ProductionSession {
         config: ProductionSessionConfig,
         fps: [u8; 3],
         view: impl crate::FieldTrialsView,
-    ) -> Result<Self, PeerError> {
+    ) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         if config.video_format.is_none() {
             return Err(error(
                 PeerErrorKind::UnsupportedParameter,
@@ -909,7 +952,10 @@ impl ProductionSession {
     pub fn new_simulcast_with_field_trials(
         config: ProductionSessionConfig,
         view: impl crate::FieldTrialsView,
-    ) -> Result<Self, PeerError> {
+    ) -> Result<Self, PeerError>
+    where
+        R: Default,
+    {
         if config.video_format.is_none() {
             return Err(error(
                 PeerErrorKind::UnsupportedParameter,
@@ -954,9 +1000,10 @@ impl ProductionSession {
         Ok(self.factory.clock_timestamp())
     }
 
-    fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
-        // Keep the lease until error-path provider cleanup has finished.
-        let ProductionSessionBuilder {
+    fn build(options: SessionBuilder<R>) -> Result<Self, PeerError> {
+        // Keep the runtime until error-path provider cleanup has finished.
+        let SessionBuilder {
+            mut runtime,
             execution_resources,
             randomness,
             environment_factory,
@@ -1017,7 +1064,7 @@ impl ProductionSession {
             None if pcm_audio => AudioDecoderFactory::builtin().map_err(codec_error)?,
             None => AudioDecoderFactory::builtin_opus().map_err(codec_error)?,
         };
-        let mut builder = PeerConnectionFactory::builder()
+        let mut builder = runtime::configure(&mut runtime, PeerConnectionFactory::builder())
             .execution_resources(execution_resources)
             .audio_encoder_factory(selected_audio_encoder)
             .audio_decoder_factory(selected_audio_decoder)
@@ -1081,14 +1128,8 @@ impl ProductionSession {
         if let Some(factory) = network_controller_factory {
             builder = builder.network_controller_factory(&factory);
         }
-        if task_queue_factory
-            .as_ref()
-            .is_some_and(crate::TaskQueueFactory::is_cooperative)
-        {
-            return Err(error(
-                PeerErrorKind::UnsupportedParameter,
-                "controlled task queue factories cannot enter the production actor",
-            ));
+        if let Some(factory) = &task_queue_factory {
+            runtime::validate_queues(&runtime, Some(factory.is_cooperative()))?;
         }
         if environment_factory.is_some()
             || field_trials.is_some()
@@ -1097,7 +1138,10 @@ impl ProductionSession {
             || task_queue_factory.is_some()
             || randomness.is_some()
         {
-            let mut environment = environment_factory.unwrap_or_default();
+            let mut environment = match environment_factory {
+                Some(factory) => factory,
+                None => runtime::environment_factory(&runtime)?,
+            };
             let configure = || -> Result<crate::Environment, crate::BuildEnvironmentError> {
                 if let Some(factory) = task_queue_factory {
                     environment.set_task_queue_factory(&factory)?;
@@ -1118,12 +1162,7 @@ impl ProductionSession {
             };
             let environment = configure()
                 .map_err(|e| error(PeerErrorKind::NativeConstruction, &e.to_string()))?;
-            if environment.cooperative_queues() != Some(false) {
-                return Err(error(
-                    PeerErrorKind::UnsupportedParameter,
-                    "production environment requires qualified non-cooperative task queues",
-                ));
-            }
+            runtime::validate_queues(&runtime, environment.cooperative_queues())?;
             builder = builder.environment(environment);
         }
         let input = config
@@ -1169,9 +1208,9 @@ impl ProductionSession {
             );
         }
         let factory = builder.build()?;
-        // A successful factory already holds the production lease, so a
-        // rejected controlled selection cannot start this worker.
-        let retirement = SessionRetirement::new()?;
+        // Only the threaded runtime reserves a cleanup worker. Managed
+        // construction and final teardown never start that background role.
+        let retirement = runtime::reserve(&runtime)?;
         Ok(Self {
             connectivity: connectivity::ConnectivityResources::default(),
             video_encoders: HashMap::new(),
@@ -1232,7 +1271,8 @@ impl ProductionSession {
             readiness,
             closed: false,
             _exclusive: PhantomData,
-            retirement: Some(retirement),
+            retirement,
+            runtime: Some(runtime),
         })
     }
 
@@ -6326,18 +6366,12 @@ impl ProductionSession {
     }
 }
 
-impl Drop for ProductionSession {
+impl<R: SessionRuntime> Drop for Session<R> {
     fn drop(&mut self) {
         if self.factory.is_empty() {
             return;
         }
-        if self.retirement.is_some()
-            && (crate::provider_panic::callback_active()
-                || self.factory.requires_deferred_teardown())
-        {
-            let mut owner = self.take_for_cleanup();
-            let retirement = owner.retirement.take().expect("admitted retirement owner");
-            retirement.retire(owner);
+        if runtime::retire(self) {
             return;
         }
         let _ = self.shutdown();

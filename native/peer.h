@@ -275,7 +275,7 @@ bool peer_should_fire_negotiation_needed(const NativePeerConnection &peer,
                                          std::uint32_t event_id) noexcept;
 std::uint8_t peer_set_local_description_auto(const NativePeerConnection &peer,
                                              std::uint64_t operation_id,
-                                             bool allow_media, bool legacy) noexcept;
+                                             bool legacy) noexcept;
 std::uint8_t peer_modify_ice_candidate(const NativePeerConnection &peer,
                                        bool remove, rust::Slice<const std::uint8_t> sdp_mid,
                                        std::int32_t sdp_mline_index,
@@ -300,10 +300,6 @@ std::uint8_t peer_set_remote_description(const NativePeerConnection &peer,
                                          std::uint64_t operation_id,
                                          std::uint8_t sdp_type,
                                          rust::Slice<const std::uint8_t> sdp, bool legacy) noexcept;
-// Complete a controlled-mode video operation without entering upstream's
-// synchronous receive-stream recreation (which waits on a cooperative queue).
-std::uint8_t peer_reject_controlled_media(const NativePeerConnection &peer,
-                                          std::uint64_t operation_id) noexcept;
 std::uint8_t peer_add_ice_candidate(const NativePeerConnection &peer,
                                     std::uint64_t operation_id,
                                     rust::Slice<const std::uint8_t> sdp_mid,

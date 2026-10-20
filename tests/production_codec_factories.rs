@@ -91,9 +91,10 @@ fn explicitly_selected_actor_factories_keep_capabilities_and_registration_throug
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 #[test]
-fn absent_audio_choice_preserves_carrier_defaults_and_conflicting_input_is_rejected() {
+fn absent_audio_choice_selects_stock_pcm_and_conflicting_input_is_rejected() {
     let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
-    assert!(session.create_opus_source(1).is_ok());
+    assert!(session.create_pcm_source().is_ok());
+    assert!(session.create_opus_source(1).is_err());
     session.shutdown().unwrap();
     drop(session);
     let encoder = VideoEncoderFactoryHandle::builtin().unwrap();

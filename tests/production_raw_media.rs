@@ -681,6 +681,7 @@ fn receive_encoded_audio(
 fn replacing_one_opus_source_preserves_native_sender_and_unrelated_payloads() {
     let decoder = AudioDecoderFactory::builtin_opus().unwrap();
     let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
         .audio_decoder_factory(&decoder)
         .build()
         .unwrap();
@@ -914,13 +915,13 @@ fn video(luma: u8, timestamp_us: i64) -> VideoFrame {
 }
 
 #[test]
-fn raw_pcm_requires_an_explicit_pcm_encoder_without_changing_encoded_defaults() {
+fn raw_pcm_is_the_headless_default_without_implicitly_selecting_encoded_input() {
     let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    assert!(session.create_pcm_source().is_ok());
     assert_eq!(
-        session.create_pcm_source().unwrap_err().kind,
+        session.create_opus_source(1).unwrap_err().kind,
         PeerErrorKind::UnsupportedOperation
     );
-    assert!(session.create_opus_source(1).is_ok());
     session.shutdown().unwrap();
 }
 

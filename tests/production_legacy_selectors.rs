@@ -22,7 +22,10 @@ fn finish(
 }
 #[test]
 fn migrated_actor_selects_actual_foreign_same_id_track_and_retires_pending_work() {
-    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let mut session = ProductionSession::builder(Default::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let target = session.create_peer(Default::default()).unwrap();
     let origin = session.create_peer(Default::default()).unwrap();
     let input = session.create_opus_source(1).unwrap();

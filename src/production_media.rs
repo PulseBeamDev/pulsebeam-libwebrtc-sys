@@ -1,7 +1,7 @@
 //! Captive media references and explicit notifiers for the production actor.
 use super::*;
 
-impl ProductionSession {
+impl<R: SessionRuntime> Session<R> {
     pub fn senders(&mut self, peer: SessionPeerId) -> Result<Vec<SessionSenderId>, PeerError> {
         self.check_open()?;
         let values = self.peers.get(&peer).ok_or_else(missing)?.value.senders();

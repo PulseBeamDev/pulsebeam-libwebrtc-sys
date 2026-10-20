@@ -10,6 +10,18 @@ pub const MAX_CONTROLLED_TIME: Duration =
 // Non-Send closures enter native code only through creator-thread cooperative
 // queues. Threaded posting methods continue to require Send closures.
 pub(crate) struct RustTask(Option<Box<dyn FnOnce() + 'static>>, bool);
+
+// This box owns only Environment dependencies, never the Rc driver. The native
+// creator table retains it until all SDK copies release their scope ticket.
+pub(crate) struct RustRuntimeEnvironmentRetention {
+    environment: Option<Environment>,
+}
+impl Drop for RustRuntimeEnvironmentRetention {
+    fn drop(&mut self) {
+        let environment = self.environment.take();
+        let _ = crate::provider_panic::catch_provider(|| drop(environment));
+    }
+}
 impl Drop for RustTask {
     fn drop(&mut self) {
         let task = self.0.take();
@@ -425,6 +437,12 @@ pub(crate) use environment_factory::{
 };
 
 /// A thread-safe, copyable WebRTC environment.
+///
+/// SDK copies from a managed runtime retain a creator-side retirement ticket,
+/// not an affine driver owner. Release those copies and dependent products
+/// before exiting the creator runtime's scope. Final runtime teardown drains
+/// native-ready lifecycle work and waits for outstanding owning aliases; an
+/// alias must not wait for that teardown while continuing to retain its ticket.
 pub struct Environment {
     native: cxx::UniquePtr<ffi::NativeEnvironment>,
     _clock: Option<ManualClock>,
@@ -572,6 +590,25 @@ impl Environment {
         self._clock = None;
         self._clock_handle = None;
         self._randomness = None;
+    }
+
+    pub(crate) fn bind_driver(
+        &self,
+        driver: &ControlledPeerDriver,
+    ) -> Result<Self, BuildEnvironmentError> {
+        let native = ffi::bind_driver_environment(
+            driver.native(),
+            self.native(),
+            Box::new(RustRuntimeEnvironmentRetention {
+                environment: Some(self.clone()),
+            }),
+        );
+        if native.is_null() {
+            return Err(BuildEnvironmentError::WrongThread);
+        }
+        let mut result = self.clone();
+        result.native = native;
+        Ok(result)
     }
 
     pub(crate) fn uses_controlled_clock(&self, clock: &ManualClock) -> bool {
@@ -1320,6 +1357,16 @@ impl ControlledWorld {
     /// separately sendable clock handle. Delivery and shaping remain external.
     pub fn create_network(&self) -> Result<crate::ControlledSimulatedNetwork, crate::NetworkError> {
         crate::ControlledSimulatedNetwork::new(&self.clock, &self.driver)
+    }
+
+    /// Select this world's services for the common session API. This does not
+    /// select a media profile or start workers; ordinary builder options select
+    /// network providers, codecs, processing and explicit native devices.
+    pub fn runtime(&self) -> Result<crate::ManagedRuntime, BuildEnvironmentError> {
+        let environment = Environment::builder()
+            .task_queue_factory(&self.factory)
+            .build()?;
+        Ok(crate::ManagedRuntime::new(environment, self.driver.clone()))
     }
 
     /// Build a factory with matching clock, cooperative queues and driver.

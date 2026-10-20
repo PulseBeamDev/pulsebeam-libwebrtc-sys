@@ -243,7 +243,13 @@ pub fn run() {
             alias.state(),
             pulsebeam_webrtc_sys::DataChannelState::Closed
         );
-        let mut session = pulsebeam_webrtc_sys::ProductionSession::new(Default::default()).unwrap();
+        let mut session = pulsebeam_webrtc_sys::Session::with_runtime(
+            pulsebeam_webrtc_sys::ThreadedRuntime,
+            Default::default(),
+        )
+        .encoded_audio()
+        .build()
+        .unwrap();
         let peer = session.create_peer(Default::default()).unwrap();
         assert!(session.peer_sctp_transport(peer).unwrap().is_none());
         assert!(
@@ -292,4 +298,43 @@ pub fn run() {
         .join()
         .unwrap();
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        common_application(pulsebeam_webrtc_sys::ThreadedRuntime);
+        let world =
+            pulsebeam_webrtc_sys::ControlledWorld::acquire(17, Duration::from_secs(7)).unwrap();
+        let network = world.create_network().unwrap();
+        let endpoint = network
+            .register_endpoint("192.0.2.1".parse::<std::net::IpAddr>().unwrap())
+            .unwrap();
+        common_application(world.runtime().unwrap().with_endpoint(&endpoint).unwrap());
+        assert_eq!(world.now(), Duration::from_secs(7));
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn common_application<R: pulsebeam_webrtc_sys::SessionRuntime>(runtime: R) {
+    use pulsebeam_webrtc_sys::*;
+    {
+        let factory = runtime.environment_factory().unwrap();
+        let environment = runtime.create_environment(&factory).unwrap();
+        let mut standalone =
+            AudioProcessingModule::builtin(&environment, AudioProcessingConfig::default()).unwrap();
+        assert_eq!(standalone.initialize().unwrap(), AudioProcessingStatus::OK);
+    }
+    let mut session = Session::with_runtime(runtime, SessionConfig::default())
+        .audio_processing(AudioProcessingConfig::default())
+        .event_logging(true)
+        .build()
+        .unwrap();
+    let peer = session.create_peer(PeerConfiguration::default()).unwrap();
+    session.create_pcm_source().unwrap();
+    session.create_raw_video_source().unwrap();
+    let mut init = RtpTransceiverInit::default();
+    init.set_direction(RtpTransceiverDirectionValue::ReceiveOnly);
+    for kind in [MediaType::Audio, MediaType::Video] {
+        let transceiver = session.add_transceiver(peer, kind, &init).unwrap();
+        assert_eq!(session.transceiver_media_type(transceiver).unwrap(), kind);
+    }
+    session.shutdown().unwrap();
 }

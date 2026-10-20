@@ -22,7 +22,7 @@ impl Deref for CaptiveFactory {
             .expect("factory is moved only during final teardown")
     }
 }
-impl ProductionSession {
+impl<R: SessionRuntime> Session<R> {
     pub(super) fn take_for_cleanup(&mut self) -> Self {
         // Move every Rc-containing field, not clones. Construction requires all
         // fields, so future resources cannot silently be omitted from handoff.
@@ -81,6 +81,7 @@ impl ProductionSession {
             camera_device_info: std::mem::take(&mut self.camera_device_info),
             video_bitrate_allocator_factory: self.video_bitrate_allocator_factory.take(),
             retirement: self.retirement.take(),
+            runtime: self.runtime.take(),
             peers: std::mem::take(&mut self.peers),
             input: self.input.take(),
             factory: self.factory.take(),

@@ -3,7 +3,7 @@
 ## Caller codec installation
 
 Caller audio factory, encoder, decoder and parsed-frame handles are standalone
-owners. They are not selectable peer or `ProductionSession` codec dependencies.
+owners. They are not selectable peer or shared `Session<R>` codec dependencies.
 The pinned SDK does not provide the recoverable error paths required to install
 arbitrary fallible caller encoders safely:
 
@@ -18,8 +18,28 @@ arbitrary fallible caller encoders safely:
 Standalone wrappers preserve current Query answers and typed callback failures.
 They do not authorize installed use, cache a prior success, fabricate supported
 metadata, substitute stock products, or turn encoding errors into successful
-buffering. Installed fallible caller encoders require a genuine native consumer
-error path, unavailable under the current SDK pin and no-runtime-patch policy.
+buffering. The installed caller-codec consumer contract remains an open
+binding/qualification gap, not evidence that caller codecs are upstream
+unavailable. Runtime-injection changes do not authorize rewriting codec error
+semantics or treating standalone forwarding as installed-consumer proof.
+
+## Common standalone construction
+
+Generic `R: SessionRuntime` applications configure the existing native factory
+with `runtime.environment_factory()`, then call
+`runtime.create_environment(&factory)` to attach ownership to the completed
+selection. Existing APM, codec, NetEq and logging constructors consume that
+same environment. Managed contexts retain creator-side retirement authority;
+no peer factory, separate clock, cleanup worker or media profile is required.
+Release products and SDK environment aliases before the final caller-owned
+runtime scope. Context-free native mixers keep their ordinary constructor.
+
+`tests/runtime_standalone.rs` exercises actual APM processing, source-backed
+mixing, G711 encode/decode and stock log output with one procedure for threaded
+and managed runtimes, including release of configuring owners before use and
+failed-configuration recovery. Core/native and core ASan with leak detection
+passed. These are bounded construction/consumer results, not complete NetEq,
+VoIP or all-software-codec deterministic execution qualification.
 
 ## Standalone NetEq decoder selection
 
@@ -65,9 +85,10 @@ native local, with a failed admission flag rather than a successful observation.
 
 ## Actor-owned PCM and processing
 
-The production actor's absent encoder choice remains the encoded Opus carrier.
-Select `ProductionSession::builder(config).pcm_audio()` to use builtin PCM
-encoding and decoding instead. Explicit codec selections are preserved, including native
+The shared session's absent codec choices select stock PCM encoding and decoding.
+Use `Session::with_runtime(runtime, config)` with either runtime; `.pcm_audio()`
+is an explicit selection of the same PCM behavior. Prerecorded Opus carrier input
+requires `.encoded_audio()`. Explicit codec selections are preserved, including native
 rejection when the selected encoder does not support the requested source type.
 Software processing is separately selected with `audio_processing(config)`;
 it does not process already encoded Opus packets or activate a physical device.

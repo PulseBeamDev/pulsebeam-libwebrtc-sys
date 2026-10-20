@@ -816,8 +816,9 @@ pub(crate) use event_log_product::{
     RustEventLogProductStop, RustEventLogRetention, event_log_product_stopped,
 };
 pub(crate) use execution::{
-    RustEnvironmentFactoryRandomness, RustEnvironmentFactoryRetention, RustTask,
-    environment_factory_has_randomness, environment_factory_randomness, run_task,
+    RustEnvironmentFactoryRandomness, RustEnvironmentFactoryRetention,
+    RustRuntimeEnvironmentRetention, RustTask, environment_factory_has_randomness,
+    environment_factory_randomness, run_task,
 };
 pub use field_trials::{FieldTrials, FieldTrialsError, FieldTrialsSnapshot, FieldTrialsView};
 pub(crate) use field_trials::{
@@ -894,23 +895,24 @@ pub use peer_configuration::{
     SdpSemantics, TcpCandidatePolicy, TlsCertificatePolicy, TurnPortPrunePolicy, VpnPreference,
 };
 pub use production::{
-    ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, SessionAudioObserverId,
-    SessionAudioProcessorId, SessionAudioSourceViewId, SessionAudioTrackProcessorId,
-    SessionCameraDeviceInfoId, SessionCameraOptionsId, SessionChannelId,
-    SessionDecodedImageCallbackId, SessionDesktopMetadataId, SessionDesktopOptionsId,
-    SessionDtlsTransportId, SessionDtmfError, SessionDtmfSenderId, SessionEncodedImageCallbackId,
-    SessionEncodedImageId, SessionEncodedVideoBufferId, SessionEvent, SessionFecOverrideId,
-    SessionFrameDecryptorId, SessionFrameEncryptorId, SessionFrameTransformerId,
-    SessionIceTransportId, SessionLocalMediaStreamId, SessionMediaStreamId,
-    SessionMediaStreamObserverId, SessionMediaTrackId, SessionPeerId, SessionRawVideoBufferId,
-    SessionRawVideoFrameId, SessionReceiverId, SessionSctpTransportId,
-    SessionSctpTransportInformation, SessionSenderId, SessionSenderParametersOperationId,
-    SessionSframeDecrypterId, SessionSframeEncrypterId, SessionSourceId, SessionTrackId,
-    SessionTrackSourceId, SessionTransceiverId, SessionTransportError,
-    SessionVideoBufferPreparationId, SessionVideoDecoderId, SessionVideoEncoderId,
-    SessionVideoEncoderSelectorId, SessionVideoObserverId, SessionVideoSinkId,
-    SessionVideoSourceEncodedSinkId, SessionVideoSourceViewId, SessionWritableEncodedBufferId,
-    SessionWritableI420BufferId,
+    ManagedRuntime, ProductionSession, ProductionSessionBuilder, ProductionSessionConfig, Session,
+    SessionAudioObserverId, SessionAudioProcessorId, SessionAudioSourceViewId,
+    SessionAudioTrackProcessorId, SessionBuilder, SessionCameraDeviceInfoId,
+    SessionCameraOptionsId, SessionChannelId, SessionConfig, SessionDecodedImageCallbackId,
+    SessionDesktopMetadataId, SessionDesktopOptionsId, SessionDtlsTransportId, SessionDtmfError,
+    SessionDtmfSenderId, SessionEncodedImageCallbackId, SessionEncodedImageId,
+    SessionEncodedVideoBufferId, SessionEvent, SessionFecOverrideId, SessionFrameDecryptorId,
+    SessionFrameEncryptorId, SessionFrameTransformerId, SessionIceTransportId,
+    SessionLocalMediaStreamId, SessionMediaStreamId, SessionMediaStreamObserverId,
+    SessionMediaTrackId, SessionPeerId, SessionRawVideoBufferId, SessionRawVideoFrameId,
+    SessionReceiverId, SessionRuntime, SessionSctpTransportId, SessionSctpTransportInformation,
+    SessionSenderId, SessionSenderParametersOperationId, SessionSframeDecrypterId,
+    SessionSframeEncrypterId, SessionSourceId, SessionTrackId, SessionTrackSourceId,
+    SessionTransceiverId, SessionTransportError, SessionVideoBufferPreparationId,
+    SessionVideoDecoderId, SessionVideoEncoderId, SessionVideoEncoderSelectorId,
+    SessionVideoObserverId, SessionVideoSinkId, SessionVideoSourceEncodedSinkId,
+    SessionVideoSourceViewId, SessionWritableEncodedBufferId, SessionWritableI420BufferId,
+    ThreadedRuntime,
 };
 #[cfg(feature = "native")]
 pub use video::{
@@ -4232,6 +4234,7 @@ mod ffi {
         type RustReadiness;
         fn notify_readiness(readiness: &RustReadiness);
         type RustTask;
+        type RustRuntimeEnvironmentRetention;
         type RustTaskQueueFactory;
         type RustTaskQueueProvider;
         fn task_queue_provider_create(
@@ -8618,6 +8621,11 @@ mod ffi {
         fn field_trials_lookup(view: &NativeFieldTrials, key: &str) -> String;
         fn field_trials_is_enabled(view: &NativeFieldTrials, key: &str) -> bool;
         fn field_trials_is_disabled(view: &NativeFieldTrials, key: &str) -> bool;
+        fn bind_driver_environment(
+            driver: &NativeDriverThread,
+            environment: &NativeEnvironment,
+            retained: Box<RustRuntimeEnvironmentRetention>,
+        ) -> UniquePtr<NativeEnvironment>;
         fn clone_environment(environment: &NativeEnvironment) -> UniquePtr<NativeEnvironment>;
         fn environment_task_queue_factory(
             environment: &NativeEnvironment,
@@ -9346,7 +9354,6 @@ mod ffi {
         fn peer_set_local_description_auto(
             peer: &NativePeerConnection,
             operation_id: u64,
-            allow_media: bool,
             legacy: bool,
         ) -> u8;
         fn peer_modify_ice_candidate(
@@ -9413,7 +9420,6 @@ mod ffi {
             sdp: &[u8],
             legacy: bool,
         ) -> u8;
-        fn peer_reject_controlled_media(peer: &NativePeerConnection, operation_id: u64) -> u8;
         fn peer_add_ice_candidate(
             peer: &NativePeerConnection,
             operation_id: u64,

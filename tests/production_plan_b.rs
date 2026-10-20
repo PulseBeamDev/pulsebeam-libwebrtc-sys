@@ -118,7 +118,10 @@ impl Events {
 
 #[test]
 fn migrated_plan_b_uses_real_stream_callbacks_media_and_legacy_description_outcomes() {
-    let mut session = ProductionSession::new(Default::default()).unwrap();
+    let mut session = ProductionSession::builder(Default::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let config = RtcConfiguration {
         options: PeerConnectionOptions {
             sdp_semantics: SdpSemantics::PlanB,

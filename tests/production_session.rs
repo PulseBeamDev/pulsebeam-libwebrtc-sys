@@ -241,7 +241,10 @@ fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
             .unwrap();
     }
     let crypto_trace = Arc::new(frame_crypto_support::Trace::default());
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let mut encrypted_configuration = RtcConfiguration::default();
     encrypted_configuration
         .options
@@ -542,9 +545,11 @@ fn session_owns_live_media_graph_across_caller_migration_and_final_drop() {
         .with_parameter("level-asymmetry-allowed", "1")
         .with_parameter("packetization-mode", "1")
         .with_parameter("profile-level-id", "42e01f");
-    let mut session = ProductionSession::new(ProductionSessionConfig {
+    let mut session = ProductionSession::builder(ProductionSessionConfig {
         video_format: Some(h264),
     })
+    .encoded_audio()
+    .build()
     .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let channel = session
@@ -1456,7 +1461,10 @@ fn accepted_operations_are_bounded_until_outcomes_are_consumed_and_survive_close
 
 #[test]
 fn sframe_after_negotiated_disabled_preserves_native_invalid_modification() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let alice = session.create_peer(PeerConfiguration::default()).unwrap();
     let bob = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();

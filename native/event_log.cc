@@ -1,4 +1,5 @@
 #include "pulsebeam-webrtc-sys/native/event_log.h"
+#include "pulsebeam-webrtc-sys/native/runtime_retirement.h"
 
 #include <condition_variable>
 #include <deque>
@@ -101,13 +102,24 @@ struct SharedLogStorage {
 class SharedLogState : public std::enable_shared_from_this<SharedLogState> {
  public:
   SharedLogState(std::unique_ptr<SharedLogStorage> storage, SharedLogKind kind)
-      : storage_(std::move(storage)), kind_(kind) {}
+      : owned_storage_(std::move(storage)), storage_(owned_storage_.get()), kind_(kind) {
+    if (storage_->context) retirement_ = runtime_retirement_for(*storage_->context);
+    if (retirement_) {
+      // Native aliases keep this state alive, but only the creator table owns
+      // the actual affine logger/queue and its creation dependencies.
+      retirement_id_ = retirement_->Retain(
+          [storage = std::move(owned_storage_)]() mutable { storage.reset(); });
+    }
+  }
   ~SharedLogState() {
+    if (retirement_) {
+      retirement_->Release(retirement_id_);
+      return;
+    }
     if (OnOutputQueue()) {
-      // Joining a stock logger's queue on that queue deadlocks. No controlled
-      // logger takes this path. Keep both SDK and Rust dependencies and the
-      // production reservation until the native join finishes off-queue.
-      std::thread([storage = std::move(storage_)]() mutable { storage.reset(); }).detach();
+      // Threaded execution still uses its off-output-queue teardown. Managed
+      // storage always takes the creator ticket path above, with no worker.
+      std::thread([storage = std::move(owned_storage_)]() mutable { storage.reset(); }).detach();
     }
   }
   void RetainRandomness(rust::Box<RustEnvironmentFactoryRandomness> retention) {
@@ -237,7 +249,11 @@ class SharedLogState : public std::enable_shared_from_this<SharedLogState> {
     return 0;
   }
   void WaitForCallbacks() {
-    if (!Stock() || OnOutputQueue()) return;
+    // A scoped callback owns both its logger state and creation environment.
+    // Releasing a view/product must not wait on its caller-pumped output queue.
+    // The creator retirement scope keeps the actual storage/driver alive and
+    // drains the admitted native callback before final dependent teardown.
+    if (!Stock() || OnOutputQueue() || retirement_) return;
     std::unique_lock lock(callbacks_->mutex);
     callbacks_->changed.wait(lock, [&] { return callbacks_->count == 0; });
   }
@@ -252,8 +268,11 @@ class SharedLogState : public std::enable_shared_from_this<SharedLogState> {
     }
     return control_queue_ ? control_queue_ == queue : control_thread_ == std::this_thread::get_id();
   }
-  std::unique_ptr<SharedLogStorage> storage_;
+  std::unique_ptr<SharedLogStorage> owned_storage_;
+  SharedLogStorage* storage_;
   const SharedLogKind kind_;
+  std::shared_ptr<NativeRuntimeRetirement> retirement_;
+  NativeRuntimeRetirement::Id retirement_id_ = 0;
   mutable std::mutex mutex_;
   struct CallbackTracker {
     std::mutex mutex;
@@ -340,7 +359,7 @@ class SharedBuiltinLogFactory final : public webrtc::RtcEventLogFactoryInterface
   std::unique_ptr<webrtc::RtcEventLog> Create(const webrtc::Environment& environment) const override {
     const bool stock = !environment.field_trials().IsEnabled("WebRTC-RtcEventLogKillSwitch");
     std::shared_ptr<NativeProductionLease> production;
-    if (stock) {
+    if (stock && !runtime_retirement_for(environment)) {
       production = new_production_lease();
       if (!production) return nullptr;
     }
@@ -1087,7 +1106,9 @@ std::unique_ptr<NativeRtcEventLogProduct> event_log_product_create(
   // The pinned SDK kill switch returns a null logger without an output queue.
   const bool stock = builtin && !environment.environment().field_trials().IsEnabled("WebRTC-RtcEventLogKillSwitch");
   std::shared_ptr<NativeProductionLease> production;
-  if (stock) {
+  if (stock && !runtime_retirement_for(environment.environment())) {
+    // Bare cooperative environments have no creator-side drain authority.
+    // Bound runtime environments use their native alias retirement scope.
     if (controlled) { error = 6; return nullptr; }
     production = new_production_lease();
     if (!production) { error = 6; return nullptr; }

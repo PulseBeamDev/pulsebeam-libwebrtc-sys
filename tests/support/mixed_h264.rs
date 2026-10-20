@@ -66,7 +66,6 @@ fn run_pair_inner(profiles: [H264SourceProfile; 2], impaired: bool) -> Trace {
                 .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
                 .video_encoder_factory(input.encoder_factory())
                 .video_decoder_factory(input.encoded_receive_factory().unwrap())
-                .controlled_media()
                 .build()
                 .unwrap()
         })

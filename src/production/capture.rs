@@ -1,7 +1,7 @@
 //! Explicit opt-in physical capture inside the actor's captive graph.
 use super::*;
 
-impl ProductionSession {
+impl<R: SessionRuntime> Session<R> {
     pub fn create_camera_options(&mut self) -> Result<SessionCameraOptionsId, PeerError> {
         self.check_open()?;
         let options = self.factory.create_camera_options()?;

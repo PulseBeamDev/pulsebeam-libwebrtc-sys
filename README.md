@@ -218,12 +218,19 @@ and configuration-specific event/RTP helpers. Building alone only compile-links
 these consumers. Physical device behavior remains explicitly opt-in and is not
 certified by software codec or APM execution.
 
-## Actor-owned production execution
+## Runtime-injected session ownership
 
-`ProductionSession` is a move-only `Send`, non-`Sync` owner for a production
-resource graph. It constructs headless peers on system time and retains
-WebRTC's existing network, worker and signaling threads. There is no additional
-application owner executor. All mutations require `&mut self`; peers, channels,
+`Session<R>` and `SessionBuilder<R>` use one native resource/operation graph.
+The outer harness selects `ThreadedRuntime` or obtains `ManagedRuntime` from
+`ControlledWorld::runtime()`, supplies endpoint services, and controls pumping
+and virtual time. Application construction and operations do not branch on the
+runtime or require a simulated source profile. `ProductionSession` and its
+builder/configuration names remain compatibility aliases for the threaded
+instantiation, not a second implementation.
+
+`Session<ThreadedRuntime>` is move-only `Send`, non-`Sync`. It constructs
+headless peers on system time and retains WebRTC's existing network, worker and
+signaling threads. There is no additional application owner executor. All mutations require `&mut self`; peers, channels,
 encoded sources, RTP handles, DTMF senders, transports and sinks stay private. Copyable session IDs and
 owned event/frame values are the application boundary, so an async actor may
 retain the session across awaits and migrate between executor threads.
@@ -245,41 +252,79 @@ core/native non-device suites. Exact evidence and still-unqualified live capture
 gates are recorded in
 [`docs/provider-verification-plan.md`](docs/provider-verification-plan.md#final-results).
 
-Use `ProductionSession::new(ProductionSessionConfig::default())` for encoded
-Opus and data channels. For caller-fed PCM, select
-`ProductionSession::builder(config).pcm_audio()` and optionally
-`.audio_processing(settings)` before building. The actor owns PCM sources,
-sender-track processing choices and exclusive encoded/decoded receive sinks;
-headless PCM playout remains caller-paced. Platform devices additionally require
-the `native` feature and explicit `.native_audio(true)` selection. See
-[`docs/audio-runtime-contracts.md`](docs/audio-runtime-contracts.md) for receive
-mode, processing and device contracts. An optional `video_format` selects direct encoded H.264
-or VP8 input and encoded-only video reception, not a new H.264 decoder. Existing
-input limitations still apply: this API alone does not implement layered or
-opaque media. Low-level local handles and controlled execution remain non-Send
-and cannot be imported into a production session. Production factories and
-controlled worlds reject coexistence before starting production threads.
+`Session<ManagedRuntime>` remains creator-sequence-bound and reserves no cleanup
+worker. Its SDK environment aliases retain native retirement tickets, never an
+`Rc` driver owner. Last releases may signal from another thread, but actual
+logger/queue and retained provider destruction stays on the creator. Release
+owning environment aliases and dependent products before exiting the creator
+runtime's scope. Final scope teardown drains native-ready lifecycle work and
+waits for outstanding aliases without advancing time. Do not retain an alias
+while waiting for that scope to finish.
 
-Raw media uses explicit factory selection without changing those encoded-input
-defaults. For PCM, select compatible stock audio factories on the builder:
+Headless defaults select stock software audio/video factories and raw PCM/video
+in both runtimes. `.audio_processing(settings)` optionally selects native PCM
+processing. Prerecorded Opus input requires the explicit `.encoded_audio()`
+adapter; optional `SessionConfig::video_format` selects direct encoded H.264 or
+VP8 input and encoded-only reception. Those adapters' own constraints do not
+restrict stock raw sources. Platform devices additionally require the `native`
+feature and explicit `.native_audio(true)` or capture selection. Explicit native
+backends and arbitrary providers that bypass runtime hooks are outside the
+managed deterministic guarantee, never an implicit fallback. See
+[`docs/audio-runtime-contracts.md`](docs/audio-runtime-contracts.md).
+
+The same application constructor can be used by either outer harness:
 
 ```rust,no_run
 use pulsebeam_webrtc_sys::*;
-let encoder = AudioEncoderFactory::builtin()?;
-let decoder = AudioDecoderFactory::builtin()?;
-let mut session = ProductionSession::builder(ProductionSessionConfig::default())
-    .audio_encoder_factory(&encoder)
-    .audio_decoder_factory(&decoder)
-    .build()?;
-let source = session.create_pcm_source()?;
-let peer = session.create_peer(PeerConfiguration::default())?;
-let transceiver = session.publish_pcm(
-    peer, source, "voice", RtpTransceiverDirection::SendOnly,
-)?;
-let frame = AudioPcmFrame::i16_interleaved(48000, 1, 0, vec![0; 480])?;
-session.push_pcm(source, &frame)?;
+fn application<R: SessionRuntime>(runtime: R) -> Result<Session<R>, PeerError> {
+    let mut session = Session::with_runtime(runtime, SessionConfig::default())
+        .audio_processing(AudioProcessingConfig::default())
+        .build()?;
+    let source = session.create_pcm_source()?;
+    let peer = session.create_peer(PeerConfiguration::default())?;
+    session.publish_pcm(peer, source, "voice", RtpTransceiverDirection::SendOnly, None)?;
+    Ok(session)
+}
+let threaded = application(ThreadedRuntime)?;
+drop(threaded);
+
+let world = ControlledWorld::acquire(17, std::time::Duration::from_secs(7))?;
+let network = world.create_network()?;
+let endpoint = network.register_endpoint("192.0.2.1".parse::<std::net::IpAddr>()?)?;
+let managed = application(world.runtime()?.with_endpoint(&endpoint)?)?;
+world.pump(256); // Harness work, not an application mode branch.
+drop(managed);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Standalone consumers use the same runtime selection without constructing a
+peer factory or capturing an environment from a provider callback:
+
+```rust,no_run
+use pulsebeam_webrtc_sys::*;
+fn standalone<R: SessionRuntime>(runtime: &R)
+    -> Result<AudioProcessingModule, Box<dyn std::error::Error>>
+{
+    let mut factory = runtime.environment_factory()?;
+    factory.set_field_trials(FieldTrials::parse("MyFeature/Enabled/")?)?;
+    let environment = runtime.create_environment(&factory)?;
+    Ok(AudioProcessingModule::builtin(&environment, AudioProcessingConfig::default())?)
+}
+```
+
+Configure the SDK factory first, then use `runtime.create_environment` to attach
+runtime ownership to the completed selection. Codec and logging factories take
+that same environment. Context-free native constructors, such as
+`AudioMixer::stock`, need no runtime parameter. Keep dependent products and SDK
+environment aliases inside the caller-owned runtime scope; no executor is added
+to make escaped managed products independently progress.
+
+The current common-path proof covers construction, native capabilities,
+trackless receivers, offer creation, stock logging and dependent teardown.
+It does not yet qualify all built-in software codec/processing backends for
+caller-controlled deterministic media replay or establish complete public SDK
+coverage. Low-level captive handles cannot be imported across session owners.
+Process-global real/managed hook exclusivity remains.
 
 For raw video, `create_raw_video_source`, `publish_video` and `push_raw_video`
 use the selected video encoder. Selecting only an encoder or decoder factory
@@ -771,17 +816,22 @@ signaling roles. Pair it with a matching manual-clock environment, cooperative
 task queues, and `ControlledSimulatedNetwork` to pump multiple peers with
 `run_ready` and `next_deadline`. Only one driver may own the process-global
 WebRTC clock at a time; drop all controlled peers, endpoints, and networks to
-release it. Native audio and independently threaded peer roles are rejected.
-A seeded world's builder can opt into `controlled_media()`: pair Opus carrier
-input with `builtin_opus()`, and either direct VP8 input with `builtin_vp8()` or
-direct H.264 input with `input.encoded_receive_factory()`. The latter registers
-the wire format only: decoder support queries return false, decoded receiver
-sinks fail explicitly, and `attach_encoded_sink()` is the receive path. Ordinary
+release it, including retained SDK environment aliases and provider products.
+The common `Session::with_runtime` path supplies matching runtime dependencies;
+stock raw-media construction has no simulation-specific admission flag. The
+obsolete `controlled_media` constructor method has been removed. The earlier
+focused encoded-input fixtures explicitly select Opus carrier input with `builtin_opus()`,
+direct VP8 with `builtin_vp8()`, or direct H.264 with
+`input.encoded_receive_factory()`. The last is an encoded-only adapter: its
+support queries do not advertise decoded output and `attach_encoded_sink()`
+is its receive path. Ordinary
 H.264 needs no DD; `new_l1t3()` requires native DD negotiation and sender L1T3
 selection. The caller alone delivers packets, advances time and pumps queues.
 Closing an encoded sink is terminal for that receiver; a new receiver is needed
-to intercept again. This controlled selection does not admit H.264 decoding,
-even when the artifact bundles a decoder.
+to intercept again. That adapter's receive constraint does not prohibit selecting
+the artifact's stock H.264 decoder with raw-media factories. Deterministic
+managed execution of every built-in decoding/encoding backend remains an open
+qualification obligation, not an implemented whitelist.
 The controlled network supports externally scheduled UDP delivery, client-side
 TCP connect/data decisions, and caller-provided DNS answers for STUN/TURN
 servers. Unknown names fail deterministically. A delivered TCP connect succeeds;

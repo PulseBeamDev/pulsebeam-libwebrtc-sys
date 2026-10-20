@@ -1,8 +1,9 @@
-//! Demonstrates a caller-pumped peer, cooperative queue and externally routed
-//! UDP packets. TCP and DNS outcomes are not available in controlled mode.
+//! Common session operations with caller-owned progress and packet delivery.
+//! This setup example does not qualify a complete deterministic media call.
 use pulsebeam_webrtc_sys::{
-    ControlledPeerDriver, ControlledSimulatedNetwork, Environment, ManualClock, PeerConfiguration,
-    PeerConnectionEvent, PeerConnectionFactory, QueuePriority, TaskQueueFactory,
+    ControlledWorld, MediaType, OperationId, PeerConfiguration, QueuePriority,
+    RtpTransceiverDirectionValue, RtpTransceiverInit, Session, SessionConfig, SessionEvent,
+    SessionPeerId, SessionRuntime,
 };
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -13,75 +14,77 @@ use std::{
     time::Duration,
 };
 
+// The application procedure has no real/managed branch or encoded-source gate.
+fn application<R: SessionRuntime>(
+    runtime: R,
+) -> Result<(Session<R>, SessionPeerId, OperationId), Box<dyn std::error::Error>> {
+    let mut session = Session::with_runtime(runtime, SessionConfig::default()).build()?;
+    let peer = session.create_peer(PeerConfiguration::default())?;
+    let mut receive = RtpTransceiverInit::default();
+    receive.set_direction(RtpTransceiverDirectionValue::ReceiveOnly);
+    session.add_transceiver(peer, MediaType::Audio, &receive)?;
+    session.add_transceiver(peer, MediaType::Video, &receive)?;
+    let offer = session.create_offer(peer, false)?;
+    Ok((session, peer, offer))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let clock = ManualClock::new(Duration::from_secs(1))?;
-    let queues = TaskQueueFactory::cooperative(&clock)?;
-    let mut queue = queues.create_queue("example", QueuePriority::Normal)?;
+    let world = ControlledWorld::acquire(17, Duration::from_secs(1))?;
+    let mut queue = world.create_queue("example", QueuePriority::Normal)?;
     let fired = Arc::new(AtomicBool::new(false));
     let from_task = fired.clone();
     assert!(queue.post_delayed(Duration::from_millis(5), move || {
         from_task.store(true, Ordering::SeqCst);
     })?);
-    assert_eq!(queues.run_ready(), 0);
-    clock.advance(Duration::from_millis(5))?;
-    assert_eq!(queues.run_ready(), 1);
+    assert_eq!(world.pump(1).dispatched, 0);
+    world.advance(Duration::from_millis(5))?;
+    assert_eq!(world.pump(1).dispatched, 1);
     assert!(fired.load(Ordering::SeqCst));
 
-    let driver = ControlledPeerDriver::new(&clock)?;
-    let network = ControlledSimulatedNetwork::new(&clock, &driver)?;
+    let network = world.create_network()?;
     let sender = network.register_endpoint(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))?;
     let receiver = network.register_endpoint(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)))?;
     let mut tx = sender.bind_udp(4000)?;
     let mut rx = receiver.bind_udp(5000)?;
     tx.send_to(rx.local_address(), b"packet".to_vec())?;
-    let pending = network
-        .next_packet()
-        .expect("send produces an outbound packet");
+    let pending = network.next_packet().expect("outbound packet");
     assert!(rx.try_receive().is_none());
     network.deliver(pending.id)?;
     assert_eq!(rx.try_receive().unwrap().payload, b"packet");
     rx.close();
     tx.close();
 
-    let environment = Environment::builder().task_queue_factory(&queues).build()?;
-    let factory = PeerConnectionFactory::builder()
-        .environment(environment)
-        .controlled_driver(&driver)
-        .network_manager(sender.network_manager()?)
-        .packet_socket_factory(sender.packet_socket_factory()?)
-        .build()?;
-    let mut peer = factory.create_peer_connection(PeerConfiguration::default())?;
-    let operation = peer.create_offer().unwrap();
+    let runtime = world.runtime()?.with_endpoint(&sender)?;
+    let (mut session, peer, operation) = application(runtime)?;
     let mut completed = false;
     for _ in 0..1000 {
-        driver.run_ready();
-        queues.run_ready();
-        while let Some(event) = peer.try_next_event() {
-            if let PeerConnectionEvent::OperationComplete(result) = event
+        assert!(!world.pump(64).blocked);
+        while let Some(event) = session.try_peer_event(peer)? {
+            if let SessionEvent::OperationComplete(result) = event
                 && result.operation_id == operation
             {
-                result.result?;
+                let offer = result.result?.expect("native offer");
+                assert!(offer.sdp.contains("m=audio "));
+                assert!(offer.sdp.contains("m=video "));
                 completed = true;
             }
         }
         if completed {
             break;
         }
-        let deadline = [driver.next_deadline(), queues.next_deadline()]
-            .into_iter()
-            .flatten()
-            .min();
-        let step = deadline
-            .and_then(|deadline| deadline.checked_sub(clock.now()))
-            .filter(|delta| !delta.is_zero())
-            .unwrap_or(Duration::from_millis(1));
-        clock.advance(step)?;
+        if let Some(deadline) = world.next_deadline()
+            && deadline > world.now()
+        {
+            world.advance(deadline - world.now())?;
+        }
     }
     assert!(
         completed,
-        "offer did not complete under the controlled driver"
+        "native offer did not complete under caller progress"
     );
-    peer.close()?;
+    session.close_peer(peer)?;
+    session.shutdown()?;
+    drop(session);
     queue.close();
     Ok(())
 }

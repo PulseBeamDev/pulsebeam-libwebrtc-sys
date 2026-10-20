@@ -2751,18 +2751,11 @@ std::unique_ptr<NativeMediaStreams> peer_streams(const NativePeerConnection& pee
 }
 
 std::uint8_t peer_set_local_description_auto(const NativePeerConnection& peer,
-    std::uint64_t operation_id, bool allow_media, bool legacy) noexcept {
+    std::uint64_t operation_id, bool legacy) noexcept {
   const auto& state = peer.state();
   const auto status = state->events->Begin(operation_id, true);
   if (status != 0) return status;
   state->signaling_thread->BlockingCall([&] {
-    if (!allow_media && (!state->peer->GetSenders().empty() ||
-                         !state->peer->GetReceivers().empty())) {
-      state->events->Complete(ErrorEvent(
-          operation_id, webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
-          "controlled audio/video requires admitted cooperative media dependencies"));
-      return;
-    }
     if (legacy) {
       auto observer = webrtc::make_ref_counted<LegacySetObserver>(state->events, operation_id);
       state->peer->SetLocalDescription(observer.get());
@@ -2847,17 +2840,6 @@ std::uint8_t peer_set_remote_description(const NativePeerConnection& peer,
           webrtc::make_ref_counted<SetRemoteObserver>(state->events, operation_id));
     }
   });
-  return 0;
-}
-
-std::uint8_t peer_reject_controlled_media(const NativePeerConnection& peer,
-                                  std::uint64_t operation_id) noexcept {
-  const auto& events = peer.state()->events;
-  const auto status = events->Begin(operation_id);
-  if (status != 0) return status;
-  events->Complete(ErrorEvent(
-      operation_id, webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
-      "controlled audio/video requires threaded codec queues"));
   return 0;
 }
 

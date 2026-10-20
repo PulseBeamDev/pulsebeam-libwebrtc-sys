@@ -40,7 +40,6 @@ fn selected_foreign_origin_retires_without_clock_or_caller_queue_progress() {
             .audio_decoder_factory(AudioDecoderFactory::builtin_opus().unwrap())
             .video_encoder_factory(input.encoder_factory())
             .video_decoder_factory(input.encoded_receive_factory().unwrap())
-            .controlled_media()
             .build()
             .unwrap();
         let mut peer = factory.create_peer_connection(Default::default()).unwrap();
