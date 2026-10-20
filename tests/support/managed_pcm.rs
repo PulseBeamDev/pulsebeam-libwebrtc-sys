@@ -1,12 +1,16 @@
 //! Real PCM capture -> stock Opus -> NetEq/raw playout with caller-owned progress.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
-use std::{cell::RefCell, collections::HashMap, net::IpAddr, time::Duration};
+use std::{cell::RefCell, collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+
+#[path = "pcm_periodic.rs"]
+mod periodic;
 
 struct Call<R: SessionRuntime> {
     sessions: [Session<R>; 2],
     peers: [SessionPeerId; 2],
     operations: HashMap<(usize, OperationId), Option<SessionDescription>>,
+    stats: HashMap<(usize, OperationId), PeerStatsSnapshot>,
     gathered: [bool; 2],
     connected: [bool; 2],
     receivers: [Option<SessionReceiverId>; 2],
@@ -15,7 +19,12 @@ struct Call<R: SessionRuntime> {
 }
 
 impl<R: SessionRuntime> Call<R> {
-    fn new(runtimes: [R; 2], processing: Option<&AudioProcessorConfig>) -> Self {
+    fn new(
+        runtimes: [R; 2],
+        processing: Option<&AudioProcessorConfig>,
+        reports: Option<&Arc<periodic::Audit>>,
+    ) -> Self {
+        let mut index = 0;
         let mut sessions = runtimes.map(|runtime| {
             let mut builder = Session::with_runtime(runtime, SessionConfig::default());
             if let Some(config) = processing {
@@ -23,6 +32,13 @@ impl<R: SessionRuntime> Call<R> {
                     BuiltinAudioProcessorBuilder::new().config(config.clone()),
                 );
             }
+            if let Some(audit) = reports {
+                builder = builder.event_log_factory(periodic::Factory {
+                    peer: index,
+                    audit: audit.clone(),
+                });
+            }
+            index += 1;
             builder.build().unwrap()
         });
         let peers = sessions
@@ -32,6 +48,7 @@ impl<R: SessionRuntime> Call<R> {
             sessions,
             peers,
             operations: HashMap::new(),
+            stats: HashMap::new(),
             gathered: [false; 2],
             connected: [false; 2],
             receivers: [None; 2],
@@ -52,6 +69,13 @@ impl<R: SessionRuntime> Call<R> {
                             .insert((index, done.operation_id), done.result.unwrap())
                             .is_none()
                     ),
+                    SessionEvent::Stats(snapshot) => {
+                        assert!(
+                            self.stats
+                                .insert((index, snapshot.operation_id), snapshot)
+                                .is_none()
+                        );
+                    }
                     SessionEvent::IceGatheringStateChanged(state) => {
                         self.events.push(format!("{index}:gather:{state:?}"));
                         self.gathered[index] = state == IceGatheringState::Complete;
@@ -94,6 +118,20 @@ impl<R: SessionRuntime> Call<R> {
             progress(Duration::from_millis(1));
         }
         panic!("native operation stalled: peer {index}");
+    }
+
+    fn snapshot(&mut self, index: usize, progress: &mut impl FnMut(Duration)) -> periodic::Stats {
+        let operation = self.sessions[index]
+            .request_stats(self.peers[index])
+            .unwrap();
+        for _ in 0..10_000 {
+            self.drain();
+            if let Some(snapshot) = self.stats.remove(&(index, operation)) {
+                return periodic::Stats::from_native(index, snapshot);
+            }
+            progress(Duration::from_millis(1));
+        }
+        panic!("native stats stalled: peer {index}");
     }
 
     fn gather(
@@ -199,6 +237,8 @@ struct WirePacket {
     deadline_us: u128,
     observed_at_us: u128,
     payload: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<&'static str>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -212,6 +252,8 @@ struct PacketObservation {
     observed_at_us: u128,
     opus_rtp_header: Option<Vec<u8>>,
     opus_packet_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,6 +274,8 @@ struct Observation {
     media_elapsed_us: u128,
     packets: Vec<PacketObservation>,
     opus_packets: [usize; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    periodic: Option<periodic::Observation>,
 }
 
 fn has_tone(samples: &[i16], period: usize) -> bool {
@@ -254,10 +298,23 @@ fn has_tone(samples: &[i16], period: usize) -> bool {
 fn application<R: SessionRuntime>(
     runtimes: [R; 2],
     processing: Option<&AudioProcessorConfig>,
+    capture_blocks: usize,
+    reports: Option<&Arc<periodic::Audit>>,
     mut progress: impl FnMut(Duration),
     mut now: impl FnMut() -> Duration,
 ) -> Observation {
-    let mut call = Call::new(runtimes, processing);
+    let mut call = Call::new(runtimes, processing, reports);
+    if reports.is_some() {
+        for index in 0..2 {
+            call.sessions[index]
+                .start_peer_event_log(
+                    call.peers[index],
+                    EventLogOutput::from_sink(periodic::Output),
+                    Some(EventLogOutputPeriod::Immediate),
+                )
+                .unwrap();
+        }
+    }
     let sources = call
         .sessions
         .each_mut()
@@ -301,9 +358,10 @@ fn application<R: SessionRuntime>(
     let mut frames: [Vec<FrameObservation>; 2] = [Vec::new(), Vec::new()];
     let mut tone_frames = [0; 2];
     let mut captures_at_us = Vec::new();
+    let before = reports.map(|_| std::array::from_fn(|index| call.snapshot(index, &mut progress)));
     let started_at = now();
-    for step in 0..100 {
-        if step < 6 {
+    for step in 0..capture_blocks + 100 {
+        if step < capture_blocks {
             let before_push = now();
             captures_at_us.push(before_push.as_micros());
             for index in 0..2 {
@@ -349,11 +407,11 @@ fn application<R: SessionRuntime>(
                 });
             }
         }
-        if step >= 5 && tone_frames.iter().all(|&count| count >= 3) {
+        if step + 1 >= capture_blocks && tone_frames.iter().all(|&count| count >= 3) {
             break;
         }
     }
-    assert_eq!(captures_at_us.len(), 6);
+    assert_eq!(captures_at_us.len(), capture_blocks);
     assert!(
         captures_at_us
             .windows(2)
@@ -364,9 +422,22 @@ fn application<R: SessionRuntime>(
         tone_frames.iter().all(|&count| count >= 3),
         "stock PCM/Opus/NetEq did not deliver three source-correlated tone blocks per receiver: {tone_frames:?}"
     );
+    let media_elapsed_us = now().as_micros() - started_at.as_micros();
+    assert!(media_elapsed_us >= (capture_blocks as u128) * 10_000);
+    let periodic = before.map(|before| periodic::Observation {
+        media_started_at_us: started_at.as_micros(),
+        before,
+        after: std::array::from_fn(|index| call.snapshot(index, &mut progress)),
+        reports: periodic::Reports::default(),
+    });
     let before_close = now();
-    let media_elapsed_us = before_close.as_micros() - started_at.as_micros();
-    assert!(media_elapsed_us >= 60_000);
+    if reports.is_some() {
+        for index in 0..2 {
+            call.sessions[index]
+                .stop_peer_event_log(call.peers[index])
+                .unwrap();
+        }
+    }
     for (index, receiver) in receivers.iter().enumerate() {
         call.sessions[index].close_media_sink(*receiver).unwrap();
         call.sessions[index].close_peer(call.peers[index]).unwrap();
@@ -382,6 +453,7 @@ fn application<R: SessionRuntime>(
         media_elapsed_us,
         packets: Vec::new(),
         opus_packets: [0; 2],
+        periodic,
     }
 }
 
@@ -407,6 +479,15 @@ fn opus_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
 }
 
 fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
+    run_case(processing, 6, false, false)
+}
+
+fn run_case(
+    processing: Option<&AudioProcessorConfig>,
+    capture_blocks: usize,
+    observe_periodic: bool,
+    impaired: bool,
+) -> Trace {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let observation = {
         let world = ControlledWorld::acquire(0x50434d, Duration::from_secs(7)).unwrap();
@@ -417,12 +498,26 @@ fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
             .each_ref()
             .map(|endpoint| world.runtime().unwrap().with_endpoint(endpoint).unwrap());
         let packets = RefCell::new(Vec::new());
+        let mut sent_rtp = [0usize; 2];
+        let reports = observe_periodic.then(|| Arc::new(periodic::Audit::default()));
         let mut observation = application(
             runtimes,
             processing,
+            capture_blocks,
+            reports.as_ref(),
             |step| {
                 assert!(!world.pump(256).blocked);
                 while let Some(packet) = network.next_packet() {
+                    let sender = ips.iter().position(|&ip| ip == packet.source.ip()).unwrap();
+                    // This application advertises only Opus. The outer caller
+                    // drops every tenth RTP packet, never STUN/DTLS/RTCP.
+                    let rtp = packet.payload.len() >= 12
+                        && packet.payload[0] >> 6 == 2
+                        && !(192..=223).contains(&packet.payload[1]);
+                    if rtp {
+                        sent_rtp[sender] += 1;
+                    }
+                    let drop = impaired && rtp && sent_rtp[sender] % 10 == 5;
                     packets.borrow_mut().push(WirePacket {
                         id: packet.id,
                         kind: format!("{:?}", packet.kind),
@@ -432,17 +527,25 @@ fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
                             packet.destination.ip(),
                             packet.destination.port()
                         ),
-                        sender: ips.iter().position(|&ip| ip == packet.source.ip()).unwrap(),
+                        sender,
                         deadline_us: packet.deadline.as_micros(),
                         observed_at_us: world.now().as_micros(),
                         payload: packet.payload.clone(),
+                        decision: observe_periodic.then_some(if drop { "drop" } else { "deliver" }),
                     });
-                    network.deliver(packet.id).unwrap();
+                    if drop {
+                        network.drop_packet(packet.id).unwrap();
+                    } else {
+                        network.deliver(packet.id).unwrap();
+                    }
                 }
                 world.advance(step).unwrap();
             },
             || world.now(),
         );
+        if let Some(audit) = reports {
+            observation.periodic.as_mut().unwrap().reports = audit.snapshot();
+        }
         let wire = packets.into_inner();
         for packet in &wire {
             let header = opus_rtp_header(&packet.payload, observation.opus_payload_type);
@@ -460,11 +563,12 @@ fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
                 observed_at_us: packet.observed_at_us,
                 opus_rtp_header: header,
                 opus_packet_size,
+                decision: packet.decision,
             });
         }
         assert!(
             observation.opus_packets.iter().all(|&count| count >= 3),
-            "six PCM inputs must produce at least three native Opus RTP packets per sender: {:?}",
+            "PCM inputs must produce at least three native Opus RTP packets per sender: {:?}",
             observation.opus_packets
         );
         Trace { observation, wire }
@@ -549,5 +653,103 @@ pub fn check_replay(processing: Option<&AudioProcessorConfig>, trace_variable: &
         [first.opus_packets, second.opus_packets],
         [first.media_elapsed_us, second.media_elapsed_us],
         [first.packets.len(), second.packets.len()],
+    );
+}
+
+pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
+    let first = run_case(None, 300, true, impaired);
+    let second = run_case(None, 300, true, impaired);
+    if let Some(path) = std::env::var_os(trace_variable) {
+        let path = std::path::PathBuf::from(path);
+        std::fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();
+        std::fs::write(
+            path.with_extension("second.json"),
+            serde_json::to_vec(&second).unwrap(),
+        )
+        .unwrap();
+    }
+    for trace in [&first, &second] {
+        let v = &trace.observation;
+        assert_eq!(v.captures_at_us.len(), 300);
+        assert_eq!(v.media_elapsed_us, 3_000_000);
+        assert!(v.opus_packets.iter().all(|&count| count >= 100));
+        assert!(v.tone_frames.iter().all(|&count| count >= 100));
+        let periodic = v.periodic.as_ref().unwrap();
+        assert_eq!(periodic.reports.created.len(), 2);
+        assert_eq!(periodic.reports.started.len(), 2);
+        assert_eq!(periodic.reports.stopped.len(), 2);
+        assert_eq!(periodic.reports.dropped.len(), 2);
+        for index in 0..2 {
+            let before = &periodic.before[index];
+            let after = &periodic.after[index];
+            assert!(after.timestamp_us > before.timestamp_us);
+            let inbound = after
+                .inbound
+                .iter()
+                .find(|v| v.kind.as_deref() == Some(b"audio"))
+                .expect("actual native inbound audio stats");
+            let outbound = after
+                .outbound
+                .iter()
+                .find(|v| v.kind.as_deref() == Some(b"audio"))
+                .expect("actual native outbound audio stats");
+            assert!(inbound.packets_received.unwrap() >= 100);
+            assert!(outbound.packets_sent.unwrap() >= 100);
+            let lost = inbound.packets_lost.unwrap();
+            if impaired {
+                assert!(
+                    lost > 0,
+                    "explicit RTP drops were not visible in native loss stats"
+                );
+            } else {
+                assert_eq!(lost, 0);
+            }
+            let created_at = periodic
+                .reports
+                .created
+                .iter()
+                .find(|&&(peer, _)| peer == index)
+                .unwrap()
+                .1;
+            for incoming in [false, true] {
+                assert!(
+                    periodic.reports.packets.iter().any(|report| {
+                        report.peer == index
+                            && report.incoming == incoming
+                            && report.observed_at_us >= created_at + 2_500_000
+                            && report.observed_at_us as u128
+                                >= periodic.media_started_at_us + 1_000_000
+                            && periodic::packet_types(&report.bytes)
+                                .iter()
+                                .any(|&kind| kind == 200 || kind == 201)
+                    }),
+                    "missing actual late native SR/RR: peer={index}, incoming={incoming}"
+                );
+            }
+        }
+        let dropped = v
+            .packets
+            .iter()
+            .filter(|p| p.decision == Some("drop"))
+            .count();
+        if impaired {
+            assert!(dropped > 0);
+            assert!(
+                v.packets
+                    .iter()
+                    .filter(|p| p.decision == Some("drop"))
+                    .all(|p| p.opus_rtp_header.is_some())
+            );
+        } else {
+            assert_eq!(dropped, 0);
+        }
+    }
+    assert!(
+        first.observation == second.observation,
+        "sustained PCM replay differs: impaired={impaired}, events_equal={}, frames_equal={}, packets_equal={}, periodic_equal={}",
+        first.observation.events == second.observation.events,
+        first.observation.frames == second.observation.frames,
+        first.observation.packets == second.observation.packets,
+        first.observation.periodic == second.observation.periodic,
     );
 }

@@ -184,10 +184,52 @@ criteria; all raw wire bytes remain separately retained. Optional source echo,
 noise and gain choices retain their existing native processing/admission rules.
 No custom DSP, runtime mode-specific algorithm or new wait hook is installed.
 
-These are bounded, clean-delivery mono PCM cases. They do not qualify every
-voice-engine APM configuration, multi-source mixing, NetEq impairment/
-reconfiguration, plaintext encoded Opus byte replay or long-running audio.
-Those paths require their own native consumer observations.
+These short cases are bounded, clean-delivery mono PCM cases. They do not
+qualify every voice-engine APM configuration, multi-source mixing or arbitrary
+NetEq impairment/reconfiguration. Those paths need their own native consumers.
+
+### Sustained native RTCP and explicit RTP loss
+
+`tests/managed_pcm_periodic.rs` extends the same application to 300 input blocks
+per sender over three virtual seconds. One case delivers every packet. The other
+uses an outer-caller policy to drop every tenth RTP packet at a fixed position,
+while continuing to deliver STUN, DTLS and RTCP. The policy is retained per packet
+and every dropped packet must match the actual negotiated Opus payload type.
+No native loss model, codec or timer is replaced.
+
+Each peer uses a caller-supplied event logger to retain the real native outgoing
+and incoming plaintext RTCP bytes. These callbacks occur at the SDK's native
+transport/logging boundaries, not by interpreting SRTP ciphertext. The fixture
+requires SR/RR packet types in both directions after the source-grounded initial
+2.5-second RTCP evaluation deadline, measured from the earlier logger creation.
+It retains the event's unmodified timestamp separately from the callback time
+queried from the logger's supplied SDK environment. Ordinary native events begin
+with timestamp zero; assigning log-time timestamps belongs to the logger.
+
+The before/after native RTP stats retain actual record IDs, timestamps, SSRCs,
+packet counts, optional loss and exact jitter bits. Both Linux flavors produced
+150 Opus packets per sender and 299 source-correlated returned blocks per
+receiver. The clean case reported zero loss; the impaired case dropped 15 RTP
+packets per direction and native inbound stats reported 15 lost packets each.
+Both retained 244 RTCP callback records, including late SR/RR. Complete selected
+observations replayed within and across fresh processes and across flavors,
+including full returned PCM and unmodified RTCP bytes/timing. The earlier short
+plain and pre-amplified observations remained unchanged.
+
+`PULSEBEAM_PCM_PERIODIC_TRACE_PATH` and
+`PULSEBEAM_PCM_PERIODIC_DROP_TRACE_PATH` write the same first/second JSON format.
+Only the existing cryptographic identity/ciphertext exclusion applies. Logger
+stop, sink/peer close and session shutdown must not advance virtual time.
+Continuous monitoring covered 16 sustained native lifecycles, with zero physical
+thread/helper-process creation or real socket syscalls. Both new core cases also
+passed ASan with leak detection alongside the six earlier stock-media cases.
+
+This qualifies the scoped native reporting and loss observations, not every
+periodic RTT update, custom logger serialization, stock buffered-file logging,
+long-running audio, arbitrary impairment, plaintext encoded Opus byte replay or
+reconfiguration. A received SR/RR alone does not prove the separate periodic RTT
+update ran. Teardown still originates from the ordinary application actor, not
+from an active encoder queue or arbitrary nested callback.
 
 ## Installed stock encoder controls
 
