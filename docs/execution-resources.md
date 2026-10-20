@@ -97,8 +97,27 @@ rejected by the monitor. The shared-harness refactor also requalified eight VP8
 lifecycles and produced byte-identical JSON observations to the committed VP8
 baseline. Both VPx fixtures passed core ASan with leak detection.
 
-For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH` or
-`PULSEBEAM_VP9_TRACE_PATH` to a separate JSON path for each invocation of the
+`tests/managed_av1.rs` uses the same unmodified application/harness with stock
+libaom encoding and dav1d decoding of 1280×720 8-bit input. The pinned encoder
+maps one core to `g_threads=1`; row-MT stays synchronous and worker 0 is never
+reset/launched as a pthread. The decoder maps one core to `n_threads=1` with
+`max_frame_delay=1`; dav1d derives one task/frame context and creates pthreads
+only when the task-context count exceeds one. These scoped source conditions
+are backed by actual first-frame media, not only option readbacks.
+
+On both Linux flavors, the AV1 first decoded frame's complete visible pixels,
+capture/RTP timestamps, logical events and virtual observation time matched
+within and across fresh processes. Eight complete AV1 lifecycles had no
+thread/process creation or real socket syscalls. The optional
+`PULSEBEAM_AV1_HOST_WORKER_PROBE=1` explicitly selected native host detection;
+the same media procedure completed with 23 successful native worker creations
+per flavor, correctly rejected by the monitor. Core AV1 ASan/leak detection
+and existing VPx regressions passed. No SDK/bridge, media algorithm, profile
+admission rule or new runtime hook was needed for this stock one-core case.
+
+For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH`,
+`PULSEBEAM_VP9_TRACE_PATH` or `PULSEBEAM_AV1_TRACE_PATH` to a separate JSON path
+for each invocation of the
 corresponding already-built test executable. Run it under the
 continuous monitor described in `tools/check_controlled_lifecycle_trace.py`,
 then check each default-resource trace with `--minimum-scopes 2`. The optional
@@ -107,8 +126,10 @@ JSON file writes occur after all native lifecycle scopes.
 
 This evidence covers the first decoded frame and its listed observations, not
 all encoded bytes, RTP/statistics timelines, sustained media, software codecs
-beyond these VPx cases or complete replay/lifecycle closure. Explicit VP9
-settings/profiles beyond this stock profile-0 case also remain unqualified.
+beyond these stock VPx/AV1 cases or complete replay/lifecycle closure. Explicit
+settings/profiles beyond these cases also remain unqualified. Repeated dav1d
+configuration ownership and reconfiguration lifecycle were not exercised by
+the first-frame AV1 case and remain specific qualification gaps.
 Those obligations remain open.
 
 The actual Call consumer fixture in `tests/video.rs` records encoder and decoder
