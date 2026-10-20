@@ -1,0 +1,303 @@
+name: Independent OS release
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    outputs:
+      build: ${{ steps.matrix.outputs.build }}
+      runtime: ${{ steps.matrix.outputs.runtime }}
+      manifest: ${{ steps.matrix.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - id: matrix
+        env: {RELEASE_SCOPE: '${{ inputs.scope }}'}
+        run: |
+          echo "build=$(python3 -m tools.platform_ci matrix "$RELEASE_SCOPE")" >> "$GITHUB_OUTPUT"
+          echo "runtime=$(python3 -m tools.platform_ci matrix "$RELEASE_SCOPE" --runtime)" >> "$GITHUB_OUTPUT"
+          echo "manifest=${RELEASE_SCOPE^^}-RELEASE-MANIFEST.json" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and desktop runtime (${{ matrix.flavor }}, ${{ matrix.target }})
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.build) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions: {contents: read}
+    defaults:
+      run: {shell: bash}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Configure the matching native SDK and Rust target
+        if: inputs.scope != 'android'
+        run: python -m tools.platform_ci setup '${{ matrix.target }}' build
+      - name: Prepare the repository-owned Android producer image
+        if: inputs.scope == 'android'
+        run: |
+          just ci podman
+          just linux-image pulsebeam-android-${{ github.sha }}
+      - name: Build Android and smoke-link both consumer boundaries
+        if: inputs.scope == 'android'
+        run: >-
+          just linux-run pulsebeam-android-${{ github.sha }}
+          python3 -m tools.platform_ci produce '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - name: Build and qualify the matching desktop or Apple cross target
+        if: inputs.scope != 'android'
+        # produce also executes the complete SDK/bridge/Rust runtime suites on
+        # every macOS/Windows selection before an archive can be uploaded.
+        run: python -m tools.platform_ci produce '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.flavor }}-${{ matrix.target }}
+          path: dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Retain desktop runtime identities separately from release inputs
+        if: inputs.scope == 'macos' || inputs.scope == 'windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.scope }}-runtime-${{ matrix.flavor }}-${{ strategy.job-index }}
+          path: .work/qualification/${{ matrix.flavor }}-${{ matrix.target }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  audit:
+    needs: [matrix, build]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {pattern: '*-${{ inputs.scope }}-*', path: release-input, merge-multiple: true}
+      - name: Audit exactly this OS target/flavor group
+        env:
+          RELEASE_SCOPE: ${{ inputs.scope }}
+          RELEASE_MANIFEST: ${{ needs.matrix.outputs.manifest }}
+        run: just ci audit "$RELEASE_SCOPE" release-input release-input/SHA256SUMS "release-input/$RELEASE_MANIFEST"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.scope }}-audit
+          path: |
+            release-input/SHA256SUMS
+            release-input/${{ needs.matrix.outputs.manifest }}
+          if-no-files-found: error
+          retention-days: 1
+
+  candidate:
+    needs: [matrix, build, audit]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.build) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions: {contents: read}
+    defaults:
+      run: {shell: bash}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Prepare only the target toolchain and SDK, without WebRTC
+        run: python -m tools.platform_ci setup '${{ matrix.target }}' consumer
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: dist}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ inputs.scope }}-audit', path: audit}
+      - name: Prove cold and offline Rust-only use of the audited archive
+        run: just ci candidate '${{ matrix.flavor }}' '${{ matrix.target }}' audit/SHA256SUMS
+
+  mobile-runtime:
+    if: inputs.scope == 'android' || inputs.scope == 'ios'
+    needs: [matrix, build, audit]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.runtime) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions: {contents: read}
+    defaults:
+      run: {shell: bash}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Prepare the pinned SDK and exact minimum OS runtime
+        run: python -m tools.platform_ci setup '${{ matrix.target }}' runtime
+      - name: Grant only the job user access to its emulator accelerator
+        if: inputs.scope == 'android'
+        run: |
+          test -c /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          fi
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ matrix.flavor }}-${{ matrix.target }}', path: dist}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ inputs.scope }}-audit', path: audit}
+      - name: Execute real Rust and SDK C++ code at the minimum baseline
+        run: >-
+          just ci mobile-runtime '${{ matrix.flavor }}' '${{ matrix.target }}'
+          audit/SHA256SUMS runtime-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.scope }}-runtime-${{ matrix.flavor }}
+          path: runtime-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+
+  qualification:
+    if: always()
+    needs: [build, audit, candidate, mobile-runtime]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Require every applicable pre-publication gate
+        env:
+          RELEASE_SCOPE: ${{ inputs.scope }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          MOBILE_RESULT: ${{ needs.mobile-runtime.result }}
+        run: |
+          just ci require-success "build=$BUILD_RESULT" "audit=$AUDIT_RESULT" "candidate=$CANDIDATE_RESULT"
+          case "$RELEASE_SCOPE" in
+            android|ios) just ci require-success "mobile-runtime=$MOBILE_RESULT";;
+            macos|windows) test "$MOBILE_RESULT" = skipped;;
+            *) exit 1;;
+          esac
+
+  bundle:
+    if: github.event_name == 'push'
+    needs: [matrix, qualification]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {pattern: '*-${{ inputs.scope }}-*', path: release-input, merge-multiple: true}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ inputs.scope }}-audit', path: release-input}
+      - name: Construct the closed audited OS bundle
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}-${{ inputs.scope }}
+          RELEASE_MANIFEST: ${{ needs.matrix.outputs.manifest }}
+        run: just ci release-prepare release-input release-input/SHA256SUMS "release-input/$RELEASE_MANIFEST" "$RELEASE_TAG" release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: {name: '${{ inputs.scope }}-release-bundle', path: release, if-no-files-found: error, retention-days: 1, compression-level: 0}
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [qualification, bundle]
+    concurrency:
+      group: publish-${{ inputs.scope }}-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    permissions: {contents: write, id-token: write, attestations: write}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}-${{ inputs.scope }}
+      CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with: {name: '${{ inputs.scope }}-release-bundle', path: release}
+      - name: Require the immutable OS tag at the canonical source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          RELEASE_SCOPE: ${{ inputs.scope }}
+        run: just ci-release ensure-tag --source-tag "$SOURCE_TAG" --scope "$RELEASE_SCOPE" --commit "$SOURCE_COMMIT"
+      - id: publication-plan
+        name: Classify immutable release bytes before mutation
+        env: {GH_TOKEN: '${{ github.token }}', RUNTIME_REPOSITORY: '${{ github.repository }}'}
+        run: just ci-release classify --tag "$RELEASE_TAG" --repository "$RUNTIME_REPOSITORY" --bundle release --output publication-plan.json
+      - name: Upload only verified missing draft assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: just ci-release upload --tag "$RELEASE_TAG" --bundle release --plan publication-plan.json
+      - name: Reverify the closed draft
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: just ci-release verify --tag "$RELEASE_TAG" --bundle release --output verified-plan.json
+      - name: Attest final release assets
+        if: steps.publication-plan.outputs.finalize == 'true'
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with: {subject-path: 'release/*'}
+      - name: Reverify immediately before advertisement
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: just ci-release verify --tag "$RELEASE_TAG" --bundle release --output attested-plan.json
+      - name: Advertise only the verified complete OS release
+        if: steps.publication-plan.outputs.finalize == 'true'
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: just ci-release advertise --tag "$RELEASE_TAG" --plan attested-plan.json
+
+  released-consumer:
+    if: needs.publish.result == 'success'
+    needs: [matrix, publish]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.build) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions: {contents: read}
+    defaults:
+      run: {shell: bash}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Prepare only the consumer target toolchain and SDK
+        run: python -m tools.platform_ci setup '${{ matrix.target }}' consumer
+      - name: Test the published Git dependency without overrides
+        env: {SOURCE_TAG: '${{ github.ref_name }}'}
+        run: >-
+          python3 -m tools.rust_only_consumer released
+          --repository https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git
+          --tag "$SOURCE_TAG" --target '${{ matrix.target }}' --flavor '${{ matrix.flavor }}'
+
+  result:
+    if: always() && github.event_name == 'push'
+    needs: [publish, released-consumer]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        with: {just-version: 1.43.1}
+      - name: Require publication and every released consumer selection
+        run: just ci require-success 'publish=${{ needs.publish.result }}' 'released-consumer=${{ needs.released-consumer.result }}'

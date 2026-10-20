@@ -9,13 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-from tools import audit_release, linux_release_publication, write_artifact_lock
+from tools import audit_release, linux_release_publication, rust_only_consumer, write_artifact_lock
 from tools.release_inventory import OS_TARGETS, archive_names, source_tag
 
 
@@ -91,6 +92,16 @@ def candidate(flavor: str, target: str, checksums: Path) -> None:
     subprocess.run([sys.executable, "-m", "tools.rust_only_consumer", "candidate", "--artifact", str(Path("dist") / name), "--sha256", digest, "--target", target, "--flavor", flavor], check=True)
 
 
+def runtime(flavor: str, target: str, archive: Path) -> None:
+    if flavor not in write_artifact_lock.FLAVORS or not target.startswith(("linux-", "macos-", "windows-")):
+        raise TaskError("unsupported desktop runtime selection")
+    cargo, _ = rust_only_consumer.coordinate(target, flavor)
+    rust_only_consumer.require_host(target)
+    environment = os.environ.copy()
+    rust_only_consumer.configure_target_environment(environment, cargo)
+    subprocess.run(["just", "_runtime-test", flavor, target, str(archive)], env=environment, check=True)
+
+
 def mobile_runtime(flavor: str, target: str, checksums: Path, output: Path) -> None:
     if flavor not in write_artifact_lock.FLAVORS or target not in {"android-x86_64", "ios-simulator-arm64"}:
         raise TaskError("unsupported mobile runtime flavor or target")
@@ -156,6 +167,10 @@ def main() -> int:
     candidate_parser.add_argument("flavor")
     candidate_parser.add_argument("target")
     candidate_parser.add_argument("checksums", type=Path)
+    runtime_parser = commands.add_parser("runtime")
+    runtime_parser.add_argument("flavor", choices=write_artifact_lock.FLAVORS)
+    runtime_parser.add_argument("target")
+    runtime_parser.add_argument("archive", type=Path)
     mobile = commands.add_parser("mobile-runtime")
     mobile.add_argument("flavor", choices=write_artifact_lock.FLAVORS)
     mobile.add_argument("target", choices=("android-x86_64", "ios-simulator-arm64"))
@@ -183,11 +198,12 @@ def main() -> int:
         elif args.task == "audit": audit(args.scope, args.archives, args.checksums, args.output)
         elif args.task == "candidate": candidate(args.flavor, args.target, args.checksums)
         elif args.task == "mobile-runtime": mobile_runtime(args.flavor, args.target, args.checksums, args.output)
+        elif args.task == "runtime": runtime(args.flavor, args.target, args.archive)
         elif args.task == "release-prepare": linux_release_publication.prepare(args.archives, args.checksums, args.audit, args.tag, args.output)
         elif args.task == "asan": asan(args.image, args.flavor)
         elif args.task == "upgrade-refresh": upgrade(args.image, False)
         elif args.task == "upgrade-build": upgrade(args.image, True)
-    except (OSError, ValueError, TaskError, subprocess.CalledProcessError, audit_release.AuditError, linux_release_publication.PublicationError, write_artifact_lock.LockError) as error:
+    except (OSError, ValueError, TaskError, subprocess.CalledProcessError, audit_release.AuditError, linux_release_publication.PublicationError, rust_only_consumer.ProofError, write_artifact_lock.LockError) as error:
         print(f"CI task: {error}", file=sys.stderr)
         return 1
     return 0

@@ -2,6 +2,8 @@ name: CI and release
 
 on:
   pull_request:
+  # Qualification only. Publication jobs require a canonical source-tag push.
+  workflow_dispatch:
   push:
     tags: ['v*', '!v*-linux', '!v*-macos', '!v*-windows', '!v*-ios', '!v*-android']
 
@@ -43,9 +45,37 @@ jobs:
       - name: Run source and control-plane checks
         run: just linux-run pulsebeam-linux-${{ github.sha }} just check
 
+  macos-release:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    uses: ./.github/workflows/os-release.yml
+    with: {scope: macos}
+    permissions: {contents: write, id-token: write, attestations: write}
+
+  windows-release:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    uses: ./.github/workflows/os-release.yml
+    with: {scope: windows}
+    permissions: {contents: write, id-token: write, attestations: write}
+
+  ios-release:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    uses: ./.github/workflows/os-release.yml
+    with: {scope: ios}
+    permissions: {contents: write, id-token: write, attestations: write}
+
+  android-release:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    uses: ./.github/workflows/os-release.yml
+    with: {scope: android}
+    permissions: {contents: write, id-token: write, attestations: write}
+
   linux-build:
     name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: validate
     strategy:
       fail-fast: false
@@ -93,7 +123,7 @@ jobs:
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
       - name: Qualify ARM64 on the matching build host before upload
         if: matrix.target == 'linux-arm64'
-        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just ci runtime '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.flavor }}-${{ matrix.target }}
@@ -140,7 +170,7 @@ jobs:
 
   lifetime-sanitizers:
     name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: validate
     strategy:
       fail-fast: false
@@ -177,7 +207,7 @@ jobs:
   linux-qualification:
     name: Linux qualification
     needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]
-    if: always() && github.event_name == 'push'
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -23,7 +23,10 @@ check:
     set -euo pipefail
     cd "{{ root }}"
     test "$(just --list --unsorted | sed -n 's/^    \([^ _][^ ]*\).*/\1/p' | grep -v '^default$' | sort)" = $'build\ncheck\nci\nci-preflight\nci-release\nlinux-image\nlinux-run\nrefresh-cxx\nverify-artifact'
-    test "$(find .github/workflows -maxdepth 1 -name '*.yml' | wc -l)" -eq 1
+    test "$(find .github/workflows -maxdepth 1 -name '*.yml' | wc -l)" -eq 2
+    test -f .github/workflows/os-release.yml
+    test -f consumer/mobile/Cargo.toml
+    test -f consumer/mobile/src/lib.rs
     grep -Fq '  released-consumer:' .github/workflows/release.yml
     test -f consumer/rust-only/Cargo.toml.in
     test -f consumer/rust-only/src/main.rs
@@ -67,8 +70,9 @@ check:
     python3 tools/write_artifact_lock.py --help >/dev/null
     python3 -m tools.audit_release --help >/dev/null
     python3 -m tools.linux_release_publication --help >/dev/null
-    ! grep -E '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)'
+    ! grep -hE '^[[:space:]]*(- )?uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]#]|$)|^[[:space:]]+uses: \./\.github/workflows/os-release\.yml$'
     cargo fmt --check
+    cargo fmt --manifest-path consumer/mobile/Cargo.toml -- --check
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --doc --locked --offline
     CARGO_HOME="{{ work }}/cargo-home" PULSEBEAM_WEBRTC_SYS_SKIP_LINK=1 cargo test --test artifact_support --locked --offline
     echo 'source/control-plane check passed; native proof requires: just verify-artifact <archive> <sha256>'

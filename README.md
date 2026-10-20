@@ -23,19 +23,39 @@ against the locally installed `gh` (also run on the GitHub runner before the
 Linux image build). It needs neither network nor a GitHub token. Run it before
 starting a long local build; unlike `just check`, it requires `gh` on the host.
 
-The single `release.yml` workflow calls repository-owned `just` commands for
-validation, artifact audit, result qualification, and release publication. Its
-YAML retains job dependencies, runner selection, credential transport, caching,
-artifact transfer, and GitHub attestation.
+The single `release.yml` workflow entry point calls repository-owned commands
+for validation, artifact audit, result qualification, and release publication.
+Linux retains its golden job graph; four independent calls to `os-release.yml`
+run the macOS, Windows, iOS and Android graphs. Each OS waits only for the common
+source checks and its own build, audit, runtime and consumer gates, not another
+OS's qualification or publication. YAML retains dependencies, runner selection,
+credential transport, caching, artifact transfer and GitHub attestation.
 Run the same operations locally with `just ci <task> ...` (see `just ci --help`),
 for example `just ci revision <40-character-revision>` or `just ci audit linux
 release-input release-input/SHA256SUMS release-input/LINUX-RELEASE-MANIFEST.json`.
 `just ci-release --help` lists publication stages. The release commands require
 an authenticated `gh` and contact GitHub; the local tests fake the CLI and
 never publish a release. Bundle preparation and audit run on the host without
-building a Podman image. Only the actual WebRTC builds need the Linux image.
-The released-consumer job uses the published tag as a Cargo Git dependency and
-requires both Linux architectures and flavors to consume without a local artifact override.
+building a Podman image. Linux and Android producers use the repository-owned
+Linux image; Windows and Apple builds run on their matching native hosts.
+Released-consumer matrices use the source tag as a Cargo Git dependency and
+require every target and flavor in their OS group without a local override.
+A manual `workflow_dispatch` runs the complete pre-publication qualification
+paths, including Linux x86_64 ASan, but cannot create tags or publish releases.
+Publication jobs require a canonical source-tag push.
+
+Non-Linux jobs use `python -m tools.platform_ci` for fixed target/flavor matrices,
+native SDK setup and producer orchestration. They pin Rust to `1.96.0`, matching
+the Linux image. Windows uses an installed supported VS 2022/2026 developer
+environment with Windows SDK `10.0.26100.0`; no restricted Google Windows
+toolchain download is required. Android consumer jobs install the source-pinned
+NDK; runtime jobs additionally install platform 26, build tools 35.0.0 and the
+API 26 x86_64 emulator image. An initialized, already licensed Xcode can download
+and import the exact ARM64 iOS 18.0 runtime when absent. Setup never implicitly
+accepts SDK licenses or substitutes a newer minimum-runtime baseline. Missing
+licenses, SDK components, acceleration, matching hosts or runner capacity fail
+qualification rather than waiving a gate. Public runner labels alone are not
+proof of account entitlement, capacity or completed platform qualification.
 
 `just check` is the fast, offline source/control-plane gate once the pinned Rust
 dependencies are cached. It does not require or extract native bytes. Native
@@ -68,7 +88,12 @@ before archive upload on its build host; x86_64 also has separate artifact-only
 runtime jobs. Linux x86_64 AddressSanitizer jobs rebuild both
 flavors and exercise the lifetime-sensitive environment, provider, peer,
 channel, video, and teardown tests; only their failure logs are retained, never
-their instrumented archives. Other platform builds are not part of this release.
+their instrumented archives. macOS and Windows execute the complete Rust and
+SDK/bridge C++ runtime suites on every matching build host before archive
+upload. Mobile OS releases require both flavors to execute the headless minimum
+baseline scenarios described below; physical-device targets remain compile/link
+qualified. Each OS independently audits, qualifies, prepares and immutably
+publishes its own closed release group.
 
 `just refresh-cxx` is the explicit networked maintenance operation for the
 Rust-only CXX runtime. It downloads the version recorded in
@@ -845,12 +870,12 @@ its compiler-running Cargo build script; its matching C++ runtime is also part
 of the native archive. Cargo consumers therefore compile only Rust. CXX and STL
 types stay private; the public crate surface uses ordinary Rust values.
 
-Schema-3 manifests also require `bridge.native_adapter_sha256`, a path-aware
+Schema-4 manifests also require `bridge.native_adapter_sha256`, a path-aware
 SHA-256 of every `native/*.cc`/`native/*.h` input and `Justfile`. It participates
 in native configuration identity and is checked against the current source
 package by producer provenance, release audit and Rust-only consumers. Matching
 CXX declarations alone cannot qualify an archive containing stale adapters or
-build recipes; schema-2 manifests are deliberately rejected.
+build recipes; older manifest schemas are deliberately rejected.
 
 This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 

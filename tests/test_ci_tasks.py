@@ -106,6 +106,19 @@ class CiTasksTests(unittest.TestCase):
             with self.assertRaisesRegex(ci_tasks.TaskError, "missing checksum"):
                 ci_tasks.candidate("native", "linux-x86_64", checksums)
 
+    def test_desktop_runtime_configures_arm64_clang_and_static_windows_crt(self):
+        for target, flag in (("linux-arm64", "--rtlib=compiler-rt"), ("windows-x86_64", "target-feature=+crt-static")):
+            with self.subTest(target=target), patch.dict(os.environ, {}, clear=True), patch.object(ci_tasks.rust_only_consumer, "require_host"), patch.object(ci_tasks.rust_only_consumer.shutil, "which", return_value="/sdk/clang-19"), patch.object(ci_tasks.subprocess, "run") as run:
+                ci_tasks.runtime("core", target, Path("archive.tar.gz"))
+            self.assertEqual(run.call_args.args[0], ["just", "_runtime-test", "core", target, "archive.tar.gz"])
+            self.assertTrue(run.call_args.kwargs["check"])
+            environment = run.call_args.kwargs["env"]
+            self.assertIn(flag, environment["CARGO_ENCODED_RUSTFLAGS"])
+            if target == "linux-arm64":
+                self.assertEqual(environment["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"], "/sdk/clang-19")
+        with self.assertRaises(ci_tasks.TaskError):
+            ci_tasks.runtime("core", "ios-arm64", Path("archive.tar.gz"))
+
     def test_mobile_runtime_uses_exact_archive_and_rejects_physical_targets(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
