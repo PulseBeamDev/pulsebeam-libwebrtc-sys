@@ -854,6 +854,56 @@ build recipes; schema-2 manifests are deliberately rejected.
 
 This repository does not produce AARs, JARs, frameworks, or XCFrameworks.
 
+### Headless mobile qualification
+
+`consumer/mobile` is a producer-owned acceptance host, not a downstream SDK or
+shipping application. It links the selected archive into a disposable APK or
+simulator application. The Rust bridge scenario checks identity, controlled
+clock behavior, software PCM processing, factory/peer/channel behavior and
+shutdown. The SDK C++ companion exercises real software audio encoding/decoding,
+VP8/VP9/AV1 encoding/decoding and PCM processing against the exported headers.
+Linux x86_64 retains its additional mandatory H.264 and event-log checks.
+The applications request no microphone or camera permission and do not exercise
+hardware codecs, native device backends, rendering, or physical devices.
+
+Android runtime qualification requires an x86_64 Linux host with acceleration,
+a standalone NDK `30.0.14608247` (the source pin), Android platform 26, build tools
+`35.0.0`, platform tools, command-line tools and the
+`system-images;android-26;google_apis;x86_64` emulator image already installed and
+licensed. Set `ANDROID_NDK_HOME` and `ANDROID_SDK_ROOT`; Java and Cargo must be
+available. The runner creates an isolated, accelerated headless AVD unless
+`--android-serial emulator-NNNN` selects an existing emulator. Either way, a real
+API 26 x86_64 emulator is mandatory. A newer API is not minimum-baseline proof.
+
+The iOS runner requires an ARM64 macOS host, Xcode's simulator SDK and an
+available iOS **18.0** simulator runtime. It creates and deletes its own iPhone
+16 simulator and checks the OS version reported by the executed application.
+A newer simulator runtime, a physical iPhone, or an Intel host cannot substitute.
+
+```bash
+# Install the matching Rust target first. SDK/runtime installation is separate.
+just ci rust-target android-x86_64
+python3 -m tools.mobile_runtime \\
+  --archive dist/webrtc-core-android-x86_64.tar.gz --sha256 <archive-sha256> \\
+  --target android-x86_64 --flavor core --output .work/android-core-runtime.json
+
+# On ARM64 macOS with the iOS 18.0 runtime installed:
+just ci rust-target ios-simulator-arm64
+python3 -m tools.mobile_runtime \\
+  --archive dist/webrtc-native-ios-simulator-arm64.tar.gz --sha256 <archive-sha256> \\
+  --target ios-simulator-arm64 --flavor native --output .work/ios-native-runtime.json
+```
+
+The equivalent CI entry is `just ci mobile-runtime <flavor> <target>
+<checksums> <output>`. Success requires a fresh guest result matching a per-run
+nonce and the exact archive SHA-256, not merely a zero launcher exit code. It
+writes JSON evidence only after execution succeeds and refuses to overwrite
+existing evidence. Both flavors must execute on Android x86_64 and the ARM64 iOS
+simulator. Android ARM64 and physical-device iOS ARM64 still require compile and
+link qualification, not physical-device execution. These commands implement the
+qualification path; their availability is not evidence that the full platform
+matrix has passed.
+
 ## Release contract
 
 The immutable commit

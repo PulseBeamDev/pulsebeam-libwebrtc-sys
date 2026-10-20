@@ -1,6 +1,10 @@
 use std::time::Duration;
 
 fn main() {
+    run();
+}
+
+pub fn run() {
     let ice = pulsebeam_webrtc_sys::IceConfig::default();
     ice.validate().unwrap();
     assert!(ice.receiving_timeout.is_none());
@@ -28,6 +32,31 @@ fn main() {
     assert_eq!(environment.now(), Duration::from_secs(7));
     clock.advance(Duration::from_millis(5)).unwrap();
     assert_eq!(environment.now(), Duration::from_millis(7_005));
+    {
+        use pulsebeam_webrtc_sys::*;
+        let mut config = AudioProcessorConfig::default();
+        config.pre_amplifier.enabled = true;
+        let mut processor =
+            AudioProcessingModule::builtin_with_config(&environment, &config).unwrap();
+        processor
+            .set_runtime_setting(AudioProcessingRuntimeSetting::CapturePreGain(2.0))
+            .unwrap();
+        let stream = AudioProcessingStream {
+            sample_rate_hz: 16000,
+            channels: 1,
+        };
+        let mut pcm = vec![1000; 160];
+        assert_eq!(
+            processor.process_interleaved(stream, &mut pcm).unwrap(),
+            AudioProcessingStatus::OK
+        );
+        pcm.fill(1000);
+        assert_eq!(
+            processor.process_interleaved(stream, &mut pcm).unwrap(),
+            AudioProcessingStatus::OK
+        );
+        assert_eq!(pcm, vec![2000; 160]);
+    }
     {
         let encoder = pulsebeam_webrtc_sys::VideoEncoderFactoryHandle::builtin().unwrap();
         let decoder = pulsebeam_webrtc_sys::VideoDecoderFactoryHandle::builtin().unwrap();

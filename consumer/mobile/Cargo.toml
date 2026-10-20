@@ -1,0 +1,15 @@
+[package]
+name = "pulsebeam-headless-qualification"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "pulsebeam_headless"
+crate-type = ["staticlib"]
+
+[features]
+native = ["pulsebeam-webrtc-sys/native"]
+
+[dependencies]
+pulsebeam-webrtc-sys = { path = "../.." }

@@ -91,6 +91,17 @@ def candidate(flavor: str, target: str, checksums: Path) -> None:
     subprocess.run([sys.executable, "-m", "tools.rust_only_consumer", "candidate", "--artifact", str(Path("dist") / name), "--sha256", digest, "--target", target, "--flavor", flavor], check=True)
 
 
+def mobile_runtime(flavor: str, target: str, checksums: Path, output: Path) -> None:
+    if flavor not in write_artifact_lock.FLAVORS or target not in {"android-x86_64", "ios-simulator-arm64"}:
+        raise TaskError("unsupported mobile runtime flavor or target")
+    name = f"webrtc-{flavor}-{target}.tar.gz"
+    digest = write_artifact_lock.read_checksums(checksums).get(name)
+    if digest is None:
+        raise TaskError(f"missing checksum for {name}")
+    subprocess.run([sys.executable, "-m", "tools.mobile_runtime", "--archive", str(Path("dist") / name),
+                    "--sha256", digest, "--target", target, "--flavor", flavor, "--output", str(output)], check=True)
+
+
 def install_target(target: str) -> None:
     cargo_targets = {artifact: cargo for cargo, artifact in write_artifact_lock.SUPPORTED_TARGETS.items()}
     if target not in cargo_targets or target.startswith("linux-"):
@@ -145,6 +156,11 @@ def main() -> int:
     candidate_parser.add_argument("flavor")
     candidate_parser.add_argument("target")
     candidate_parser.add_argument("checksums", type=Path)
+    mobile = commands.add_parser("mobile-runtime")
+    mobile.add_argument("flavor", choices=write_artifact_lock.FLAVORS)
+    mobile.add_argument("target", choices=("android-x86_64", "ios-simulator-arm64"))
+    mobile.add_argument("checksums", type=Path)
+    mobile.add_argument("output", type=Path)
     prepare = commands.add_parser("release-prepare")
     prepare.add_argument("archives", type=Path)
     prepare.add_argument("checksums", type=Path)
@@ -166,6 +182,7 @@ def main() -> int:
         elif args.task == "require-success": require_success(args.results)
         elif args.task == "audit": audit(args.scope, args.archives, args.checksums, args.output)
         elif args.task == "candidate": candidate(args.flavor, args.target, args.checksums)
+        elif args.task == "mobile-runtime": mobile_runtime(args.flavor, args.target, args.checksums, args.output)
         elif args.task == "release-prepare": linux_release_publication.prepare(args.archives, args.checksums, args.audit, args.tag, args.output)
         elif args.task == "asan": asan(args.image, args.flavor)
         elif args.task == "upgrade-refresh": upgrade(args.image, False)

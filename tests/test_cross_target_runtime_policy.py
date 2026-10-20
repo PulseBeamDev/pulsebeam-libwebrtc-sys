@@ -1,10 +1,13 @@
 import importlib.util
+import io
+import tarfile
 import json
 import os
 import subprocess
 import tempfile
 from unittest.mock import patch
 
+from tools import mobile_runtime as mobile
 from tools import rust_only_consumer as consumer
 from tools.release_inventory import OS_TARGETS, archive_names
 from pathlib import Path
@@ -318,6 +321,70 @@ class TargetConsumerPolicyTests(unittest.TestCase):
                 for evidence in report["assets"]:
                     expected = "applied" if scope == "ios" and evidence["name"].startswith("webrtc-core-") else "pristine"
                     self.assertEqual(evidence["source_state"], expected)
+
+
+class MobileRuntimePolicyTests(unittest.TestCase):
+    def test_android_baseline_is_real_emulator_api26_x86_64(self):
+        properties = {"api": "26", "abi": "x86_64", "qemu": "1"}
+        mobile.android_environment(properties)
+        for key, value in (("api", "27"), ("api", "35"), ("abi", "arm64-v8a"), ("qemu", "0")):
+            with self.subTest(key=key, value=value), self.assertRaises(mobile.RuntimeError):
+                mobile.android_environment({**properties, key: value})
+
+    def test_ios_requires_exact_available_baseline_not_newer_runtime(self):
+        runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0", "version": "18.0", "isAvailable": True}
+        self.assertEqual(mobile.ios_runtime([runtime]), runtime["identifier"])
+        for runtimes in ([], [{**runtime, "version": "18.1"}], [{**runtime, "isAvailable": False}], [runtime, runtime]):
+            with self.subTest(runtimes=runtimes), self.assertRaises(mobile.RuntimeError):
+                mobile.ios_runtime(runtimes)
+
+    def test_mobile_success_requires_fresh_nonce_and_exact_archived_bytes(self):
+        result = {"pulsebeam_status": 0, "pulsebeam_nonce": "nonce", "pulsebeam_archive_sha256": "a" * 64}
+        mobile.validate_result(result, "nonce", "a" * 64)
+        for key, value in (("pulsebeam_status", 1), ("pulsebeam_status", False),
+                           ("pulsebeam_nonce", "stale"), ("pulsebeam_archive_sha256", "b" * 64)):
+            with self.subTest(key=key, value=value), self.assertRaises(mobile.RuntimeError):
+                mobile.validate_result({**result, key: value}, "nonce", "a" * 64)
+        with self.assertRaises(mobile.RuntimeError):
+            mobile.validate_result({}, "nonce", "a" * 64)
+
+    def test_android_command_exit_zero_is_not_instrumentation_success(self):
+        success = ("INSTRUMENTATION_RESULT: pulsebeam_status=0\n"
+                   "INSTRUMENTATION_RESULT: pulsebeam_nonce=nonce\n"
+                   f"INSTRUMENTATION_RESULT: pulsebeam_archive_sha256={'a' * 64}\n"
+                   "INSTRUMENTATION_CODE: -1\n")
+        self.assertEqual(mobile.android_result(success, "nonce", "a" * 64)["pulsebeam_status"], 0)
+        for output in ("", success.replace("CODE: -1", "CODE: 0"),
+                       success.replace("status=0", "status=1"),
+                       success + "INSTRUMENTATION_RESULT: pulsebeam_status=0\n"):
+            with self.subTest(output=output), self.assertRaises(mobile.RuntimeError):
+                mobile.android_result(output, "nonce", "a" * 64)
+
+    def test_mobile_archive_rejects_path_links_and_duplicate_members(self):
+        for names, linked in ((["../escape"], False), (["/escape"], False),
+                              (["C:\\escape"], False), (["link"], True),
+                              (["manifest.json", "manifest.json"], False)):
+            with self.subTest(names=names), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "input.tar.gz"
+                with tarfile.open(archive, "w:gz") as output:
+                    for name in names:
+                        member = tarfile.TarInfo(name)
+                        if linked:
+                            member.type = tarfile.SYMTYPE
+                            member.linkname = "../escape"
+                            output.addfile(member)
+                        else:
+                            member.size = 2
+                            output.addfile(member, io.BytesIO(b"{}"))
+                with self.assertRaisesRegex(mobile.RuntimeError, "unsafe|duplicate"):
+                    mobile.extract_kit(archive, mobile.digest(archive), root / "kit", "android-x86_64", "core")
+                self.assertFalse((root / "escape").exists())
+
+    def test_mobile_runtime_rejects_physical_mobile_targets_before_sdk_work(self):
+        for target in ("android-arm64-v8a", "ios-arm64"):
+            with self.subTest(target=target), self.assertRaises(mobile.RuntimeError):
+                mobile.qualify(Path("absent"), "a" * 64, target, "core", Path("absent-output"))
 
 
 if __name__ == "__main__":

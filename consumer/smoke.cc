@@ -77,7 +77,7 @@ public:
   }
 };
 
-#if defined(__linux__) && defined(__x86_64__)
+#if defined(__linux__) && !defined(__ANDROID__) && defined(__x86_64__)
 // A shipped-archive gate, not a codec-shaped mock: these callbacks consume
 // actual OpenH264 bytes and FFmpeg output using only public SDK headers.
 class H264Encoded final : public webrtc::EncodedImageCallback {
@@ -178,8 +178,10 @@ static bool H264Roundtrip(const webrtc::Environment &environment,
 
 void FrameCallbackSlotRegression();
 bool VideoFrameMetadataInitializationRegression();
+bool SoftwareImplementations(const webrtc::Environment&);
+bool HeadlessSoftwareImplementations(const webrtc::Environment&);
 
-int main() {
+extern "C" int pulsebeam_sdk_smoke() {
   FrameCallbackSlotRegression();
   if (!VideoFrameMetadataInitializationRegression()) return 3;
   webrtc::SetRandomGenerator(std::make_unique<SeededRandom>());
@@ -212,11 +214,16 @@ int main() {
   if (random_id == 0 || !factory || !audio_encoders || !audio_decoders ||
       !video_encoders || !video_decoders)
     return 1;
-#if defined(__linux__) && defined(__x86_64__)
-  extern bool SoftwareImplementations(const webrtc::Environment&);
+#if defined(__linux__) && !defined(__ANDROID__) && defined(__x86_64__)
   if (!SoftwareImplementations(environment)) return 5;
   if (!H264Roundtrip(environment, *video_encoders, *video_decoders))
     return 2;
+#else
+  if (!HeadlessSoftwareImplementations(environment)) return 5;
 #endif
   return 0;
 }
+
+#ifndef PULSEBEAM_SMOKE_NO_MAIN
+int main() { return pulsebeam_sdk_smoke(); }
+#endif

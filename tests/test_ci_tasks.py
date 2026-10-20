@@ -106,6 +106,22 @@ class CiTasksTests(unittest.TestCase):
             with self.assertRaisesRegex(ci_tasks.TaskError, "missing checksum"):
                 ci_tasks.candidate("native", "linux-x86_64", checksums)
 
+    def test_mobile_runtime_uses_exact_archive_and_rejects_physical_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            checksums = root / "SHA256SUMS"
+            checksums.write_text("a" * 64 + "  webrtc-core-android-x86_64.tar.gz\n")
+            with patch.object(ci_tasks.subprocess, "run") as run:
+                ci_tasks.mobile_runtime("core", "android-x86_64", checksums, root / "evidence.json")
+            command = run.call_args.args[0]
+            self.assertIn("tools.mobile_runtime", command)
+            self.assertEqual(command[command.index("--sha256") + 1], "a" * 64)
+            self.assertEqual(command[command.index("--archive") + 1], "dist/webrtc-core-android-x86_64.tar.gz")
+            with self.assertRaisesRegex(ci_tasks.TaskError, "missing checksum"):
+                ci_tasks.mobile_runtime("native", "android-x86_64", checksums, root / "absent.json")
+            with self.assertRaisesRegex(ci_tasks.TaskError, "unsupported"):
+                ci_tasks.mobile_runtime("core", "android-arm64-v8a", checksums, root / "absent.json")
+
     def test_rust_target_is_from_one_canonical_mapping(self):
         with patch.object(ci_tasks.subprocess, "run") as run:
             ci_tasks.install_target("ios-simulator-arm64")

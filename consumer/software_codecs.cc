@@ -1,5 +1,7 @@
 // Implementation-level SDK consumer. No bridge adapters or substitute codecs.
-#if defined(__linux__) && defined(__x86_64__)
+#ifndef PULSEBEAM_EXPECT_PROTOBUF
+#define PULSEBEAM_EXPECT_PROTOBUF 0
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -256,6 +258,21 @@ bool Helpers(const webrtc::Environment& env) {
 }
 }  // namespace
 
+bool HeadlessSoftwareImplementations(const webrtc::Environment& env) {
+  auto encoders = webrtc::CreateBuiltinVideoEncoderFactory();
+  auto decoders = webrtc::CreateBuiltinVideoDecoderFactory();
+  for (const char* name : {"VP8", "VP9", "AV1"}) {
+    bool found = false;
+    for (const auto& format : encoders->GetSupportedFormats()) {
+      if (format.name != name) continue;
+      found = true;
+      if (!Video(env, *encoders, *decoders, format)) return false;
+    }
+    if (!found) return false;
+  }
+  return Audio(env) && Processing(env);
+}
+
 bool SoftwareImplementations(const webrtc::Environment& env) {
   auto encoders = webrtc::CreateBuiltinVideoEncoderFactory();
   auto decoders = webrtc::CreateBuiltinVideoDecoderFactory();
@@ -278,4 +295,3 @@ bool SoftwareImplementations(const webrtc::Environment& env) {
   }
   return Audio(env) && Processing(env) && Helpers(env);
 }
-#endif
