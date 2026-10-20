@@ -115,9 +115,29 @@ per flavor, correctly rejected by the monitor. Core AV1 ASan/leak detection
 and existing VPx regressions passed. No SDK/bridge, media algorithm, profile
 admission rule or new runtime hook was needed for this stock one-core case.
 
+`tests/managed_h264.rs` applies the same procedure to stock constrained-baseline
+H.264 (`profile-level-id=42e01f`, packetization mode 1) with OpenH264 encoding
+and FFmpeg decoding. WebRTC's stock encoder requests one thread and one slice.
+OpenH264 clamps its final thread count to the slice count and calls its
+multithread resource initializer only when that final count exceeds one, so its
+shared task pool is unreachable in this configuration. WebRTC's FFmpeg adapter
+forces `thread_count=1`; FFmpeg disables active slice/frame threading before
+worker initialization. The SDK encoder-thread-limit experiment cannot override
+the fixed one-slice clamp in this binding path.
+
+Both Linux flavors produced the stock H.264 first decoded frame with complete
+visible pixels, capture/RTP timestamps, logical events and virtual observation
+time matching within and across fresh processes. Eight default-resource H.264
+lifecycles had no thread/process creation or real socket syscalls. Unlike the
+VPx/AV1 diagnostic controls, explicit host detection remains single-threaded for
+this stock one-slice configuration: two additional host-resource lifecycles had
+no worker/socket calls and produced JSON identical to the default. This is
+expected source-backed behavior, not evidence that explicit host resources are
+generally managed. Core ASan/leak detection passed for all four codec cases.
+
 For fresh-process comparison, set `PULSEBEAM_VP8_TRACE_PATH`,
-`PULSEBEAM_VP9_TRACE_PATH` or `PULSEBEAM_AV1_TRACE_PATH` to a separate JSON path
-for each invocation of the
+`PULSEBEAM_VP9_TRACE_PATH`, `PULSEBEAM_AV1_TRACE_PATH` or
+`PULSEBEAM_H264_TRACE_PATH` to a separate JSON path for each invocation of the
 corresponding already-built test executable. Run it under the
 continuous monitor described in `tools/check_controlled_lifecycle_trace.py`,
 then check each default-resource trace with `--minimum-scopes 2`. The optional
@@ -127,8 +147,9 @@ JSON file writes occur after all native lifecycle scopes.
 This evidence covers the first decoded frame and its listed observations, not
 all encoded bytes, RTP/statistics timelines, sustained media, software codecs
 beyond these stock VPx/AV1 cases or complete replay/lifecycle closure. Explicit
-settings/profiles beyond these cases also remain unqualified. Repeated dav1d
-configuration ownership and reconfiguration lifecycle were not exercised by
+settings/profiles beyond these cases also remain unqualified. H.264 multi-slice
+and experimental parallel configurations are not exposed by this stock case.
+Repeated dav1d configuration ownership and reconfiguration lifecycle were not exercised by
 the first-frame AV1 case and remain specific qualification gaps.
 Those obligations remain open.
 
