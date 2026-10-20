@@ -84,6 +84,19 @@ class ArtifactLockTests(unittest.TestCase):
             with self.assertRaisesRegex(write_artifact_lock.LockError, "bridge"):
                 write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "tag", bad)
 
+    def test_audit_runtime_resource_patch_cannot_be_missing_or_substituted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            valid = json.loads(self.report(root, "linux").read_text())
+            for patch in (None, "", "unrecorded", "0" * 64):
+                with self.subTest(patch=patch):
+                    report = json.loads(json.dumps(valid))
+                    report["sources"]["webrtc"]["runtime_resources_patch_sha256"] = patch
+                    bad = root / "bad.json"
+                    bad.write_text(json.dumps(report))
+                    with self.assertRaisesRegex(write_artifact_lock.LockError, "audit source identity|runtime-resources patch"):
+                        write_artifact_lock.render(ROOT / "artifacts.lock.json", None, "tag", bad)
+
     def test_rejects_malformed_checksums_and_does_not_fill_linux(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); checksums = root / "SHA256SUMS"

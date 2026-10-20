@@ -483,6 +483,7 @@ unsafe impl Send for ProductionSession {}
 /// require thread-safe owned contracts, never local native handles. Existing
 /// convenience constructors retain their defaults.
 pub struct ProductionSessionBuilder {
+    execution_resources: crate::ExecutionResources,
     config: ProductionSessionConfig,
     audio_encoder_factory: Option<AudioEncoderFactory>,
     audio_decoder_factory: Option<AudioDecoderFactory>,
@@ -517,6 +518,13 @@ pub struct ProductionSessionBuilder {
 }
 
 impl ProductionSessionBuilder {
+    /// Select the same native Call resource defaults as the local factory.
+    /// This does not opt into a codec whitelist or modify media selection.
+    pub fn execution_resources(mut self, resources: crate::ExecutionResources) -> Self {
+        self.execution_resources = resources;
+        self
+    }
+
     /// Select stock PCM encoding instead of the absent-choice encoded Opus
     /// carrier default. An explicitly selected encoder factory is unchanged.
     pub fn pcm_audio(mut self) -> Self {
@@ -808,6 +816,7 @@ impl ProductionSession {
             audio_encoder_factory: None,
             audio_decoder_factory: None,
             pcm_audio: false,
+            execution_resources: crate::ExecutionResources::default(),
             audio_processing: None,
             audio_processor_builder: None,
             audio_mixer_sources: None,
@@ -948,6 +957,7 @@ impl ProductionSession {
     fn build(options: ProductionSessionBuilder) -> Result<Self, PeerError> {
         // Keep the lease until error-path provider cleanup has finished.
         let ProductionSessionBuilder {
+            execution_resources,
             randomness,
             environment_factory,
             config,
@@ -1008,6 +1018,7 @@ impl ProductionSession {
             None => AudioDecoderFactory::builtin_opus().map_err(codec_error)?,
         };
         let mut builder = PeerConnectionFactory::builder()
+            .execution_resources(execution_resources)
             .audio_encoder_factory(selected_audio_encoder)
             .audio_decoder_factory(selected_audio_decoder)
             .readiness(readiness.clone())

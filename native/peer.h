@@ -196,7 +196,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     const NativeRtcEventLogFactory *event_log_factory,
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome, const NativeReadiness *readiness,
-    const FfiAudioProcessingConfig &processing, std::unique_ptr<NativeAudioMixer> audio_mixer, std::unique_ptr<NativeInstalledAudioProcessor> audio_processor, rust::String &error) noexcept;
+    std::int32_t codec_core_budget, const FfiAudioProcessingConfig &processing, std::unique_ptr<NativeAudioMixer> audio_mixer, std::unique_ptr<NativeInstalledAudioProcessor> audio_processor, rust::String &error) noexcept;
 std::unique_ptr<NativeAudioEncoderFailureObserver> factory_audio_encoder_failure_observer(
     const NativePeerConnectionFactory&) noexcept;
 FfiCertificateKeyParams certificate_default_key_params(bool rsa) noexcept;

@@ -7,6 +7,8 @@ const CORE_IOS_PATCH_SHA256: &str =
     "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037";
 const ENCODER_SWITCH_PATCH_SHA256: &str =
     "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a";
+const RUNTIME_RESOURCES_PATCH_SHA256: &str =
+    "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02";
 const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
@@ -20,11 +22,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "eea983b9717a32d1fe80a173f1dd5eb1e48066d28db238b64b9256094b202746";
+    "36cb394bdfaa622e8c0ee2b0923ec96604ea1d0f9697a0216828f11c2b127849";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
     "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "b1fc8d2f37848712daf9273a157832a50bc337a7e3aa533e2c93775be8cb20f1";
+    "a34b33c236d5eaacff0c13a21c4b304502e801e3543df86191d32b8017f91bd4";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -471,6 +473,7 @@ struct Source {
     patch_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     encoder_switch_patch_sha256: Option<String>,
+    runtime_resources_patch_sha256: Option<String>,
     #[serde(default)]
     state: Option<String>,
 }
@@ -540,6 +543,7 @@ struct NativeConfiguration {
     source_revision: String,
     source_patch_sha256: String,
     source_encoder_switch_patch_sha256: String,
+    source_runtime_resources_patch_sha256: String,
     source_state: String,
     depot_tools_revision: String,
     flavor: String,
@@ -713,6 +717,15 @@ impl ArtifactManifest {
         {
             return Err("wrong WebRTC encoder-switch patch identity".into());
         }
+        if manifest
+            .sources
+            .webrtc
+            .runtime_resources_patch_sha256
+            .as_deref()
+            != Some(RUNTIME_RESOURCES_PATCH_SHA256)
+        {
+            return Err("wrong WebRTC runtime-resources patch identity".into());
+        }
         let expected_source_state = if expected_flavor == "core"
             && matches!(expected_target, "ios-arm64" | "ios-simulator-arm64")
         {
@@ -796,6 +809,8 @@ impl ArtifactManifest {
             || Some(&config.source_patch_sha256) != self.sources.webrtc.patch_sha256.as_ref()
             || Some(&config.source_encoder_switch_patch_sha256)
                 != self.sources.webrtc.encoder_switch_patch_sha256.as_ref()
+            || Some(&config.source_runtime_resources_patch_sha256)
+                != self.sources.webrtc.runtime_resources_patch_sha256.as_ref()
             || Some(&config.source_state) != self.sources.webrtc.state.as_ref()
             || config.depot_tools_revision != self.sources.depot_tools.revision
             || config.flavor != self.artifact.flavor
@@ -1035,6 +1050,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_substituted_runtime_resources_patch() {
+        for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
+            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            value["sources"]["webrtc"]["runtime_resources_patch_sha256"] = replacement;
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .contains("runtime-resources patch")
+            );
+        }
+    }
+
+    #[test]
     fn maps_every_supported_cargo_target_exactly() {
         let artifact_targets = [
             "linux-x86_64",
@@ -1105,6 +1133,10 @@ mod tests {
             ("/native_configuration/toolchain", "unrelated compiler"),
             (
                 "/native_configuration/source_encoder_switch_patch_sha256",
+                "substituted patch",
+            ),
+            (
+                "/native_configuration/source_runtime_resources_patch_sha256",
                 "substituted patch",
             ),
             (

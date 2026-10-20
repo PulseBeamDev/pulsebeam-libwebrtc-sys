@@ -634,10 +634,18 @@ pub struct PeerConnectionFactoryBuilder {
     audio_processor_builder: Option<crate::BuiltinAudioProcessorBuilder>,
     audio_mixer: Option<crate::AudioMixer>,
     options: crate::FactoryOptions,
+    execution_resources: crate::ExecutionResources,
     readiness: Option<std::sync::Arc<crate::readiness::Readiness>>,
 }
 
 impl PeerConnectionFactoryBuilder {
+    /// Select native Call execution-resource defaults without changing media
+    /// implementations or standalone caller codec settings.
+    pub fn execution_resources(mut self, resources: crate::ExecutionResources) -> Self {
+        self.execution_resources = resources;
+        self
+    }
+
     /// Inject the full owned congestion-controller contract. The environment
     /// must enable WebRTC-Bwe-InjectedCongestionController; absent injection
     /// preserves stock controller selection.
@@ -1270,6 +1278,7 @@ impl PeerConnectionFactoryBuilder {
                     .as_ref()
                     .map_or_else(crate::Metronome::absent, crate::Metronome::bridge),
                 optional_ptr(readiness.as_ref().and_then(|value| value.as_ref())),
+                self.execution_resources.codec_core_budget_bits(),
                 &self.audio_processing.map_or(
                     ffi::FfiAudioProcessingConfig {
                         enabled: false,
@@ -1335,6 +1344,7 @@ impl Default for PeerConnectionFactoryBuilder {
             signaling_thread: None,
             controlled_driver: None,
             controlled_media: false,
+            execution_resources: crate::ExecutionResources::default(),
             network_manager: None,
             network_manager_factory: None,
             network_monitor_factory: None,

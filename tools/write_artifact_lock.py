@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "artifacts.lock.json"
 TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+RUNTIME_RESOURCES_PATCH_SHA256 = "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
 REPOSITORY = "PulseBeamDev/pulsebeam-libwebrtc-sys"
 BASE_URL = f"https://github.com/{REPOSITORY}/releases/download"
 SUPPORTED_TARGETS = {
@@ -71,7 +72,8 @@ def validate_report(report: object, lock: dict) -> tuple[str, dict[str, str]]:
     if report["schema_version"] != 1 or report["scope"] not in {"complete", *OS_TARGETS}: raise LockError("audit report must be schema 1 with an OS or complete scope")
     if not isinstance(report["bridge"], dict) or report["bridge"].get("identity") != lock["bridge_identity"]: raise LockError("wrong audit bridge identity")
     sources = report["sources"]; webrtc = sources.get("webrtc") if isinstance(sources, dict) else None; depot_tools = sources.get("depot_tools") if isinstance(sources, dict) else None
-    if not isinstance(webrtc, dict) or not all(isinstance(webrtc.get(key), str) and webrtc[key] for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256")) or not isinstance(depot_tools, dict) or not all(isinstance(depot_tools.get(key), str) and depot_tools[key] for key in ("repository", "revision")): raise LockError("missing audit source identity")
+    if not isinstance(webrtc, dict) or not all(isinstance(webrtc.get(key), str) and webrtc[key] for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256", "runtime_resources_patch_sha256")) or not isinstance(depot_tools, dict) or not all(isinstance(depot_tools.get(key), str) and depot_tools[key] for key in ("repository", "revision")): raise LockError("missing audit source identity")
+    if webrtc["runtime_resources_patch_sha256"] != RUNTIME_RESOURCES_PATCH_SHA256: raise LockError("unrecognized runtime-resources patch in audit source identity")
     expected = expected_assets(lock, report["scope"]); assets = report["assets"]
     if not isinstance(assets, list): raise LockError("audit assets must be a list")
     seen = {}

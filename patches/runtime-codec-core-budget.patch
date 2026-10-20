@@ -1,0 +1,38 @@
+diff --git a/call/call.cc b/call/call.cc
+index 15b8d57b2f512f72a8231b97e5f29a5e1903d50c..1f69253bc894b4bd0b1c16ac40835e5123622f6b 100644
+--- a/call/call.cc
++++ b/call/call.cc
+@@ -717,7 +717,8 @@ Call::Call(CallConfig config,
+                                                      config.decode_metronome,
+                                                      worker_thread_)
+               : nullptr),
+-      num_cpu_cores_(cpu_info::DetectNumberOfCores()),
++      num_cpu_cores_(config.codec_core_budget ? *config.codec_core_budget
++                                            : cpu_info::DetectNumberOfCores()),
+       call_stats_(new CallStats(&env_.clock(), worker_thread_)),
+       bitrate_allocator_(new BitrateAllocator(
+           this,
+@@ -739,6 +740,7 @@ Call::Call(CallConfig config,
+       start_of_call_(env_.clock().CurrentTime()),
+       transport_send_ptr_(transport_send.get()),
+       transport_send_(std::move(transport_send)) {
++  RTC_CHECK_GT(num_cpu_cores_, 0);
+   RTC_DCHECK(network_thread_);
+   RTC_DCHECK(worker_thread_->IsCurrent());
+ 
+diff --git a/call/call_config.h b/call/call_config.h
+index d4a2a37e0d98c3b79a29c510184ee975387cf3b4..f440533f2ed9c9bf03c0f29e48ca8277f55cc143 100644
+--- a/call/call_config.h
++++ b/call/call_config.h
+@@ -47,6 +47,11 @@ struct CallConfig {
+ 
+   Environment env;
+ 
++  // Optional execution-resource budget for video codec cores. Must be positive
++  // when set. Unset preserves host core detection. This is not a process-wide
++  // worker limit and does not change standalone codec initialization settings.
++  std::optional<int> codec_core_budget;
++
+   // Bitrate config used until valid bitrate estimates are calculated. Also
+   // used to cap total bitrate used. This comes from the remote connection.
+   BitrateConstraints bitrate_config;

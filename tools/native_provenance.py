@@ -52,6 +52,7 @@ def validate_configuration(manifest: dict, root: Path) -> None:
         "cxx": bridge["cxx"], "source_revision": sources["webrtc"]["revision"],
         "source_patch_sha256": sources["webrtc"]["patch_sha256"],
         "source_encoder_switch_patch_sha256": sources["webrtc"]["encoder_switch_patch_sha256"],
+        "source_runtime_resources_patch_sha256": sources["webrtc"]["runtime_resources_patch_sha256"],
         "source_state": sources["webrtc"]["state"],
         "depot_tools_revision": sources["depot_tools"]["revision"],
         **artifact, "toolchain": manifest["abi"]["toolchain"],

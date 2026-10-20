@@ -46,6 +46,23 @@
   "configuration_mappings": [],
   "retained_capabilities": [
     {
+      "name": "Native Call codec-core execution defaults",
+      "semantics": "ExecutionResources supplies an optional positive native-int CallConfig codec-core budget, through the selected SDK media factory, to both send and receive codec settings. Absent preserves native detection; an explicit native CallConfig value wins. This necessary transitive input lives in call/call_config.h outside the SDK directory tables. It is not a complete standalone Call/CallConfig binding or proof of backend worker ownership/replay. Existing standalone codec settings are not rewritten.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution_resources.rs", "anchor": "pub struct ExecutionResources"},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn execution_resources("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn execution_resources("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "if (!config.codec_core_budget) config.codec_core_budget = codec_core_budget_;"},
+        {"tree": "sdk", "path": "call/call_config.h", "anchor": "std::optional<int> codec_core_budget;"},
+        {"tree": "sdk", "path": "call/call.cc", "anchor": "num_cpu_cores_(config.codec_core_budget ? *config.codec_core_budget"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/video.rs", "anchor": "fn call_execution_resources_reach_actual_encoder_and_decoder_without_codec_substitution()"}
+      ]
+    },
+    {
       "name": "Linux camera device information and capture",
       "semantics": "Retain the existing CameraDeviceInfo, camera option/provider, format selection and camera capture APIs. The upstream roots are modules/video_capture/video_capture.h, video_capture_factory.h and video_capture_options.h, outside native-api.md's directory list. This is not a claim to expose every implementation header in modules/video_capture.",
       "rust": [

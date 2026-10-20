@@ -541,6 +541,7 @@ pub use event_log_dependency::*;
 pub use event_log_rtp::*;
 pub use event_log_values::*;
 mod execution;
+mod execution_resources;
 mod field_trials;
 mod mdns;
 mod network;
@@ -870,6 +871,7 @@ pub use execution::{
     PumpResult, QueuePriority, RandomnessLease, RandomnessLeaseError, SignalingThread, SystemClock,
     TaskQueue, TaskQueueFactory, ThreadStartError, WorkerThread, WorldAcquireError,
 };
+pub use execution_resources::{CodecCoreBudget, ExecutionResources, InvalidCodecCoreBudget};
 pub use network::{
     ControlledSimulatedNetwork, NetworkAddress, NetworkEndpoint, NetworkError,
     NetworkManagerProvider, OutboundKind, OutboundPacket, PacketSocketFactoryProvider,
@@ -9210,6 +9212,7 @@ mod ffi {
             encode_metronome: Box<RustMetronome>,
             decode_metronome: Box<RustMetronome>,
             readiness: *const NativeReadiness,
+            codec_core_budget: i32,
             processing: &FfiAudioProcessingConfig,
             audio_mixer: UniquePtr<NativeAudioMixer>,
             audio_processor: UniquePtr<NativeInstalledAudioProcessor>,

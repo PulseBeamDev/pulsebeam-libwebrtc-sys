@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicU32, AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[path = "support/non_trickle.rs"]
@@ -39,6 +39,7 @@ struct Counters {
     encoder_fps_allocation: Option<[Vec<u8>; 5]>,
     decoder_factory: AtomicUsize,
     decoder_create: AtomicUsize,
+    decoder_settings: Mutex<Vec<VideoDecoderSettings>>,
     decode: AtomicUsize,
     decoder_release: AtomicUsize,
     decoder_rtp_timestamp: AtomicU32,
@@ -178,7 +179,8 @@ impl VideoDecoderFactory for DecoderFactory {
 struct TestDecoder(Arc<Counters>);
 
 impl VideoDecoder for TestDecoder {
-    fn configure(&mut self, _: VideoDecoderSettings) -> Result<(), CodecError> {
+    fn configure(&mut self, settings: VideoDecoderSettings) -> Result<(), CodecError> {
+        self.0.decoder_settings.lock().unwrap().push(settings);
         Ok(())
     }
 
@@ -599,6 +601,120 @@ fn factory_with_call_factories(
     }
     builder.build().unwrap()
 }
+#[test]
+fn call_execution_resources_reach_actual_encoder_and_decoder_without_codec_substitution() {
+    use pulsebeam_webrtc_sys::{CodecCoreBudget, ExecutionResources};
+    // These caller codecs are probes for the real SDK Call/send/receive path,
+    // not evidence of built-in codec worker control or deterministic execution.
+    let mut detected_cores = None;
+    for selected in [None, Some(1), Some(i32::MAX), Some(2), None] {
+        let resources = ExecutionResources {
+            codec_core_budget: selected.map(|cores| CodecCoreBudget::new(cores).unwrap()),
+        };
+        let counters = Arc::new(Counters::default());
+        let clock = ManualClock::new(Duration::from_secs(1)).unwrap();
+        let environment = Environment::builder().clock(&clock).build().unwrap();
+        let network = SimulatedNetwork::new(&clock).unwrap();
+        let alice_endpoint = network
+            .register_endpoint(Ipv4Addr::new(10, 22, 0, 1).into())
+            .unwrap();
+        let bob_endpoint = network
+            .register_endpoint(Ipv4Addr::new(10, 22, 0, 2).into())
+            .unwrap();
+        let factory = |endpoint: &pulsebeam_webrtc_sys::NetworkEndpoint| {
+            PeerConnectionFactory::builder()
+                .environment(environment.clone())
+                .execution_resources(resources)
+                .network_manager(endpoint.network_manager().unwrap())
+                .packet_socket_factory(endpoint.packet_socket_factory().unwrap())
+                .video_encoder_factory(
+                    VideoEncoderFactoryHandle::new(EncoderFactory {
+                        counters: counters.clone(),
+                        fail: false,
+                    })
+                    .unwrap(),
+                )
+                .video_decoder_factory(
+                    VideoDecoderFactoryHandle::new(DecoderFactory(counters.clone(), h264()))
+                        .unwrap(),
+                )
+                .build()
+                .unwrap()
+        };
+        let alice_factory = factory(&alice_endpoint);
+        let bob_factory = factory(&bob_endpoint);
+        let alice = alice_factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
+        let bob = bob_factory
+            .create_peer_connection(PeerConfiguration::default())
+            .unwrap();
+        let pair = Pair {
+            clock,
+            network,
+            alice_factory,
+            bob_factory,
+            alice,
+            bob,
+            _alice_endpoint: alice_endpoint,
+            _bob_endpoint: bob_endpoint,
+        };
+        let source = pair.alice_factory.create_video_source().unwrap();
+        let track = pair
+            .alice_factory
+            .create_video_track("resource-probe", &source)
+            .unwrap();
+        pair.alice
+            .add_video_transceiver(&track, RtpTransceiverDirection::SendOnly)
+            .unwrap();
+        pair.negotiate();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut index = 0u32;
+        while counters.decode.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "resource probe never reached native decode"
+            );
+            source
+                .push_frame(
+                    &VideoFrame::i420(
+                        16,
+                        16,
+                        synthetic_i420(16, 16),
+                        2_000_000 + i64::from(index) * 33_333,
+                        index * 3000,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            index += 1;
+            pair.progress();
+            pair.clock.advance(Duration::from_millis(32)).unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let encoded = counters.encoder_settings.lock().unwrap();
+        let decoded = counters.decoder_settings.lock().unwrap();
+        assert!(!encoded.is_empty() && !decoded.is_empty());
+        if let Some(cores) = selected {
+            assert!(
+                encoded
+                    .iter()
+                    .all(|settings| settings.cores == cores as u32)
+            );
+            assert!(
+                decoded
+                    .iter()
+                    .all(|settings| settings.cores == cores as u32)
+            );
+        } else {
+            assert!(encoded.iter().all(|settings| settings.cores > 0));
+            let expected = *detected_cores.get_or_insert(encoded[0].cores);
+            assert!(encoded.iter().all(|settings| settings.cores == expected));
+            assert!(decoded.iter().all(|settings| settings.cores == expected));
+        }
+    }
+}
+
 fn synthetic_i420(width: u32, height: u32) -> Vec<u8> {
     let len = (width * height + 2 * width.div_ceil(2) * height.div_ceil(2)) as usize;
     (0..len).map(|index| index as u8).collect()

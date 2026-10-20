@@ -16,9 +16,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseAuditTests(unittest.TestCase):
+    def test_runtime_resource_patch_is_mandatory_and_pinned(self):
+        for patch in (None, "0" * 64):
+            with self.subTest(patch=patch), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checksums, lock = self.build_release(root, {"linux-x86_64"}, runtime_resources_patch=patch)
+                with self.assertRaisesRegex(audit_release.AuditError, "source identity|runtime-resources patch"):
+                    audit_release.audit(root, checksums, lock, "linux")
+
     def build_release(self, root: Path, targets: set[str] | None = None, *,
                       native_adapter: str | None = None, schema: int = 4,
                       encoder_switch_patch: str | None = audit_release.ENCODER_SWITCH_PATCH_SHA256,
+                      runtime_resources_patch: str | None = audit_release.RUNTIME_RESOURCES_PATCH_SHA256,
                       license_path: str = "LICENSES/NOTICE.txt") -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
@@ -40,6 +49,7 @@ class ReleaseAuditTests(unittest.TestCase):
                         "revision": "source",
                         "patch_sha256": audit_release.CORE_IOS_PATCH_SHA256,
                         "encoder_switch_patch_sha256": encoder_switch_patch,
+                        "runtime_resources_patch_sha256": runtime_resources_patch,
                         "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
                     },
                     "depot_tools": {"repository": "tools-repository", "revision": "tools"},
@@ -75,6 +85,7 @@ class ReleaseAuditTests(unittest.TestCase):
                           source_revision=manifest["sources"]["webrtc"]["revision"],
                           source_patch_sha256=manifest["sources"]["webrtc"]["patch_sha256"],
                           source_encoder_switch_patch_sha256=manifest["sources"]["webrtc"]["encoder_switch_patch_sha256"],
+                          source_runtime_resources_patch_sha256=manifest["sources"]["webrtc"]["runtime_resources_patch_sha256"],
                           source_state=manifest["sources"]["webrtc"]["state"],
                           depot_tools_revision=manifest["sources"]["depot_tools"]["revision"])
             manifest["abi"] = {"toolchain": config["toolchain"]}

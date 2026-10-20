@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "eea983b9717a32d1fe80a173f1dd5eb1e48066d28db238b64b9256094b202746",
+      "bridge_source_sha256": "36cb394bdfaa622e8c0ee2b0923ec96604ea1d0f9697a0216828f11c2b127849",
       "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
-      "generated_source_sha256": "b1fc8d2f37848712daf9273a157832a50bc337a7e3aa533e2c93775be8cb20f1"
+      "generated_source_sha256": "a34b33c236d5eaacff0c13a21c4b304502e801e3543df86191d32b8017f91bd4"
     },
-    "native_adapter_sha256": "e87b2b115e2ae38b6034a3243dc146b46a0ce1594308c71724933f4a4f4bfcd6"
+    "native_adapter_sha256": "e5329b73554848407ff125459b51482f617966eff1658121e176184d75d9ef8b"
   },
   "sources": {
     "webrtc": {
@@ -21,7 +21,8 @@
       "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
       "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
-      "state": "pristine"
+      "state": "pristine",
+      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
     },
     "depot_tools": {
       "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
@@ -34,7 +35,7 @@
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
   "native_configuration": {
-    "native_adapter_sha256": "e87b2b115e2ae38b6034a3243dc146b46a0ce1594308c71724933f4a4f4bfcd6",
+    "native_adapter_sha256": "e5329b73554848407ff125459b51482f617966eff1658121e176184d75d9ef8b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -43,9 +44,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "eea983b9717a32d1fe80a173f1dd5eb1e48066d28db238b64b9256094b202746",
+      "bridge_source_sha256": "36cb394bdfaa622e8c0ee2b0923ec96604ea1d0f9697a0216828f11c2b127849",
       "generated_header_sha256": "9bf25ec0669a21f66bac3dcab1af89611adb941e8401d7dabd8889e6d5fed98f",
-      "generated_source_sha256": "b1fc8d2f37848712daf9273a157832a50bc337a7e3aa533e2c93775be8cb20f1"
+      "generated_source_sha256": "a34b33c236d5eaacff0c13a21c4b304502e801e3543df86191d32b8017f91bd4"
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
@@ -141,9 +142,10 @@
         "-ffp-contract=off"
       ],
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
-    }
+    },
+    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
   },
-  "native_configuration_sha256": "f7c0b6422229fc13c6cc63b5db16ecaa67961734eaac5e89ee09a922d38a4202",
+  "native_configuration_sha256": "63dad10a210ec96c06f55bc159b5b595580f4d6ccd35dd1e5aa9b1b5a1c43be1",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",

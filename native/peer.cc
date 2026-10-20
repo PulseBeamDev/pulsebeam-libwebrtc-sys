@@ -1172,8 +1172,10 @@ class ObservedMediaFactory final : public webrtc::MediaFactory {
  public:
   ObservedMediaFactory(std::unique_ptr<webrtc::MediaFactory> selected,
                        std::shared_ptr<PeerCallCreationContext> context,
-                       std::unique_ptr<NativeEnvironment> selected_environment)
-      : selected_environment_(std::move(selected_environment)),
+                       std::unique_ptr<NativeEnvironment> selected_environment,
+                       std::optional<int> codec_core_budget)
+      : codec_core_budget_(codec_core_budget),
+        selected_environment_(std::move(selected_environment)),
         selected_(std::move(selected)), context_(std::move(context)) {}
   std::unique_ptr<webrtc::MediaEngineInterface> CreateMediaEngine(
       const webrtc::Environment& environment,
@@ -1189,6 +1191,9 @@ class ObservedMediaFactory final : public webrtc::MediaFactory {
     // Capture before delegation, without holding the context mutex across any
     // selected provider. Never synchronously query signaling from this worker.
     const auto environment = retain_environment_from_sdk(config.env, selected_environment_.get());
+    // Runtime selection supplies a default, never overwrites an explicit
+    // native CallConfig value or standalone codec initialization settings.
+    if (!config.codec_core_budget) config.codec_core_budget = codec_core_budget_;
     auto actual = selected_->CreateCall(std::move(config));
     if (!actual || !observation) return actual;
     return std::make_unique<ObservedCall>(
@@ -1196,6 +1201,7 @@ class ObservedMediaFactory final : public webrtc::MediaFactory {
   }
 
  private:
+  const std::optional<int> codec_core_budget_;
   std::unique_ptr<NativeEnvironment> selected_environment_;
   std::unique_ptr<webrtc::MediaFactory> selected_;
   std::shared_ptr<PeerCallCreationContext> context_;
@@ -1437,10 +1443,12 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
     rust::Box<RustMetronome> encode_metronome,
     rust::Box<RustMetronome> decode_metronome,
     const NativeReadiness* readiness,
+    std::int32_t codec_core_budget,
     const FfiAudioProcessingConfig& processing,
     std::unique_ptr<NativeAudioMixer> audio_mixer,
     std::unique_ptr<NativeInstalledAudioProcessor> audio_processor,
     rust::String& error) noexcept {
+  if (codec_core_budget < 0) { error = "codec-core budget must be positive or absent"; return nullptr; }
   if (audio_device_module && !native_audio) { error = "owning ADM admission: explicit native selection required"; return nullptr; }
   if (audio_processor && native_audio) { error = "owning APM admission: physical callback failure/publication path is not qualified"; return nullptr; }
   webrtc::PeerConnectionFactoryDependencies dependencies;
@@ -1634,7 +1642,8 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   // Wrap the actual selected instance. Do not substitute engines, encoder stream
   // factories, default providers, or a newly constructed stock Call.
   dependencies.media_factory = std::make_unique<ObservedMediaFactory>(
-      std::move(dependencies.media_factory), call_creation, clone_environment(environment));
+      std::move(dependencies.media_factory), call_creation, clone_environment(environment),
+      codec_core_budget == 0 ? std::nullopt : std::optional<int>(codec_core_budget));
   // Supply the same SDK defaults explicitly so per-peer public allocator
   // injection can borrow them, including caller-selected network resources.
   const auto allocator_environment = *dependencies.env;

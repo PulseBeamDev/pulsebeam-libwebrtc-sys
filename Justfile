@@ -13,6 +13,8 @@ webrtc_core_ios_patch_sha256 := "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4
 webrtc_core_ios_build_gn_sha256 := "ed533d68269e01a70f7c40567099cd9f7fd5c52c66ea8f8ef609d52c966c9a69"
 webrtc_encoder_switch_patch := root + "/patches/encoder-preference-order-fallback.patch"
 webrtc_encoder_switch_patch_sha256 := "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a"
+webrtc_runtime_resources_patch := root + "/patches/runtime-codec-core-budget.patch"
+webrtc_runtime_resources_patch_sha256 := "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
 depot_tools_url := "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
 depot_tools_commit := "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
 default: check
@@ -248,7 +250,7 @@ _source-state flavor target:
     actual_patch=$(shasum -a 256 "$patch" | awk '{print $1}')
     test "$actual_patch" = "{{ webrtc_core_ios_patch_sha256 }}" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch-digest expected={{ webrtc_core_ios_patch_sha256 }} actual=$actual_patch" >&2; exit 1; }
     test -z "$(git -C "$src" ls-files --others --exclude-standard)" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=untracked-files" >&2; exit 1; }
-    git -C "$src" diff --cached --quiet && test -z "$(git -C "$src" diff --name-only -- . ':!BUILD.gn' ':!media/engine/webrtc_video_engine.cc' ':!media/engine/webrtc_video_engine_unittest.cc')" || { echo 'source state failed: unexpected modification outside pinned patches' >&2; exit 1; }
+    git -C "$src" diff --cached --quiet && test -z "$(git -C "$src" diff --name-only -- . ':!BUILD.gn' ':!media/engine/webrtc_video_engine.cc' ':!media/engine/webrtc_video_engine_unittest.cc' ':!call/call.cc' ':!call/call_config.h')" || { echo 'source state failed: unexpected modification outside pinned patches' >&2; exit 1; }
     encoder_patch="{{ webrtc_encoder_switch_patch }}"
     test "$(shasum -a 256 "$encoder_patch" | awk '{print $1}')" = "{{ webrtc_encoder_switch_patch_sha256 }}" || { echo 'source state failed: encoder-switch patch digest mismatch' >&2; exit 1; }
     encoder_paths=(media/engine/webrtc_video_engine.cc media/engine/webrtc_video_engine_unittest.cc)
@@ -260,6 +262,17 @@ _source-state flavor target:
     fi
     actual_encoder_patch=$(git -C "$src" diff --no-ext-diff --no-color --binary --full-index -- "${encoder_paths[@]}" | shasum -a 256 | awk '{print $1}')
     test "$actual_encoder_patch" = "{{ webrtc_encoder_switch_patch_sha256 }}" || { echo 'source state failed: encoder-switch source differs from pinned patch' >&2; exit 1; }
+    runtime_patch="{{ webrtc_runtime_resources_patch }}"
+    test "$(shasum -a 256 "$runtime_patch" | awk '{print $1}')" = "{{ webrtc_runtime_resources_patch_sha256 }}" || { echo 'source state failed: runtime-resources patch digest mismatch' >&2; exit 1; }
+    runtime_paths=(call/call.cc call/call_config.h)
+    if git -C "$src" diff --quiet -- "${runtime_paths[@]}"; then
+      git -C "$src" apply --check "$runtime_patch"
+      rm -rf "{{ work }}/package/webrtc-{{ flavor }}-{{ target }}"
+      rm -f "{{ dist }}/webrtc-{{ flavor }}-{{ target }}.tar.gz"
+      git -C "$src" apply "$runtime_patch"
+    fi
+    actual_runtime_patch=$(git -C "$src" diff --no-ext-diff --no-color --binary --full-index -- "${runtime_paths[@]}" | shasum -a 256 | awk '{print $1}')
+    test "$actual_runtime_patch" = "{{ webrtc_runtime_resources_patch_sha256 }}" || { echo 'source state failed: runtime-resources source differs from pinned patch' >&2; exit 1; }
     actual_build=$(shasum -a 256 "$src/BUILD.gn" | awk '{print $1}')
     if test "$actual_build" = "{{ webrtc_core_ios_build_gn_sha256 }}"; then
       test "$(git -C "$src" diff --name-only -- BUILD.gn)" = BUILD.gn && git -C "$src" diff --cached --quiet || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=unexpected-modification" >&2; exit 1; }
@@ -558,11 +571,11 @@ _export flavor target:
     definitions=$(tr '\n' ' ' < "$definitions_file")
     just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
     source_state=pristine; case "{{ flavor }}:{{ target }}" in core:ios-arm64|core:ios-simulator-arm64) source_state=applied;; esac
-    { printf 'webrtc_repository=%s\nwebrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_encoder_switch_patch_sha256={{ webrtc_encoder_switch_patch_sha256 }}\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_url }}' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
+    { printf 'webrtc_repository=%s\nwebrtc_commit=%s\nwebrtc_core_ios_patch_sha256=%s\nwebrtc_encoder_switch_patch_sha256={{ webrtc_encoder_switch_patch_sha256 }}\nwebrtc_runtime_resources_patch_sha256={{ webrtc_runtime_resources_patch_sha256 }}\nwebrtc_source_state=%s\ndepot_tools_commit=%s\nflavor=%s\ntarget=%s\ntoolchain=' '{{ webrtc_url }}' '{{ webrtc_commit }}' '{{ webrtc_core_ios_patch_sha256 }}' "$source_state" '{{ depot_tools_commit }}' '{{ flavor }}' '{{ target }}'; cat "$toolchain_file"; printf 'gn_args='; cat "$out/pulsebeam-gn-args.txt"; printf 'cxx_defines=%s\n' "$definitions"; } > "$stage/build.txt"
     if test "{{ target }}" = linux-x86_64; then
       printf 'native_floating_point_flags=-fno-fast-math -ffp-contract=off\nnative_cc_wrapper_sha256=%s\n' "$(sha256sum "{{ root }}/tools/native_cc_wrapper.py" | cut -d' ' -f1)" >> "$stage/build.txt"
     fi
-    python3 "$root_native/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --encoder-switch-patch-sha256 "{{ webrtc_encoder_switch_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "$root_native/src/lib.rs" --generated-header "$stage_native/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc")" --toolchain-file "$(just --justfile "{{ root }}/Justfile" _native-path "$toolchain_file")" --gn-args-file "$out_native/pulsebeam-gn-args.txt" --defines-file "$(just --justfile "{{ root }}/Justfile" _native-path "$definitions_file")" --licenses "$stage_native/LICENSES" --output "$stage_native/manifest.json"
+    python3 "$root_native/tools/write_artifact_manifest.py" --flavor "{{ flavor }}" --target "{{ target }}" --bridge-identity pulsebeam-webrtc-sys-bridge-v2 --source-repository "{{ webrtc_url }}" --source-revision "{{ webrtc_commit }}" --source-patch-sha256 "{{ webrtc_core_ios_patch_sha256 }}" --encoder-switch-patch-sha256 "{{ webrtc_encoder_switch_patch_sha256 }}" --runtime-resources-patch-sha256 "{{ webrtc_runtime_resources_patch_sha256 }}" --source-state "$source_state" --depot-tools-repository "{{ depot_tools_url }}" --depot-tools-revision "{{ depot_tools_commit }}" --bridge-source "$root_native/src/lib.rs" --generated-header "$stage_native/include/pulsebeam-webrtc-sys/src/lib.rs.h" --generated-source "$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/bridge/{{ flavor }}/{{ target }}/lib.rs.cc")" --toolchain-file "$(just --justfile "{{ root }}/Justfile" _native-path "$toolchain_file")" --gn-args-file "$out_native/pulsebeam-gn-args.txt" --defines-file "$(just --justfile "{{ root }}/Justfile" _native-path "$definitions_file")" --licenses "$stage_native/LICENSES" --output "$stage_native/manifest.json"
     members=(include lib link.txt LICENSES build.txt manifest.json)
     rm -f "$archive"; tar -C "$stage" -czf "$archive" "${members[@]}"
     verify=$(mktemp -d); trap 'rm -rf "$verify"; rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT; tar -C "$verify" -xzf "$archive"
