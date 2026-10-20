@@ -213,6 +213,11 @@ FfiEncodedAudioFrame encoded_audio_sink_take_frame(
 std::uint64_t encoded_audio_sink_dropped_frames(
     const NativeEncodedAudioSink& sink) noexcept;
 bool close_encoded_audio_sink(const NativeEncodedAudioSink& sink) noexcept;
+class NativeRtpTransceiverInit;
+class NativeRtcError;
+std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver_value(
+    const NativePeerConnection&, const NativeAudioTrack&, const NativeRtpTransceiverInit&,
+    bool&, std::unique_ptr<NativeRtcError>&) noexcept;
 std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(
     const NativePeerConnection& peer, const NativeAudioTrack& track,
     std::uint8_t direction, std::uint8_t& error_type,

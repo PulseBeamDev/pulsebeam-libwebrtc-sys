@@ -2983,11 +2983,28 @@ std::unique_ptr<NativeRtpReceiver> wrap_rtp_receiver(
 }
 
 namespace { bool VideoParameterConsumptionSafe(const std::vector<webrtc::RtpEncodingParameters>&); }
+bool transceiver_init_consumption_safe(const NativePeerConnection& peer,
+    const NativeRtpTransceiverInit& init, bool video) noexcept {
+  // The pinned AddTransceiver overloads RTC_CHECK Unified Plan, and later
+  // consumers assume a real direction and safely representable video math.
+  const auto direction = static_cast<int>(init.value().direction);
+  return peer.peer()->GetConfiguration().sdp_semantics == webrtc::SdpSemantics::kUnifiedPlan &&
+      direction >= 0 && direction <= 4 &&
+      (!video || VideoParameterConsumptionSafe(init.value().send_encodings));
+}
+std::unique_ptr<NativeRtpTransceiver> peer_add_transceiver_value(
+    const NativePeerConnection& peer, std::int32_t kind, const NativeRtpTransceiverInit& init,
+    bool& valid, std::unique_ptr<NativeRtcError>& error) noexcept {
+  valid = transceiver_init_consumption_safe(peer, init, kind == static_cast<int>(webrtc::MediaType::VIDEO));
+  if (!valid) return nullptr;
+  auto result = peer.peer()->AddTransceiver(static_cast<webrtc::MediaType>(kind), init.value());
+  if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }
+  return wrap_rtp_transceiver(result.MoveValue());
+}
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value(
     const NativePeerConnection& peer, const NativeVideoTrack& track, const NativeRtpTransceiverInit& init,
     bool& valid, std::unique_ptr<NativeRtcError>& error) noexcept {
-  const auto direction = static_cast<int>(init.value().direction);
-  valid = direction >= 0 && direction <= 4 && VideoParameterConsumptionSafe(init.value().send_encodings);
+  valid = transceiver_init_consumption_safe(peer, init, true);
   if (!valid) return nullptr;
   auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());
   if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }

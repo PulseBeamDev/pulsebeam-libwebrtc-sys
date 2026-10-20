@@ -1,4 +1,4 @@
-//! Standalone init-value source fixtures, unrun. This does not install init encodings.
+//! Standalone init-value ownership and complete child-value contracts.
 use pulsebeam_webrtc_sys::*;
 use std::{sync::Arc, thread};
 

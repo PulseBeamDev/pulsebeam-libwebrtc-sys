@@ -9914,6 +9914,20 @@ mod ffi {
             list: &NativeTransceiverList,
             index: usize,
         ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_add_transceiver_value(
+            peer: &NativePeerConnection,
+            kind: i32,
+            init: &NativeRtpTransceiverInit,
+            valid: &mut bool,
+            error: &mut UniquePtr<NativeRtcError>,
+        ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_add_audio_transceiver_value(
+            peer: &NativePeerConnection,
+            track: &NativeAudioTrack,
+            init: &NativeRtpTransceiverInit,
+            valid: &mut bool,
+            error: &mut UniquePtr<NativeRtcError>,
+        ) -> UniquePtr<NativeRtpTransceiver>;
         fn peer_add_video_transceiver_value(
             peer: &NativePeerConnection,
             track: &NativeVideoTrack,

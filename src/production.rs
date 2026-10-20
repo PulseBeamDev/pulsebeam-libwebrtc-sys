@@ -4682,6 +4682,47 @@ impl ProductionSession {
             .add_audio_transceiver(&track, direction)?;
         self.insert_transceiver(peer, value)
     }
+    /// Add a transceiver with no sending source, using the complete SDK init.
+    pub fn add_transceiver(
+        &mut self,
+        peer: SessionPeerId,
+        kind: crate::MediaType,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<SessionTransceiverId, crate::RtpSenderOperationError> {
+        self.check_open()?;
+        let value = self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_transceiver(kind, init)?;
+        Ok(self.insert_transceiver(peer, value)?)
+    }
+
+    /// Publish audio using all native initialization fields in one operation.
+    pub fn publish_audio_with_init(
+        &mut self,
+        peer: SessionPeerId,
+        source: SessionSourceId,
+        track_id: &str,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<SessionTransceiverId, crate::RtpSenderOperationError> {
+        self.check_open()?;
+        let source = self
+            .sources
+            .get(&source)
+            .ok_or_else(missing)?
+            .audio_source()?;
+        let track = self.factory.create_audio_track(track_id, source)?;
+        let value = self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_audio_transceiver_with_init(&track, init)?;
+        Ok(self.insert_transceiver(peer, value)?)
+    }
+
     pub fn publish_video_with_init(
         &mut self,
         peer: SessionPeerId,

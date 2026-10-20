@@ -65,6 +65,95 @@ fn finish(
 }
 
 #[test]
+fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init() {
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .pcm_audio()
+        .build()
+        .unwrap();
+    let receiver = session.create_peer(PeerConfiguration::default()).unwrap();
+    let sender = session.create_peer(PeerConfiguration::default()).unwrap();
+    let mut receive_init = RtpTransceiverInit::default();
+    receive_init.set_direction(RtpTransceiverDirectionValue::ReceiveOnly);
+    let receiving: Vec<_> = [MediaType::Audio, MediaType::Video]
+        .into_iter()
+        .map(|kind| {
+            session
+                .add_transceiver(receiver, kind, &receive_init)
+                .unwrap()
+        })
+        .collect();
+    let mut send_init = RtpTransceiverInit::default();
+    send_init.set_direction(RtpTransceiverDirectionValue::SendOnly);
+    send_init.set_stream_ids(&[b"pcm-stream".to_vec()]);
+    let source = session.create_pcm_source().unwrap();
+    let audio = session
+        .publish_audio_with_init(sender, source, "pcm-track", &send_init)
+        .unwrap();
+    let audio_sender = session.sender(audio).unwrap();
+    assert_eq!(
+        session.sender_stream_ids(audio_sender).unwrap(),
+        send_init.stream_ids()
+    );
+    drop(receive_init);
+    drop(send_init);
+    thread::spawn(move || {
+        let operation = session.create_offer(receiver, false).unwrap();
+        let offer = finish(&mut session, receiver, operation).unwrap();
+        assert!(offer.sdp.contains("m=audio"));
+        assert!(offer.sdp.contains("m=video"));
+        assert_eq!(offer.sdp.matches("a=recvonly").count(), 2);
+        let operation = session
+            .set_local_description(receiver, offer.clone())
+            .unwrap();
+        finish(&mut session, receiver, operation);
+        let operation = session.set_remote_description(sender, offer).unwrap();
+        finish(&mut session, sender, operation);
+        // Native remote-offer association does not reuse AddTransceiver-created
+        // senders. Configure the actual newly associated audio/video endpoints,
+        // without fabricating a local track on either receiving transceiver.
+        let offered: Vec<_> = session
+            .transceivers(sender)
+            .unwrap()
+            .into_iter()
+            .filter(|&id| id != audio)
+            .collect();
+        assert_eq!(offered.len(), 2);
+        for transceiver in offered {
+            session
+                .set_direction(transceiver, RtpTransceiverDirection::SendOnly)
+                .unwrap();
+        }
+        let operation = session.create_answer(sender).unwrap();
+        let answer = finish(&mut session, sender, operation).unwrap();
+        assert_eq!(
+            answer.sdp.matches("a=sendonly").count(),
+            2,
+            "{}",
+            answer.sdp
+        );
+        let operation = session
+            .set_local_description(sender, answer.clone())
+            .unwrap();
+        finish(&mut session, sender, operation);
+        let operation = session.set_remote_description(receiver, answer).unwrap();
+        finish(&mut session, receiver, operation);
+        for transceiver in receiving {
+            assert_eq!(
+                session.current_direction_value(transceiver).unwrap(),
+                Some(RtpTransceiverDirectionValue::ReceiveOnly)
+            );
+        }
+        assert_eq!(
+            session.sender_stream_ids(audio_sender).unwrap(),
+            [b"pcm-stream".to_vec()]
+        );
+        session.shutdown().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn migrated_actor_transports_mapped_opus_capture_time_and_independent_levels() {
     const CAPTURE: &str = "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time";
     #[derive(Default)]

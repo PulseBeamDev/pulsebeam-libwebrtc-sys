@@ -5,8 +5,10 @@ use crate::{RtpEncodingParameters, RtpTransceiverDirectionValue, ffi};
 ///
 /// Child snapshots are independent copies. Arbitrary stream-ID bytes, raw
 /// directions and encoding metadata are retained here; constructing this value
-/// does not install it, validate it, or configure a sender. Generic init
-/// installation still requires a separate consuming-path safety audit.
+/// does not install it, validate it, or configure a sender. Install it through
+/// `PeerConnection::add_transceiver` (trackless) or the audio/video
+/// `add_*_transceiver_with_init` methods. Consumers preserve native validation
+/// and reject values that would trigger unsafe native arithmetic or assertions.
 /// The SDK declares no equality or formatting operation for this struct.
 pub struct RtpTransceiverInit {
     native: cxx::UniquePtr<ffi::NativeRtpTransceiverInit>,

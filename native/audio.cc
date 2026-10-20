@@ -29,6 +29,8 @@
 #include "api/rtp_transceiver_interface.h"
 #include "pulsebeam-webrtc-sys/native/execution.h"
 #include "pulsebeam-webrtc-sys/native/peer.h"
+#include "pulsebeam-webrtc-sys/native/rtp_values.h"
+#include "pulsebeam-webrtc-sys/native/rtc_error.h"
 #include "pulsebeam-webrtc-sys/native/opus_carrier.h"
 #include "pulsebeam-webrtc-sys/native/video.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
@@ -1173,6 +1175,16 @@ bool close_encoded_audio_sink(const NativeEncodedAudioSink& sink) noexcept {
   state.collector->Deactivate();
   state.peer->release_audio_receiver(state.receiver_id);
   return true;
+}
+std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver_value(
+    const NativePeerConnection& peer, const NativeAudioTrack& track,
+    const NativeRtpTransceiverInit& init, bool& valid,
+    std::unique_ptr<NativeRtcError>& error) noexcept {
+  valid = transceiver_init_consumption_safe(peer, init, false);
+  if (!valid) return nullptr;
+  auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());
+  if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }
+  return wrap_rtp_transceiver(result.MoveValue());
 }
 std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver(
     const NativePeerConnection& peer, const NativeAudioTrack& track,

@@ -2751,6 +2751,47 @@ impl PeerConnection {
             .collect())
     }
 
+    /// Add an audio or video transceiver without a sending track. All native
+    /// initialization fields are forwarded, including stream IDs and initial
+    /// encodings. Use a default init for the SDK's no-init overload semantics.
+    /// Native capability and parameter errors remain owning `RtcError` values.
+    pub fn add_transceiver(
+        &self,
+        kind: crate::MediaType,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<RtpTransceiver, crate::RtpSenderOperationError> {
+        self.inner._factory.check_control_call()?;
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }
+            .into());
+        }
+        let mut valid = false;
+        let mut error = cxx::UniquePtr::null();
+        let native = ffi::peer_add_transceiver_value(
+            self.inner.native(),
+            kind.to_native(),
+            init.native(),
+            &mut valid,
+            &mut error,
+        );
+        if !valid {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "unsafe native transceiver initialization or non-Unified-Plan peer".into(),
+            }
+            .into());
+        }
+        if native.is_null() {
+            return Err(crate::RtpSenderOperationError::Native(
+                crate::RtcError::from_native(error),
+            ));
+        }
+        Ok(RtpTransceiver::from_native(native, self.inner.clone()))
+    }
+
     /// Install the entire native initialization value in one AddTransceiver.
     /// The supplied value remains unchanged on both rejection and acceptance.
     pub fn add_video_transceiver_with_init(
@@ -2758,6 +2799,14 @@ impl PeerConnection {
         track: &VideoTrack,
         init: &crate::RtpTransceiverInit,
     ) -> Result<RtpTransceiver, crate::RtpSenderOperationError> {
+        self.inner._factory.check_control_call()?;
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }
+            .into());
+        }
         let fail = |message: &str| PeerError {
             kind: PeerErrorKind::InvalidParameter,
             message: message.into(),
@@ -2815,7 +2864,9 @@ impl PeerConnection {
             &mut error,
         );
         if !valid {
-            return Err(fail("unsafe native transceiver initialization arithmetic").into());
+            return Err(
+                fail("unsafe native transceiver initialization or non-Unified-Plan peer").into(),
+            );
         }
         if native.is_null() {
             return Err(crate::RtpSenderOperationError::Native(
@@ -2847,6 +2898,13 @@ impl PeerConnection {
         direction: RtpTransceiverDirection,
         rids: &[String],
     ) -> Result<RtpTransceiver, PeerError> {
+        self.inner._factory.check_control_call()?;
+        if self.configuration().options.sdp_semantics != crate::SdpSemantics::UnifiedPlan {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "AddTransceiver requires Unified Plan in the native SDK".into(),
+            });
+        }
         if self.inner._factory._controlled_driver.is_some()
             && (!self.inner._factory.controlled_media || !track.is_admitted_controlled_video())
         {
@@ -2914,12 +2972,82 @@ impl PeerConnection {
         }
     }
 
+    /// Install a local audio track and all native initialization fields.
+    /// Native encoding normalization and errors are not replaced by binding
+    /// policy. The track and its factory remain retained by the sender.
+    pub fn add_audio_transceiver_with_init(
+        &self,
+        track: &AudioTrack,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<RtpTransceiver, crate::RtpSenderOperationError> {
+        self.inner._factory.check_control_call()?;
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }
+            .into());
+        }
+        if self.inner._factory._controlled_driver.is_some()
+            && (!self.inner._factory.controlled_media || !track.is_opus_frames())
+        {
+            return Err(PeerError {
+                kind: PeerErrorKind::UnsupportedOperation,
+                message: "controlled audio requires the admitted Opus-carrier media profile".into(),
+            }
+            .into());
+        }
+        if !track.belongs_to(&self.inner._factory) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "audio track must belong to this peer factory".into(),
+            }
+            .into());
+        }
+        track.check_peer_dependency(&self.inner)?;
+        let mut valid = false;
+        let mut error = cxx::UniquePtr::null();
+        let native = ffi::peer_add_audio_transceiver_value(
+            self.inner.native(),
+            track.native(),
+            init.native(),
+            &mut valid,
+            &mut error,
+        );
+        if !valid {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "unsafe native transceiver initialization or non-Unified-Plan peer".into(),
+            }
+            .into());
+        }
+        if native.is_null() {
+            return Err(crate::RtpSenderOperationError::Native(
+                crate::RtcError::from_native(error),
+            ));
+        }
+        let transceiver = RtpTransceiver::from_native(native, self.inner.clone());
+        let sender = transceiver.sender();
+        self.inner.audio_sender_tracks.borrow_mut().insert(
+            sender.resource_key(),
+            SenderTrackLease::new(&sender, track.clone()),
+        );
+        Ok(transceiver)
+    }
+
     /// Adds a local audio track to this peer's negotiated RTP session.
     pub fn add_audio_transceiver(
         &self,
         track: &AudioTrack,
         direction: RtpTransceiverDirection,
     ) -> Result<RtpTransceiver, PeerError> {
+        self.inner._factory.check_control_call()?;
+        if self.configuration().options.sdp_semantics != crate::SdpSemantics::UnifiedPlan {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "AddTransceiver requires Unified Plan in the native SDK".into(),
+            });
+        }
         if self.inner._factory._controlled_driver.is_some()
             && (!self.inner._factory.controlled_media || !track.is_opus_frames())
         {
