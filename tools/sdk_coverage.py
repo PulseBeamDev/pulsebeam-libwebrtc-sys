@@ -270,6 +270,7 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
     if set(inventory["profiles"]) != set(PROFILES):
         raise ValueError("inventory must retain both core/native profiles")
     declared = {}
+    declaration_details = {}
     native_types = set()
     native_references = set()
     unresolved = []
@@ -296,6 +297,7 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
                 unresolved.append(f"{profile}: {header}")
             for declaration in metadata.get("declarations", []):
                 declared.setdefault(declaration["id"], set()).add(profile)
+                declaration_details.setdefault(declaration["id"], []).append(declaration)
                 native_types.add(declaration.get("usr"))
                 native_references.update(reference for reference in declaration.get("references", [])
                                          if reference.startswith(("c:@N@webrtc@", "c:@N@rtc@")))
@@ -331,6 +333,37 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
             for reference in entry[field]:
                 source_reference(reference, root, sdk)
         mapped.add(identifier)
+    unavailable = {}
+    for entry in mapping.get("declaration_availability", []):
+        identifier = entry["declaration"]
+        if identifier not in declared or identifier in mapped or identifier in unavailable:
+            raise ValueError(f"unknown, duplicate or mapped unavailable declaration: {identifier}")
+        if set(entry["profiles"]) != declared[identifier]:
+            raise ValueError(f"wrong unavailable declaration profiles: {identifier}")
+        # ExtractAPI drops '= delete'. Recognize only an explicitly deleted
+        # default constructor at the frontend's exact source coordinates. Do
+        # not generalize missing implementations or disabled builds into this.
+        if entry["availability"] != "deleted_default_constructor" or not entry["reason"]:
+            raise ValueError(f"unsupported declaration availability: {identifier}")
+        reference = entry["evidence"]
+        evidence = source_reference(reference, root, sdk)
+        for declaration in declaration_details[identifier]:
+            names = declaration["name"].split("::")
+            header = declaration["header"]
+            line = declaration["line"]
+            column = declaration["column"]
+            source = (sdk / header).read_text().splitlines()[line - 1][column - 1:].strip()
+            if (reference["tree"] != "sdk" or reference["path"] != header
+                    or evidence["line"] != line or reference["anchor"] != source
+                    or declaration["kind"] != "c++.method" or len(names) < 2
+                    or names[-1] != names[-2]
+                    or not re.fullmatch(re.escape(names[-1]) + r"\s*\(\s*\)\s*=\s*delete\s*;", source)):
+                raise ValueError(f"availability is not the exact deleted default constructor: {identifier}")
+        if not entry["verification"]:
+            raise ValueError(f"missing unavailable declaration verification: {identifier}")
+        for reference in entry["verification"]:
+            source_reference(reference, root, sdk)
+        unavailable[identifier] = {**entry, "evidence": evidence}
     configuration = set(inventory["configuration_macros"])
     mapped_configuration = set()
     for entry in mapping.get("configuration_mappings", []):
@@ -352,7 +385,9 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
             for reference in entry[field]:
                 source_reference(reference, root, sdk)
     return {"declarations": len(declared), "mapped": len(mapped),
-            "partial": sorted(partial), "unmapped": sorted(set(declared) - mapped),
+            "partial": sorted(partial),
+            "unavailable_declarations": [unavailable[key] for key in sorted(unavailable)],
+            "unmapped": sorted(set(declared) - mapped - set(unavailable)),
             "unresolved_headers": unresolved,
             "external_native_references": sorted(native_references - native_types),
             "unmapped_configuration_macros": sorted(configuration - mapped_configuration)}
@@ -384,7 +419,9 @@ def main() -> int:
         if args.output:
             args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         print(f"{report['mapped']} of {report['declarations']} active declarations have explicit mappings; "
-              f"{len(report['partial'])} partial; {len(report['unresolved_headers'])} unresolved headers; "
+              f"{len(report['partial'])} partial; "
+              f"{len(report['unavailable_declarations'])} source-evidenced unavailable declarations; "
+              f"{len(report['unresolved_headers'])} unresolved headers; "
               f"{len(report['unmapped_configuration_macros'])} configuration macros and "
               f"{len(report['external_native_references'])} external/specialized native type references require review")
         return int(bool(report["unresolved_headers"] or (args.require_mapped and (

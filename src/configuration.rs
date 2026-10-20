@@ -80,8 +80,9 @@ pub struct FactoryOptions {
     /// This is insecure and also prevents DTLS-dependent capabilities such as
     /// SCTP data channels. Ordinary applications should retain `false`.
     pub disable_encryption: bool,
-    /// Forward the native platform-network-monitor option. Applicability is
-    /// determined by the selected native network implementation.
+    /// Forward the native platform-network-monitor option. The pinned Linux
+    /// C++ factory stores but does not consult this field, so setting it does
+    /// not disable an installed network monitor. Platform wrappers may differ.
     pub disable_network_monitor: bool,
     /// Adapter categories ignored by subsequent peers' port allocators.
     /// The default ignores loopback only.

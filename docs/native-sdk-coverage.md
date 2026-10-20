@@ -109,7 +109,25 @@ Source anchors must match exactly once and remain relative to either this
 repository or the pinned SDK. Unknown/duplicate mappings, changed native header
 bytes, missing consumers, stale anchors and wrong profile claims fail validation.
 The report always lists unmapped declarations. A partial typed-track wrapper does
-not satisfy an arbitrary native `MediaStreamTrackInterface` overload.
+not satisfy an arbitrary native `MediaStreamTrackInterface` overload. The
+`Environment`/`EnvironmentFactory` entries distinguish retaining delegates from
+borrowed utility identity and keep native-context queue qualification and
+cooperative creation restrictions explicit. Factory options cover the four fields
+actually present in the pinned SDK; runtime scheduling is not another option field.
+
+`declaration_availability` retains an unavailable declaration in the denominator
+without counting it as a working Rust mapping. The currently recognized case is
+`deleted_default_constructor`: Clang ExtractAPI lists such constructors without
+preserving their `= delete` spelling. Each entry must identify an SDK-only source
+anchor at the exact frontend header, line and column in every declared profile,
+match an explicitly deleted no-argument constructor, and name a verification
+source. The pinned `Environment` constructor has type-trait checks for both
+artifact configurations that also protect its supported copy/move operations.
+Unknown reasons, another overload's source, comments, duplicate entries and
+entries already claimed as implemented are rejected. Disabled builds, missing
+wrappers, absent archive dependencies and unimplemented providers cannot use this
+disposition. Other native-unavailable cases require their own concrete evidence
+and validation rather than being inferred from a parser or linker failure.
 
 `configuration_mappings` accounts for the compile-time configuration capabilities
 listed by `native-api.md`; it requires the same Rust, installation and verification

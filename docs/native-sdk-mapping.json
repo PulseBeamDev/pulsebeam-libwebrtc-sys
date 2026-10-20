@@ -31,6 +31,18 @@
       ]
     }
   },
+  "declaration_availability": [
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@Environment#",
+      "profiles": ["core", "native"],
+      "availability": "deleted_default_constructor",
+      "reason": "The pinned SDK explicitly deletes default construction; use EnvironmentFactory::Create. Copy and move construction/assignment remain supported. This is not a missing binding or a usable native constructor.",
+      "evidence": {"tree": "sdk", "path": "api/environment/environment.h", "anchor": "Environment() = delete;"},
+      "verification": [
+        {"tree": "repository", "path": "tests/test_sdk_coverage.py", "anchor": "    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):"}
+      ]
+    }
+  ],
   "configuration_mappings": [],
   "retained_capabilities": [
     {
@@ -65,6 +77,616 @@
     }
   ],
   "mappings": [
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryDependencies@FI@env",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "The selected owning Environment is copied into actual SDK factory dependencies before CreateModularPeerConnectionFactory. Its clock, queues, field trials and event logger reach native creation consumers. The SDK has no separate task-queue-factory dependency slot; this row does not qualify role execution, nested codec workers or a common real/sim construction path.",
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn environment(mut self, environment: Environment)"},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn environment_factory(mut self, factory: &crate::EnvironmentFactory)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "dependencies.env = environment.environment();"},
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "webrtc::CreateModularPeerConnectionFactory(std::move(dependencies));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_clock.rs", "anchor": "fn actual_peer_creation_clock_utility_outlives_peer_factory_and_registration()"},
+        {"tree": "repository", "path": "tests/environment_task_queue.rs", "anchor": "fn actual_peer_creation_utility_outlives_native_peer_factory_and_context()"},
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn factory_context_getter_uses_prior_sdk_utility_not_newly_created_logger()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn actor_uses_factory_snapshot_overrides_and_real_sdk_creation_after_migration()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Owning SDK storage with Clone, Rust moves and explicit close. Native utilities are queried rather than echoed from configuration; clock/queue acquisition retains process leases where required.",
+      "gaps": ["Task-queue access from a native creation context without a proven Rust registration returns UnqualifiedEnvironment rather than exposing every SDK utility."],
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub struct Environment {"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "struct FactoryDependencies {"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@Environment#&&$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Idiomatic Rust move/assignment transfers the owning handle without rebuilding SDK storage or adding progress. No unsafe sequence-affine application owner is made movable by this utility mapping.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub struct Environment {"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("},
+        {"tree": "sdk", "path": "api/environment/environment.h", "anchor": "  Environment(Environment&&) = default;"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/test_sdk_coverage.py", "anchor": "    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@Environment#&1$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Clone copies the actual native Environment storage; Rust clone_from is replacement with that independent owning handle. Selected utilities and leases stay shared.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "impl Clone for Environment"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("},
+        {"tree": "sdk", "path": "api/environment/environment.h", "anchor": "  Environment(const Environment&) = default;"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/test_sdk_coverage.py", "anchor": "    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@clock#1",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Owning delegate to the exact SDK clock and its dependencies, including provider bounds/failures. The default system clock reserves real execution and rejects incompatible global testing-time hooks.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub fn clock(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/clock.cc", "anchor": "std::unique_ptr<NativeClock> environment_clock("}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_clock.rs", "anchor": "fn actual_peer_creation_clock_utility_outlives_peer_factory_and_registration()"},
+        {"tree": "repository", "path": "tests/environment_clock.rs", "anchor": "fn utility_delegates_native_clock_and_retains_provider_failure_and_bounds()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@event_log#1",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Owning alias to the installed SDK logger, not a newly created factory product. Stop/completion/failure state is shared across aliases and retains native storage after original close.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub fn event_log(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/event_log.cc", "anchor": "std::unique_ptr<NativeEventLogUtility> environment_event_log("}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn owning_custom_utility_preserves_events_periods_aliases_and_final_lease()"},
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn factory_context_getter_uses_prior_sdk_utility_not_newly_created_logger()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@field_trials#1",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Owned immutable snapshot invokes the installed native FieldTrialsView::CreateCopy. This is an SDK copy, not a Rust configuration echo; it can outlive the environment.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub fn field_trials(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "return std::make_unique<NativeFieldTrials>(environment.environment().field_trials().CreateCopy());"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/field_trials.rs", "anchor": "fn custom_provider_is_retained_copied_and_retired_after_native_owners()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@operator=#&&$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Idiomatic Rust move/assignment transfers the owning handle without rebuilding SDK storage or adding progress. No unsafe sequence-affine application owner is made movable by this utility mapping.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub struct Environment {"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("},
+        {"tree": "sdk", "path": "api/environment/environment.h", "anchor": "  Environment(Environment&&) = default;"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/test_sdk_coverage.py", "anchor": "    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@operator=#&1$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Clone copies the actual native Environment storage; Rust clone_from is replacement with that independent owning handle. Selected utilities and leases stay shared.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "impl Clone for Environment"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("},
+        {"tree": "sdk", "path": "api/environment/environment.h", "anchor": "  Environment(const Environment&) = default;"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/test_sdk_coverage.py", "anchor": "    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@task_queue_factory#1",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Owning delegate calls the exact selected SDK queue factory, retains its environment and leases, and preserves names, priorities, scheduler and creator sequence.",
+      "gaps": ["Native contexts without identity-bound Rust queue metadata return UnqualifiedEnvironment; the SDK getter itself has no equivalent registration requirement."],
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "pub fn task_queue_factory(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeTaskQueueFactory> environment_task_queue_factory("}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_task_queue.rs", "anchor": "fn provider_utility_reinstalls_exact_names_priorities_and_failure_diagnostics()"},
+        {"tree": "repository", "path": "tests/environment_task_queue.rs", "anchor": "fn actual_peer_creation_utility_outlives_native_peer_factory_and_context()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@~Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Rust Drop and explicit close retire native storage before releasing Rust utilities/leases. Independent SDK copies and utility owners remain valid.",
+      "rust": [
+        {"tree": "repository", "path": "src/execution.rs", "anchor": "    pub fn close(&mut self) {\n        // Destroy the native environment"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::unique_ptr<NativeEnvironment> clone_environment("}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn default_sdk_noop_is_exact_and_closing_views_does_not_close_other_owners()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@FT@>1#pTCreateEnvironment#P&&t0.0#$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Idiomatic factory setters followed by create provide the variadic helper's composition/order/default behavior. Omitting an optional setter is the native null no-op, not a clear/reset operation.",
+      "gaps": ["Borrowed SDK utility overloads are not all exposed with their original utility identity; in particular an installed RtcEventLogUtility cannot be selected directly.", "Cooperative creation enforces creator affinity and an explicitly selected matching manual clock. This is an existing binding constraint, not evidence that other SDK Environment compositions are unavailable."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub struct EnvironmentFactory"},
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn create(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "auto environment = factory.state()->factory.Create();"},
+        {"tree": "sdk", "path": "api/environment/environment_factory.h", "anchor": "Environment CreateEnvironment(Utilities&&... utilities);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn actor_uses_factory_snapshot_overrides_and_real_sdk_creation_after_migration()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Reusable native utility-selection factory. SDK storage is copied; later selections affect only that factory. Rust-only dependencies retain setter history through native environment/product retirement.",
+      "gaps": ["Borrowed SDK utility overloads are not all exposed with their original utility identity; in particular an installed RtcEventLogUtility cannot be selected directly.", "Cooperative creation enforces creator affinity and an explicitly selected matching manual clock. This is an existing binding constraint, not evidence that other SDK Environment compositions are unavailable."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub struct EnvironmentFactory"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "  webrtc::EnvironmentFactory factory;"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "auto environment = factory.state()->factory.Create();"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn actor_uses_factory_snapshot_overrides_and_real_sdk_creation_after_migration()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Create#1",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Calls SDK Create every time. Omitted utilities use SDK defaults, including fresh default queue factories; selected utility identities persist. No executor, clock advancement or queue is added by Rust metadata.",
+      "gaps": ["Cooperative creation enforces creator affinity and an explicitly selected matching manual clock. This is an existing binding constraint, not evidence that other SDK Environment compositions are unavailable."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn create(&self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "auto environment = factory.state()->factory.Create();"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn sdk_defaults_create_real_queues_and_closed_factories_reject_without_replacing_inputs()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn controlled_factory_keeps_creator_and_requires_explicit_matching_clock()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Constructs the actual SDK factory with no selected utility. Defaults are obtained on each create, not eagerly installed by the Rust constructor.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn new() -> Self {"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "webrtc::EnvironmentFactory{}, bounds, false"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn sdk_defaults_create_real_queues_and_closed_factories_reject_without_replacing_inputs()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@EnvironmentFactory#&&$@N@webrtc@S@EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Idiomatic Rust move/assignment transfers the owning native factory and its retention graph without creating new utilities.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub struct EnvironmentFactory"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::make_unique<NativeEnvironmentFactory::State>(*factory.state())"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@EnvironmentFactory#&1$@N@webrtc@S@Environment#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Calls SDK EnvironmentFactory(environment), preserving installed utility selections and retaining the source environment's SDK storage and Rust leases.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn from_environment("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "webrtc::EnvironmentFactory(environment.environment())"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@EnvironmentFactory#&1$@N@webrtc@S@EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Clone invokes the native factory copy constructor and shares immutable dependency branches. Rust clone_from replaces with that independent factory; subsequent setters do not change the source.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "impl Clone for EnvironmentFactory"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::make_unique<NativeEnvironmentFactory::State>(*factory.state())"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#$@N@std@N@__Cr@S@unique_ptr>#$@N@webrtc@S@Clock#$@N@std@N@__Cr@S@default_delete>#S1_#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Installs an owning native utility adapter/product through SDK Set, retaining input dependencies and prior storage branches. Null input's no-op is represented idiomatically by omitting the setter; no reset-to-default is claimed.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_clock("},
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_clock_handle("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(clock_reference(clock));"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::make_unique<SharedClock>(clock.state()));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_clock.rs", "anchor": "fn utility_delegates_native_clock_and_retains_provider_failure_and_bounds()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#$@N@std@N@__Cr@S@unique_ptr>#$@N@webrtc@S@RtcEventLog#$@N@std@N@__Cr@S@default_delete>#S1_#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Installs an owning native utility adapter/product through SDK Set, retaining input dependencies and prior storage branches. Null input's no-op is represented idiomatically by omitting the setter; no reset-to-default is claimed.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_event_log("},
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_event_log_product("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::move(logger));"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(shared_custom_event_log(std::move(log)));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn owning_custom_utility_preserves_events_periods_aliases_and_final_lease()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#$@N@std@N@__Cr@S@unique_ptr>#$@N@webrtc@S@TaskQueueFactory#$@N@std@N@__Cr@S@default_delete>#S1_#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Installs an owning native utility adapter/product through SDK Set, retaining input dependencies and prior storage branches. Null input's no-op is represented idiomatically by omitting the setter; no reset-to-default is claimed.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_task_queue_factory("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::make_unique<EnvironmentTaskQueueFactory>(*queues.environment(), queues.production_lease()));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_task_queue.rs", "anchor": "fn provider_utility_reinstalls_exact_names_priorities_and_failure_diagnostics()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#$@N@std@N@__Cr@S@unique_ptr>#1$@N@webrtc@S@FieldTrialsView#$@N@std@N@__Cr@S@default_delete>#1S1_#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Installs an owning native utility adapter/product through SDK Set, retaining input dependencies and prior storage branches. Null input's no-op is represented idiomatically by omitting the setter; no reset-to-default is claimed.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_field_trials("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(field_trials_adapter(std::move(trials)));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn actor_uses_factory_snapshot_overrides_and_real_sdk_creation_after_migration()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#*$@N@webrtc@S@Clock#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Related retaining Rust setters keep inputs alive without unsafe raw-pointer exposure, but are not a complete identity-preserving mapping of this borrowed SDK overload. Null means omit the setter, not clear the selected utility.",
+      "gaps": ["There is no direct selection of every existing SDK utility reference with the same native pointer identity. Retaining a delegate is not proof that this borrowed overload is fully exposed."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_clock("},
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_clock_handle("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(clock_reference(clock));"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::make_unique<SharedClock>(clock.state()));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_clock.rs", "anchor": "fn utility_delegates_native_clock_and_retains_provider_failure_and_bounds()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#*$@N@webrtc@S@RtcEventLog#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Related retaining Rust setters keep inputs alive without unsafe raw-pointer exposure, but are not a complete identity-preserving mapping of this borrowed SDK overload. Null means omit the setter, not clear the selected utility.",
+      "gaps": ["There is no direct selection of every existing SDK utility reference with the same native pointer identity. Retaining a delegate is not proof that this borrowed overload is fully exposed."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_event_log("},
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_event_log_product("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::move(logger));"},
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(shared_custom_event_log(std::move(log)));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_event_log.rs", "anchor": "fn owning_custom_utility_preserves_events_periods_aliases_and_final_lease()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#*$@N@webrtc@S@TaskQueueFactory#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Related retaining Rust setters keep inputs alive without unsafe raw-pointer exposure, but are not a complete identity-preserving mapping of this borrowed SDK overload. Null means omit the setter, not clear the selected utility.",
+      "gaps": ["There is no direct selection of every existing SDK utility reference with the same native pointer identity. Retaining a delegate is not proof that this borrowed overload is fully exposed."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_task_queue_factory("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(std::make_unique<EnvironmentTaskQueueFactory>(*queues.environment(), queues.production_lease()));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_task_queue.rs", "anchor": "fn provider_utility_reinstalls_exact_names_priorities_and_failure_diagnostics()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@Set#*1$@N@webrtc@S@FieldTrialsView#",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Related retaining Rust setters keep inputs alive without unsafe raw-pointer exposure, but are not a complete identity-preserving mapping of this borrowed SDK overload. Null means omit the setter, not clear the selected utility.",
+      "gaps": ["There is no direct selection of every existing SDK utility reference with the same native pointer identity. Retaining a delegate is not proof that this borrowed overload is fully exposed."],
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn set_field_trials("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "factory.state()->factory.Set(field_trials_adapter(std::move(trials)));"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn actor_uses_factory_snapshot_overrides_and_real_sdk_creation_after_migration()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@operator=#&&$@N@webrtc@S@EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Idiomatic Rust move/assignment transfers the owning native factory and its retention graph without creating new utilities.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub struct EnvironmentFactory"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::make_unique<NativeEnvironmentFactory::State>(*factory.state())"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@operator=#&1$@N@webrtc@S@EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Clone invokes the native factory copy constructor and shares immutable dependency branches. Rust clone_from replaces with that independent factory; subsequent setters do not change the source.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "impl Clone for EnvironmentFactory"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "std::make_unique<NativeEnvironmentFactory::State>(*factory.state())"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"}
+      ]
+    },
+    {
+      "declaration": "api/environment/environment_factory.h#c:@N@webrtc@S@EnvironmentFactory@F@~EnvironmentFactory#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Drop/close releases only this reusable factory. Already created environments and aliases retain the SDK storage and Rust inputs independently.",
+      "rust": [
+        {"tree": "repository", "path": "src/environment_factory.rs", "anchor": "pub fn close(&mut self)"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/execution.cc", "anchor": "NativeEnvironmentFactory::~NativeEnvironmentFactory() = default;"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn trial_copies_retain_sdk_storage_and_replaced_input_dependencies_until_final_drop()"},
+        {"tree": "repository", "path": "tests/environment_factory.rs", "anchor": "fn composed_factories_preserve_shared_scheduler_and_log_selection_after_original_close()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@F@SetOptions#&1$@N@webrtc@S@PeerConnectionFactoryInterface@S@Options#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Calls native SetOptions on signaling. Only subsequent peers use the new values; existing peers are not reconfigured. Native offers exercise encryption behavior rather than a local readback echo.",
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn set_options("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn set_factory_options("}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn factory_options_apply_to_new_peers_without_reconfiguring_existing_peers()"},
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn actor_factory_options_remain_effective_after_migration_and_fail_after_shutdown()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "All four fields and native defaults are represented: encryption false, network monitoring false, loopback ignored and DTLS 1.3 maximum. Disabling encryption is explicit insecure native behavior, never a production fallback.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub struct FactoryOptions"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn factory_options_apply_to_new_peers_without_reconfiguring_existing_peers()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options@F@Options#",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "All four fields and native defaults are represented: encryption false, network monitoring false, loopback ignored and DTLS 1.3 maximum. Disabling encryption is explicit insecure native behavior, never a production fallback.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub struct FactoryOptions"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn factory_options_apply_to_new_peers_without_reconfiguring_existing_peers()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options@FI@disable_encryption",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "All four fields and native defaults are represented: encryption false, network monitoring false, loopback ignored and DTLS 1.3 maximum. Disabling encryption is explicit insecure native behavior, never a production fallback.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub disable_encryption:"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn factory_options_apply_to_new_peers_without_reconfiguring_existing_peers()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options@FI@disable_network_monitor",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Forwarded unchanged into SDK SetOptions. The pinned Linux C++ path stores but does not read this field: true does not disable a supplied monitor. This native no-op is preserved, not replaced with a binding-side implementation or advertised as a working monitor-disable capability. Other platform wrappers are outside this Linux claim.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub disable_network_monitor:"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "native.disable_network_monitor = options.disable_network_monitor;"},
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/network_monitor.rs", "anchor": "fn pinned_linux_sdk_monitor_option_does_not_disable_the_installed_monitor()"},
+        {"tree": "repository", "path": "tests/network_monitor.rs", "anchor": "fn actor_monitor_owns_provider_and_retires_cross_thread_notifications()"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options@FI@network_ignore_mask",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Open adapter bit pattern preserves native signed int bits, including unknown flags. Default ignores loopback.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub ignored_network_adapters:"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"},
+        {"tree": "sdk", "path": "pc/peer_connection_factory.cc", "anchor": "dependencies.allocator->SetNetworkIgnoreMask(options().network_ignore_mask);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn signed_and_legacy_protocol_selectors_are_accepted_without_narrowing()"},
+        {"tree": "repository", "path": "tests/controlled_driver.rs", "anchor": "fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations()"},
+        {"tree": "repository", "path": "tests/controlled_driver.rs", "anchor": "ignored_network_adapters: NetworkAdapterMask::ETHERNET | NetworkAdapterMask::LOOPBACK,"}
+      ]
+    },
+    {
+      "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryInterface@S@Options@FI@ssl_max_version",
+      "profiles": ["core", "native"],
+      "state": "implemented",
+      "semantics": "Native secure-protocol selectors include signed unspecified and legacy aliases; no local option readback or negotiation guarantee is invented.",
+      "rust": [
+        {"tree": "repository", "path": "src/configuration.rs", "anchor": "pub ssl_max_version:"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/peer.cc", "anchor": "factory.factory()->SetOptions(native);"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/factory_configuration.rs", "anchor": "fn signed_and_legacy_protocol_selectors_are_accepted_without_narrowing()"}
+      ]
+    },
     {
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@E@MediaType#",
       "profiles": ["core", "native"],

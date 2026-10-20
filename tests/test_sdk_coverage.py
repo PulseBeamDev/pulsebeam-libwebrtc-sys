@@ -108,6 +108,82 @@ class MappingTests(unittest.TestCase):
     def check(self):
         return sdk_coverage.check_mapping(self.inventory, self.mapping, self.root, self.sdk)
 
+    def deleted_constructor(self):
+        self.header.write_text("struct Public {\n  Public() = delete;\n  static void Other();\n};\n")
+        header = self.inventory["headers"]["api/public.h"]
+        header["sha256"] = sdk_coverage.digest(self.header)
+        identifier = self.identifier + "@F@Public#"
+        declaration = {"id": identifier, "name": "webrtc::Public::Public",
+                       "kind": "c++.method", "header": "api/public.h", "line": 2, "column": 3}
+        header["profiles"]["core"]["declarations"].append(declaration)
+        entry = {"declaration": identifier, "profiles": ["core"],
+                 "availability": "deleted_default_constructor",
+                 "reason": "The SDK explicitly deletes default construction.",
+                 "evidence": {"tree": "sdk", "path": "api/public.h", "anchor": "Public() = delete;"},
+                 "verification": copy.deepcopy(self.entry["verification"])}
+        self.mapping["declaration_availability"] = [entry]
+        return entry, declaration
+
+    def test_deleted_constructor_stays_in_denominator_and_is_not_a_working_binding(self):
+        entry, _ = self.deleted_constructor()
+        report = self.check()
+        self.assertEqual(report["declarations"], 2)
+        self.assertEqual(report["mapped"], 1)
+        self.assertEqual(report["unmapped"], [])
+        self.assertEqual(report["unavailable_declarations"][0]["declaration"], entry["declaration"])
+        self.assertEqual(report["unavailable_declarations"][0]["evidence"]["line"], 2)
+        self.mapping["declaration_availability"] = []
+        self.assertEqual(self.check()["unmapped"], [entry["declaration"]])
+
+    def test_unavailability_cannot_waive_bindings_or_use_another_declarations_source(self):
+        entry, _ = self.deleted_constructor()
+        entry["availability"] = "missing_wrapper"
+        with self.assertRaisesRegex(ValueError, "unsupported declaration availability"):
+            self.check()
+        entry["availability"] = "deleted_default_constructor"
+        entry["evidence"]["anchor"] = "static void Other();"
+        with self.assertRaisesRegex(ValueError, "exact deleted default constructor"):
+            self.check()
+
+    def test_deleted_constructor_requires_exact_source_not_a_delete_comment_or_parameters(self):
+        entry, _ = self.deleted_constructor()
+        for source in ("Public(); // = delete;", "Public(int) = delete;", "Public() = default;"):
+            with self.subTest(source=source):
+                self.header.write_text("struct Public {\n  " + source + "\n};\n")
+                self.inventory["headers"]["api/public.h"]["sha256"] = sdk_coverage.digest(self.header)
+                entry["evidence"]["anchor"] = source
+                with self.assertRaisesRegex(ValueError, "exact deleted default constructor"):
+                    self.check()
+
+    def test_unavailability_must_match_all_profile_locations_and_require_verification(self):
+        entry, declaration = self.deleted_constructor()
+        native = copy.deepcopy(declaration)
+        native["line"] = 3
+        self.inventory["headers"]["api/public.h"]["profiles"]["native"]["declarations"] = [native]
+        with self.assertRaisesRegex(ValueError, "wrong unavailable declaration profiles"):
+            self.check()
+        entry["profiles"].append("native")
+        with self.assertRaisesRegex(ValueError, "exact deleted default constructor"):
+            self.check()
+        native["line"] = 2
+        entry["verification"] = []
+        with self.assertRaisesRegex(ValueError, "missing unavailable declaration verification"):
+            self.check()
+
+    def test_unknown_duplicate_and_already_mapped_unavailability_is_rejected(self):
+        entry, _ = self.deleted_constructor()
+        self.mapping["declaration_availability"].append(copy.deepcopy(entry))
+        with self.assertRaisesRegex(ValueError, "duplicate or mapped unavailable"):
+            self.check()
+        self.mapping["declaration_availability"].pop()
+        self.mapping["mappings"].append({**self.entry, "declaration": entry["declaration"]})
+        with self.assertRaisesRegex(ValueError, "duplicate or mapped unavailable"):
+            self.check()
+        self.mapping["mappings"].pop()
+        entry["declaration"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "unknown, duplicate"):
+            self.check()
+
     def test_added_declaration_is_unmapped_without_changing_the_rust_subset(self):
         report = self.check()
         self.assertEqual(report["mapped"], 1)
@@ -214,6 +290,9 @@ class MappingSourceTests(unittest.TestCase):
                 references.extend(entry[field])
         for entry in mapping["header_availability"].values():
             references.extend(entry["evidence"])
+        for entry in mapping.get("declaration_availability", []):
+            references.append(entry["evidence"])
+            references.extend(entry["verification"])
         for reference in references:
             if reference["tree"] == "sdk" and not sdk.is_dir():
                 continue
@@ -223,6 +302,33 @@ class MappingSourceTests(unittest.TestCase):
 
 @unittest.skipUnless(CLANG.is_file(), "pinned Clang is required for the ExtractAPI boundary")
 class ExtractAPITests(unittest.TestCase):
+    def test_pinned_sdk_environment_deletes_default_construction_but_preserves_copy_and_move(self):
+        work = ROOT / ".work"
+        sdk = work / "checkout/src"
+        manifests = [work / f"package/webrtc-{flavor}-linux-x86_64/manifest.json"
+                     for flavor in sdk_coverage.PROFILES]
+        if not all(path.is_file() for path in manifests):
+            self.skipTest("matching core/native packages are required for the SDK type-trait boundary")
+        with tempfile.TemporaryDirectory() as temporary:
+            probe = Path(temporary) / "environment.cc"
+            probe.write_text('''#include "api/environment/environment.h"
+static_assert(!__is_constructible(webrtc::Environment));
+static_assert(__is_constructible(webrtc::Environment, const webrtc::Environment&));
+static_assert(__is_constructible(webrtc::Environment, webrtc::Environment&&));
+static_assert(__is_assignable(webrtc::Environment&, const webrtc::Environment&));
+static_assert(__is_assignable(webrtc::Environment&, webrtc::Environment&&));
+''')
+            for flavor, manifest in zip(sdk_coverage.PROFILES, manifests):
+                with self.subTest(flavor=flavor):
+                    arguments = sdk_coverage.compiler_arguments(
+                        sdk, manifest.parent, work / f"out/{flavor}/linux-x86_64",
+                        json.loads(manifest.read_text()))
+                    arguments.remove("-extract-api")
+                    arguments[arguments.index("c++-header")] = "c++"
+                    result = subprocess.run([*arguments, "-fsyntax-only", str(probe)],
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_real_frontend_preserves_overloads_templates_fields_and_macro_contracts(self):
         with tempfile.TemporaryDirectory() as temporary:
             sdk = Path(temporary)
@@ -236,6 +342,7 @@ class Example {
  protected:
   void Protected();
  public:
+  Example() = delete;
   enum class Mode { First, Second };
   int value;
   virtual int Call(int input) const = 0;
@@ -257,6 +364,10 @@ int Function(double input);
             self.assertEqual(names.count("webrtc::Example::Call"), 2)
             self.assertEqual(names.count("webrtc::Function"), 2)
             self.assertIn("webrtc::Example::value", names)
+            deleted = next(item for item in declarations if item["name"] == "webrtc::Example::Example")
+            self.assertEqual(deleted["declaration"], "Example();")
+            self.assertEqual((sdk / "public.h").read_text().splitlines()[deleted["line"] - 1].strip(),
+                             "Example() = delete;")
             self.assertIn("webrtc::Example::Mode::First", names)
             self.assertIn("webrtc::SimpleValue::field", names)
             self.assertIn("webrtc::SimpleValue::Get", names)

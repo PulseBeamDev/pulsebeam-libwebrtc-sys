@@ -10,7 +10,7 @@ provider, media or peer-configuration interface.
 | Native contract | Public Rust representation | Semantics |
 | --- | --- | --- |
 | `Options::disable_encryption` | `FactoryOptions::disable_encryption` | Defaults to false. Disables DTLS and native media encryption in new peers; prevents DTLS-dependent SCTP channels. |
-| `Options::disable_network_monitor` | `FactoryOptions::disable_network_monitor` | Defaults to false. Forwarded unchanged; the selected native network implementation determines applicability. |
+| `Options::disable_network_monitor` | `FactoryOptions::disable_network_monitor` | Defaults to false. Forwarded unchanged, but the pinned Linux C++ factory stores this field without consulting it. Setting it does not disable an installed network monitor; behavior of other platform wrappers is not a Linux guarantee. |
 | `Options::network_ignore_mask` | `FactoryOptions::ignored_network_adapters` | Defaults to loopback. `NetworkAdapterMask` preserves the open native bit pattern, including high bits. Known adapter categories have composable constants. |
 | `Options::ssl_max_version` | `FactoryOptions::ssl_max_version` | Defaults to the native DTLS 1.3 alias. `SslProtocolVersion` preserves all native values, including signed unspecified and deprecated values. |
 | `SetOptions` | `PeerConnectionFactory::set_options`, `ProductionSession::set_factory_options` | Replaces the complete options value for future peers. Existing peers retain their own options. The native method has no validation outcome and no getter. |

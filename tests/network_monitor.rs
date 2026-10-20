@@ -130,23 +130,35 @@ fn finish(
 }
 #[test]
 fn actor_monitor_owns_provider_and_retires_cross_thread_notifications() {
-    run_monitor(false);
+    run_monitor(false, false);
 }
 #[test]
 fn actor_monitor_stop_and_factory_product_destruction_contain_hostile_payloads() {
-    run_monitor(true);
+    run_monitor(true, false);
 }
-fn run_monitor(panic_drop: bool) {
+#[test]
+fn pinned_linux_sdk_monitor_option_does_not_disable_the_installed_monitor() {
+    // SetOptions stores this field, but the pinned Linux C++ path never reads
+    // it. Exercise real BasicNetworkManager callbacks rather than an option echo.
+    run_monitor(false, true);
+}
+fn run_monitor(panic_drop: bool, disable_network_monitor: bool) {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<NetworkChangeNotifier>();
     let observed = Arc::new(Observed {
         panic_drop,
         ..Observed::default()
     });
-    let session = ProductionSession::builder(ProductionSessionConfig::default())
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
         .field_trials(FieldTrials::parse("Monitor-Provider/EnabledOwned/").unwrap())
         .network_monitor_factory(Factory(observed.clone()))
         .build()
+        .unwrap();
+    session
+        .set_factory_options(FactoryOptions {
+            disable_network_monitor,
+            ..Default::default()
+        })
         .unwrap();
     let observed_actor = observed.clone();
     let session = std::thread::spawn(move || {
