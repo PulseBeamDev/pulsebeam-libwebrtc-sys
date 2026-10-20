@@ -35,7 +35,7 @@ an authenticated `gh` and contact GitHub; the local tests fake the CLI and
 never publish a release. Bundle preparation and audit run on the host without
 building a Podman image. Only the actual WebRTC builds need the Linux image.
 The released-consumer job uses the published tag as a Cargo Git dependency and
-proves both Linux x86_64 flavors without a local artifact override.
+requires both Linux architectures and flavors to consume without a local artifact override.
 
 `just check` is the fast, offline source/control-plane gate once the pinned Rust
 dependencies are cached. It does not require or extract native bytes. Native
@@ -62,8 +62,10 @@ usable HEAD before retrying; a real upstream timeout can still fail the build.
 Every flavor/target artifact carries the same generated bridge and portable
 adapter sources, compiled with that job's target toolchain and ABI configuration.
 
-On a version-tag push, the release workflow runs the Rust runtime suite for
-both Linux x86_64 flavors. Linux x86_64 AddressSanitizer jobs rebuild both
+On a canonical version-tag push, Linux publication requires the Rust runtime
+suite for both flavors on matching x86_64 and ARM64 hosts. ARM64 execution runs
+before archive upload on its build host; x86_64 also has separate artifact-only
+runtime jobs. Linux x86_64 AddressSanitizer jobs rebuild both
 flavors and exercise the lifetime-sensitive environment, provider, peer,
 channel, video, and teardown tests; only their failure logs are retained, never
 their instrumented archives. Other platform builds are not part of this release.
@@ -834,9 +836,9 @@ state; the encoder-switch patch is always required. Source-state checks reject
 tracked WebRTC source changes outside the exact pinned patches, and
 only optimized release artifacts are published.
 
-Linux releases use two explicit phases. The independently qualified primary
-Linux group is exactly `core` and `native` for `linux-x86_64`; Linux arm64 is a
-secondary tier. Registry publication remains deferred (`pulsebeam-webrtc-sys`
+Linux publication requires the entire `core`/`native` by
+`linux-x86_64`/`linux-arm64` group. It does not advertise a partial architecture
+or flavor set. Registry publication remains deferred (`pulsebeam-webrtc-sys`
 is not a crates.io dependency).
 
 ## Linux container development
@@ -867,12 +869,14 @@ pulsebeam-webrtc-sys = { git = "https://github.com/PulseBeamDev/pulsebeam-libweb
 # For native capture/playback, add: features = ["native"]
 ```
 
-On Linux x86_64, a normal `cargo run` then downloads and verifies the selected
-artifact automatically. No separate setup is needed.
+Once the matching OS release is available, a normal Linux `cargo run` downloads
+and verifies the selected architecture/flavor automatically. System linker and
+library prerequisites still apply.
 
 1. **One CI workflow** runs fast checks on pull requests. Push a new `v*`
-   version tag to run the full Linux x86_64 core and native qualification, with
-   runtime tests, ASan, audit, and cold candidate consumers. Before building any
+   canonical version tag to run Linux core/native qualification on matching
+   x86_64 and ARM64 hosts, with runtime tests, x86_64 ASan, audit, and cold
+   candidate consumers. Derived OS tags are excluded from source-release triggers. Before building any
    container or native code, the first job checks that the repository is the
    canonical producer, the tag resolves to the checked-out commit, and it equals
    `v<package.version>` in `Cargo.toml`. Pull requests skip this tag-only check.
@@ -881,17 +885,20 @@ artifact automatically. No separate setup is needed.
    `just ci release-tag <tag> <commit>` runs the same check locally without a
    container, GitHub authentication, or marker files. The tag must already exist
    in the local checkout. Publication starts automatically only if all
-   qualification gates pass. The resulting bundle contains two archives,
+   Linux qualification gates pass. The resulting bundle contains four archives,
    `SHA256SUMS`, `LINUX-RELEASE-MANIFEST.json`, the repository license, and a
-   schema-2 `artifacts.lock.json` with two Linux x86_64 URLs/digests and sixteen
-   explicitly unavailable selections. Other targets are not released.
-2. The workflow first creates a draft if no release exists, downloads and hashes
+   schema-2 `artifacts.lock.json` with four Linux URLs/digests and fourteen
+   explicitly unavailable selections. Linux publishes at `v<version>-linux`,
+   while consumers continue depending on the canonical `v<version>` source tag.
+   OS suffixes are reserved for derived release tags.
+2. The workflow first verifies or creates the immutable derived tag at the
+   canonical source commit, then creates a draft if no release exists, downloads and hashes
    any existing assets, and uploads only missing byte-verified assets. It never
    deletes, replaces, or clobbers an asset; a conflicting or unexpected asset
    fails closed. It rechecks the complete inventory, attests the closed bundle,
    and only then advertises the release. An interrupted draft is recoverable by
    rerunning the exact same tag with identical bytes.
-3. After publication, CI tests both flavors using the tag itself as the Cargo
+3. After publication, CI tests both architectures and flavors using the source tag as the Cargo
    Git dependency, with fresh checkouts and cold release-lock and archive caches.
    It reports the usable tag in the workflow summary. The tag works only after
    the matching release and its lock have been published.

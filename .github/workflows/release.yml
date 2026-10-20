@@ -3,13 +3,9 @@ name: CI and release
 on:
   pull_request:
   push:
-    tags: ['v*']
+    tags: ['v*', '!v*-linux', '!v*-macos', '!v*-windows', '!v*-ios', '!v*-android']
 
 permissions: {}
-
-concurrency:
-  group: linux-qualification-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   validate:
@@ -61,6 +57,12 @@ jobs:
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
@@ -89,6 +91,9 @@ jobs:
         run: just linux-image pulsebeam-linux-${{ github.sha }}
       - name: Build and smoke-link artifact
         run: just linux-run pulsebeam-linux-${{ github.sha }} just build '${{ matrix.flavor }}' '${{ matrix.target }}'
+      - name: Qualify ARM64 on the matching build host before upload
+        if: matrix.target == 'linux-arm64'
+        run: just linux-run pulsebeam-linux-${{ github.sha }} just _runtime-test '${{ matrix.flavor }}' '${{ matrix.target }}' 'dist/webrtc-${{ matrix.flavor }}-${{ matrix.target }}.tar.gz'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.flavor }}-${{ matrix.target }}
@@ -211,7 +216,7 @@ jobs:
           pattern: '*-linux-*'
           path: release-input
           merge-multiple: true
-      - name: Audit exactly the two primary Linux x86_64 archives
+      - name: Audit both flavors and architectures in the Linux release
         run: >-
           just ci audit linux release-input release-input/SHA256SUMS
           release-input/LINUX-RELEASE-MANIFEST.json
@@ -238,6 +243,12 @@ jobs:
           - flavor: native
             target: linux-x86_64
             runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -292,7 +303,7 @@ jobs:
           path: release-input
       - name: Construct one closed audited Linux publication bundle
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
         run: >-
           just ci release-prepare release-input release-input/SHA256SUMS
           release-input/LINUX-RELEASE-MANIFEST.json "$RELEASE_TAG" linux-release
@@ -306,6 +317,9 @@ jobs:
 
   publish-linux:
     name: Publish Linux release
+    concurrency:
+      group: publish-linux-${{ github.ref }}
+      cancel-in-progress: false
     if: github.event_name == 'push'
     needs: [linux-qualification, linux-release-bundle]
     runs-on: ubuntu-24.04
@@ -325,12 +339,18 @@ jobs:
         with:
           name: linux-release-bundle
           path: release
+      - name: Require an immutable OS tag at the canonical source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: just ci-release ensure-tag --source-tag "$SOURCE_TAG" --scope linux --commit "$SOURCE_COMMIT"
       - name: Classify the immutable release identity before mutation
         id: publication-plan
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
           CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
           RUNTIME_REPOSITORY: ${{ github.repository }}
         run: >-
@@ -341,7 +361,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
           CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: just ci-release upload --tag "$RELEASE_TAG" --bundle release --plan publication-plan.json
       - name: Reverify the full draft inventory without replacement
@@ -349,7 +369,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
           CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: >-
           just ci-release verify --tag "$RELEASE_TAG" --bundle release
@@ -364,7 +384,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
           CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: >-
           just ci-release verify --tag "$RELEASE_TAG" --bundle release
@@ -373,19 +393,31 @@ jobs:
         if: steps.publication-plan.outputs.finalize == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}-linux
           CANONICAL_REPOSITORY: PulseBeamDev/pulsebeam-libwebrtc-sys
         run: just ci-release advertise --tag "$RELEASE_TAG" --plan attested-publication-plan.json
 
   released-consumer:
-    name: Released consumer (${{ matrix.flavor }}, linux-x86_64)
+    name: Released consumer (${{ matrix.flavor }}, ${{ matrix.target }})
     needs: publish-linux
     if: needs.publish-linux.result == 'success'
     strategy:
       fail-fast: false
       matrix:
-        flavor: [core, native]
-    runs-on: ubuntu-24.04
+        include:
+          - flavor: core
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: native
+            target: linux-x86_64
+            runner: ubuntu-24.04
+          - flavor: core
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: native
+            target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -407,10 +439,10 @@ jobs:
           python3 -m tools.rust_only_consumer released
           --repository https://github.com/PulseBeamDev/pulsebeam-libwebrtc-sys.git
           --tag '${{ github.ref_name }}'
-          --target linux-x86_64 --flavor '${{ matrix.flavor }}'
+          --target '${{ matrix.target }}' --flavor '${{ matrix.flavor }}'
 
   release-result:
-    name: Release and consumer result
+    name: Linux release and consumer result
     needs: [publish-linux, released-consumer]
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-24.04
