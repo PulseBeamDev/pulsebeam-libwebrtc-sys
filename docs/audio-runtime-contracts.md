@@ -128,6 +128,30 @@ participate in replay. The consumer does not query or discard APM statistics.
 Managed time remains frozen during synchronous processing. Other levels, inputs,
 rates, channel layouts, live changes and adaptive gain need separate consumers.
 
+### Standalone GC1 startup-floor and caller feedback
+
+`tests/runtime_standalone_agc.rs` follows the pinned native float-planar startup
+case: 16-kHz mono silence, applied analog level 3, and full GC1 adaptive-analog
+control with its analog controller and digital adaptation enabled. A second stock
+module differs only in the top-level GC1 enable flag. AEC, NS, GC2 and fixed
+pre/post gain paths are disabled. Both modules use the same runtime-selected
+environment; original configuring owners are released before initialization.
+
+After the first native block, active GC1 must recommend a level greater than 3,
+while the disabled control recommends its applied level. Each subsequent block
+receives the actual preceding recommendation via `set_stream_analog_level`.
+Every setter result, recommendation before/after processing, native status,
+configuration and format state is retained. This is caller feedback to native
+APM, not a simulated microphone or a replacement audio-gain model.
+
+All float input, initialized output and actual output samples are stored as raw
+bits, including negative-zero input tails and unchanged extra output samples.
+`PULSEBEAM_STANDALONE_AGC_TRACE_PATH` writes the complete threaded/managed tuple.
+Managed time remains frozen during these synchronous blocks. This startup-floor
+and feedback-plumbing witness is not clipping-triggered or sustained adaptive-gain
+qualification, does not establish speech quality, and does not generalize to
+manual volume adjustment, other rates/channels or GC2 behavior.
+
 ### Distinct-rate multi-source mixing
 
 The same standalone application now calls `tests/support/standalone_mixing.rs`,
