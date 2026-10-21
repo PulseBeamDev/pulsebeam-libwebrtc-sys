@@ -103,6 +103,31 @@ frozen during this synchronous consumer. This bounded mono integer-input case
 does not establish all AEC settings, multichannel/float-input handling, adaptive
 noise/gain modes, device feedback or echo-quality certification.
 
+### Standalone noise suppression with a native control
+
+`tests/runtime_standalone_ns.rs` constructs two stock APM modules from the same
+runtime-selected environment. Both use SDK-default configuration fields with the
+NS level set to `VeryHigh`; only the NS enable flag differs. Original configuring
+owners are released before explicit 16-kHz mono initialization and capture calls.
+Both modules process identical bounded stationary caller PCM. The fixed integer
+recurrence is fixture data, not a runtime entropy provider or replacement DSP.
+
+The pinned NS uses 160-sample blocks, a 256-sample FFT, and startup phases of 50
+and 200 blocks. This consumer retains all 320 input/output blocks and measures
+four consecutive 25-block energy windows after 220 warm-up blocks. Each enabled
+output window must remain nonzero, differ from the disabled native control and
+have lower prefix energy. Measuring past startup avoids treating initial overlap
+delay as attenuation. There is no prescribed literal waveform or suppression
+ratio, and this stationary-input witness does not certify speech/noise quality.
+
+Complete configurations, explicit formats, native initialization/processing
+statuses, per-block format state, all 169 PCM samples including the untouched
+nine-sample caller tails, recurrence seed/final state and measured window energies
+participate in replay. The consumer does not query or discard APM statistics.
+`PULSEBEAM_STANDALONE_NS_TRACE_PATH` writes the complete threaded/managed tuple.
+Managed time remains frozen during synchronous processing. Other levels, inputs,
+rates, channel layouts, live changes and adaptive gain need separate consumers.
+
 ### Distinct-rate multi-source mixing
 
 The same standalone application now calls `tests/support/standalone_mixing.rs`,
