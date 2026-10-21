@@ -222,6 +222,111 @@ bool Processing(const webrtc::Environment& env) {
   return true;
 }
 
+// Observe installation only. Native AudioBuffer performs the channel conversion;
+// this provider never reads or modifies PCM and is not replacement DSP.
+struct RenderObservation {
+  int channels = 0;
+  int processed = 0;
+  bool dropped = false;
+};
+class ObserveRender final : public webrtc::CustomProcessing {
+ public:
+  explicit ObserveRender(std::shared_ptr<RenderObservation> observation)
+      : observation_(std::move(observation)) {}
+  ~ObserveRender() override { observation_->dropped = true; }
+  void Initialize(int, int channels) override { observation_->channels = channels; }
+  void Process(webrtc::AudioBuffer*) override { ++observation_->processed; }
+  std::string ToString() const override { return "SDK render observer"; }
+ private:
+  std::shared_ptr<RenderObservation> observation_;
+};
+
+bool Int16Layouts(const webrtc::Environment& env) {
+  const webrtc::StreamConfig stereo(16000, 2), mono(16000, 1), three(16000, 3);
+  std::vector<int16_t> input(320);
+  for (size_t frame = 0; frame < 160; ++frame) {
+    input[2 * frame] = 1000;
+    input[2 * frame + 1] = 3000;
+  }
+  input.insert(input.end(), 9, -333);
+  const auto original = input;
+  webrtc::AudioProcessing::Config config;
+  config.pre_amplifier.enabled = true;
+  config.pre_amplifier.fixed_gain_factor = 2;
+  auto capture = webrtc::BuiltinAudioProcessingBuilder(config).Build(env);
+  if (!capture) return false;
+  std::vector<int16_t> output(169, 777);
+  for (int frame = 0; frame < 10; ++frame) {
+    std::fill(output.begin(), output.end(), 777);
+    const auto status = capture->ProcessStream(input.data(), stereo, mono, output.data());
+    if (status != 0 ||
+        !std::all_of(output.begin(), output.begin() + 160, [](int16_t v) { return v == 4000; }) ||
+        !std::all_of(output.begin() + 160, output.end(), [](int16_t v) { return v == 777; })) {
+      std::fprintf(stderr, "int16 capture frame=%d status=%d first=%d last=%d tail=%d channels=%zu\n",
+                   frame, status, output.front(), output[159], output[160], capture->num_proc_channels());
+      return false;
+    }
+  }
+  // With no render processing active, the int16 native implementation returns
+  // OK without writing dest. Do not manufacture passthrough or downmix output.
+  std::fill(output.begin(), output.end(), 777);
+  const auto inactive_status = capture->ProcessReverseStream(input.data(), stereo, mono, output.data());
+  if (inactive_status != 0 ||
+      !std::all_of(output.begin(), output.end(), [](int16_t v) { return v == 777; })) {
+    std::fprintf(stderr, "int16 inactive status=%d first=%d tail=%d\n", inactive_status, output.front(), output[160]);
+    return false;
+  }
+
+  // AEC selects native mono render analysis; the observing render provider makes
+  // the real native CopyTo branch active. No provider-generated samples.
+  config = webrtc::AudioProcessing::Config{};
+  config.echo_canceller.enabled = true;
+  config.pipeline.multi_channel_render = false;
+  auto observation = std::make_shared<RenderObservation>();
+  webrtc::BuiltinAudioProcessingBuilder builder(config);
+  builder.SetRenderPreProcessing(std::make_unique<ObserveRender>(observation));
+  auto render = builder.Build(env);
+  if (!render) return false;
+  // Establish the full graph explicitly. The first implicit render-only
+  // transition can otherwise retain two processing channels despite AEC
+  // selection; native CopyTo then cannot safely write a mono destination.
+  webrtc::ProcessingConfig formats;
+  formats.input_stream() = mono;
+  formats.output_stream() = mono;
+  formats.reverse_input_stream() = stereo;
+  formats.reverse_output_stream() = mono;
+  const auto initialization = render->Initialize(formats);
+  if (initialization != 0 || render->num_reverse_channels() != 1 || observation->channels != 1) {
+    std::fprintf(stderr, "int16 render initialization=%d native_channels=%zu observer_channels=%d\n",
+                 initialization, render->num_reverse_channels(), observation->channels);
+    return false;
+  }
+  for (int frame = 0; frame < 10; ++frame) {
+    std::fill(output.begin(), output.end(), 777);
+    const auto status = render->ProcessReverseStream(input.data(), stereo, mono, output.data());
+    if (status != 0 ||
+        render->num_reverse_channels() != 1 || observation->channels != 1 ||
+        !std::all_of(output.begin(), output.begin() + 160, [](int16_t v) { return v == 2000; }) ||
+        !std::all_of(output.begin() + 160, output.end(), [](int16_t v) { return v == 777; })) {
+      std::fprintf(stderr, "int16 render frame=%d status=%d first=%d last=%d tail=%d native_channels=%zu observer_channels=%d calls=%d\n",
+                   frame, status, output.front(), output[159], output[160], render->num_reverse_channels(), observation->channels, observation->processed);
+      return false;
+    }
+  }
+  if (observation->processed != 10) return false;
+  // Distinct unsupported channel layouts retain native status and error output.
+  std::vector<int16_t> rejected(489, 777);
+  if (render->ProcessReverseStream(input.data(), stereo, three, rejected.data()) !=
+          webrtc::AudioProcessing::kBadNumberChannelsError ||
+      !std::all_of(rejected.begin(), rejected.begin() + 480, [](int16_t v) { return v == 1000; }) ||
+      !std::all_of(rejected.begin() + 480, rejected.end(), [](int16_t v) { return v == 777; }) ||
+      input != original) return false;
+  render = nullptr;
+  if (!observation->dropped) return false;
+  std::puts("software APM int16: native distinct-layout capture/render, inactive destination, error output and provider lifetime passed");
+  return true;
+}
+
 class LogOutput final : public webrtc::RtcEventLogOutput {
  public:
   explicit LogOutput(std::shared_ptr<std::string> bytes) : bytes_(std::move(bytes)) {}
@@ -293,5 +398,5 @@ bool SoftwareImplementations(const webrtc::Environment& env) {
     }
     if (!found) { std::fprintf(stderr, "missing required video codec %s\n", name); return false; }
   }
-  return Audio(env) && Processing(env) && Helpers(env);
+  return Audio(env) && Processing(env) && Int16Layouts(env) && Helpers(env);
 }

@@ -20,7 +20,7 @@ class ReleaseAuditTests(unittest.TestCase):
         for patch in (None, "0" * 64):
             with self.subTest(patch=patch), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                checksums, lock = self.build_release(root, {"linux-x86_64"}, runtime_resources_patch=patch)
+                checksums, lock = self.build_release(root, {"linux-x86_64", "linux-arm64"}, runtime_resources_patch=patch)
                 with self.assertRaisesRegex(audit_release.AuditError, "source identity|runtime-resources patch"):
                     audit_release.audit(root, checksums, lock, "linux")
 
