@@ -1,5 +1,9 @@
 //! One standalone application procedure, without a PeerConnectionFactory.
 use pulsebeam_webrtc_sys::*;
+use serde::Serialize;
+
+#[path = "support/standalone_mixing.rs"]
+mod mixing;
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -42,12 +46,13 @@ impl AudioMixerSourceProvider for Source {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 struct Observation {
     processed: Vec<i16>,
     mixed: Vec<i16>,
     encoded: Vec<u8>,
     decoded: Vec<i16>,
+    multi_source: mixing::Observation,
 }
 
 fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Observation {
@@ -134,6 +139,10 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Obs
     assert!(!encoded.is_empty());
     assert!(!decoded.is_empty());
     assert!(decoded.iter().any(|&sample| sample != 0));
+    // The stock SDK mixer is context-free. Keep its ordinary constructor,
+    // inside the same generic native application rather than inventing an
+    // environment dependency or a managed-only media procedure.
+    let multi_source = mixing::run();
     let mut stop = logger.stop_async().unwrap();
     loop {
         if let Some(result) = stop.try_take() {
@@ -149,6 +158,7 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Obs
         mixed,
         encoded,
         decoded,
+        multi_source,
     }
 }
 
@@ -159,7 +169,9 @@ fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging() 
         assert!(Instant::now() < deadline, "threaded native stop stalled");
         std::thread::yield_now();
     });
+    let mut observations = Vec::new();
     for _ in 0..2 {
+        eprintln!("CONTROLLED_MEDIA_BEGIN");
         let world = ControlledWorld::acquire(1001, Duration::from_secs(7)).unwrap();
         let mut turns = 0;
         let managed = application(world.runtime().unwrap(), || {
@@ -171,6 +183,11 @@ fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging() 
         assert_eq!(world.now(), Duration::from_secs(7));
         // Retire the final context/products without advancing virtual time.
         drop(world);
+        eprintln!("CONTROLLED_MEDIA_END");
+        observations.push(managed);
+    }
+    if let Some(path) = std::env::var_os("PULSEBEAM_STANDALONE_MIXING_TRACE_PATH") {
+        std::fs::write(path, serde_json::to_vec(&(&real, &observations)).unwrap()).unwrap();
     }
 }
 

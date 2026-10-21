@@ -103,7 +103,10 @@ primary-format results do not close auxiliary formats, all processing/mixing or
 arbitrary NetEq settings. Separate standalone L16 stereo and six-channel Opus
 cases qualify direct encode/decode and creator/parsed-frame ownership across
 runtimes, without changing peer advertisement or establishing installed NetEq
-consumers for those formats. See the
+consumers for those formats. The generic standalone application also qualifies
+two simultaneous stock mixer sources at distinct preferred rates, mono/stereo
+output and source removal/release, without inventing an environment parameter
+for the context-free SDK mixer. See the
 [audio runtime contracts](audio-runtime-contracts.md) for exact scope and trace
 controls.
 

@@ -41,6 +41,43 @@ failed-configuration recovery. Core/native and core ASan with leak detection
 passed. These are bounded construction/consumer results, not complete NetEq,
 VoIP or all-software-codec deterministic execution qualification.
 
+### Distinct-rate multi-source mixing
+
+The same standalone application now calls `tests/support/standalone_mixing.rs`,
+using the ordinary stock mixer alongside its environment-owned APM, G711 and
+logger products. The SDK mixer has no environment constructor; no extra runtime
+plumbing, executor or replacement mixing algorithm is introduced.
+
+Two actual source providers prefer 8 kHz mono and 16 kHz stereo. They generate
+caller PCM in the format requested by the native mixer. Twenty native mixes
+alternate mono/stereo output while both sources are registered. Both providers
+are requested at 16 kHz; steady stereo output must contain both distinct source
+contributions. The stereo source is then removed through an alias, repeated
+removal must report absence, and releasing the alias must destroy that provider.
+The remaining mono source supplies twenty more alternating mono/stereo outputs
+at 8 kHz, then its provider is released with the mixer. No removed-source callback
+may occur after release.
+
+Replay retains all forty output blocks, source callback order and input frames,
+source drops, active samples, public frame fields, layout, mute state and optional
+absolute capture timestamps. Local inputs supply no RTP packet infos; the corpus
+asserts they remain empty rather than silently omitting unexpected metadata.
+Startup/ramp output is retained without filtering or amplitude normalization.
+
+Current core/native observations match across threaded/managed execution, two
+managed repetitions and fresh processes. Both complete standalone test cases also
+pass core ASan with leak and stack-use-after-return checks. Continuous monitoring
+covers eight complete managed application acquisition-through-final-drop scopes,
+including the original APM/G711/logging consumers, with no physical thread/helper
+process creation or real socket syscalls. Managed time remains frozen. The
+threaded baseline is outside managed lifecycle markers.
+
+`PULSEBEAM_STANDALONE_MIXING_TRACE_PATH` writes the full JSON tuple
+`[threaded_observation, [managed_first, managed_second]]` after native lifecycles
+end. This qualifies the stated two-source rate/channel/removal consumer, not all
+source statuses, source-selection/limiter settings, reentry or concurrent callbacks,
+RTP packet-info merging or peer-installed mixing paths.
+
 ## Standalone NetEq decoder selection
 
 `NetEq::stock_with_decoder_factory` and
