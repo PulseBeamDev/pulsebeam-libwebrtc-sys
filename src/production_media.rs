@@ -34,6 +34,22 @@ impl<R: SessionRuntime> Session<R> {
             .map(|v| self.insert_transceiver(peer, v))
             .collect()
     }
+    /// Actual negotiated SDK MID for this transceiver. It remains absent until
+    /// native description application associates the transceiver with an m-line.
+    pub fn transceiver_mid(
+        &mut self,
+        transceiver: SessionTransceiverId,
+    ) -> Result<Option<String>, PeerError> {
+        self.check_open()?;
+        Ok(self
+            .transceivers
+            .get(&transceiver)
+            .ok_or_else(missing)?
+            .value
+            .value
+            .mid())
+    }
+
     pub fn create_local_media_stream(
         &mut self,
         peer: SessionPeerId,

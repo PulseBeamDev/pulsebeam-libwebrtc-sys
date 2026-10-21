@@ -84,6 +84,10 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Ses
         assert_eq!(session.media_track_id(retained).unwrap(), track_id);
         session.release_media_track_reference(retained).unwrap();
     }
+    let transceivers = session.transceivers(peer).unwrap();
+    for &transceiver in &transceivers {
+        assert_eq!(session.transceiver_mid(transceiver).unwrap(), None);
+    }
     let operation = session.create_offer(peer, false).unwrap();
     let offer = loop {
         if let Some(SessionEvent::OperationComplete(done)) = session.try_peer_event(peer).unwrap() {
@@ -95,6 +99,22 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Ses
     };
     assert!(offer.sdp.contains("m=audio "));
     assert!(offer.sdp.contains("m=video "));
+    let operation = session.set_local_description(peer, offer.clone()).unwrap();
+    loop {
+        if let Some(SessionEvent::OperationComplete(done)) = session.try_peer_event(peer).unwrap() {
+            if done.operation_id == operation {
+                done.result.unwrap();
+                break;
+            }
+        }
+        progress();
+    }
+    let mut mids = std::collections::HashSet::new();
+    for transceiver in transceivers {
+        let mid = session.transceiver_mid(transceiver).unwrap().unwrap();
+        assert!(offer.sdp.lines().any(|line| line == format!("a=mid:{mid}")));
+        assert!(mids.insert(mid), "native transceivers have distinct MIDs");
+    }
     session.shutdown().unwrap();
     offer
 }

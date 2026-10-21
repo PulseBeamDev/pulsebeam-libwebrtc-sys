@@ -1257,8 +1257,10 @@ dropped observably rather than truncated. Actor counterparts retain IDs for the
 same native objects, and baseline Opus/video track constructors do not require
 implicitly publishing an auxiliary transceiver. `senders()`, `receivers()`
 and `transceivers()` copy one actual native collection snapshot; the latter
-requires Unified Plan. Stream source leases follow native collection and sender
-identity, including the SDK's ID-based track removal semantics.
+requires Unified Plan. `transceiver_mid(id)` reads the native transceiver's
+optional MID; it remains absent until description application associates the
+transceiver with an m-line. Stream source leases follow native collection and
+sender identity, including the SDK's ID-based track removal semantics.
 
 Retained ICE access is revocable: `IceTransportInternal` reacquires the internal
 transport inside each network-role call. It exposes actual configuration,
