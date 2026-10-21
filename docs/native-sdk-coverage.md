@@ -135,6 +135,15 @@ paths. Non-Linux header dispositions retain explicit source evidence. Existing
 capture capabilities have separate source/consumer/test references rather than
 being silently dropped because their roots are outside the SDK directory tables.
 
+The `api/rtc_error.h` mappings distinguish native discriminant values, name
+conversion, owned error construction/assignment, field operations, borrowed
+message storage and native formatting. `RtcError::message_bytes()` follows the
+SDK's NUL-terminated message accessor; the exclusive builder exposes full stored
+bytes. Unknown discriminants remain values, but name conversion avoids the
+SDK's unchecked lookup for them. The generic stream-insertion domain remains
+partial, and `RTCErrorOr<T>` remains unmapped rather than being implicitly covered
+by an owned-error entry or an unexamined equivalence to Rust `Result`.
+
 `check --require-mapped` additionally rejects unmapped or partial active
 declarations and unaccounted configuration macros. It is a structural mapping
 gate, **not** proof of functional SDK coverage. A valid source anchor or a test

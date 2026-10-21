@@ -95,6 +95,889 @@
   ],
   "mappings": [
     {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@DATA_CHANNEL_FAILURE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@DTLS_FAILURE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@FINGERPRINT_FAILURE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@HARDWARE_ENCODER_ERROR",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@HARDWARE_ENCODER_NOT_AVAILABLE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@NONE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@SCTP_FAILURE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType@SDP_SYNTAX_ERROR",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorDetailType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@INVALID_MODIFICATION",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@INVALID_PARAMETER",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@INVALID_RANGE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@INVALID_STATE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@NETWORK_ERROR",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@NONE",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@OPERATION_ERROR_WITH_DATA",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@RESOURCE_EXHAUSTED",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@SYNTAX_ERROR",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@UNSUPPORTED_OPERATION",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorType@UNSUPPORTED_PARAMETER",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Known native discriminants map to RtcErrorType variants; Other(i32) retains the full unknown discriminant domain. Native field construction, mutation and reads preserve the numeric value rather than normalizing it.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"},
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@F@ToString#$@N@webrtc@E@RTCErrorDetailType#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "native_name calls the pinned SDK ToString for known detail values. Unknown discriminants remain observable but return None instead of reaching the native unchecked array index.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorDetailType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"rust::String rtc_error_detail_name("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@F@ToString#$@N@webrtc@E@RTCErrorType#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "native_name calls the pinned SDK ToString for known error values. Unknown discriminants remain observable but return None instead of reaching the native unchecked array index.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub enum RtcErrorType {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"rust::String rtc_error_type_name("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@FT@>1#TAbslStringify#&t0.0#&1$@N@webrtc@S@RTCError#v#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "native_string_bytes uses the SDK AbslStringify overload through absl::StrFormat, exposing the complete native formatted bytes for idiomatic Rust sink consumption. native_string is a UTF-8-lossy convenience. Unknown error types reject the unsafe native name lookup without altering stored fields; unknown details do not incorrectly block formatting.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn native_string_bytes("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"rust::Vec<std::uint8_t> rtc_error_string("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError",
+      "profiles": ["core","native"],
+      "state": "partial",
+      "gaps": ["Generic stream insertion is bound for the existing scalar and SDK value inputs, but the remaining in-scope native streamable value types have not been reconciled. RTCErrorOr<T> is a separate, unmapped template family."],
+      "semantics": "RtcError owns actual SDK RTCError storage with native factories, copy/move assignment, field mutation, borrowed message builder and byte-preserving queries. Native sender SetParameters results reach the same public value; message() is explicitly a lossy text convenience over exact message_bytes(). This row does not claim every RTCErrorOr or streamable SDK type.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub struct RtcError {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.h","anchor":"explicit NativeRtcError(webrtc::RTCError value) : value_(std::move(value)) {}"},
+        {"tree":"repository","path":"native/video.cc","anchor":"return std::make_unique<NativeRtcError>(sender.sender()->SetParameters(parameters.value()));"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/sender_parameter_transactions.rs","anchor":"fn native_sender_transactions_preserve_staleness_failure_and_one_shot_completion()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@InvalidModification#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::invalid_modification delegates to SDK RTCError::InvalidModification without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn invalid_modification("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::INVALID_MODIFICATION: return std::make_unique<NativeRtcError>(webrtc::RTCError::InvalidModification("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@InvalidParameter#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::invalid_parameter delegates to SDK RTCError::InvalidParameter without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn invalid_parameter("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::INVALID_PARAMETER: return std::make_unique<NativeRtcError>(webrtc::RTCError::InvalidParameter("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@InvalidRange#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::invalid_range delegates to SDK RTCError::InvalidRange without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn invalid_range("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::INVALID_RANGE: return std::make_unique<NativeRtcError>(webrtc::RTCError::InvalidRange("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@InvalidState#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::invalid_state delegates to SDK RTCError::InvalidState without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn invalid_state("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::INVALID_STATE: return std::make_unique<NativeRtcError>(webrtc::RTCError::InvalidState("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@NetworkError#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::network_error delegates to SDK RTCError::NetworkError without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn network_error("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::NETWORK_ERROR: return std::make_unique<NativeRtcError>(webrtc::RTCError::NetworkError("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@OK#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::success delegates to SDK RTCError::OK without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn success("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::NONE: return std::make_unique<NativeRtcError>(webrtc::RTCError::OK("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@OperationErrorWithData#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::operation_error_with_data delegates to SDK RTCError::OperationErrorWithData without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn operation_error_with_data("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::OPERATION_ERROR_WITH_DATA: return std::make_unique<NativeRtcError>(webrtc::RTCError::OperationErrorWithData("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@RTCError#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "The owned Rust value preserves native default/type/message construction and copy semantics. Rust moves transfer its owning handle without rebuilding fields; native RTCError moves are used when constructing the holder. Clone copies SDK storage rather than aliasing mutable message storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"impl Default for RtcError {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_default("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@RTCError#$@N@webrtc@E@RTCErrorType#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "The owned Rust value preserves native default/type/message construction and copy semantics. Rust moves transfer its owning handle without rebuilding fields; native RTCError moves are used when constructing the holder. Clone copies SDK storage rather than aliasing mutable message storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn new(kind: RtcErrorType)"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_for_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@RTCError#$@N@webrtc@E@RTCErrorType#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "The owned Rust value preserves native default/type/message construction and copy semantics. Rust moves transfer its owning handle without rebuilding fields; native RTCError moves are used when constructing the holder. Clone copies SDK storage rather than aliasing mutable message storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn with_message("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_new("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@RTCError#&&$@N@webrtc@S@RTCError#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "The owned Rust value preserves native default/type/message construction and copy semantics. Rust moves transfer its owning handle without rebuilding fields; native RTCError moves are used when constructing the holder. Clone copies SDK storage rather than aliasing mutable message storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub struct RtcError {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.h","anchor":"explicit NativeRtcError(webrtc::RTCError value) : value_(std::move(value)) {}"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@RTCError#&1$@N@webrtc@S@RTCError#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "The owned Rust value preserves native default/type/message construction and copy semantics. Rust moves transfer its owning handle without rebuilding fields; native RTCError moves are used when constructing the holder. Clone copies SDK storage rather than aliasing mutable message storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"impl Clone for RtcError {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_clone("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@ResourceExhausted#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::resource_exhausted delegates to SDK RTCError::ResourceExhausted without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn resource_exhausted("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::RESOURCE_EXHAUSTED: return std::make_unique<NativeRtcError>(webrtc::RTCError::ResourceExhausted("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@SyntaxError#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::syntax_error delegates to SDK RTCError::SyntaxError without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn syntax_error("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::SYNTAX_ERROR: return std::make_unique<NativeRtcError>(webrtc::RTCError::SyntaxError("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@UnsupportedOperation#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::unsupported_operation delegates to SDK RTCError::UnsupportedOperation without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn unsupported_operation("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::UNSUPPORTED_OPERATION: return std::make_unique<NativeRtcError>(webrtc::RTCError::UnsupportedOperation("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@UnsupportedParameter#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#S",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::unsupported_parameter delegates to SDK RTCError::UnsupportedParameter without reconstructing the result. Message inputs preserve the native string_view byte domain, including non-UTF-8 and embedded NUL.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn unsupported_parameter("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"case webrtc::RTCErrorType::UNSUPPORTED_PARAMETER: return std::make_unique<NativeRtcError>(webrtc::RTCError::UnsupportedParameter("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@error_detail#1",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::error_detail delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn error_detail("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@message#1",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::message_bytes delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn message_bytes("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_c_string_message_accessor_does_not_invent_full_length_semantics()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@ok#1",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::is_ok delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn is_ok("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"bool rtc_error_is_ok(const NativeRtcError& error) noexcept"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@operator=#&&$@N@webrtc@S@RTCError#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Native move assignment preserves type, detail, optional SCTP cause and complete message storage. Rust mutation requires exclusive access.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn move_assign("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_move_assign("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@operator=#&1$@N@webrtc@S@RTCError#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "Native copy assignment preserves type, detail, optional SCTP cause and complete message storage. Rust mutation requires exclusive access.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"impl Clone for RtcError {"}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_assign("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@sctp_cause_code#1",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::sctp_cause_code delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn sctp_cause_code("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@set_error_detail#$@N@webrtc@E@RTCErrorDetailType#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::set_error_detail delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn set_error_detail("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_detail("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@set_message#$@N@std@N@__Cr@S@basic_string_view>#C#$@N@std@N@__Cr@S@char_traits>#C#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::set_message delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn set_message("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_message("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_c_string_message_accessor_does_not_invent_full_length_semantics()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@set_sctp_cause_code#s#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::set_sctp_cause_code delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn set_sctp_cause_code("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_sctp_cause("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@set_type#$@N@webrtc@E@RTCErrorType#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::set_kind delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn set_kind("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"void rtc_error_set_type("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@string_builder#",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "An exclusive borrowed Rust builder operates on the SDK RTCError message storage, retaining full bytes across embedded NUL and non-UTF-8 input. Its borrow prevents owner mutation/destruction until release; clear/release and supported native stream inputs delegate to StringBuilder.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn string_builder("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"rust::Slice<const std::uint8_t> rtc_error_builder_bytes("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_owned_string_builder_construction_and_assignment()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@F@type#1",
+      "profiles": ["core","native"],
+      "state": "implemented",
+      "semantics": "RtcError::kind delegates to the corresponding SDK value operation. Enum and optional SCTP cause fields retain their native domain; success is the SDK ok() result. Message bytes follow the native const-char* accessor's termination at embedded NUL, while string_builder exposes the full storage.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn kind("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rtc_error_factories_fields_and_assignment()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn unknown_error_discriminants_preserved_without_unsafe_string_conversion()"}
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@S@RTCError@FT@>1#Toperator<<#&1t0.0#&&$@N@webrtc@S@RTCError#&&",
+      "profiles": ["core","native"],
+      "state": "partial",
+      "gaps": ["The arbitrary C++ streamable template domain is not fully reconciled to the remaining in-scope SDK value types. The existing named Rust scalar/value adapters do not establish that every necessary streamable input is exposed."],
+      "semantics": "Consuming with_appended_* methods invoke the native rvalue stream template on the owned error, preserving metadata and native formatting for supported scalar and SDK value inputs. They are not an arbitrary C++ template instantiation facility.",
+      "rust": [
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn with_appended_bytes("},
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn with_appended_i32("},
+        {"tree":"repository","path":"src/rtc_error.rs","anchor":"pub fn with_appended_rtp_parameters("}
+      ],
+      "installation": [
+        {"tree":"repository","path":"native/rtc_error.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_with_appended_bytes("},
+        {"tree":"repository","path":"native/rtp_values.cc","anchor":"std::unique_ptr<NativeRtcError> rtc_error_stream_rtp_parameters("}
+      ],
+      "verification": [
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_rvalue_scalar_streams_retain_error_metadata()"},
+        {"tree":"repository","path":"tests/rtc_error.rs","anchor":"fn native_borrowed_message_builder_and_non_utf8_bytes()"}
+      ]
+    },
+    {
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionFactoryDependencies@FI@env",
       "profiles": ["core", "native"],
       "state": "implemented",
