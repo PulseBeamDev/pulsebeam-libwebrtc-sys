@@ -73,6 +73,36 @@ This is bounded standalone effect/control/ownership qualification, separate from
 the installed peer pre-amplifier case. It does not qualify all adaptive/noise,
 render/capture, echo, multichannel or configuration-rejection paths.
 
+### Standalone AEC render/capture and native observations
+
+`AudioProcessingModule::builtin_with_linear_echo` enables the native AEC3 linear
+filter in the builder. Enable both the top-level echo canceller and linear-output
+export in `AudioProcessorConfig` to consume its output. The module retains the
+selected environment independently of the original factory/environment handles;
+release the module before its runtime scope closes. No ADM or physical device is
+needed for caller-supplied render/capture buffers.
+
+`tests/runtime_standalone_aec.rs` uses one generic runtime procedure with 20 paired
+16-kHz mono 160-sample reverse-render/capture blocks and a 37-ms delay input. It
+keeps both full PCM buffers, native statuses, formats and nine-sample caller tails.
+Inactive linear queries retain their actual false/refusal result and untouched
+buffers. With AEC/export enabled, initialized pre-capture zero output is a native
+result. Subsequent linear queries keep both full 160-float rows, including the
+untouched extra caller row; warmed-up output must be finite, bounded and nonzero.
+No literal cancellation waveform or quality threshold is substituted for native
+processing. Configurations and native initial/final statistics remain observable.
+
+All five optional `f64` metrics are retained as exact bits, all three optional
+`i32` delay values remain exact, and optional voice detection and failure remain
+separate. Every linear `f32` is also retained as bits. There is no NaN, signed-zero
+or absence normalization. The deprecated `statistics_for_remote_tracks(false)`
+overload delegates to the ordinary native snapshot in this pin, not an absence
+filter. `PULSEBEAM_STANDALONE_AEC_TRACE_PATH` writes the full threaded/managed
+observation tuple after module/runtime lifecycles close. Managed time remains
+frozen during this synchronous consumer. This bounded mono integer-input case
+does not establish all AEC settings, multichannel/float-input handling, adaptive
+noise/gain modes, device feedback or echo-quality certification.
+
 ### Distinct-rate multi-source mixing
 
 The same standalone application now calls `tests/support/standalone_mixing.rs`,
