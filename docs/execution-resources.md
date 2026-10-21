@@ -99,8 +99,11 @@ reports and externally selected loss. Replay compares actual plaintext encoded
 frames and all returned PCM without changing codec algorithms or callback sample
 rates. Current core/native and core ASan cases passed, with complete-lifecycle
 monitoring and repeated fresh-process/cross-flavor observations. These bounded
-primary-format results do not close L16, multi-channel Opus, auxiliary formats,
-all processing/mixing or arbitrary NetEq settings. See the
+primary-format results do not close auxiliary formats, all processing/mixing or
+arbitrary NetEq settings. Separate standalone L16 stereo and six-channel Opus
+cases qualify direct encode/decode and creator/parsed-frame ownership across
+runtimes, without changing peer advertisement or establishing installed NetEq
+consumers for those formats. See the
 [audio runtime contracts](audio-runtime-contracts.md) for exact scope and trace
 controls.
 

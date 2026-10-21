@@ -302,10 +302,52 @@ still excluded without rewriting them or adding clock/entropy shims.
 `PULSEBEAM_PCM_{PCMU,PCMA,G722}_TRACE_PATH` and
 `PULSEBEAM_PCM_{PCMU,PCMA,G722}_LOSS_TRACE_PATH` write first/second JSON traces,
 using the same format as the Opus cases. These bounded primary-format cases do
-not qualify directly constructible non-advertised L16 or multi-channel Opus,
-auxiliary CN/DTMF/RED paths, arbitrary APM settings, multi-source mixing or all
-NetEq impairment/reconfiguration paths. Those remain distinct qualification
-obligations, not upstream unavailability or determinism opt-outs.
+not qualify peer/NetEq installation of non-advertised L16 or multi-channel
+Opus, auxiliary CN/DTMF/RED paths, arbitrary APM settings, multi-source mixing or
+all NetEq impairment/reconfiguration paths. The direct standalone codec results
+below are distinct from installed-peer qualification. Remaining gaps are not
+upstream unavailability or determinism opt-outs.
+
+### Direct L16 and multi-channel Opus
+
+`tests/managed_audio_codec_families.rs` uses one generic standalone application
+on threaded and managed runtimes. It creates the environment through the common
+runtime factory, then directly creates builtin encoder/decoder products for
+`L16/48000/2` or `multiopus/48000/6`. The latter uses `num_streams=4`,
+`coupled_streams=2` and `channel_mapping=0,4,1,2,3,5`. No peer capabilities,
+default codec preferences, media algorithms or artifact sources are changed.
+
+Each case submits twelve interleaved 10 ms blocks with distinct channel tones
+and wrapping RTP timestamps. It retains every encoding result, including empty
+buffering, complete primary/redundant encoded metadata, compressed bytes, packet
+duration/FEC observations, parsed timestamps/priorities, frame metadata, speech
+type and every decoded sample. Native negative duration sentinels remain intact.
+Stereo L16 uses its native default 10 ms packets, producing twelve packets and
+11,520 decoded interleaved samples. Six-channel Opus buffers 20 ms packets,
+producing six packets and 34,560 samples. L16 must roundtrip bit-exactly; all six
+Opus channels must retain their distinct source tones without removing startup
+samples or normalizing output.
+
+Configuring factories and the original environment are dropped before use.
+After encoding and parsing, the original encoder/decoder handles are dropped
+before the owning parsed frames decode. Passive observations survive complete
+native retirement. Managed construction, use and final product retirement leave
+virtual time frozen; these synchronous standalone cases do not require packet
+transport or caller-driven media pacing.
+
+Both current Linux x86_64 artifact flavors matched complete observations across
+threaded/managed execution, repeated managed scopes and fresh processes. Core
+ASan with leak and stack-use-after-return checks passed. Continuous monitoring
+covered sixteen complete managed acquisition-through-final-drop lifecycles with
+no physical thread/helper-process creation or real socket syscalls. The threaded
+baseline runs outside those managed lifecycle markers.
+
+`PULSEBEAM_L16_TRACE_PATH` and `PULSEBEAM_MULTIOPUS_TRACE_PATH` write the complete
+JSON tuple `[threaded_observation, [managed_first, managed_second]]` after native
+lifecycles end. Compare the entire objects, not only compressed bytes or channel
+counts. These results qualify the stated standalone formats and ownership path,
+not every rate/channel/mapping/packetization setting, peer advertisement,
+installed transport, NetEq reconfiguration or custom codec providers.
 
 ## Installed stock encoder controls
 
