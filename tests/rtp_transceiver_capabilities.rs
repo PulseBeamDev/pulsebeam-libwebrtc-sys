@@ -58,7 +58,10 @@ fn finish_offer(
 
 #[test]
 fn full_capability_preferences_preserve_metadata_errors_and_migrated_ownership() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();
     let transceiver = session

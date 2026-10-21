@@ -71,7 +71,10 @@ fn terminal_results_hold_admission_until_observed_and_close_never_duplicates_the
 
 #[test]
 fn actor_source_retirement_releases_entries_and_is_idempotent() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     for _ in 0..128 {
         let id = session.create_opus_source(1).unwrap();
         session.close_source(id).unwrap();

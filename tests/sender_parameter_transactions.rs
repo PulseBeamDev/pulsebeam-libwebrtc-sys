@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn native_sender_transactions_preserve_staleness_failure_and_one_shot_completion() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();
     let transceiver = session

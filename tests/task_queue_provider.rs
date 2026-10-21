@@ -591,6 +591,7 @@ impl TaskQueueFactoryProvider for WorkerFactory {
 fn production_engine_uses_registered_scheduler_and_retires_all_products() {
     let provider = Arc::new(WorkerFactory::default());
     let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
         .task_queue_provider(provider.clone())
         .unwrap()
         .build()

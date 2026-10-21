@@ -58,7 +58,10 @@ fn unsupported(error: SframeCreateError, message: &str) {
 }
 #[test]
 fn migrated_actor_preserves_native_creation_errors_and_owner_side_effects() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();
     let transceiver = session

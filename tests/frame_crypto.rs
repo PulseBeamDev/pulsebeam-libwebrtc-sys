@@ -239,7 +239,10 @@ fn unsafe_provider_results_poison_without_silent_success_or_size_clamping() {
 #[test]
 fn actor_installs_native_providers_retains_released_aliases_and_binds_one_receiver() {
     let trace = Arc::new(Trace::default());
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();
     let transceiver = session
@@ -357,7 +360,10 @@ fn actor_installs_native_providers_retains_released_aliases_and_binds_one_receiv
 
 #[test]
 fn actor_video_capacity_guard_and_decrypt_callback_failure_preserve_sdk_status_domain() {
-    let mut session = ProductionSession::new(ProductionSessionConfig::default()).unwrap();
+    let mut session = ProductionSession::builder(ProductionSessionConfig::default())
+        .encoded_audio()
+        .build()
+        .unwrap();
     let peer = session.create_peer(PeerConfiguration::default()).unwrap();
     let source = session.create_opus_source(1).unwrap();
     let transceiver = session
