@@ -1,10 +1,49 @@
-//! Real PCM capture -> stock Opus -> NetEq/raw playout with caller-owned progress.
+//! Real PCM capture -> selected stock audio codec -> NetEq/raw playout with caller-owned progress.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
-use std::{cell::RefCell, collections::HashMap, net::IpAddr, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    net::IpAddr,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 #[path = "pcm_periodic.rs"]
 mod periodic;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct EncodedFrameObservation {
+    ssrc: u32,
+    rtp_timestamp: u32,
+    payload_type: u8,
+    data: Vec<u8>,
+}
+
+#[derive(Default)]
+struct EncodedAudit {
+    frames: Mutex<Vec<EncodedFrameObservation>>,
+}
+
+impl FrameTransformerProvider for EncodedAudit {
+    fn transform(&self, frame: TransformableMediaFrame, completion: FrameTransformCompletion) {
+        assert!(matches!(&frame, TransformableMediaFrame::Audio(_)));
+        assert_eq!(frame.direction(), TransformableFrameDirection::Sender);
+        self.frames.lock().unwrap().push(EncodedFrameObservation {
+            ssrc: frame.ssrc(),
+            rtp_timestamp: frame.rtp_timestamp(),
+            payload_type: frame.payload_type(),
+            data: frame.data().to_vec(),
+        });
+        // Observe the actual plaintext encoder output, then return the same
+        // owning SDK frame without changing its data, metadata or callback.
+        assert_eq!(
+            completion.complete(frame).unwrap(),
+            FrameTransformCompletionOutcome::DeliveredToNative
+        );
+    }
+}
 
 struct Call<R: SessionRuntime> {
     sessions: [Session<R>; 2],
@@ -15,6 +54,8 @@ struct Call<R: SessionRuntime> {
     connected: [bool; 2],
     receivers: [Option<SessionReceiverId>; 2],
     answer_transceiver: Option<SessionTransceiverId>,
+    encoded: [Arc<EncodedAudit>; 2],
+    transformers: [Option<SessionFrameTransformerId>; 2],
     events: Vec<String>,
 }
 
@@ -53,8 +94,20 @@ impl<R: SessionRuntime> Call<R> {
             connected: [false; 2],
             receivers: [None; 2],
             answer_transceiver: None,
+            encoded: std::array::from_fn(|_| Arc::new(EncodedAudit::default())),
+            transformers: [None; 2],
             events: Vec::new(),
         }
+    }
+
+    fn observe_sender(&mut self, index: usize, sender: SessionSenderId) {
+        let transformer = self.sessions[index]
+            .create_frame_transformer(self.encoded[index].clone(), usize::MAX)
+            .unwrap();
+        self.sessions[index]
+            .set_sender_frame_transformer(sender, Some(transformer))
+            .unwrap();
+        assert!(self.transformers[index].replace(transformer).is_none());
     }
 
     fn drain(&mut self) {
@@ -175,19 +228,23 @@ impl<R: SessionRuntime> Call<R> {
 
     fn negotiate(
         &mut self,
+        codec_name: &str,
         answer_source: SessionSourceId,
         progress: &mut impl FnMut(Duration),
-    ) -> u8 {
+    ) -> (u8, String) {
         let operation = self.sessions[0].create_offer(self.peers[0], false).unwrap();
         let offer = self.finish(0, operation, progress).unwrap();
-        let opus_payload_type = offer
+        let (payload_type, codec_rtpmap) = offer
             .sdp
             .lines()
             .find_map(|line| {
                 let (payload_type, codec) = line.strip_prefix("a=rtpmap:")?.split_once(' ')?;
-                (codec.trim() == "opus/48000/2").then(|| payload_type.parse::<u8>().unwrap())
+                let codec = codec.trim();
+                let (name, _) = codec.split_once('/')?;
+                name.eq_ignore_ascii_case(codec_name)
+                    .then(|| (payload_type.parse::<u8>().unwrap(), codec.to_owned()))
             })
-            .expect("stock Opus must be negotiated");
+            .unwrap_or_else(|| panic!("stock codec must be negotiated: {codec_name}"));
         let offer = self.gather(0, offer, progress);
         let operation = self.sessions[1]
             .set_remote_description(self.peers[1], offer)
@@ -203,12 +260,13 @@ impl<R: SessionRuntime> Call<R> {
         self.sessions[1]
             .set_direction(transceiver, RtpTransceiverDirection::SendReceive)
             .unwrap();
+        self.observe_sender(1, sender);
         let operation = self.sessions[1].create_answer(self.peers[1]).unwrap();
         let answer = self.finish(1, operation, progress).unwrap();
         assert!(
             answer
                 .sdp
-                .contains(&format!("a=rtpmap:{opus_payload_type} opus/48000/2"))
+                .contains(&format!("a=rtpmap:{payload_type} {codec_rtpmap}"))
         );
         let answer = self.gather(1, answer, progress);
         let operation = self.sessions[0]
@@ -218,7 +276,7 @@ impl<R: SessionRuntime> Call<R> {
         for _ in 0..10_000 {
             self.drain();
             if self.connected == [true; 2] && self.receivers.iter().all(Option::is_some) {
-                return opus_payload_type;
+                return (payload_type, codec_rtpmap);
             }
             progress(Duration::from_millis(1));
         }
@@ -263,8 +321,8 @@ struct PacketObservation {
     sender: usize,
     deadline_us: u128,
     observed_at_us: u128,
-    opus_rtp_header: Option<Vec<u8>>,
-    opus_packet_size: Option<usize>,
+    rtp_header: Option<Vec<u8>>,
+    rtp_packet_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     decision: Option<&'static str>,
 }
@@ -291,13 +349,15 @@ struct QueueTeardown {
 #[derive(Debug, Eq, PartialEq, Serialize)]
 struct Observation {
     events: Vec<String>,
-    opus_payload_type: u8,
+    codec_rtpmap: String,
+    payload_type: u8,
+    encoded: [Vec<EncodedFrameObservation>; 2],
     captures_at_us: Vec<u128>,
     frames: [Vec<FrameObservation>; 2],
     tone_frames: [usize; 2],
     media_elapsed_us: u128,
     packets: Vec<PacketObservation>,
-    opus_packets: [usize; 2],
+    rtp_packets: [usize; 2],
     #[serde(skip_serializing_if = "Option::is_none")]
     periodic: Option<periodic::Observation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,6 +383,8 @@ fn has_tone(samples: &[i16], period: usize) -> bool {
 
 fn application<R: SessionRuntime>(
     runtimes: [R; 2],
+    codec_name: &str,
+    decoded_sample_rate_hz: u32,
     processing: Option<&AudioProcessorConfig>,
     capture_blocks: usize,
     reports: Option<&Arc<periodic::Audit>>,
@@ -355,17 +417,24 @@ fn application<R: SessionRuntime>(
             None,
         )
         .unwrap();
-    let opus = call.sessions[0]
+    let codec = call.sessions[0]
         .get_rtp_sender_capabilities(MediaType::Audio)
         .unwrap()
         .codecs()
         .into_iter()
-        .find(|codec| codec.base_codec().name_bytes() == b"opus")
-        .expect("stock Opus encoder capability");
+        .find(|codec| {
+            codec
+                .base_codec()
+                .name_bytes()
+                .eq_ignore_ascii_case(codec_name.as_bytes())
+        })
+        .unwrap_or_else(|| panic!("stock encoder capability missing: {codec_name}"));
     call.sessions[0]
-        .set_rtp_codec_preferences(transceiver, &[opus])
+        .set_rtp_codec_preferences(transceiver, &[codec])
         .unwrap();
-    let opus_payload_type = call.negotiate(sources[1], &mut progress);
+    let sender = call.sessions[0].sender(transceiver).unwrap();
+    call.observe_sender(0, sender);
+    let (payload_type, codec_rtpmap) = call.negotiate(codec_name, sources[1], &mut progress);
     let receivers = call.receivers.map(Option::unwrap);
     for (index, receiver) in receivers.iter().enumerate() {
         call.sessions[index].attach_pcm(*receiver).unwrap();
@@ -410,16 +479,15 @@ fn application<R: SessionRuntime>(
                 .try_pcm_frame(receivers[index])
                 .unwrap()
             {
-                assert_eq!(
-                    (
-                        frame.sample_rate_hz,
-                        frame.channels,
-                        frame.samples_per_channel
-                    ),
-                    (48000, 1, 480)
-                );
-                assert_eq!(frame.samples.len(), 480);
-                if has_tone(&frame.samples, [48, 32][1 - index]) {
+                // Native callbacks include both codec-rate and 48kHz output.
+                // Keep every returned format and sample block without local
+                // resampling or discarding startup/concealment.
+                assert!([48000, decoded_sample_rate_hz].contains(&frame.sample_rate_hz));
+                assert_eq!(frame.channels, 1);
+                assert_eq!(frame.samples_per_channel, frame.sample_rate_hz / 100);
+                assert_eq!(frame.samples.len(), (frame.sample_rate_hz / 100) as usize);
+                let frequency = [1000, 1500][1 - index];
+                if has_tone(&frame.samples, (frame.sample_rate_hz / frequency) as usize) {
                     tone_frames[index] += 1;
                 }
                 // Retain silence and any concealment, not just selected tones.
@@ -447,7 +515,7 @@ fn application<R: SessionRuntime>(
     );
     assert!(
         tone_frames.iter().all(|&count| count >= 3),
-        "stock PCM/Opus/NetEq did not deliver three source-correlated tone blocks per receiver: {tone_frames:?}"
+        "stock PCM/{codec_name}/NetEq did not deliver three source-correlated tone blocks per receiver: {tone_frames:?}"
     );
     let media_elapsed_us = now().as_micros() - started_at.as_micros();
     assert!(media_elapsed_us >= (capture_blocks as u128) * 10_000);
@@ -465,25 +533,59 @@ fn application<R: SessionRuntime>(
                 .unwrap();
         }
     }
+    let encoded = call.encoded.clone();
+    for index in 0..2 {
+        let stats = call.sessions[index]
+            .frame_transformer_statistics(call.transformers[index].unwrap())
+            .unwrap();
+        assert_eq!(stats.in_flight, 0);
+        assert_eq!(stats.delivered, stats.completed);
+        assert_eq!(
+            stats.delivered as usize,
+            encoded[index].frames.lock().unwrap().len()
+        );
+        assert_eq!(
+            [
+                stats.abandoned,
+                stats.late_completions,
+                stats.capacity_drops,
+                stats.wrong_frame,
+                stats.callback_panics
+            ],
+            [0; 5],
+            "plaintext observation must not drop, bypass or corrupt encoded frames"
+        );
+    }
     let events = finish(call);
     assert_eq!(now(), before_close, "teardown advanced virtual time");
+    let encoded = encoded.map(|audit| audit.frames.lock().unwrap().clone());
+    for frames in &encoded {
+        assert!(frames.len() >= 3);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.payload_type == payload_type && !frame.data.is_empty())
+        );
+    }
     Observation {
         events,
-        opus_payload_type,
+        codec_rtpmap,
+        payload_type,
+        encoded,
         captures_at_us,
         frames,
         tone_frames,
         media_elapsed_us,
         packets: Vec::new(),
-        opus_packets: [0; 2],
+        rtp_packets: [0; 2],
         periodic,
         queue_teardown: None,
     }
 }
 
-fn opus_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
+fn audio_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
     // SRTP retains the RTP header in the clear. Classify only the negotiated
-    // Opus PT, excluding STUN/DTLS and the RTCP type range.
+    // audio PT, excluding STUN/DTLS and the RTCP type range.
     if bytes.len() < 12
         || bytes[0] >> 6 != 2
         || (192..=223).contains(&bytes[1])
@@ -502,11 +604,27 @@ fn opus_rtp_header(bytes: &[u8], payload_type: u8) -> Option<Vec<u8>> {
     Some(bytes[..length].to_vec())
 }
 
-fn run(processing: Option<&AudioProcessorConfig>) -> Trace {
-    run_case(processing, 6, false, false, false)
+fn run_case(
+    processing: Option<&AudioProcessorConfig>,
+    capture_blocks: usize,
+    observe_periodic: bool,
+    impaired: bool,
+    queued_teardown: bool,
+) -> Trace {
+    run_codec_case(
+        "opus",
+        48000,
+        processing,
+        capture_blocks,
+        observe_periodic,
+        impaired,
+        queued_teardown,
+    )
 }
 
-fn run_case(
+fn run_codec_case(
+    codec_name: &str,
+    decoded_sample_rate_hz: u32,
     processing: Option<&AudioProcessorConfig>,
     capture_blocks: usize,
     observe_periodic: bool,
@@ -535,6 +653,8 @@ fn run_case(
         let mut queue_teardown = None;
         let mut observation = application(
             runtimes,
+            codec_name,
+            decoded_sample_rate_hz,
             processing,
             capture_blocks,
             reports.as_ref(),
@@ -585,7 +705,7 @@ fn run_case(
                 assert!(!world.pump(256).blocked);
                 while let Some(packet) = network.next_packet() {
                     let sender = ips.iter().position(|&ip| ip == packet.source.ip()).unwrap();
-                    // This application advertises only Opus. The outer caller
+                    // The application selects one stock codec. The outer caller
                     // drops every tenth RTP packet, never STUN/DTLS/RTCP.
                     let rtp = packet.payload.len() >= 12
                         && packet.payload[0] >> 6 == 2
@@ -625,10 +745,10 @@ fn run_case(
         observation.queue_teardown = queue_teardown;
         let wire = packets.into_inner();
         for packet in &wire {
-            let header = opus_rtp_header(&packet.payload, observation.opus_payload_type);
-            let opus_packet_size = header.as_ref().map(|_| packet.payload.len());
+            let header = audio_rtp_header(&packet.payload, observation.payload_type);
+            let rtp_packet_size = header.as_ref().map(|_| packet.payload.len());
             if header.is_some() {
-                observation.opus_packets[packet.sender] += 1;
+                observation.rtp_packets[packet.sender] += 1;
             }
             observation.packets.push(PacketObservation {
                 id: packet.id,
@@ -638,15 +758,15 @@ fn run_case(
                 sender: packet.sender,
                 deadline_us: packet.deadline_us,
                 observed_at_us: packet.observed_at_us,
-                opus_rtp_header: header,
-                opus_packet_size,
+                rtp_header: header,
+                rtp_packet_size,
                 decision: packet.decision,
             });
         }
         assert!(
-            observation.opus_packets.iter().all(|&count| count >= 3),
-            "PCM inputs must produce at least three native Opus RTP packets per sender: {:?}",
-            observation.opus_packets
+            observation.rtp_packets.iter().all(|&count| count >= 3),
+            "PCM inputs must produce at least three native {codec_name} RTP packets per sender: {:?}",
+            observation.rtp_packets
         );
         Trace { observation, wire }
     };
@@ -667,7 +787,7 @@ fn check_short_replay(
     trace_variable: &str,
     queued_teardown: bool,
 ) {
-    let reference = processing.map(|_| run(None));
+    let reference = processing.map(|_| run_case(None, 6, false, false, false));
     let first_trace = run_case(processing, 6, false, false, queued_teardown);
     let second_trace = run_case(processing, 6, false, false, queued_teardown);
     // Write only after every complete native lifecycle, including on replay
@@ -743,20 +863,45 @@ fn check_short_replay(
         .position(|(a, b)| a != b);
     assert!(
         first == second,
-        "native PCM/Opus replay differs: events_equal={}, packets_equal={}, frames_equal={}, tones={:?}, packets={:?}, elapsed_us={:?}, first_packet_difference={packet_difference:?}, packet_counts={:?}",
+        "native PCM replay differs: events_equal={}, packets_equal={}, frames_equal={}, tones={:?}, packets={:?}, elapsed_us={:?}, first_packet_difference={packet_difference:?}, packet_counts={:?}",
         first.events == second.events,
         first.packets == second.packets,
         first.frames == second.frames,
         [first.tone_frames, second.tone_frames],
-        [first.opus_packets, second.opus_packets],
+        [first.rtp_packets, second.rtp_packets],
         [first.media_elapsed_us, second.media_elapsed_us],
         [first.packets.len(), second.packets.len()],
     );
 }
 
 pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
-    let first = run_case(None, 300, true, impaired, false);
-    let second = run_case(None, 300, true, impaired, false);
+    check_codec_sustained_replay("opus", 48000, impaired, trace_variable);
+}
+
+pub fn check_codec_sustained_replay(
+    codec_name: &str,
+    decoded_sample_rate_hz: u32,
+    impaired: bool,
+    trace_variable: &str,
+) {
+    let first = run_codec_case(
+        codec_name,
+        decoded_sample_rate_hz,
+        None,
+        300,
+        true,
+        impaired,
+        false,
+    );
+    let second = run_codec_case(
+        codec_name,
+        decoded_sample_rate_hz,
+        None,
+        300,
+        true,
+        impaired,
+        false,
+    );
     if let Some(path) = std::env::var_os(trace_variable) {
         let path = std::path::PathBuf::from(path);
         std::fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();
@@ -770,7 +915,7 @@ pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
         let v = &trace.observation;
         assert_eq!(v.captures_at_us.len(), 300);
         assert_eq!(v.media_elapsed_us, 3_000_000);
-        assert!(v.opus_packets.iter().all(|&count| count >= 100));
+        assert!(v.rtp_packets.iter().all(|&count| count >= 100));
         assert!(v.tone_frames.iter().all(|&count| count >= 100));
         let periodic = v.periodic.as_ref().unwrap();
         assert_eq!(periodic.reports.created.len(), 2);
@@ -836,7 +981,7 @@ pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
                 v.packets
                     .iter()
                     .filter(|p| p.decision == Some("drop"))
-                    .all(|p| p.opus_rtp_header.is_some())
+                    .all(|p| p.rtp_header.is_some())
             );
         } else {
             assert_eq!(dropped, 0);
@@ -844,7 +989,7 @@ pub fn check_sustained_replay(impaired: bool, trace_variable: &str) {
     }
     assert!(
         first.observation == second.observation,
-        "sustained PCM replay differs: impaired={impaired}, events_equal={}, frames_equal={}, packets_equal={}, periodic_equal={}",
+        "sustained PCM replay differs: codec={codec_name}, impaired={impaired}, events_equal={}, frames_equal={}, packets_equal={}, periodic_equal={}",
         first.observation.events == second.observation.events,
         first.observation.frames == second.observation.frames,
         first.observation.packets == second.observation.packets,

@@ -91,6 +91,19 @@ gap. Native-only device execution, arbitrary provider callbacks and arbitrary
 stack/TLS usage are outside these bounded software-worker contracts. See
 [caller-driven scheduling](controlled-scheduling.md) for lifecycle and pump rules.
 
+## Stock audio qualification
+
+The shared generic application in `tests/support/managed_pcm.rs` drives stock
+Opus, PCMU, PCMA and G722 through capture, negotiated RTP, native NetEq/playout,
+reports and externally selected loss. Replay compares actual plaintext encoded
+frames and all returned PCM without changing codec algorithms or callback sample
+rates. Current core/native and core ASan cases passed, with complete-lifecycle
+monitoring and repeated fresh-process/cross-flavor observations. These bounded
+primary-format results do not close L16, multi-channel Opus, auxiliary formats,
+all processing/mixing or arbitrary NetEq settings. See the
+[audio runtime contracts](audio-runtime-contracts.md) for exact scope and trace
+controls.
+
 ## Exercising the media boundary
 
 `tests/support/managed_video.rs` uses the same application procedure for threaded

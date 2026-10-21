@@ -104,6 +104,11 @@ disabled and no extra thread or executor is introduced.
 an active same-world caller queue. It checks current-queue identity before and
 after native teardown, restoration on return and no virtual-time movement.
 The [audio contracts](audio-runtime-contracts.md) describe its replay and scope.
+The same shared PCM application also qualifies stock Opus, PCMU, PCMA and G722
+with native reports and explicit RTP loss. Replay includes actual plaintext
+encoded frames and every returned PCM block, including native sample-rate
+transitions. These bounded cases do not qualify all codecs, processing or NetEq
+configurations.
 This does not authorize arbitrary reentry from native media/provider callbacks
 or prove teardown from an active encoder queue.
 

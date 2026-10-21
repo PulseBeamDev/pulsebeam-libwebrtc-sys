@@ -154,8 +154,8 @@ advance virtual time.
 the second run at that path with extension `second.json`, after both native
 lifecycles end. Compare the complete `observation` objects: native PCM samples
 and optional capture times, logical events, virtual capture/playout/delivery
-times, packet metadata and clear Opus RTP headers/sizes. The separate `wire`
-array retains unmodified packet bytes. Cryptographic identities/ciphertext are
+times, packet metadata, clear Opus RTP headers/sizes and actual plaintext
+encoded frames. The separate `wire` array retains unmodified packet bytes. Cryptographic identities/ciphertext are
 not replay criteria and are not rewritten or made deterministic by the fixture.
 
 ### Explicit builtin source processing
@@ -226,8 +226,7 @@ passed ASan with leak detection alongside the six earlier stock-media cases.
 
 This qualifies the scoped native reporting and loss observations, not every
 periodic RTT update, custom logger serialization, stock buffered-file logging,
-long-running audio, arbitrary impairment, plaintext encoded Opus byte replay or
-reconfiguration. A received SR/RR alone does not prove the separate periodic RTT
+long-running audio, arbitrary impairment or reconfiguration. A received SR/RR alone does not prove the separate periodic RTT
 update ran. These reporting cases close from the ordinary application actor.
 
 ### Stock audio teardown from an active caller queue
@@ -262,6 +261,51 @@ This covers a distinct active caller queue, not a stop invoked from inside the
 stock encoder queue. That queue is not exposed by the inspected public stock
 Rust surface; a source-level self-wait possibility is not a demonstrated public
 runtime path. Arbitrary nested callbacks and full scheduling closure remain open.
+
+### Advertised primary codec and plaintext replay
+
+`tests/managed_pcm_codecs.rs` selects PCMU, PCMA and G722 through the actual
+sender capabilities and codec preferences, reusing the same generic `Session<R>`
+application, native factories and 300-block capture/report/loss harness. Each
+format has clean delivery and externally selected every-tenth-RTP-packet loss
+cases. Negotiation retains the actual RTP map; every observed sender frame must
+use that negotiated payload type. This is real stock encoding and native
+NetEq/playout, not prerecorded input or a codec-option readback.
+
+All shared PCM cases now install an identity `FrameTransformerProvider` per
+sender. It copies the SDK frame's actual plaintext compressed bytes, SSRC, RTP
+timestamp and payload type for observation, then completes the same owning frame
+without mutation. Completion statistics check delivery, no in-flight frames and
+no abandonment, late completion, capacity drop, wrong-frame use or callback
+panic. These full encoded observations participate in replay alongside every
+returned PCM sample, native report bytes, stats, timing and delivery decisions.
+This also closes the previous bounded Opus plaintext-byte replay gap, including
+the pre-amplified and active-caller-queue teardown cases.
+
+The sink preserves native callback formats. PCMU/PCMA produce 8 kHz and 48 kHz
+blocks; G722 produces 16 kHz and 48 kHz blocks while its RTP clock remains 8 kHz.
+The SDK receive path obtains audio from NetEq and applies its own requested-rate
+resampler before notifying the sink. The fixture checks 10 ms block sizing and
+correlates tones using the actual returned rate; it does not resample samples,
+discard silence/concealment or require every callback to use the decoder's
+nominal rate. Both directions produced 150 plaintext frames/packets and 299
+source-correlated blocks per receiver in each clean sustained case.
+
+Current Linux x86_64 core/native and core ASan/leak checks passed all 11 shared
+PCM cases. Repeated fresh processes and both artifact flavors matched complete
+observations, including compressed bytes and all returned PCM. Continuous
+monitoring covered 92 complete acquisition-through-final-drop lifecycles with
+zero physical thread/helper-process creation or real socket syscalls. Whole
+wire bytes remain retained separately; cryptographic identities/ciphertext are
+still excluded without rewriting them or adding clock/entropy shims.
+
+`PULSEBEAM_PCM_{PCMU,PCMA,G722}_TRACE_PATH` and
+`PULSEBEAM_PCM_{PCMU,PCMA,G722}_LOSS_TRACE_PATH` write first/second JSON traces,
+using the same format as the Opus cases. These bounded primary-format cases do
+not qualify directly constructible non-advertised L16 or multi-channel Opus,
+auxiliary CN/DTMF/RED paths, arbitrary APM settings, multi-source mixing or all
+NetEq impairment/reconfiguration paths. Those remain distinct qualification
+obligations, not upstream unavailability or determinism opt-outs.
 
 ## Installed stock encoder controls
 
