@@ -116,18 +116,28 @@ cooperative creation restrictions explicit. Factory options cover the four field
 actually present in the pinned SDK; runtime scheduling is not another option field.
 
 `declaration_availability` retains an unavailable declaration in the denominator
-without counting it as a working Rust mapping. The currently recognized case is
-`deleted_default_constructor`: Clang ExtractAPI lists such constructors without
-preserving their `= delete` spelling. Each entry must identify an SDK-only source
-anchor at the exact frontend header, line and column in every declared profile,
-match an explicitly deleted no-argument constructor, and name a verification
-source. The pinned `Environment` constructor has type-trait checks for both
-artifact configurations that also protect its supported copy/move operations.
-Unknown reasons, another overload's source, comments, duplicate entries and
+without counting it as a working Rust mapping. Clang ExtractAPI omits the
+`= delete` spelling from deleted operations. Two narrowly checked dispositions
+retain those declarations:
+
+- `deleted_default_constructor` requires an explicitly deleted no-argument
+  constructor. The pinned `Environment` default constructor uses this disposition;
+  its supported copy/move operations remain separate declarations.
+- `deleted_copy_operation` requires an explicitly deleted constructor or assignment
+  taking `const` reference to its own class. The pinned `RTCErrorOr<T>` copy
+  constructor and copy assignment use this disposition, not its default, value,
+  error, move or converting operations.
+
+Each entry must identify an SDK-only source anchor at the exact frontend header,
+line and column in every declared profile and name a verification source. Pinned
+SDK type-trait checks for both artifact configurations distinguish the deleted
+operations from supported construction and moves. Unknown reasons, another
+overload's source, delete comments, move/value overloads, duplicate entries and
 entries already claimed as implemented are rejected. Disabled builds, missing
-wrappers, absent archive dependencies and unimplemented providers cannot use this
-disposition. Other native-unavailable cases require their own concrete evidence
-and validation rather than being inferred from a parser or linker failure.
+wrappers, absent archive dependencies and unimplemented providers cannot use
+these dispositions. Other native-unavailable cases require their own concrete
+evidence and validation rather than being inferred from a parser or linker
+failure.
 
 `configuration_mappings` accounts for the compile-time configuration capabilities
 listed by `native-api.md`; it requires the same Rust, installation and verification
@@ -141,8 +151,9 @@ message storage and native formatting. `RtcError::message_bytes()` follows the
 SDK's NUL-terminated message accessor; the exclusive builder exposes full stored
 bytes. Unknown discriminants remain values, but name conversion avoids the
 SDK's unchecked lookup for them. The generic stream-insertion domain remains
-partial, and `RTCErrorOr<T>` remains unmapped rather than being implicitly covered
-by an owned-error entry or an unexamined equivalence to Rust `Result`.
+partial. The supported `RTCErrorOr<T>` operations remain unmapped rather than
+being implicitly covered by an owned-error entry or an unexamined equivalence to
+Rust `Result`; its explicitly deleted copy operations are retained as unavailable.
 
 `check --require-mapped` additionally rejects unmapped or partial active
 declarations and unaccounted configuration macros. It is a structural mapping

@@ -33,6 +33,48 @@
   },
   "declaration_availability": [
     {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@ST>1#T@RTCErrorOr@F@RTCErrorOr#&1>@N@webrtc@ST>1#T@RTCErrorOr1t0.0#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "availability": "deleted_copy_operation",
+      "reason": "The pinned SDK explicitly deletes copy construction of RTCErrorOr<T>. Value construction, default/error construction, moves and converting operations are separate retained declarations, not covered by this unavailable disposition.",
+      "evidence": {
+        "tree": "sdk",
+        "path": "api/rtc_error.h",
+        "anchor": "RTCErrorOr(const RTCErrorOr& other) = delete;"
+      },
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/test_sdk_coverage.py",
+          "anchor": "    def test_pinned_sdk_result_deletes_copy_but_preserves_value_and_move_operations(self):"
+        }
+      ]
+    },
+    {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@ST>1#T@RTCErrorOr@F@operator=#&1>@N@webrtc@ST>1#T@RTCErrorOr1t0.0#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "availability": "deleted_copy_operation",
+      "reason": "The pinned SDK explicitly deletes copy assignment of RTCErrorOr<T>. Value construction, default/error construction, moves and converting operations are separate retained declarations, not covered by this unavailable disposition.",
+      "evidence": {
+        "tree": "sdk",
+        "path": "api/rtc_error.h",
+        "anchor": "operator=(const RTCErrorOr& other) = delete;"
+      },
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/test_sdk_coverage.py",
+          "anchor": "    def test_pinned_sdk_result_deletes_copy_but_preserves_value_and_move_operations(self):"
+        }
+      ]
+    },
+    {
       "declaration": "api/environment/environment.h#c:@N@webrtc@S@Environment@F@Environment#",
       "profiles": ["core", "native"],
       "availability": "deleted_default_constructor",

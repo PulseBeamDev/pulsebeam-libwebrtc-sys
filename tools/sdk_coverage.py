@@ -340,10 +340,11 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
             raise ValueError(f"unknown, duplicate or mapped unavailable declaration: {identifier}")
         if set(entry["profiles"]) != declared[identifier]:
             raise ValueError(f"wrong unavailable declaration profiles: {identifier}")
-        # ExtractAPI drops '= delete'. Recognize only an explicitly deleted
-        # default constructor at the frontend's exact source coordinates. Do
-        # not generalize missing implementations or disabled builds into this.
-        if entry["availability"] != "deleted_default_constructor" or not entry["reason"]:
+        # ExtractAPI drops '= delete'. Recognize only the supported deleted
+        # operations at the frontend's exact source coordinates in every profile.
+        # Missing wrappers, implementations or build inputs cannot use this path.
+        availability = entry["availability"]
+        if availability not in ("deleted_default_constructor", "deleted_copy_operation") or not entry["reason"]:
             raise ValueError(f"unsupported declaration availability: {identifier}")
         reference = entry["evidence"]
         evidence = source_reference(reference, root, sdk)
@@ -353,12 +354,25 @@ def check_mapping(inventory: dict, mapping: dict, root: Path, sdk: Path) -> dict
             line = declaration["line"]
             column = declaration["column"]
             source = (sdk / header).read_text().splitlines()[line - 1][column - 1:].strip()
+            matches = False
+            if len(names) >= 2:
+                owner = re.escape(names[-2])
+                # Template constructors are named Class<T> by ExtractAPI, while
+                # their source uses the injected class name Class.
+                constructor = names[-1].split("<", 1)[0] == names[-2]
+                if availability == "deleted_default_constructor":
+                    pattern = owner + r"\s*\(\s*\)\s*=\s*delete\s*;"
+                    matches = constructor and re.fullmatch(pattern, source)
+                else:
+                    operation = owner if constructor else r"operator\s*="
+                    argument = r"const\s+" + owner + r"\s*&\s*(?:[A-Za-z_]\w*)?"
+                    pattern = operation + r"\s*\(\s*" + argument + r"\s*\)\s*=\s*delete\s*;"
+                    matches = (constructor or names[-1] == "operator=") and re.fullmatch(pattern, source)
             if (reference["tree"] != "sdk" or reference["path"] != header
                     or evidence["line"] != line or reference["anchor"] != source
-                    or declaration["kind"] != "c++.method" or len(names) < 2
-                    or names[-1] != names[-2]
-                    or not re.fullmatch(re.escape(names[-1]) + r"\s*\(\s*\)\s*=\s*delete\s*;", source)):
-                raise ValueError(f"availability is not the exact deleted default constructor: {identifier}")
+                    or declaration["kind"] != "c++.method" or not matches):
+                operation = "default constructor" if availability == "deleted_default_constructor" else "copy operation"
+                raise ValueError(f"availability is not the exact deleted {operation}: {identifier}")
         if not entry["verification"]:
             raise ValueError(f"missing unavailable declaration verification: {identifier}")
         for reference in entry["verification"]:

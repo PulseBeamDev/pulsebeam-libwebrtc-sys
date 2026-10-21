@@ -184,6 +184,68 @@ class MappingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown, duplicate"):
             self.check()
 
+    def deleted_copy_operation(self, assignment=False):
+        source = ("operator=(const Public& other) = delete;" if assignment
+                  else "Public(const Public& other) = delete;")
+        prefix = "Public& " if assignment else ""
+        self.header.write_text("struct Public {\n  " + prefix + source + "\n};\n")
+        header = self.inventory["headers"]["api/public.h"]
+        header["sha256"] = sdk_coverage.digest(self.header)
+        member = "operator=" if assignment else "Public"
+        identifier = self.identifier + "@F@" + member + "#&1$@S@Public#"
+        declaration = {"id": identifier, "name": "webrtc::Public::" + member,
+                       "kind": "c++.method", "header": "api/public.h", "line": 2,
+                       "column": 3 + len(prefix)}
+        header["profiles"]["core"]["declarations"] = [{"id": self.identifier}, declaration]
+        entry = {"declaration": identifier, "profiles": ["core"],
+                 "availability": "deleted_copy_operation",
+                 "reason": "The SDK explicitly deletes this copy operation.",
+                 "evidence": {"tree": "sdk", "path": "api/public.h", "anchor": source},
+                 "verification": copy.deepcopy(self.entry["verification"])}
+        self.mapping["declaration_availability"] = [entry]
+        return entry, declaration
+
+    def test_deleted_copy_operations_remain_unavailable_not_implemented(self):
+        for assignment in (False, True):
+            with self.subTest(assignment=assignment):
+                # Each operation is an independent declaration, not a class-wide
+                # waiver of its other constructors or assignment overloads.
+                entry, declaration = self.deleted_copy_operation(assignment)
+                if not assignment:
+                    declaration["name"] += "<T>"
+                report = self.check()
+                self.assertEqual(report["declarations"], 2)
+                self.assertEqual(report["mapped"], 1)
+                self.assertEqual(report["unmapped"], [])
+                self.assertEqual(report["unavailable_declarations"][0]["declaration"], entry["declaration"])
+
+    def test_deleted_copy_policy_rejects_other_operations_and_comment_spelling(self):
+        entry, declaration = self.deleted_copy_operation()
+        for source in ("Public(Public&& other) = delete;", "Public(Public other) = delete;",
+                       "Public(const Other& other) = delete;", "Public() = delete;",
+                       "Public(const Public& other); // = delete;",
+                       "Public(const Public& other) = default;"):
+            with self.subTest(source=source):
+                self.header.write_text("struct Public {\n  " + source + "\n};\n")
+                self.inventory["headers"]["api/public.h"]["sha256"] = sdk_coverage.digest(self.header)
+                entry["evidence"]["anchor"] = source
+                with self.assertRaisesRegex(ValueError, "exact deleted copy operation"):
+                    self.check()
+        entry, declaration = self.deleted_copy_operation(assignment=True)
+        declaration["name"] = "webrtc::Public::Other"
+        with self.assertRaisesRegex(ValueError, "exact deleted copy operation"):
+            self.check()
+
+    def test_deleted_copy_evidence_matches_every_profile_location(self):
+        entry, declaration = self.deleted_copy_operation(assignment=True)
+        native = copy.deepcopy(declaration)
+        self.inventory["headers"]["api/public.h"]["profiles"]["native"]["declarations"] = [native]
+        entry["profiles"].append("native")
+        self.assertEqual(len(self.check()["unavailable_declarations"]), 1)
+        native["column"] = 3
+        with self.assertRaisesRegex(ValueError, "exact deleted copy operation"):
+            self.check()
+
     def test_added_declaration_is_unmapped_without_changing_the_rust_subset(self):
         report = self.check()
         self.assertEqual(report["mapped"], 1)
@@ -317,6 +379,44 @@ static_assert(__is_constructible(webrtc::Environment, const webrtc::Environment&
 static_assert(__is_constructible(webrtc::Environment, webrtc::Environment&&));
 static_assert(__is_assignable(webrtc::Environment&, const webrtc::Environment&));
 static_assert(__is_assignable(webrtc::Environment&, webrtc::Environment&&));
+''')
+            for flavor, manifest in zip(sdk_coverage.PROFILES, manifests):
+                with self.subTest(flavor=flavor):
+                    arguments = sdk_coverage.compiler_arguments(
+                        sdk, manifest.parent, work / f"out/{flavor}/linux-x86_64",
+                        json.loads(manifest.read_text()))
+                    arguments.remove("-extract-api")
+                    arguments[arguments.index("c++-header")] = "c++"
+                    result = subprocess.run([*arguments, "-fsyntax-only", str(probe)],
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pinned_sdk_result_deletes_copy_but_preserves_value_and_move_operations(self):
+        work = ROOT / ".work"
+        sdk = work / "checkout/src"
+        manifests = [work / f"package/webrtc-{flavor}-linux-x86_64/manifest.json"
+                     for flavor in sdk_coverage.PROFILES]
+        if not all(path.is_file() for path in manifests):
+            self.skipTest("matching core/native packages are required for the SDK type-trait boundary")
+        with tempfile.TemporaryDirectory() as temporary:
+            probe = Path(temporary) / "result.cc"
+            probe.write_text('''#include "api/rtc_error.h"
+#include <memory>
+using Result = webrtc::RTCErrorOr<int>;
+static_assert(!__is_constructible(Result, const Result&));
+static_assert(!__is_assignable(Result&, const Result&));
+static_assert(__is_constructible(Result));
+static_assert(__is_constructible(Result, webrtc::RTCError&&));
+static_assert(__is_constructible(Result, const int&));
+static_assert(__is_constructible(Result, int&&));
+static_assert(__is_constructible(Result, Result&&));
+static_assert(__is_assignable(Result&, Result&&));
+using OwnedResult = webrtc::RTCErrorOr<std::unique_ptr<int>>;
+static_assert(!__is_constructible(OwnedResult, const OwnedResult&));
+static_assert(!__is_assignable(OwnedResult&, const OwnedResult&));
+static_assert(__is_constructible(OwnedResult, std::unique_ptr<int>&&));
+static_assert(__is_constructible(OwnedResult, OwnedResult&&));
+static_assert(__is_assignable(OwnedResult&, OwnedResult&&));
 ''')
             for flavor, manifest in zip(sdk_coverage.PROFILES, manifests):
                 with self.subTest(flavor=flavor):
