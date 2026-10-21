@@ -151,9 +151,13 @@ message storage and native formatting. `RtcError::message_bytes()` follows the
 SDK's NUL-terminated message accessor; the exclusive builder exposes full stored
 bytes. Unknown discriminants remain values, but name conversion avoids the
 SDK's unchecked lookup for them. The generic stream-insertion domain remains
-partial. The supported `RTCErrorOr<T>` operations remain unmapped rather than
-being implicitly covered by an owned-error entry or an unexamined equivalence to
-Rust `Result`; its explicitly deleted copy operations are retained as unavailable.
+partial. `RTCErrorOr<T>` has a partial consumer mapping: actual transceiver
+creation moves successful SDK handles into retained Rust owners and failed SDK
+errors into owning `RtcError` values. These paths expose exact native error type,
+message bytes, detail and optional SCTP cause, separately from binding safety
+errors. They do not establish the standalone generic default, borrowed-error,
+conversion or formatting contracts. Its explicitly deleted copy operations are
+retained as unavailable.
 
 `check --require-mapped` additionally rejects unmapped or partial active
 declarations and unaccounted configuration macros. It is a structural mapping

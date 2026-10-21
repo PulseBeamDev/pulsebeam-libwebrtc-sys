@@ -1,8 +1,13 @@
 use pulsebeam_webrtc_sys::*;
 
-fn native_error<T>(result: Result<T, RtpSenderOperationError>, kind: RtcErrorType) {
+fn native_error<T>(result: Result<T, RtpSenderOperationError>, kind: RtcErrorType, message: &[u8]) {
     match result {
-        Err(RtpSenderOperationError::Native(error)) => assert_eq!(error.kind(), kind),
+        Err(RtpSenderOperationError::Native(error)) => {
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.message_bytes(), message);
+            assert_eq!(error.error_detail(), RtcErrorDetailType::None);
+            assert_eq!(error.sctp_cause_code(), None);
+        }
         Err(error) => panic!("expected native {kind:?}, got {error:?}"),
         Ok(_) => panic!("expected native {kind:?}, got success"),
     }
@@ -72,6 +77,7 @@ fn native_rejections_and_binding_safety_failures_are_distinct_and_non_mutating()
         native_error(
             peer.add_transceiver(kind, &init),
             RtcErrorType::InvalidParameter,
+            b"media type is not audio or video",
         );
     }
     let mut encoding = RtpEncodingParameters::default();
@@ -80,6 +86,7 @@ fn native_rejections_and_binding_safety_failures_are_distinct_and_non_mutating()
     native_error(
         peer.add_transceiver(MediaType::Video, &init),
         RtcErrorType::UnsupportedParameter,
+        b"Attempted to set an unimplemented parameter of RtpParameters.",
     );
     assert_eq!(init.send_encodings()[0].ssrc(), Some(123));
     assert!(peer.transceivers().unwrap().is_empty());
@@ -132,6 +139,17 @@ fn audio_track_init_retains_track_and_forwards_complete_native_fields() {
     let mut encoding = RtpEncodingParameters::default();
     encoding.set_max_bitrate_bps(Some(48_000));
     init.set_send_encodings(&[encoding]);
+    let mut rejected_init = init.clone();
+    let mut rejected_encoding = RtpEncodingParameters::default();
+    rejected_encoding.set_ssrc(Some(123));
+    rejected_init.set_send_encodings(&[rejected_encoding]);
+    native_error(
+        peer.add_audio_transceiver_with_init(&track, &rejected_init),
+        RtcErrorType::UnsupportedParameter,
+        b"Attempted to set an unimplemented parameter of RtpParameters.",
+    );
+    assert!(peer.transceivers().unwrap().is_empty());
+    assert_eq!(rejected_init.send_encodings()[0].ssrc(), Some(123));
     let transceiver = peer.add_audio_transceiver_with_init(&track, &init).unwrap();
     let sender = transceiver.sender();
     assert_eq!(sender.stream_id_bytes(), init.stream_ids());
@@ -149,4 +167,59 @@ fn audio_track_init_retains_track_and_forwards_complete_native_fields() {
     assert_eq!(sender.track_reference().unwrap().id(), b"pcm");
     assert!(sender.dtmf_sender().is_some());
     assert_eq!(peer.transceivers().unwrap().len(), 1);
+}
+
+#[test]
+fn video_track_init_preserves_native_error_and_retains_the_successful_product() {
+    let factory = PeerConnectionFactory::builder().build().unwrap();
+    let peer = factory
+        .create_peer_connection(PeerConfiguration::default())
+        .unwrap();
+    let source = factory.create_video_source().unwrap();
+    let track = factory.create_video_track("camera", &source).unwrap();
+    let mut init = RtpTransceiverInit::default();
+    init.set_direction(RtpTransceiverDirectionValue::SendOnly);
+    init.set_stream_ids(&[b"camera-stream".to_vec()]);
+    let mut encoding = RtpEncodingParameters::default();
+    encoding.set_ssrc(Some(123));
+    init.set_send_encodings(&[encoding.clone()]);
+    native_error(
+        peer.add_video_transceiver_with_init(&track, &init),
+        RtcErrorType::UnsupportedParameter,
+        b"Attempted to set an unimplemented parameter of RtpParameters.",
+    );
+    assert!(peer.transceivers().unwrap().is_empty());
+    assert_eq!(init.send_encodings()[0].ssrc(), Some(123));
+
+    encoding.set_ssrc(None);
+    encoding.set_rid(b"main");
+    encoding.set_max_bitrate_bps(Some(256_000));
+    let mut smaller = encoding.clone();
+    smaller.set_rid(b"small");
+    smaller.set_max_bitrate_bps(Some(64_000));
+    smaller.set_scale_resolution_down_by(Some(2.0));
+    init.set_send_encodings(&[encoding, smaller]);
+    let transceiver = peer.add_video_transceiver_with_init(&track, &init).unwrap();
+    let sender = transceiver.sender();
+    assert_eq!(transceiver.media_type(), MediaType::Video);
+    assert_eq!(transceiver.direction_value(), init.direction());
+    assert_eq!(sender.stream_id_bytes(), init.stream_ids());
+    let installed = sender.init_send_encodings();
+    assert_eq!(installed.len(), 2);
+    assert_eq!(installed[0].rid_bytes(), b"main");
+    assert_eq!(installed[0].max_bitrate_bps(), Some(256_000));
+    assert_eq!(installed[1].rid_bytes(), b"small");
+    assert_eq!(installed[1].max_bitrate_bps(), Some(64_000));
+    assert_eq!(installed[1].scale_resolution_down_by(), Some(2.0));
+    drop(track);
+    drop(source);
+    drop(factory);
+    assert_eq!(sender.track_reference().unwrap().id(), b"camera");
+    assert!(sender.dtmf_sender().is_none());
+    assert!(
+        peer.transceivers()
+            .unwrap()
+            .iter()
+            .any(|value| value.same_resource(&transceiver))
+    );
 }

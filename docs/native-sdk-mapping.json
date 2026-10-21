@@ -137,6 +137,31 @@
   ],
   "mappings": [
     {
+      "declaration": "api/rtc_error.h#c:@N@webrtc@ST>1#T@RTCErrorOr",
+      "profiles": ["core", "native"],
+      "state": "partial",
+      "semantics": "Actual AddTransceiver consumers branch on the SDK result, move the full native error into owning RtcError storage on failure, and move the ref-counted transceiver into a peer-retaining Rust handle on success. Public Result distinguishes native errors from binding safety failures; local track leases survive caller release. This qualifies these installed result consumers, not a standalone binding for every generic result operation.",
+      "gaps": ["Standalone default/error/value construction, borrowed value/error access including the default OK error on success, move/converting operations, element_type and native result formatting have not been reconciled to a complete idiomatic Rust contract. The deleted copy operations are separately source-evidenced unavailable declarations, not missing wrappers."],
+      "rust": [
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_transceiver("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_audio_transceiver_with_init("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("},
+        {"tree": "repository", "path": "src/rtc_error.rs", "anchor": "pub struct RtcError {"}
+      ],
+      "installation": [
+        {"tree": "repository", "path": "native/video.cc", "anchor": "std::unique_ptr<NativeRtpTransceiver> peer_add_transceiver_value("},
+        {"tree": "repository", "path": "native/video.cc", "anchor": "std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value("},
+        {"tree": "repository", "path": "native/audio.cc", "anchor": "std::unique_ptr<NativeRtpTransceiver> peer_add_audio_transceiver_value("},
+        {"tree": "repository", "path": "native/rtc_error.cc", "anchor": "FfiRtcError rtc_error_fields(const NativeRtcError& error) noexcept {"}
+      ],
+      "verification": [
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn native_rejections_and_binding_safety_failures_are_distinct_and_non_mutating()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"},
+        {"tree": "repository", "path": "tests/rtc_error.rs", "anchor": "fn native_rtc_error_factories_fields_and_assignment()"}
+      ]
+    },
+    {
       "declaration": "api/rtc_error.h#c:@N@webrtc@E@RTCErrorDetailType",
       "profiles": ["core","native"],
       "state": "implemented",
@@ -1681,7 +1706,8 @@
         {"tree": "sdk", "path": "pc/peer_connection.cc", "anchor": "return AddTransceiver(track, RtpTransceiverInit());"}
       ],
       "verification": [
-        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"}
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"}
       ]
     },
     {
@@ -1701,6 +1727,7 @@
       ],
       "verification": [
         {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"},
         {"tree": "repository", "path": "tests/production_session.rs", "anchor": "fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init()"}
       ]
     },
