@@ -1,7 +1,7 @@
 //! Actual native PCMU packets through stock NetEq using the selected runtime clock.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
-use std::{fmt::Debug, time::Duration};
+use std::{collections::BTreeMap, fmt::Debug, time::Duration};
 
 fn serialize_debug<T: Debug, S: serde::Serializer>(
     value: &T,
@@ -42,6 +42,36 @@ impl State {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct CodecMapChange {
+    after_insertion: bool,
+    #[serde(serialize_with = "serialize_debug")]
+    codecs: BTreeMap<i32, SdpAudioFormat>,
+    #[serde(serialize_with = "serialize_debug")]
+    result: Result<(), NetEqError>,
+    before: State,
+    after: State,
+}
+impl CodecMapChange {
+    fn apply(
+        engine: &mut NetEq,
+        after_insertion: bool,
+        codecs: BTreeMap<i32, SdpAudioFormat>,
+    ) -> Self {
+        let before = State::take(engine);
+        let result = engine.set_codecs(&codecs);
+        assert_eq!(result, Ok(()));
+        let after = State::take(engine);
+        Self {
+            after_insertion,
+            codecs,
+            result,
+            before,
+            after,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Serialize)]
 struct Insertion {
     #[serde(serialize_with = "serialize_debug")]
@@ -59,6 +89,7 @@ struct Step {
     insertion: Option<Insertion>,
     #[serde(serialize_with = "serialize_debug")]
     omitted_header: Option<RtpHeaderValues>,
+    codec_map_changes: Vec<CodecMapChange>,
     code: i32,
     muted: bool,
     output_rate_hz: i32,
@@ -73,6 +104,7 @@ struct Step {
 #[derive(Debug, PartialEq, Serialize)]
 struct Observation {
     omitted_packet_indices: Vec<usize>,
+    reconfigure_to_pcma: bool,
     clock_bounds_us: (i64, i64),
     started_at_us: i64,
     finished_at_us: i64,
@@ -84,13 +116,17 @@ struct Observation {
     after_reset: State,
 }
 
-fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) -> Observation {
+fn application<R: SessionRuntime>(
+    runtime: R,
+    omitted_packet_indices: &[usize],
+    reconfigure_to_pcma: bool,
+) -> Observation {
     let factory = runtime.environment_factory().unwrap();
     let environment = runtime.create_environment(&factory).unwrap();
     let format = SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1);
     let encoders = AudioEncoderFactory::builtin().unwrap();
     let decoders = AudioDecoderFactory::builtin().unwrap();
-    let encoder = encoders
+    let pcmu_encoder = encoders
         .create(
             &environment,
             &format,
@@ -101,6 +137,20 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
         )
         .unwrap()
         .expect("actual native PCMU encoder");
+    let pcma_format = SdpAudioFormat::new(b"PCMA".to_vec(), 8000, 1);
+    let pcma_encoder = reconfigure_to_pcma.then(|| {
+        encoders
+            .create(
+                &environment,
+                &pcma_format,
+                &AudioEncoderOptions {
+                    payload_type: 8,
+                    codec_pair_id: None,
+                },
+            )
+            .unwrap()
+            .expect("actual native PCMA encoder")
+    });
     let mut config = NetEqConfig::default();
     config.sample_rate_hz = 8000;
     let mut engine = NetEq::stock(&environment, &config, &decoders).unwrap();
@@ -128,13 +178,30 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
                 }
             })
             .collect::<Vec<_>>();
+        let (encoder, payload_type) = if reconfigure_to_pcma && block >= 20 {
+            (pcma_encoder.as_ref().unwrap(), 8)
+        } else {
+            (&pcmu_encoder, 0)
+        };
         let encoded = encoder.encode(input_timestamp, &input).unwrap();
         let mut omitted_header = None;
+        let mut codec_map_changes = Vec::new();
         let insertion = if encoded.bytes.is_empty() {
             None
         } else {
+            assert_eq!(encoded.info.primary.payload_type, i32::from(payload_type));
+            let switching = reconfigure_to_pcma && packet_index == 10;
+            if switching {
+                // Admit the new format without replacing the old current PT.
+                // No flush or normalized buffer state is manufactured here.
+                codec_map_changes.push(CodecMapChange::apply(
+                    &mut engine,
+                    false,
+                    BTreeMap::from([(0, format.clone()), (8, pcma_format.clone())]),
+                ));
+            }
             let header = RtpHeaderValues {
-                payload_type: 0,
+                payload_type,
                 sequence_number: sequence,
                 timestamp: encoded.info.primary.encoded_timestamp,
                 ssrc: 73,
@@ -158,6 +225,15 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
                     .insert_packet_at(&header, &encoded.bytes, receive_time)
                     .unwrap();
                 assert_eq!(code, NetEqReturnCode::OK);
+                if switching {
+                    // Genuine PT8 input drives the native payload switch. Retire
+                    // PT0 with PT8 still queued, before any GetAudio for this packet.
+                    codec_map_changes.push(CodecMapChange::apply(
+                        &mut engine,
+                        true,
+                        BTreeMap::from([(8, pcma_format.clone())]),
+                    ));
+                }
                 Some(Insertion {
                     header,
                     receive_time_us: receive_time.microseconds().unwrap(),
@@ -193,6 +269,7 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
             encoded,
             insertion,
             omitted_header,
+            codec_map_changes,
             code: code.0,
             muted,
             output_rate_hz,
@@ -220,6 +297,72 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
             (u16::MAX - 4).wrapping_add(index as u16)
         );
         assert_eq!(header.timestamp, 1000 + index as u32 * 160);
+        assert_eq!(
+            header.payload_type,
+            if reconfigure_to_pcma && index >= 10 {
+                8
+            } else {
+                0
+            }
+        );
+    }
+    let changes = steps
+        .iter()
+        .flat_map(|s| &s.codec_map_changes)
+        .collect::<Vec<_>>();
+    assert_eq!(changes.len(), if reconfigure_to_pcma { 2 } else { 0 });
+    if reconfigure_to_pcma {
+        let (admit, retire) = (changes[0], changes[1]);
+        assert!(!admit.after_insertion);
+        assert!(retire.after_insertion);
+        assert_eq!(
+            admit.before.decoder.as_ref().unwrap(),
+            &NetEqDecoderFormat {
+                payload_type: 0,
+                sample_rate_hz: 8000,
+                num_channels: 1,
+                sdp_format: format.clone(),
+            }
+        );
+        assert_eq!(admit.before, admit.after);
+        assert_eq!(
+            retire.before.decoder.as_ref().unwrap(),
+            &NetEqDecoderFormat {
+                payload_type: 8,
+                sample_rate_hz: 8000,
+                num_channels: 1,
+                sdp_format: pcma_format.clone(),
+            }
+        );
+        assert!(retire.before.operations.current_buffer_size_ms > 0);
+        assert_eq!(
+            retire.before, retire.after,
+            "retiring PT0 must preserve queued PT8 and existing playout state"
+        );
+        let switched = steps
+            .iter()
+            .position(|s| !s.codec_map_changes.is_empty())
+            .unwrap();
+        assert_eq!(switched, 21);
+        assert_ne!(steps[19].encoded.bytes, steps[switched].encoded.bytes);
+        assert!(steps[switched..].iter().any(|s| {
+            s.fields.speech_type == AudioFrameSpeechType::NORMAL_SPEECH
+                && !s.fields.packet_infos.is_empty()
+                && s.samples.iter().any(|&v| v != 0)
+                && s.state
+                    .decoder
+                    .as_ref()
+                    .is_some_and(|d| d.payload_type == 8)
+        }));
+        let last = &steps.last().unwrap().state;
+        assert_eq!(last.decoder, retire.after.decoder);
+        assert!(
+            last.lifetime.total_samples_received > admit.before.lifetime.total_samples_received
+        );
+        assert!(
+            last.lifetime.jitter_buffer_emitted_count
+                > admit.before.lifetime.jitter_buffer_emitted_count
+        );
     }
     let omissions = steps
         .iter()
@@ -268,12 +411,14 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
         steps.iter().any(|s| !s.fields.packet_infos.is_empty()),
         "native finite arrival metadata must reach output frames"
     );
-    drop(encoder);
+    drop(pcmu_encoder);
+    drop(pcma_encoder);
     drop(engine);
     let finished_at_us = environment.timestamp().microseconds().unwrap();
     drop(environment);
     Observation {
         omitted_packet_indices: omitted_packet_indices.to_vec(),
+        reconfigure_to_pcma,
         clock_bounds_us: (
             bounds.minimum().microseconds(),
             bounds.maximum().microseconds(),
@@ -288,12 +433,16 @@ fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) 
     }
 }
 
-fn replay_case(omitted_packet_indices: &[usize], trace_suffix: &str) {
-    let threaded = application(ThreadedRuntime, omitted_packet_indices);
+fn replay_case(omitted_packet_indices: &[usize], reconfigure_to_pcma: bool, trace_suffix: &str) {
+    let threaded = application(ThreadedRuntime, omitted_packet_indices, reconfigure_to_pcma);
     let managed = std::array::from_fn::<_, 2, _>(|_| {
         eprintln!("CONTROLLED_MEDIA_BEGIN");
         let world = ControlledWorld::acquire(1005, Duration::from_secs(7)).unwrap();
-        let observation = application(world.runtime().unwrap(), omitted_packet_indices);
+        let observation = application(
+            world.runtime().unwrap(),
+            omitted_packet_indices,
+            reconfigure_to_pcma,
+        );
         assert_eq!(world.now(), Duration::from_secs(7));
         drop(world);
         eprintln!("CONTROLLED_MEDIA_END");
@@ -322,7 +471,7 @@ fn replay_case(omitted_packet_indices: &[usize], trace_suffix: &str) {
 
 #[test]
 fn native_pcmu_packets_play_through_stock_neteq_and_replay() {
-    replay_case(&[], "");
+    replay_case(&[], false, "");
 }
 
 #[test]
@@ -330,5 +479,10 @@ fn native_pcmu_packet_loss_conceals_and_recovers_with_full_replay() {
     // Three consecutive 20ms encoder packets after six packets of warm-up.
     // Do not prescribe a literal PLC waveform or the first concealment pull.
     // Every actual native output sample still participates in full replay.
-    replay_case(&[6, 7, 8], ".loss");
+    replay_case(&[6, 7, 8], false, ".loss");
+}
+
+#[test]
+fn native_codec_map_replacement_uses_pcma_packets_and_replays() {
+    replay_case(&[], true, ".reconfigure");
 }

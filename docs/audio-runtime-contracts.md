@@ -149,11 +149,28 @@ Every pull must still return native OK and an initialized 8-kHz mono 80-sample f
 There is no prescribed literal PLC waveform or exact first concealment pull; all
 actual PLC samples and metadata still participate in complete managed replay.
 
+The reconfiguration case switches from ten native PCMU packets to ten native
+PCMA packets at the same 8-kHz mono rate. Before inserting the first PCMA packet,
+`set_codecs` admits PT 8 alongside unchanged PT 0. After that genuine PT 8 input
+switches the native current payload, a second map update retires PT 0 while the
+PCMA packet remains queued. Both requested maps, results and complete before/after
+states are retained. Adding the lazy mapping and removing the unused old mapping
+must preserve the observed state; the queued PCMA input and native decoder-format
+change from PT 0/PCMU to PT 8/PCMA remain visible. Normal nonzero speech with packet
+metadata and received/emitted sample accounting must continue. This is a chosen
+two-stage caller sequence, not a requirement that direct replacement is unsupported.
+There is no caller flush or synthetic empty-buffer precondition. The native
+payload switch still performs its own encoded-buffer handling and sync-buffer
+retiming; complete PCM and buffer/statistic observations are not rewritten to hide
+those effects. Original environment-factory and encoder/decoder-factory handles
+are released before encoding, reconfiguration and playout.
+
 `PULSEBEAM_NETEQ_TRACE_PATH` writes the full threaded/managed observation tuple
-for the lossless case; the loss case appends `.loss` to that path. Both traces
-retain all statistics, including clock-dependent packet dwell time.
-These bounded paths do not cover arbitrary loss patterns, reordering, jitter,
-live codec reconfiguration, CN/DTMF/RED, NACK or peer-installed factory selection.
+for the lossless case; the loss case appends `.loss` and reconfiguration appends
+`.reconfigure` to that path. All traces retain every statistic, including
+clock-dependent packet dwell time. These bounded paths do not cover arbitrary
+loss patterns, reordering, jitter, other codec-map sequences or sample-rate changes,
+CN/DTMF/RED, NACK or peer-installed factory selection.
 
 ## Standalone NetEq decoder selection
 
