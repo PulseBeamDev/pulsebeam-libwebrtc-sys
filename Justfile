@@ -622,8 +622,8 @@ _bridge-objects flavor target stage definitions_file:
     defs=(); while IFS= read -r definition; do defs+=("$definition"); done < "{{ definitions_file }}"
     include=(-I"{{ stage }}/include")
     case "{{ target }}" in
-      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread -fno-fast-math -ffp-contract=off); suffix=o;;
-      linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread); suffix=o;;
+      linux-x86_64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=x86_64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_amd64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread -fPIC -fno-fast-math -ffp-contract=off); suffix=o;;
+      linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -std=c++20 -fno-exceptions -fno-rtti -Wno-nullability-completeness -nostdinc++ -isystem "{{ stage }}/include/c++/v1" -pthread -fPIC); suffix=o;;
       android-x86_64|android-arm64-v8a)
         prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1)
         case "{{ target }}" in android-x86_64) triple=x86_64;; *) triple=aarch64;; esac
@@ -841,6 +841,14 @@ _rust-smoke flavor target kit:
     "${command[@]}" cargo rustc --locked --target "$cargo_target" "${features[@]}" --lib --crate-type staticlib
     case "{{ target }}" in windows-*) library="$smoke_native/$cargo_target/debug/pulsebeam_webrtc_sys.lib";; *) library="$smoke_native/$cargo_target/debug/libpulsebeam_webrtc_sys.a";; esac
     PULSEBEAM_WEBRTC_CONSUMER_STATICLIB="$library" just --justfile "{{ root }}/Justfile" _cpp-smoke "{{ flavor }}" "{{ target }}" "{{ kit }}"
+    if test "{{ target }}" = linux-x86_64; then
+      "${command[@]}" cargo build --locked --target "$cargo_target" "${features[@]}" --example native_dynamic
+      loader_args=(--target=x86_64-linux-gnu -fuse-ld=lld)
+      if test "${PULSEBEAM_WEBRTC_RUNTIME_ARTIFACT_ONLY:-}" != 1; then loader_args+=("--sysroot=$src/build/linux/debian_bullseye_amd64-sysroot"); fi
+      if test "${PULSEBEAM_WEBRTC_SANITIZER:-}" = address; then loader_args+=(-fsanitize=address); fi
+      "$cxx" "${loader_args[@]}" "{{ root }}/consumer/dynamic_smoke.c" -ldl -o "$smoke_native/dynamic-smoke"
+      "$smoke_native/dynamic-smoke" "$smoke_native/$cargo_target/debug/examples/libnative_dynamic.so"
+    fi
 
 # Execute the complete Rust runtime suite against an extracted host-native artifact.
 _runtime-test flavor target archive:

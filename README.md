@@ -76,7 +76,12 @@ download, cache, offline, and release consumer jobs.
 
 `just build` validates the flavor, target, and host before it synchronizes the
 pinned sources, configures and compiles WebRTC, exports the static closure, and
-performs C++ and Rust compile/link-only consumer checks. After a failed
+performs C++ and Rust compile/link consumer checks. Linux x86_64 also builds
+and loads the `native_dynamic` shared-library consumer, constructs a peer with
+stock PCM/video sources, and retires its native graph. The Linux adapter objects
+are position-independent so the same archive supports Rust executables and
+native SDK dynamic libraries. This load check does not replace transported-media
+runtime qualification. After a failed
 `gclient sync`, it removes only incomplete dependency Git checkouts without a
 usable HEAD before retrying; a real upstream timeout can still fail the build.
 Every flavor/target artifact carries the same generated bridge and portable

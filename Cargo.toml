@@ -6,6 +6,10 @@ license = "Apache-2.0"
 links = "pulsebeam_webrtc"
 publish = false
 
+[[example]]
+name = "native_dynamic"
+crate-type = ["cdylib"]
+
 [features]
 native = []
 

@@ -71,6 +71,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         self.assertNotIn("-fsanitize=address", cpp_call)
 
     def _assert_bridge_sources(self, calls: list[list[str]]) -> None:
+        self.assertTrue(all("-fPIC" in call for call in calls), calls)
         sources = [arg for call in calls for arg in call if arg.endswith(".cc")]
         self.assertEqual(len(sources), len(calls), calls)
         expected = {str(path) for path in ROOT.glob("native/*.cc")}
@@ -214,16 +215,16 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         compiler_calls = (temporary / "compiler-arguments").read_text(encoding="utf-8")
         self.assertEqual(
             [line for line in compiler_calls.splitlines() if line.startswith("compiler=")],
-            [f"compiler={expected_cxx}"] * 2,
+            [f"compiler={expected_cxx}"] * 2 + [f"compiler={expected_linker}"],
         )
         cargo_calls = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(
             [line for line in cargo_calls if line.startswith("linker=")],
-            [f"linker={expected_linker}"] * 2
+            [f"linker={expected_linker}"] * 3
             + [f'linker={captured["clang++"] if sanitizer else ""}'],
         )
         if sanitizer:
-            self.assertEqual(sum("-fsanitize=address" in line for line in cargo_calls), 3)
+            self.assertEqual(sum("-fsanitize=address" in line for line in cargo_calls), 4)
         return captured
 
     def _cargo_fixture(
@@ -234,7 +235,6 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         log = temporary / "cargo-environment"
         clang = work / "checkout/src/third_party/llvm-build/Release+Asserts/bin/clang"
         clang.parent.mkdir(parents=True)
-        clang.touch()
         clang_plus_plus = clang.with_name("clang++")
         # This is a command/flag probe only, not a substitute for native linking.
         # Model the new companion output so the runtime recipe can execute it.
@@ -249,6 +249,8 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
         clang_plus_plus.chmod(0o755)
+        clang.write_text(clang_plus_plus.read_text(encoding="utf-8"), encoding="utf-8")
+        clang.chmod(0o755)
         tools.mkdir()
         # Runtime jobs have no producer checkout, so exercise the artifact-only
         # system compiler while keeping the producer compiler probes unchanged.
@@ -256,7 +258,7 @@ class LinuxAsanConfigurationTests(unittest.TestCase):
         host_cxx.write_text(clang_plus_plus.read_text(encoding="utf-8"), encoding="utf-8")
         host_cxx.chmod(0o755)
         host_clang = tools / "clang-19"
-        host_clang.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        host_clang.write_text(clang_plus_plus.read_text(encoding="utf-8"), encoding="utf-8")
         host_clang.chmod(0o755)
         cargo = tools / "cargo"
         cargo.write_text(
