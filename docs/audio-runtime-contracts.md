@@ -110,6 +110,35 @@ end. This qualifies the stated two-source rate/channel/removal consumer, not all
 source statuses, source-selection/limiter settings, reentry or concurrent callbacks,
 RTP packet-info merging or peer-installed mixing paths.
 
+## Standalone NetEq arrival time and replay
+
+Use the NetEq product's actual environment to sample finite packet arrival time:
+`environment.timestamp()` followed by `insert_packet_at`. A sample alone is not
+an overflow proof: the product's retained `clock_time_bounds()` must also admit
+that arrival through `receive_time_is_safe`. Do not substitute an unrelated clock
+or missing arrival to bypass the stock guard. Native decoded packet information
+retains the finite arrival timestamp.
+
+The pinned stock engine increments its internal TickTimer once per `get_audio`.
+Packet waiting time, playout progression and PCM consumption follow those ticks
+and sample counts. Separately, packet extraction accumulates the environment's
+current time minus finite receive time into `total_processing_delay_us`. This is
+packet dwell time, not a disposable host-profiling field. Default threaded time
+and managed time are different inputs; their full arrival metadata and processing
+delay statistics need not be equal. Complete replay comparisons require the same
+clock and arrival inputs, and must retain these statistics and packet fields.
+
+`tests/managed_neteq.rs` feeds actual builtin PCMU encoder bytes into stock NetEq
+through one generic `SessionRuntime` procedure. It retains complete PCM, frame
+metadata, packet headers and arrival times, network/lifetime/operation statistics,
+playout and delay observations, including the resetting network-statistics query.
+Repeated managed observations compare in full. The default-threaded observation
+retains its real timestamps and counters; only clock-independent encoded bytes
+and decoded PCM are compared across these different clock inputs. Managed time
+is frozen during this synchronous consumer, while native GetAudio ticks advance.
+This bounded path does not cover packet impairment, live codec reconfiguration,
+CN/DTMF/RED, NACK or peer-installed factory selection.
+
 ## Standalone NetEq decoder selection
 
 `NetEq::stock_with_decoder_factory` and
