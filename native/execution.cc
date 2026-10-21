@@ -277,13 +277,71 @@ webrtc::TaskQueueBase* task_queue_for_blocking_consumer(const NativeTaskQueue& q
 }
 
 struct NativeEnvironment::State {
-  explicit State(webrtc::Environment value, FfiClockTimeBounds bounds = {}) noexcept
-      : environment(std::move(value)), clock_bounds(bounds) {}
+  explicit State(webrtc::Environment value, FfiClockTimeBounds bounds = {},
+      std::shared_ptr<NativeTaskQueueFactory::State> queues = nullptr) noexcept
+      : queues(std::move(queues)), environment(std::move(value)), clock_bounds(bounds) {}
 
+  // Exact selected scheduler metadata, not inferred from a clock or queue name.
+  // The SDK Environment (including a bound scope ticket) dies before this alias.
+  std::shared_ptr<NativeTaskQueueFactory::State> queues;
   webrtc::Environment environment;
   // Immutable adapter-enforced evidence, not a sampled current timestamp.
   FfiClockTimeBounds clock_bounds;
 };
+
+struct NativeBuiltinVp8Execution::State {
+  std::shared_ptr<NativeTaskQueueFactory::State> queues;
+  std::shared_ptr<NativeRuntimeRetirement> owner;
+  webrtc::Environment environment;
+  int cores = 0;
+};
+namespace {
+thread_local NativeBuiltinVp8Execution::State* current_builtin_vp8 = nullptr;
+}
+NativeBuiltinVp8Execution::NativeBuiltinVp8Execution(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+NativeBuiltinVp8Execution::~NativeBuiltinVp8Execution() = default;
+void NativeBuiltinVp8Execution::SetCores(int cores) noexcept {
+  RTC_CHECK(state_->queues->creator == std::this_thread::get_id());
+  // Retain the actual SDK Settings input, including invalid values. Validation
+  // and native thread-count/complexity policy remain the SDK's responsibility.
+  state_->cores = cores;
+}
+std::shared_ptr<NativeBuiltinVp8Execution> builtin_vp8_execution(
+    const NativeEnvironment& selected, const webrtc::Environment& actual,
+    bool& valid) noexcept {
+  valid = true;
+  const auto& queues = selected.state()->queues;
+  if (!queues || !queues->cooperative()) return nullptr;
+  auto selected_sdk = selected.environment();
+  std::shared_ptr<NativeRuntimeRetirement> owner;
+  {
+    auto& registry = runtime_retirement_internal::registry();
+    std::lock_guard lock(registry.mutex);
+    // Unlike general retirement lookup, clock association is not sufficient
+    // evidence that this exact Environment owns a runtime scope ticket.
+    auto found = registry.factories.find(&selected_sdk.task_queue_factory());
+    if (found != registry.factories.end()) owner = found->second.lock();
+  }
+  if (!owner) return nullptr;
+  valid = queues->creator == std::this_thread::get_id() &&
+      &actual.task_queue_factory() == &selected_sdk.task_queue_factory() &&
+      &actual.clock() == &selected_sdk.clock();
+  {
+    std::lock_guard lock(queues->clock->retirement_mutex);
+    valid = valid && queues->clock->retirement.lock() == owner;
+  }
+  if (!valid) return nullptr;
+  return std::make_shared<NativeBuiltinVp8Execution>(
+      std::make_unique<NativeBuiltinVp8Execution::State>(queues, std::move(owner), actual, 0));
+}
+NativeBuiltinVp8Scope::NativeBuiltinVp8Scope(
+    const std::shared_ptr<NativeBuiltinVp8Execution>& execution) noexcept
+    : previous_(current_builtin_vp8) {
+  if (execution) RTC_CHECK(execution->state_->queues->creator == std::this_thread::get_id());
+  current_builtin_vp8 = execution ? execution->state_.get() : nullptr;
+}
+NativeBuiltinVp8Scope::~NativeBuiltinVp8Scope() { current_builtin_vp8 = previous_; }
 
 struct CapturedDriverTasks::State {
   struct Task {
@@ -553,6 +611,9 @@ void CooperativeTaskQueue::PostDelayedTaskImpl(
 }
 
 void CooperativeTaskQueue::Run(absl::AnyInvocable<void() &&> task) noexcept {
+  // Nested pumping enters another task, not another frame of the suspended
+  // encoder. Only that task's own builtin lifecycle guard may lend provenance.
+  NativeBuiltinVp8Scope encoder_scope(nullptr);
   CooperativeScope scope(this);
   CurrentTaskQueueSetter current(identity_);
   std::move(task)();
@@ -1098,22 +1159,23 @@ std::unique_ptr<NativeEnvironment> create_environment(
   return std::make_unique<NativeEnvironment>(
       std::make_unique<NativeEnvironment::State>(custom_log ? environment_factory.Create() : shared_default_event_log(environment_factory.Create()),
           FfiClockTimeBounds{true, clock_minimum_us, clock_maximum_us,
-              custom_clock ? custom_clock->monotonic() : clock != nullptr}));
+              custom_clock ? custom_clock->monotonic() : clock != nullptr}, factory.state()));
 }
 
 struct NativeEnvironmentFactory::State {
   webrtc::EnvironmentFactory factory;
   FfiClockTimeBounds bounds;
   bool log_selected = false;
+  std::shared_ptr<NativeTaskQueueFactory::State> queues;
 };
 NativeEnvironmentFactory::NativeEnvironmentFactory(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeEnvironmentFactory::~NativeEnvironmentFactory() = default;
 const std::unique_ptr<NativeEnvironmentFactory::State>& NativeEnvironmentFactory::state() const noexcept { return state_; }
 std::unique_ptr<NativeEnvironmentFactory> new_environment_factory(FfiClockTimeBounds bounds) noexcept {
-  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory{}, bounds, false));
+  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory{}, bounds, false, nullptr));
 }
 std::unique_ptr<NativeEnvironmentFactory> environment_factory_from_environment(const NativeEnvironment& environment) noexcept {
-  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory(environment.environment()), environment.state()->clock_bounds, true));
+  return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(webrtc::EnvironmentFactory(environment.environment()), environment.state()->clock_bounds, true, environment.state()->queues));
 }
 std::unique_ptr<NativeEnvironmentFactory> clone_environment_factory(const NativeEnvironmentFactory& factory) noexcept {
   return std::make_unique<NativeEnvironmentFactory>(std::make_unique<NativeEnvironmentFactory::State>(*factory.state()));
@@ -1130,6 +1192,7 @@ void environment_factory_set_clock(NativeEnvironmentFactory& factory, const Nati
   factory.state()->bounds = bounds;
 }
 void environment_factory_set_queues(NativeEnvironmentFactory& factory, const NativeTaskQueueFactory& queues) noexcept {
+  factory.state()->queues = queues.state();
   if (queues.environment()) {
     factory.state()->factory.Set(std::make_unique<EnvironmentTaskQueueFactory>(*queues.environment(), queues.production_lease()));
   } else if (queues.state()->cooperative()) {
@@ -1187,7 +1250,7 @@ std::unique_ptr<NativeEnvironment> environment_factory_create(const NativeEnviro
   retained.Set(&dependencies->environment.clock());
   retained.Set(&dependencies->environment.task_queue_factory());
   retained.Set(&dependencies->environment.event_log());
-  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(retained.Create(), factory.state()->bounds));
+  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(retained.Create(), factory.state()->bounds, factory.state()->queues));
 }
 std::unique_ptr<NativeTaskQueueFactory> environment_default_queue_metadata(const NativeEnvironment& environment) noexcept {
   return std::make_unique<NativeTaskQueueFactory>(std::make_shared<NativeTaskQueueFactory::State>(nullptr), environment.environment());
@@ -1199,7 +1262,10 @@ std::unique_ptr<NativeEnvironment> retain_environment_from_sdk(
   if (selected && &environment.clock() == &selected->environment().clock()) {
     bounds = selected->state()->clock_bounds;
   }
-  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(environment, bounds));
+  auto queues = selected && &environment.task_queue_factory() ==
+          &selected->environment().task_queue_factory()
+      ? selected->state()->queues : nullptr;
+  return std::make_unique<NativeEnvironment>(std::make_unique<NativeEnvironment::State>(environment, bounds, std::move(queues)));
 }
 std::unique_ptr<NativeEnvironment> rtc_event_log_factory_environment(const webrtc::Environment& environment) noexcept {
   return retain_environment_from_sdk(environment);
@@ -1222,6 +1288,10 @@ std::unique_ptr<NativeEnvironment> bind_environment_selection(
   if (environment && !environment->state()->clock_bounds.known &&
       environment_clock_identity_matches(*environment, selected)) {
     environment->state()->clock_bounds = selected.state()->clock_bounds;
+  }
+  if (environment && !environment->state()->queues &&
+      environment_queue_factory_identity_matches(*environment, selected)) {
+    environment->state()->queues = selected.state()->queues;
   }
   return environment;
 }
@@ -1250,7 +1320,7 @@ std::unique_ptr<NativeEnvironment> bind_driver_environment(
   scoped.Set(std::make_unique<RuntimeBoundTaskQueueFactory>(
       original.task_queue_factory(), original.clock(), owner, id));
   return std::make_unique<NativeEnvironment>(
-      std::make_unique<NativeEnvironment::State>(scoped.Create(), environment.state()->clock_bounds));
+      std::make_unique<NativeEnvironment::State>(scoped.Create(), environment.state()->clock_bounds, environment.state()->queues));
 }
 
 std::unique_ptr<NativeEnvironment> clone_environment(

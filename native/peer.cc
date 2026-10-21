@@ -929,8 +929,8 @@ class LegacyStatsObserver : public webrtc::StatsObserver {
 class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
  public:
   explicit BorrowedVideoEncoderFactory(
-      const NativeVideoEncoderFactory& factory) noexcept
-      : factory_(factory) {}
+      const NativeVideoEncoderFactory& factory, const NativeEnvironment& environment) noexcept
+      : factory_(factory), environment_(clone_environment(environment)) {}
 
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
     return factory_.factory().GetSupportedFormats();
@@ -952,11 +952,13 @@ class BorrowedVideoEncoderFactory final : public webrtc::VideoEncoderFactory {
   std::unique_ptr<webrtc::VideoEncoder> Create(
       const webrtc::Environment& environment,
       const webrtc::SdpVideoFormat& format) override {
-    return factory_.factory().Create(environment, format);
+    return retain_builtin_encoder_execution(factory_, *environment_, environment, format,
+        factory_.factory().Create(environment, format));
   }
 
  private:
   const NativeVideoEncoderFactory& factory_;
+  std::unique_ptr<NativeEnvironment> environment_;
 };
 
 class BorrowedVideoDecoderFactory final : public webrtc::VideoDecoderFactory {
@@ -1595,7 +1597,7 @@ std::unique_ptr<NativePeerConnectionFactory> new_peer_connection_factory(
   if (video_encoder) {
     dependencies.video_encoder_factory = video_encoder->rust_factory()
         ? video_encoder->CreateAdapter(video_retention)
-        : std::make_unique<BorrowedVideoEncoderFactory>(*video_encoder);
+        : std::make_unique<BorrowedVideoEncoderFactory>(*video_encoder, environment);
   }
   if (video_decoder) {
     dependencies.video_decoder_factory = video_decoder->rust_factory()

@@ -176,6 +176,33 @@ class NativeEnvironment final {
   std::unique_ptr<State> state_;
 };
 
+// Binding-internal provenance for the actual builtin VP8 encoder. This owns
+// native Environment aliases only, never a Rust driver/Rc executor. Resolution
+// requires an exact selected service identity and a bound cooperative factory.
+class NativeBuiltinVp8Execution final {
+ public:
+  struct State;
+  explicit NativeBuiltinVp8Execution(std::unique_ptr<State> state) noexcept;
+  ~NativeBuiltinVp8Execution();
+  void SetCores(int cores) noexcept;
+ private:
+  friend class NativeBuiltinVp8Scope;
+  std::unique_ptr<State> state_;
+};
+std::shared_ptr<NativeBuiltinVp8Execution> builtin_vp8_execution(
+    const NativeEnvironment& selected, const webrtc::Environment& actual,
+    bool& valid) noexcept;
+class NativeBuiltinVp8Scope final {
+ public:
+  explicit NativeBuiltinVp8Scope(
+      const std::shared_ptr<NativeBuiltinVp8Execution>& execution) noexcept;
+  ~NativeBuiltinVp8Scope();
+  NativeBuiltinVp8Scope(const NativeBuiltinVp8Scope&) = delete;
+  NativeBuiltinVp8Scope& operator=(const NativeBuiltinVp8Scope&) = delete;
+ private:
+  NativeBuiltinVp8Execution::State* previous_;
+};
+
 struct RustEnvironmentFactoryRetention;
 struct FfiClockTimeBounds;
 class NativeEnvironmentFactory final {

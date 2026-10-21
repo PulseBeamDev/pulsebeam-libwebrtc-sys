@@ -23,6 +23,9 @@ class AudioDecoderFactory;
 class AudioEncoderFactory;
 class FrameTransformerInterface;
 class VideoFrame;
+class Environment;
+struct SdpVideoFormat;
+class VideoEncoder;
 class VideoDecoderFactory;
 class VideoEncoderFactory;
 class NetEqFactory;
@@ -245,17 +248,25 @@ class NativeVideoEncoderFactory final {
 public:
   explicit NativeVideoEncoderFactory(
       std::unique_ptr<webrtc::VideoEncoderFactory> factory,
-      bool rust_factory = false) noexcept;
+      bool rust_factory = false, bool builtin_factory = false) noexcept;
   ~NativeVideoEncoderFactory();
   webrtc::VideoEncoderFactory &factory() const noexcept;
   bool rust_factory() const noexcept { return rust_factory_; }
+  bool builtin_factory() const noexcept { return builtin_factory_; }
   std::unique_ptr<webrtc::VideoEncoderFactory> CreateAdapter(
       std::shared_ptr<rust::Box<RustVideoFactoryEnvironment>>, bool installed = true) const;
 
 private:
   std::unique_ptr<webrtc::VideoEncoderFactory> factory_;
   bool rust_factory_;
+  bool builtin_factory_;
 };
+// Preserve the actual SDK encoder and all virtual behavior. Only the closed
+// builtin producer tag plus exact bound Environment can acquire runtime scope.
+std::unique_ptr<webrtc::VideoEncoder> retain_builtin_encoder_execution(
+    const NativeVideoEncoderFactory&, const NativeEnvironment&,
+    const webrtc::Environment&, const webrtc::SdpVideoFormat&,
+    std::unique_ptr<webrtc::VideoEncoder>) noexcept;
 
 class NativeVideoDecoderFactory final {
 public:

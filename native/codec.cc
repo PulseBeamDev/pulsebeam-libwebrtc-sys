@@ -1648,6 +1648,99 @@ int32_t RustDecoder::Release() {
   return decoder_release(*decoder_);
 }
 
+namespace {
+// A lifecycle/context delegate, not an encoder implementation. Native codec
+// decisions, error values, metadata and output remain the SDK encoder's own.
+class ScopedBuiltinVp8Encoder final : public webrtc::VideoEncoder {
+ public:
+  ScopedBuiltinVp8Encoder(std::unique_ptr<webrtc::VideoEncoder> encoder,
+      std::shared_ptr<NativeBuiltinVp8Execution> execution)
+      : execution_(std::move(execution)), encoder_(std::move(encoder)) {}
+  ~ScopedBuiltinVp8Encoder() override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_.reset();
+  }
+  void SetFecControllerOverride(webrtc::FecControllerOverride* value) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_->SetFecControllerOverride(value);
+  }
+  int32_t InitEncode(const webrtc::VideoCodec* codec, int32_t cores, size_t payload) override {
+    execution_->SetCores(cores);
+    NativeBuiltinVp8Scope scope(execution_);
+    return encoder_->InitEncode(codec, cores, payload);
+  }
+  int InitEncode(const webrtc::VideoCodec* codec, const Settings& settings) override {
+    execution_->SetCores(settings.number_of_cores);
+    NativeBuiltinVp8Scope scope(execution_);
+    return encoder_->InitEncode(codec, settings);
+  }
+  int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback* callback) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    callback_.target = callback;
+    return encoder_->RegisterEncodeCompleteCallback(callback ? &callback_ : nullptr);
+  }
+  int32_t Release() override {
+    NativeBuiltinVp8Scope scope(execution_);
+    return encoder_->Release();
+  }
+  int32_t Encode(const webrtc::VideoFrame& frame,
+      const std::vector<webrtc::VideoFrameType>* types) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    return encoder_->Encode(frame, types);
+  }
+  void SetRates(const RateControlParameters& parameters) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_->SetRates(parameters);
+  }
+  void OnPacketLossRateUpdate(float value) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_->OnPacketLossRateUpdate(value);
+  }
+  void OnRttUpdate(int64_t value) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_->OnRttUpdate(value);
+  }
+  void OnLossNotification(const LossNotification& value) override {
+    NativeBuiltinVp8Scope scope(execution_);
+    encoder_->OnLossNotification(value);
+  }
+  EncoderInfo GetEncoderInfo() const override {
+    NativeBuiltinVp8Scope scope(execution_);
+    return encoder_->GetEncoderInfo();
+  }
+ private:
+  class Callback final : public webrtc::EncodedImageCallback {
+   public:
+    Result OnEncodedImage(const webrtc::EncodedImage& image,
+        const webrtc::CodecSpecificInfo* info) override {
+      // Do not lend encoder provenance to application/SDK observer code or
+      // unrelated nested products, including native decoders.
+      NativeBuiltinVp8Scope scope(nullptr);
+      return target->OnEncodedImage(image, info);
+    }
+    void OnFrameDropped(uint32_t timestamp, int spatial, bool end) override {
+      NativeBuiltinVp8Scope scope(nullptr);
+      target->OnFrameDropped(timestamp, spatial, end);
+    }
+    webrtc::EncodedImageCallback* target = nullptr;
+  };
+  std::shared_ptr<NativeBuiltinVp8Execution> execution_;
+  Callback callback_;
+  std::unique_ptr<webrtc::VideoEncoder> encoder_;
+};
+}  // namespace
+std::unique_ptr<webrtc::VideoEncoder> retain_builtin_encoder_execution(
+    const NativeVideoEncoderFactory& factory, const NativeEnvironment& selected,
+    const webrtc::Environment& actual, const webrtc::SdpVideoFormat& format,
+    std::unique_ptr<webrtc::VideoEncoder> encoder) noexcept {
+  if (!encoder || !factory.builtin_factory() || !absl::EqualsIgnoreCase(format.name, "VP8")) return encoder;
+  bool valid;
+  auto execution = builtin_vp8_execution(selected, actual, valid);
+  if (!valid) return nullptr;  // Never substitute native OS services on mismatch.
+  if (!execution) return encoder;  // An unbound/native-only environment.
+  return std::make_unique<ScopedBuiltinVp8Encoder>(std::move(encoder), std::move(execution));
+}
+
 struct NativeVideoEncoderProduct::State {
   webrtc::Thread* sequence = nullptr;
   // Native encoder and private adapter must die before either environment lease.
@@ -1681,7 +1774,8 @@ std::unique_ptr<NativeVideoEncoderProduct> video_encoder_create_product(
   }
   // The builtin Create checks codec membership and constructs its adapter.
   // Unlike Query/Init, it does not invoke FuzzyMatch's format diagnostics.
-  state->encoder = selected->Create(state->environment, format.value());
+  state->encoder = retain_builtin_encoder_execution(factory, *state->environment_owner,
+      state->environment, format.value(), selected->Create(state->environment, format.value()));
   state->rust_product = factory.rust_factory();
   if (!state->encoder) return nullptr;
   return std::make_unique<NativeVideoEncoderProduct>(std::move(state));
@@ -1708,8 +1802,8 @@ std::int32_t video_encoder_product_register_callback(NativeVideoEncoderProduct& 
   auto candidate = sink ? encoded_sink_clone(*sink) : nullptr;
   auto& state = product.state();
   const auto status = state.encoder->RegisterEncodeCompleteCallback(candidate ? candidate->callback() : nullptr);
-  // SimulcastEncoderAdapter always installs its pointer, independently of
-  // leaf callback statuses. Stock encoders likewise store this exact pointer.
+  // Keep the caller's pointer alive independently of leaf callback statuses.
+  // Native adapters and the builtin context delegate retain this callback.
   state.output_callback = std::move(candidate);
   return status;
 }
@@ -1892,8 +1986,8 @@ std::unique_ptr<NativeOwnedVideoEncoderSelector> video_encoder_factory_selector(
   return value ? std::make_unique<NativeOwnedVideoEncoderSelector>(std::move(value)) : nullptr;
 }
 NativeVideoEncoderFactory::NativeVideoEncoderFactory(
-    std::unique_ptr<webrtc::VideoEncoderFactory> factory, bool rust_factory) noexcept
-    : factory_(std::move(factory)), rust_factory_(rust_factory) {}
+    std::unique_ptr<webrtc::VideoEncoderFactory> factory, bool rust_factory, bool builtin_factory) noexcept
+    : factory_(std::move(factory)), rust_factory_(rust_factory), builtin_factory_(builtin_factory) {}
 NativeVideoEncoderFactory::~NativeVideoEncoderFactory() = default;
 std::unique_ptr<webrtc::VideoEncoderFactory> NativeVideoEncoderFactory::CreateAdapter(
     VideoCreationRetention retention, bool installed) const {
@@ -2334,7 +2428,7 @@ new_builtin_audio_decoder_factory() noexcept {
 std::unique_ptr<NativeVideoEncoderFactory>
 new_builtin_video_encoder_factory() noexcept {
   auto factory = webrtc::CreateBuiltinVideoEncoderFactory();
-  return factory ? std::make_unique<NativeVideoEncoderFactory>(std::move(factory)) : nullptr;
+  return factory ? std::make_unique<NativeVideoEncoderFactory>(std::move(factory), false, true) : nullptr;
 }
 
 std::unique_ptr<NativeVideoDecoderFactory>
