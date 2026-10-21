@@ -137,6 +137,317 @@
   ],
   "mappings": [
     {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@ApplyConfig#&1$@N@webrtc@S@AudioProcessing@S@Config#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Apply the typed configuration to the same native module; readback observes native GC2 validation/reset rather than a synthetic wrapper reset. Rust admission errors distinguish unsafe active fields, trials, pending settings and callback/dump failures from the native void operation; pre-entry rejection does not call ApplyConfig, while an observer failure after entry is not a rollback. Disabled nested values are not converted to the legacy effect-selection subset. This method row does not claim all Config field declarations, providers or DSP modes are qualified.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn apply_config("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::uint8_t audio_processor_config_apply("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor_config.rs",
+          "anchor": "fn full_config_drives_real_pre_and_post_gain_on_same_module("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor_config.rs",
+          "anchor": "fn unsafe_active_fields_fail_before_mutation_but_native_gc2_reset_is_preserved("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_standalone.rs",
+          "anchor": "fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@GetConfig#1",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Read the actual native module configuration through ConfigToFfi and AudioProcessorConfig, including disabled nested fields; do not return a cached requested configuration or flatten it into legacy effect choices. Roundtrip and live gain replacement are actual native consumers. Config type/field/equality declarations and universal algorithm qualification remain separate obligations.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn configuration(&self)"
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "FfiApmConfig audio_processor_config_get("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor_config.rs",
+          "anchor": "fn full_config_drives_real_pre_and_post_gain_on_same_module("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_standalone.rs",
+          "anchor": "fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_stereo_ns.rs",
+          "anchor": "fn native_stereo_planar_ns_attenuates_after_startup_and_replays("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@Initialize#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Call native no-argument Initialize, retaining native user settings and exposing its integer status separately from Rust admission errors. Unsafe GC2 runtime reinitialization is refused before entry; dump/callback observation failure is not reported as successful initialization. The product retains the selected environment after configuring owners are released. No mandatory first-call initialization or alternate processing implementation is introduced.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn initialize(&mut self)"
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_initialize("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor.rs",
+          "anchor": "fn native_controls_and_processing_outlive_outer_environment("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_standalone.rs",
+          "anchor": "fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@Initialize#&1$@N@webrtc@S@ProcessingConfig#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Build the actual four-stream ProcessingConfig from AudioProcessingFormats and call its native Initialize overload. Rust size/rate/channel/selected-echo and runtime-reinitialization admission rejects unsafe graphs as wrapper errors, not invented native status codes: this pinned native overload returns OK even for some unsafe dimensions. The original native default/empty value is retained as a value but is not advertised as a safe initialized capture graph. Explicit valid formats and multirate native processing are witnessed; this is not a general format or provider-coverage claim.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn initialize_with_formats("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_initialize_formats("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor_config.rs",
+          "anchor": "fn explicit_formats_drive_graph_and_refuse_unsafe_layouts_without_synthetic_status("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_apm_conversion.rs",
+          "anchor": "fn native_nonzero_multirate_capture_and_reverse_planar_replay("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_stereo_ns.rs",
+          "anchor": "fn native_stereo_planar_ns_attenuates_after_startup_and_replays("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@ProcessStream#*1*1f#&1$@N@webrtc@S@StreamConfig#S2_#*1*f#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Process normalized float-planar capture through the native module with distinct input/output stream formats. Rust uses contiguous channel-major initialized slices, validates finite [-1,1] input prefixes and buffer sizes, and preserves extra caller tails. Actual native integer status and best-effort error output remain observable; adapter admission/dump failures are separate errors. Nonzero 48-kHz stereo to 16-kHz mono conversion and stereo NS retain full output bits, not a prescribed waveform. Independent pointer-array storage and aliasing are represented by safe slice/caller-buffer facilities, not a replacement DSP.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn process_planar("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_float("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/runtime_apm_conversion.rs",
+          "anchor": "fn native_nonzero_multirate_capture_and_reverse_planar_replay("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor.rs",
+          "anchor": "fn native_planar_layout_conversion_and_error_output_are_real("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_stereo_ns.rs",
+          "anchor": "fn native_stereo_planar_ns_attenuates_after_startup_and_replays("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@ProcessReverseStream#*1*1f#&1$@N@webrtc@S@StreamConfig#S2_#*1*f#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "implemented",
+      "semantics": "Process normalized float-planar reverse audio with separate input/output stream descriptions and complete caller-initialized destination prefixes. The native reverse converter, unsupported-format status and best-effort error-output branches execute; Rust validates normalized input/lengths and preserves tails without synthesizing a successful result. Nonzero 16-kHz stereo to 48-kHz mono processing is qualified, not mono-to-stereo success or universal native format support. Runtime reinitialization and observer admission remain distinct wrapper errors.",
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn process_reverse_planar("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_float("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/runtime_apm_conversion.rs",
+          "anchor": "fn native_nonzero_multirate_capture_and_reverse_planar_replay("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor.rs",
+          "anchor": "fn native_planar_layout_conversion_and_error_output_are_real("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@ProcessStream#*1S#&1$@N@webrtc@S@StreamConfig#S1_#*S#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "partial",
+      "semantics": "The existing Rust capture consumer passes one stream as both native input and output, using separate native prefix copies to avoid overlap in error-copy branches before copying back to the mutable Rust slice. Same-format int16 capture, actual status, native effects and untouched caller tails are qualified. This does not expose the full two-format native overload.",
+      "gaps": [
+        "No public int16 operation accepts distinct input/output StreamConfigs and independent input/destination slices. The native implementation's multichannel-input/mono-output path and its relation to the header's stricter initialization preconditions still require an actual native/public consumer witness and a faithful binding. Do not infer supported differing int16 rates from float conversion or treat this missing wrapper as upstream unavailability."
+      ],
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn process_interleaved("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_i16("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor.rs",
+          "anchor": "fn native_controls_and_processing_outlive_outer_environment("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor_config.rs",
+          "anchor": "fn full_config_drives_real_pre_and_post_gain_on_same_module("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_standalone.rs",
+          "anchor": "fn same_standalone_procedure_uses_native_processing_mixing_codecs_and_logging("
+        }
+      ]
+    },
+    {
+      "declaration": "api/audio/audio_processing.h#c:@N@webrtc@S@AudioProcessing@F@ProcessReverseStream#*1S#&1$@N@webrtc@S@StreamConfig#S1_#*S#",
+      "profiles": [
+        "core",
+        "native"
+      ],
+      "state": "partial",
+      "semantics": "The existing Rust reverse consumer passes one format as both native input and output and copies the native-sized result back into the caller's mutable slice. Same-format reverse int16 processing and its status are exercised after original environment release. The separate native input/output layouts are not expressible through this operation.",
+      "gaps": [
+        "The public int16 reverse API lacks separate input/output stream descriptions and independent source/destination buffers. Qualify the actual native distinct-layout/downmix path and preserve its statuses/error output before completing this overload mapping; matching rates remain the public int16 precondition."
+      ],
+      "rust": [
+        {
+          "tree": "repository",
+          "path": "src/audio_processor.rs",
+          "anchor": "pub fn process_reverse_interleaved("
+        }
+      ],
+      "installation": [
+        {
+          "tree": "repository",
+          "path": "native/audio_processor.cc",
+          "anchor": "std::int32_t audio_processor_i16("
+        }
+      ],
+      "verification": [
+        {
+          "tree": "repository",
+          "path": "tests/audio_processor.rs",
+          "anchor": "fn native_controls_and_processing_outlive_outer_environment("
+        },
+        {
+          "tree": "repository",
+          "path": "tests/runtime_standalone_aec.rs",
+          "anchor": "fn native_standalone_aec_render_capture_linear_output_and_metrics_replay("
+        }
+      ]
+    },
+    {
       "declaration": "api/rtc_error.h#c:@N@webrtc@ST>1#T@RTCErrorOr",
       "profiles": ["core", "native"],
       "state": "partial",

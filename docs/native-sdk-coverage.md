@@ -168,6 +168,25 @@ is not yet protected or qualified. Constructor success and bit-preserving value
 storage do not resolve that downstream gap. See
 [the RTP contracts](rtp-value-contracts.md#encoding-graph-remaining).
 
+The first `api/audio/audio_processing.h` increment maps eight exact method
+declarations, not the `AudioProcessing` class or its entire configuration graph.
+`ApplyConfig`, `GetConfig`, both initialization overloads and both float-planar
+processing overloads have source wiring and actual consumers. The mapping records
+Rust admission separately from native status, GC2's native reset behavior,
+initialized caller-buffer prefixes, native error output and retained owners.
+The [audio contracts](audio-runtime-contracts.md) bound the executed same-rate,
+stereo and nonzero multirate consumers; they are not universal DSP qualification.
+
+Both int16 processing overloads remain explicitly partial. Current Rust methods
+pass one stream description as both native input and output and expose in-place
+buffers only. The native overloads accept distinct descriptions and buffers;
+their implemented mono-output path still needs reconciliation with the stricter
+int16 initialization comment and an actual distinct-layout consumer. A missing
+two-format wrapper is not upstream unavailability. Float conversion does not
+establish supported differing int16 rates. Configuration/value declarations,
+status/statistics methods, builders/providers, dumps, runtime settings and linear
+output are not automatically claimed by these eight method rows.
+
 `check --require-mapped` additionally rejects unmapped or partial active
 declarations and unaccounted configuration macros. It is a structural mapping
 gate, **not** proof of functional SDK coverage. A valid source anchor or a test
