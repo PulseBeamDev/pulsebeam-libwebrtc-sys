@@ -128,6 +128,33 @@ participate in replay. The consumer does not query or discard APM statistics.
 Managed time remains frozen during synchronous processing. Other levels, inputs,
 rates, channel layouts, live changes and adaptive gain need separate consumers.
 
+### Stereo float-planar native noise suppression
+
+`tests/runtime_stereo_ns.rs` supplies distinct fixed caller-generated channel-major
+float channels at 16 kHz: 160 samples per channel, followed by nine caller tail
+samples. Two actual stock modules differ only in NS enablement at `VeryHigh`.
+AEC, HPF, transient suppression, both gain controllers and fixed pre/post paths
+are disabled. The config requests `pipeline.multi_channel_capture = true`; the
+test also requires native input, processing and output channel counts of two on
+initialization and every block. With AEC disabled, native processing-channel
+selection follows output channels, not the echo-controller downmix condition.
+
+The case retains all 320 blocks, including 220 warmup blocks. In each subsequent
+25-block window, each channel must have nonzero enabled output with lower energy
+than its corresponding disabled native control. Actual enabled channels must
+also remain distinct in each measured window. These are bounded observations,
+not channel independence: native multichannel NS combines per-channel Wiener
+filters using their per-bin minimum. No alternate DSP or caller attenuation is
+introduced, and no speech-quality or other rate/level/backend claim is made.
+
+Complete input, initialized output and native output float bits are retained,
+including negative-zero input tails and unchanged extra output samples. Caller
+generator seeds/final states, measured double-precision energy bits, complete
+configs, formats and native statuses participate in full replay. Original
+configuring owners are released before initialization; both modules are released
+before the driver. `PULSEBEAM_STEREO_NS_TRACE_PATH` writes the full threaded/managed
+tuple. Managed time remains frozen during this synchronous application.
+
 ### Standalone GC1 startup-floor and caller feedback
 
 `tests/runtime_standalone_agc.rs` follows the pinned native float-planar startup
