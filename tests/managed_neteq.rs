@@ -57,6 +57,8 @@ struct Step {
     #[serde(serialize_with = "serialize_debug")]
     encoded: AudioEncoderOutput,
     insertion: Option<Insertion>,
+    #[serde(serialize_with = "serialize_debug")]
+    omitted_header: Option<RtpHeaderValues>,
     code: i32,
     muted: bool,
     output_rate_hz: i32,
@@ -70,6 +72,7 @@ struct Step {
 
 #[derive(Debug, PartialEq, Serialize)]
 struct Observation {
+    omitted_packet_indices: Vec<usize>,
     clock_bounds_us: (i64, i64),
     started_at_us: i64,
     finished_at_us: i64,
@@ -81,7 +84,7 @@ struct Observation {
     after_reset: State,
 }
 
-fn application<R: SessionRuntime>(runtime: R) -> Observation {
+fn application<R: SessionRuntime>(runtime: R, omitted_packet_indices: &[usize]) -> Observation {
     let factory = runtime.environment_factory().unwrap();
     let environment = runtime.create_environment(&factory).unwrap();
     let format = SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1);
@@ -113,6 +116,7 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     let before = State::take(&mut engine);
     let mut steps = Vec::new();
     let mut sequence = u16::MAX - 4;
+    let mut packet_index = 0;
     for block in 0..40 {
         let input_timestamp = 1000 + block * 80;
         let input = (0..80)
@@ -125,6 +129,7 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
             })
             .collect::<Vec<_>>();
         let encoded = encoder.encode(input_timestamp, &input).unwrap();
+        let mut omitted_header = None;
         let insertion = if encoded.bytes.is_empty() {
             None
         } else {
@@ -135,21 +140,30 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
                 ssrc: 73,
                 ..Default::default()
             };
-            let receive_time = environment.timestamp();
-            assert!(
-                engine.receive_time_is_safe(receive_time),
-                "retained bounds must prove finite subtraction"
-            );
-            let code = engine
-                .insert_packet_at(&header, &encoded.bytes, receive_time)
-                .unwrap();
-            assert_eq!(code, NetEqReturnCode::OK);
+            // External packet loss does not rewind the sender. Keep the actual
+            // encoded bytes/header even when no receiver insertion takes place.
             sequence = sequence.wrapping_add(1);
-            Some(Insertion {
-                header,
-                receive_time_us: receive_time.microseconds().unwrap(),
-                code: code.0,
-            })
+            let omit = omitted_packet_indices.contains(&packet_index);
+            packet_index += 1;
+            if omit {
+                omitted_header = Some(header);
+                None
+            } else {
+                let receive_time = environment.timestamp();
+                assert!(
+                    engine.receive_time_is_safe(receive_time),
+                    "retained bounds must prove finite subtraction"
+                );
+                let code = engine
+                    .insert_packet_at(&header, &encoded.bytes, receive_time)
+                    .unwrap();
+                assert_eq!(code, NetEqReturnCode::OK);
+                Some(Insertion {
+                    header,
+                    receive_time_us: receive_time.microseconds().unwrap(),
+                    code: code.0,
+                })
+            }
         };
         let mut frame = AudioFrame::new();
         let mut muted = true;
@@ -178,6 +192,7 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
             input,
             encoded,
             insertion,
+            omitted_header,
             code: code.0,
             muted,
             output_rate_hz,
@@ -187,6 +202,49 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
             samples,
             state: State::take(&mut engine),
         });
+    }
+    assert_eq!(packet_index, 20);
+    let headers = steps
+        .iter()
+        .filter_map(|step| {
+            step.insertion
+                .as_ref()
+                .map(|i| &i.header)
+                .or(step.omitted_header.as_ref())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(headers.len(), 20);
+    for (index, header) in headers.iter().enumerate() {
+        assert_eq!(
+            header.sequence_number,
+            (u16::MAX - 4).wrapping_add(index as u16)
+        );
+        assert_eq!(header.timestamp, 1000 + index as u32 * 160);
+    }
+    let omissions = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.omitted_header.is_some())
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    assert_eq!(omissions.len(), omitted_packet_indices.len());
+    if let (Some(&first), Some(&last)) = (omissions.first(), omissions.last()) {
+        let pre_loss = &steps[first - 1].state.lifetime;
+        let during_loss = &steps[last].state.lifetime;
+        assert!(during_loss.concealed_samples > pre_loss.concealed_samples);
+        assert!(during_loss.concealment_events > pre_loss.concealment_events);
+        assert!(
+            steps[last + 1..].iter().any(|s| {
+                s.fields.speech_type == AudioFrameSpeechType::NORMAL_SPEECH
+                    && !s.fields.packet_infos.is_empty()
+                    && s.samples.iter().any(|&v| v != 0)
+            }),
+            "normal native speech with received-packet metadata must resume after the burst"
+        );
+        assert!(
+            steps.last().unwrap().state.lifetime.total_samples_received
+                > during_loss.total_samples_received
+        );
     }
     let (final_network_code, final_network) = engine.network_statistics();
     assert_eq!(final_network_code, NetEqReturnCode::OK);
@@ -215,6 +273,7 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     let finished_at_us = environment.timestamp().microseconds().unwrap();
     drop(environment);
     Observation {
+        omitted_packet_indices: omitted_packet_indices.to_vec(),
         clock_bounds_us: (
             bounds.minimum().microseconds(),
             bounds.maximum().microseconds(),
@@ -229,19 +288,19 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     }
 }
 
-#[test]
-fn native_pcmu_packets_play_through_stock_neteq_and_replay() {
-    let threaded = application(ThreadedRuntime);
+fn replay_case(omitted_packet_indices: &[usize], trace_suffix: &str) {
+    let threaded = application(ThreadedRuntime, omitted_packet_indices);
     let managed = std::array::from_fn::<_, 2, _>(|_| {
         eprintln!("CONTROLLED_MEDIA_BEGIN");
         let world = ControlledWorld::acquire(1005, Duration::from_secs(7)).unwrap();
-        let observation = application(world.runtime().unwrap());
+        let observation = application(world.runtime().unwrap(), omitted_packet_indices);
         assert_eq!(world.now(), Duration::from_secs(7));
         drop(world);
         eprintln!("CONTROLLED_MEDIA_END");
         observation
     });
-    if let Some(path) = std::env::var_os("PULSEBEAM_NETEQ_TRACE_PATH") {
+    if let Some(mut path) = std::env::var_os("PULSEBEAM_NETEQ_TRACE_PATH") {
+        path.push(trace_suffix);
         std::fs::write(path, serde_json::to_vec(&(&threaded, &managed)).unwrap()).unwrap();
     }
     // Same complete clock/arrival inputs prove full managed replay, including
@@ -250,6 +309,7 @@ fn native_pcmu_packets_play_through_stock_neteq_and_replay() {
     for observation in &managed {
         assert_eq!(observation.started_at_us, 7_000_000);
         assert_eq!(observation.finished_at_us, 7_000_000);
+        assert_eq!(threaded.steps.len(), observation.steps.len());
         for (real, controlled) in threaded.steps.iter().zip(&observation.steps) {
             assert_eq!(real.encoded, controlled.encoded);
             assert_eq!(real.samples, controlled.samples);
@@ -258,4 +318,17 @@ fn native_pcmu_packets_play_through_stock_neteq_and_replay() {
     // Default threaded arrivals use real environment time, not the managed
     // 7s clock. Retain all of those timestamps and processing-delay statistics;
     // claiming full cross-runtime timing equality would violate preconditions.
+}
+
+#[test]
+fn native_pcmu_packets_play_through_stock_neteq_and_replay() {
+    replay_case(&[], "");
+}
+
+#[test]
+fn native_pcmu_packet_loss_conceals_and_recovers_with_full_replay() {
+    // Three consecutive 20ms encoder packets after six packets of warm-up.
+    // Do not prescribe a literal PLC waveform or the first concealment pull.
+    // Every actual native output sample still participates in full replay.
+    replay_case(&[6, 7, 8], ".loss");
 }

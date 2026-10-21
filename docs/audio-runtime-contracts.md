@@ -136,8 +136,24 @@ Repeated managed observations compare in full. The default-threaded observation
 retains its real timestamps and counters; only clock-independent encoded bytes
 and decoded PCM are compared across these different clock inputs. Managed time
 is frozen during this synchronous consumer, while native GetAudio ticks advance.
-This bounded path does not cover packet impairment, live codec reconfiguration,
-CN/DTMF/RED, NACK or peer-installed factory selection.
+
+The loss case omits encoder packets 6, 7 and 8 after a six-packet warm-up, then
+resumes delivery. Sender sequence numbers and timestamps still advance across
+the omission, including the earlier sequence-number wrap. Omitted headers and
+actual encoded bytes remain in the observation; they have no receiver insertion
+or fabricated arrival. Every delivered packet keeps the same finite-arrival guard.
+Native concealed-sample and concealment-event counters must increase during the
+burst relative to the pre-loss state. Normal nonzero speech with received-packet
+metadata must resume, and decoded sample accounting must advance after the loss.
+Every pull must still return native OK and an initialized 8-kHz mono 80-sample frame.
+There is no prescribed literal PLC waveform or exact first concealment pull; all
+actual PLC samples and metadata still participate in complete managed replay.
+
+`PULSEBEAM_NETEQ_TRACE_PATH` writes the full threaded/managed observation tuple
+for the lossless case; the loss case appends `.loss` to that path. Both traces
+retain all statistics, including clock-dependent packet dwell time.
+These bounded paths do not cover arbitrary loss patterns, reordering, jitter,
+live codec reconfiguration, CN/DTMF/RED, NACK or peer-installed factory selection.
 
 ## Standalone NetEq decoder selection
 
