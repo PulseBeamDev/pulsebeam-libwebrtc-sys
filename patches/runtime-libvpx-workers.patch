@@ -1,5 +1,5 @@
 diff --git a/vp8/common/threading.h b/vp8/common/threading.h
-index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..4f27c02b56aa281444189093a3857e6ddc2bdcb1 100644
+index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..84a87f400a0154b2e49519ce1a805d1bc47a974c 100644
 --- a/vp8/common/threading.h
 +++ b/vp8/common/threading.h
 @@ -19,6 +19,71 @@ extern "C" {
@@ -74,12 +74,16 @@ index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..4f27c02b56aa281444189093a3857e6d
  #if defined(_WIN32) && !HAVE_PTHREAD_H
  /* Win32 */
  #include <windows.h>
-@@ -61,15 +126,42 @@ extern "C" {
+@@ -61,15 +126,46 @@ extern "C" {
  #include <unistd.h>
  #include <sched.h>
  #define vp8_sem_t sem_t
 +#if defined(__linux__) && VPX_ARCH_X86_64
-+static INLINE int vp8_sem_init(vp8_sem_t *sem, int pshared, unsigned int value) {
+ #define vp8_sem_init sem_init
++// Only the encoder's persistent pool registers managed objects. Decoder init
++// must not acquire an enclosing encoder's runtime provenance.
++static INLINE int vp8_encoder_sem_init(vp8_sem_t *sem, int pshared,
++                                      unsigned int value) {
 +  const VPxRuntimeInterface *runtime = vpx_get_runtime_interface();
 +  int result;
 +  if (runtime->sem_init != NULL &&
@@ -100,7 +104,7 @@ index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..4f27c02b56aa281444189093a3857e6d
 +  return sem_destroy(sem);
 +}
 +#else
- #define vp8_sem_init sem_init
++#define vp8_sem_init sem_init
 +#define vp8_sem_post sem_post
 +#define vp8_sem_destroy sem_destroy
 +#endif
@@ -119,7 +123,18 @@ index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..4f27c02b56aa281444189093a3857e6d
  #endif /* __APPLE__ */
  /* Not Windows. Assume pthreads */
  
-@@ -97,6 +189,12 @@ static INLINE void vp8_atomic_spin_wait(
+@@ -84,6 +180,10 @@ static INLINE int vp8_sem_wait(vp8_sem_t *sem) {
+ 
+ #endif
+ 
++#if !defined(__linux__) || !VPX_ARCH_X86_64
++#define vp8_encoder_sem_init vp8_sem_init
++#endif
++
+ #if VPX_ARCH_X86 || VPX_ARCH_X86_64
+ #include "vpx_ports/x86.h"
+ #else
+@@ -97,6 +197,12 @@ static INLINE void vp8_atomic_spin_wait(
      const int nsync) {
    while (mb_col > (vpx_atomic_load_acquire(last_row_current_mb_col) - nsync)) {
      x86_pause_hint();
@@ -133,10 +148,38 @@ index 0de75cfde3b465b0efb0d3f430b45a4adc4871de..4f27c02b56aa281444189093a3857e6d
    }
  }
 diff --git a/vp8/encoder/ethreading.c b/vp8/encoder/ethreading.c
-index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..e6bc4caa2f3457af1a47aeb72df903ab6208ae4d 100644
+index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..f2c9c7a6abe48af3b1f496873eef184adbee4738 100644
 --- a/vp8/encoder/ethreading.c
 +++ b/vp8/encoder/ethreading.c
-@@ -513,7 +513,7 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+@@ -490,13 +490,24 @@ void vp8cx_init_mbrthread_data(VP8_COMP *cpi, MACROBLOCK *x,
+ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+   const VP8_COMMON *cm = &cpi->common;
+   int th_count = 0;
++  int available_cores = cm->processor_core_count;
++#if defined(__linux__) && VPX_ARCH_X86_64
++  {
++    const VPxRuntimeInterface *runtime = vpx_get_runtime_interface();
++    if (runtime->enabled != NULL && runtime->enabled() &&
++        runtime->available_processors != NULL) {
++      const int supplied = runtime->available_processors();
++      if (supplied > 0) available_cores = supplied;
++    }
++  }
++#endif
+ 
+-  if (cm->processor_core_count > 1 && cpi->oxcf.multi_threaded > 1) {
++  if (available_cores > 1 && cpi->oxcf.multi_threaded > 1) {
+     th_count = cpi->oxcf.multi_threaded - 1;
+ 
+     /* don't allocate more threads than cores available */
+-    if (cpi->oxcf.multi_threaded > cm->processor_core_count) {
+-      th_count = cm->processor_core_count - 1;
++    if (cpi->oxcf.multi_threaded > available_cores) {
++      th_count = available_cores - 1;
+     }
+ 
+     /* we have th_count + 1 (main) threads processing one row each */
+@@ -513,7 +524,7 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
      int rc = 0;
  
      CHECK_MEM_ERROR(&cpi->common.error, cpi->h_encoding_thread,
@@ -145,7 +188,16 @@ index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..e6bc4caa2f3457af1a47aeb72df903ab
      CHECK_MEM_ERROR(&cpi->common.error, cpi->h_event_start_encoding,
                      vpx_malloc(sizeof(vp8_sem_t) * th_count));
      CHECK_MEM_ERROR(&cpi->common.error, cpi->h_event_end_encoding,
-@@ -546,18 +546,21 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+@@ -539,25 +550,28 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+       vp8_setup_block_ptrs(&cpi->mb_row_ei[ithread].mb);
+       vp8_setup_block_dptrs(&cpi->mb_row_ei[ithread].mb.e_mbd);
+ 
+-      vp8_sem_init(&cpi->h_event_start_encoding[ithread], 0, 0);
+-      vp8_sem_init(&cpi->h_event_end_encoding[ithread], 0, 0);
++      vp8_encoder_sem_init(&cpi->h_event_start_encoding[ithread], 0, 0);
++      vp8_encoder_sem_init(&cpi->h_event_end_encoding[ithread], 0, 0);
+ 
+       ethd->ithread = ithread;
        ethd->ptr1 = (void *)cpi;
        ethd->ptr2 = (void *)&cpi->mb_row_ei[ithread];
  
@@ -170,8 +222,14 @@ index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..e6bc4caa2f3457af1a47aeb72df903ab
          vp8_sem_destroy(&cpi->h_event_start_encoding[ithread]);
          vp8_sem_destroy(&cpi->h_event_end_encoding[ithread]);
        }
-@@ -585,7 +588,7 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
-       vp8_sem_init(&cpi->h_event_end_lpf, 0, 0);
+@@ -581,11 +595,11 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+     {
+       LPFTHREAD_DATA *lpfthd = &cpi->lpf_thread_data;
+ 
+-      vp8_sem_init(&cpi->h_event_start_lpf, 0, 0);
+-      vp8_sem_init(&cpi->h_event_end_lpf, 0, 0);
++      vp8_encoder_sem_init(&cpi->h_event_start_lpf, 0, 0);
++      vp8_encoder_sem_init(&cpi->h_event_end_lpf, 0, 0);
  
        lpfthd->ptr1 = (void *)cpi;
 -      rc = pthread_create(&cpi->h_filter_thread, 0, thread_loopfilter, lpfthd);
@@ -179,7 +237,7 @@ index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..e6bc4caa2f3457af1a47aeb72df903ab
  
        if (rc) {
          /* shutdown other threads */
-@@ -593,7 +596,7 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
+@@ -593,7 +607,7 @@ int vp8cx_create_encoder_threads(VP8_COMP *cpi) {
          for (--ithread; ithread >= 0; ithread--) {
            vp8_sem_post(&cpi->h_event_start_encoding[ithread]);
            vp8_sem_post(&cpi->h_event_end_encoding[ithread]);
@@ -188,7 +246,7 @@ index 98c87d3cbcd524943c6c29ed5bb330a0c57f32ab..e6bc4caa2f3457af1a47aeb72df903ab
            vp8_sem_destroy(&cpi->h_event_start_encoding[ithread]);
            vp8_sem_destroy(&cpi->h_event_end_encoding[ithread]);
          }
-@@ -631,14 +634,14 @@ void vp8cx_remove_encoder_threads(VP8_COMP *cpi) {
+@@ -631,14 +645,14 @@ void vp8cx_remove_encoder_threads(VP8_COMP *cpi) {
          vp8_sem_post(&cpi->h_event_start_encoding[i]);
          vp8_sem_post(&cpi->h_event_end_encoding[i]);
  
@@ -246,10 +304,10 @@ index fe703c2dca385672a42a679598761ade9f7b5ab6..4fed27de4362e01eaf5d3416e0a02cdd
 +
  //------------------------------------------------------------------------------
 diff --git a/vpx_util/vpx_thread.h b/vpx_util/vpx_thread.h
-index 22051eae41edb2d2ee85287cb80886cd792f5e42..ab65970947286780c63392101cd1f5d6ed268318 100644
+index 22051eae41edb2d2ee85287cb80886cd792f5e42..0d14010ec37b0ad1d68ab8fa3ddef5db35c5face 100644
 --- a/vpx_util/vpx_thread.h
 +++ b/vpx_util/vpx_thread.h
-@@ -83,6 +83,29 @@ int vpx_set_worker_interface(const VPxWorkerInterface *const winterface);
+@@ -83,6 +83,33 @@ int vpx_set_worker_interface(const VPxWorkerInterface *const winterface);
  // Retrieve the currently set thread worker interface.
  const VPxWorkerInterface *vpx_get_worker_interface(void);
  
@@ -272,6 +330,10 @@ index 22051eae41edb2d2ee85287cb80886cd792f5e42..ab65970947286780c63392101cd1f5d6
 +  int (*sem_post)(void *sem, int *result);
 +  int (*sem_destroy)(void *sem, int *result);
 +  void (*yield)(void);
++  // Optional encoder resource input. Positive values replace the independently
++  // detected host processor count for the original VP8 worker-pool clamp only;
++  // zero/negative leaves native detection intact. Does not change g_threads.
++  int (*available_processors)(void);
 +} VPxRuntimeInterface;
 +int vpx_set_runtime_interface(const VPxRuntimeInterface *runtime);
 +const VPxRuntimeInterface *vpx_get_runtime_interface(void);

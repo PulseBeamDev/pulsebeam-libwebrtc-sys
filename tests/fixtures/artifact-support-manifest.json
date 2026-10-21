@@ -13,13 +13,13 @@
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
       "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "2555aa97c71063469a64fc423d1da215215da398033e579dfbc7066ed381ad08"
+    "native_adapter_sha256": "00e6fa240a8a6ebf2bb0e2162cd8e2a972c95f672bd8f3443b5f08e8cf1dcb11"
   },
   "sources": {
     "libvpx": {
       "repository": "https://chromium.googlesource.com/webm/libvpx.git",
       "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
-      "worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
+      "worker_patch_sha256": "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a"
     },
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
@@ -39,7 +39,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "6a0365e845737ced5518c6556aa89f8a1529c59dd0fb9e971312756a34e7461c",
+  "native_configuration_sha256": "995b4b0ed6abc7a34f31badacebf3af29fd1e120dd12453bf6272e93e1920833",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -68,7 +68,7 @@
     ]
   },
   "native_configuration": {
-    "native_adapter_sha256": "2555aa97c71063469a64fc423d1da215215da398033e579dfbc7066ed381ad08",
+    "native_adapter_sha256": "00e6fa240a8a6ebf2bb0e2162cd8e2a972c95f672bd8f3443b5f08e8cf1dcb11",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -122,6 +122,6 @@
     },
     "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
     "libvpx_revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
-    "libvpx_worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
+    "libvpx_worker_patch_sha256": "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a"
   }
 }

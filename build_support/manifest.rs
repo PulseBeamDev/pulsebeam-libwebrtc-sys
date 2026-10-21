@@ -12,7 +12,7 @@ const RUNTIME_RESOURCES_PATCH_SHA256: &str =
 const LIBVPX_REPOSITORY: &str = "https://chromium.googlesource.com/webm/libvpx.git";
 const LIBVPX_REVISION: &str = "31af37b1bd2774d11a932c1cd9a3849328375f64";
 const LIBVPX_WORKER_PATCH_SHA256: &str =
-    "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701";
+    "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a";
 const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
@@ -383,6 +383,10 @@ const NATIVE_ADAPTER_INPUTS: &[(&str, &[u8])] = &[
     (
         "native/video_source_controls.h",
         include_bytes!("../native/video_source_controls.h"),
+    ),
+    (
+        "native/vpx_execution.inc",
+        include_bytes!("../native/vpx_execution.inc"),
     ),
     (
         "tools/native_cc_wrapper.py",

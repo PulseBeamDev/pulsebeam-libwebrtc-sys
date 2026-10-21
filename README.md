@@ -1096,7 +1096,10 @@ Both local factory and common session builders accept
 Without registration, caller-driven peer factories supply a one-core default and
 threaded factories retain native host detection. Explicit configurations, including
 an absent budget, remain unchanged. This does not select a codec profile, impose
-a global worker cap or qualify explicit multiworker settings for managed execution. See [native Call execution resources](docs/execution-resources.md).
+a global worker cap or by itself qualify every multiworker setting. The desktop
+Linux x86_64 managed VP8 backend also supports persistent native encoder/filter
+workers for its scoped explicit multi-core configuration. See
+[native Call execution resources](docs/execution-resources.md) for settings and limits.
 
 ## Crypto option values (Linux core and native)
 

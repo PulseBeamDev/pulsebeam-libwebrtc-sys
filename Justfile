@@ -18,7 +18,7 @@ webrtc_runtime_resources_patch_sha256 := "0746c63e599fd0bedde9f41c3be254f20c9ca0
 libvpx_url := "https://chromium.googlesource.com/webm/libvpx.git"
 libvpx_commit := "31af37b1bd2774d11a932c1cd9a3849328375f64"
 libvpx_runtime_patch := root + "/patches/runtime-libvpx-workers.patch"
-libvpx_runtime_patch_sha256 := "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
+libvpx_runtime_patch_sha256 := "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a"
 depot_tools_url := "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
 depot_tools_commit := "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4"
 default: check
@@ -549,6 +549,9 @@ _export flavor target:
     roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video third_party/opus/src/include)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
     cp -R "$src/third_party/abseil-cpp/absl" "$stage/include/"; cp -R "$src/third_party/libyuv/include/." "$stage/include/"
+    # Exact private runtime ABI consumed by the binding, not a local VPx layout.
+    mkdir -p "$stage/include/third_party/libvpx/source/libvpx/vpx_util"
+    cp "$src/third_party/libvpx/source/libvpx/vpx_util/vpx_thread.h" "$stage/include/third_party/libvpx/source/libvpx/vpx_util/"
     # The adapter and SDK consumers must use the pinned engine crypto headers,
     # never a platform OpenSSL header set with a different backend ABI.
     cp -R "$src/third_party/boringssl/src/include/openssl" "$stage/include/"

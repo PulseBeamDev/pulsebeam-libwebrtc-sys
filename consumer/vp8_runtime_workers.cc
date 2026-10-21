@@ -41,7 +41,7 @@ void Run(int selected, unsigned failure, bool observe_waits) {
   const VPxRuntimeInterface runtime = {Enabled,
       observe_waits ? SemInit : nullptr, observe_waits ? SemWait : nullptr,
       observe_waits ? SemPost : nullptr, observe_waits ? SemDestroy : nullptr,
-      observe_waits ? Yield : nullptr};
+      observe_waits ? Yield : nullptr, nullptr};
   assert(vpx_set_runtime_interface(selected < 0 ? nullptr : &runtime));
   vpx_codec_ctx_t encoder{};
   vpx_codec_enc_cfg_t config{};

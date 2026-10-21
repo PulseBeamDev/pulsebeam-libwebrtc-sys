@@ -316,6 +316,26 @@ fn run(
     observation
 }
 
+#[allow(dead_code)]
+pub fn check_multicore_replay(trace_path_variable: &str) {
+    let resources = ExecutionResources {
+        codec_core_budget: Some(pulsebeam_webrtc_sys::CodecCoreBudget::new(8).unwrap()),
+    };
+    let first = run("VP8", &[], Some(resources));
+    let second = run("VP8", &[], Some(resources));
+    assert!(
+        first == second,
+        "stock VP8 cores8 native replay differs: events_equal={}, frames_equal={}, observed_us={:?}",
+        first.events == second.events,
+        first.frames == second.frames,
+        [first.observed_at_us, second.observed_at_us],
+    );
+    if let Some(path) = std::env::var_os(trace_path_variable) {
+        std::fs::write(path, serde_json::to_vec(&first).unwrap()).unwrap();
+    }
+}
+
+#[allow(dead_code)]
 pub fn check_replay(
     codec_name: &str,
     parameters: &[(&str, &str)],

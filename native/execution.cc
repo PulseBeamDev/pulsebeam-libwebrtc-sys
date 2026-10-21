@@ -32,6 +32,22 @@
 #include "rtc_base/time_utils.h"
 #include "system_wrappers/include/clock.h"
 
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#include <cerrno>
+#include <climits>
+#include <new>
+#include <pthread.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <ucontext.h>
+#include <unistd.h>
+#include "third_party/libvpx/source/libvpx/vpx_util/vpx_thread.h"
+#if __has_feature(address_sanitizer)
+#define PULSEBEAM_ASAN_FIBERS 1
+#include <sanitizer/common_interface_defs.h>
+#endif
+#endif
+
 namespace pulsebeam::webrtc_sys {
 namespace {
 
@@ -92,6 +108,7 @@ using TaskKey = std::pair<std::int64_t, std::uint64_t>;
 
 class CooperativeTaskQueue final : public webrtc::TaskQueueBase {
  public:
+  using WorkerScope = CurrentTaskQueueSetter;
   CooperativeTaskQueue(std::shared_ptr<NativeTaskQueueFactory::State> state,
                        std::string name,
                        webrtc::TaskQueueBase* identity = nullptr,
@@ -294,6 +311,7 @@ struct NativeBuiltinVp8Execution::State {
   std::shared_ptr<NativeRuntimeRetirement> owner;
   webrtc::Environment environment;
   int cores = 0;
+  bool construction_failed = false;
 };
 namespace {
 thread_local NativeBuiltinVp8Execution::State* current_builtin_vp8 = nullptr;
@@ -425,6 +443,8 @@ std::size_t PumpClock(const std::shared_ptr<NativeManualClock::State>& clock,
 std::int64_t ClockDeadline(
     const std::shared_ptr<NativeManualClock::State>& clock);
 
+#include "pulsebeam-webrtc-sys/native/vpx_execution.inc"
+
 // Intercept thread posts rather than using upstream's elapsed-time pump,
 // which has no finite dispatch bound at frozen virtual time.
 class ControlledThread final : public webrtc::Thread {
@@ -497,6 +517,9 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
       std::lock_guard lock(clock.state->retirement_mutex);
       clock.state->retirement = retirement;
     }
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+    vpx_runtime = std::make_unique<NativeVpxRuntime>(retirement);
+#endif
   }
   void YieldExecution() override {
     // Supported Event waits have finite engine-owned ready dependencies.
@@ -527,6 +550,9 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
       if (retirement->empty()) break;
       if (progress == 0) retirement->Wait(generation);
     }
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+    vpx_runtime.reset();
+#endif
     controlled_driver_identity = nullptr;
     thread->UnwrapCurrent();
     thread.reset();
@@ -546,6 +572,9 @@ struct NativeDriverThread::State : webrtc::YieldInterface {
   std::shared_ptr<NativeRuntimeRetirement> retirement =
       std::make_shared<NativeRuntimeRetirement>();
   std::unique_ptr<webrtc::ScopedYieldPolicy> yield_policy;
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+  std::unique_ptr<NativeVpxRuntime> vpx_runtime;
+#endif
 };
 
 struct NativeThread::State {

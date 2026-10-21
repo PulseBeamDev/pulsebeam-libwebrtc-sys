@@ -119,13 +119,13 @@ expose physical-device APIs. Explicit native-only services preserve their actual
 behavior and are outside caller-controlled deterministic execution when they
 bypass the selected runtime dependencies.
 
-Construction support does not yet qualify every built-in software backend for
-deterministic caller-only execution. Codec-owned workers, nested dependencies
-and full raw-media replay remain open qualification work. See the
-[capability matrix](capability-matrix.md) for bounded evidence rather than a
-blanket deterministic-media claim.
+Stock raw-media execution includes the bounded codec configurations described in
+[native Call execution resources](execution-resources.md). Construction support
+is not a blanket deterministic-media guarantee: broader codec settings, nested
+dependencies and sustained raw-media replay remain qualification gaps. See the
+[capability matrix](capability-matrix.md) for the other subsystem boundaries.
 
-### Private VP8 worker-seam foundation
+### Managed VP8 workers
 
 SDK exports separately pin the DEPS libvpx revision and its runtime worker patch;
 this identity is not attributed to the parent WebRTC resource patch. Producer
@@ -133,24 +133,26 @@ validation rejects extra tracked, staged or untracked child inputs, including
 ignored files. Rust/Python consumers require that child identity and bind it to
 the hashed native configuration.
 
-The private optional seam routes VP8's unchanged persistent encoder/filter entry
-points through the existing native worker interface only when explicitly
-selected. With no selection, the original pthread path remains. Optional
-semaphore/spin callbacks may decline to preserve native primitives. This seam is
-**not installed by the managed runtime yet** and does not qualify caller-only
-multiworker execution.
+On desktop Linux x86_64 the managed runtime selects this seam only for builtin
+VP8 encoders retaining its exact native owner/environment. Unchanged persistent
+encoder/filter entries run on guarded continuation stacks and use the existing
+clock-wide task queue kernel. Encoder semaphore and spin waits do not advance
+virtual time. Worker admission failure preserves native failure and partial
+cleanup rather than creating fallback OS workers. The threaded path retains its
+native pthread implementation. The generic SDK Event yield hook is unchanged;
+this does not turn arbitrary blocking calls into cooperative operations.
 
-`consumer/vp8_runtime_workers.cc` and `tools/prove_vpx_runtime_seam.py` exercise
-matching Linux x86_64 archives, eight actual encoded/decoded frames per variant,
-original versus selected worker dispatch, native semaphore fallback and partial
-worker-creation cleanup. They use raw libvpx configuration, not the complete
-WebRTC builtin factory/media driver. Their byte/pixel digests remain raw
-observations, not replay assertions: these raw realtime codec defaults adapt
-speed to measured native elapsed time. A native-only debugger timing perturbation
-changed those observations without installing a runtime interface. No codec
-defaults or worker counts are changed to hide this timing dependency. Native
-forwarding and cleanup evidence does not establish managed scheduling,
-codec-clock coverage or arbitrary native stack/TLS safety.
+The service preserves native codec policy, including explicit multi-core input;
+it is not an encoded-media adapter or a serial-codec substitution. See
+[native Call execution resources](execution-resources.md) for the scoped stock
+settings, lifetime and sanitizer limitations.
+
+`consumer/vp8_runtime_workers.cc` and `tools/prove_vpx_runtime_seam.py` additionally
+exercise native worker dispatch, semaphore fallback and partial creation cleanup.
+These use raw libvpx rather than the complete WebRTC factory/media driver. Their
+raw realtime codec defaults adapt speed to measured native elapsed time, so their
+byte/pixel digests are observations, not replay assertions. Native forwarding
+alone does not establish managed scheduling or arbitrary stack/TLS safety.
 
 ## Explicit encoded input
 

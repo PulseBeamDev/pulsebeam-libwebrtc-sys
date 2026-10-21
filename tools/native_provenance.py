@@ -45,7 +45,7 @@ def valid_compiler_wrapper(value: str, digest: str) -> bool:
 LIBVPX_SOURCE = {
     "repository": "https://chromium.googlesource.com/webm/libvpx.git",
     "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
-    "worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701",
+    "worker_patch_sha256": "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a",
 }
 
 
