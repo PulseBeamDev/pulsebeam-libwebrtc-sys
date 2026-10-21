@@ -37,6 +37,30 @@ class NativeProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "GN configuration"):
             native_provenance.validate_configuration(value, ROOT)
 
+    def test_child_source_pin_matches_tracked_patch_and_rejects_rehashed_substitution(self):
+        path = ROOT / "tests/fixtures/artifact-support-manifest.json"
+        self.assertEqual(
+            hashlib.sha256((ROOT / "patches/runtime-libvpx-workers.patch").read_bytes()).hexdigest(),
+            native_provenance.LIBVPX_SOURCE["worker_patch_sha256"])
+        for field in ["repository", "revision", "worker_patch_sha256"]:
+            value = json.loads(path.read_text())
+            value["sources"]["libvpx"][field] = "unrecognized"
+            if field != "repository":
+                value["native_configuration"]["libvpx_" + field] = "unrecognized"
+            value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "child source"):
+                native_provenance.validate_configuration(value, ROOT)
+        value = json.loads(path.read_text())
+        del value["sources"]["libvpx"]
+        with self.assertRaisesRegex(ValueError, "child source"):
+            native_provenance.validate_configuration(value, ROOT)
+        for field in ["libvpx_revision", "libvpx_worker_patch_sha256"]:
+            value = json.loads(path.read_text())
+            value["native_configuration"][field] = "unrecognized"
+            value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "identity mismatch"):
+                native_provenance.validate_configuration(value, ROOT)
+
     def test_wrapper_identity_requires_the_command_not_a_digest_substring(self):
         path = ROOT / "tests/fixtures/artifact-support-manifest.json"
         fixture = json.loads(path.read_text())

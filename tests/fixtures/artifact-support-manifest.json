@@ -13,9 +13,14 @@
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
       "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba"
+    "native_adapter_sha256": "e6292b59c1d8e2c858bc940bf867a666bd4a994bccb0eabd7fd603da6c04eb0b"
   },
   "sources": {
+    "libvpx": {
+      "repository": "https://chromium.googlesource.com/webm/libvpx.git",
+      "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
+      "worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
+    },
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
       "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
@@ -34,7 +39,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "a42555ac11dedfed70ecce3589bfd03c84f3e298e47bd189dd143602dc5688f0",
+  "native_configuration_sha256": "4ff5f930066222f0baa18e2c9d88ead97b1d8d0aebf1049578350124953104d9",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -63,7 +68,7 @@
     ]
   },
   "native_configuration": {
-    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba",
+    "native_adapter_sha256": "e6292b59c1d8e2c858bc940bf867a666bd4a994bccb0eabd7fd603da6c04eb0b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -115,6 +120,8 @@
       ],
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
     },
-    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
+    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+    "libvpx_revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
+    "libvpx_worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
   }
 }

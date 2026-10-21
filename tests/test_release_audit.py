@@ -53,6 +53,7 @@ class ReleaseAuditTests(unittest.TestCase):
                         "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
                     },
                     "depot_tools": {"repository": "tools-repository", "revision": "tools"},
+                    "libvpx": copy.deepcopy(audit_release.LIBVPX_SOURCE),
                 },
                 "artifact": {
                     "cargo_target": entry["cargo_target"],

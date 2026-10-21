@@ -152,6 +152,9 @@ def main():
     parser.add_argument("--source-patch-sha256", required=True)
     parser.add_argument("--encoder-switch-patch-sha256", required=True)
     parser.add_argument("--runtime-resources-patch-sha256", required=True)
+    parser.add_argument("--libvpx-repository", required=True)
+    parser.add_argument("--libvpx-revision", required=True)
+    parser.add_argument("--libvpx-worker-patch-sha256", required=True)
     parser.add_argument("--source-state", choices=("applied", "pristine"), required=True)
     parser.add_argument("--depot-tools-repository", required=True)
     parser.add_argument("--depot-tools-revision", required=True)
@@ -186,6 +189,8 @@ def main():
         "source_patch_sha256": args.source_patch_sha256,
         "source_encoder_switch_patch_sha256": args.encoder_switch_patch_sha256,
         "source_runtime_resources_patch_sha256": args.runtime_resources_patch_sha256,
+        "libvpx_revision": args.libvpx_revision,
+        "libvpx_worker_patch_sha256": args.libvpx_worker_patch_sha256,
         "source_state": args.source_state,
         "depot_tools_revision": args.depot_tools_revision,
         "flavor": args.flavor,
@@ -213,6 +218,11 @@ def main():
         "bridge": {"identity": args.bridge_identity, "cxx": cxx,
                    "native_adapter_sha256": native_adapter_sha256},
         "sources": {
+            "libvpx": {
+                "repository": args.libvpx_repository,
+                "revision": args.libvpx_revision,
+                "worker_patch_sha256": args.libvpx_worker_patch_sha256,
+            },
             "webrtc": {
                 "repository": args.source_repository,
                 "revision": args.source_revision,

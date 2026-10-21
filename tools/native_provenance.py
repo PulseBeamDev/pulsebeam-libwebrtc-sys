@@ -42,17 +42,28 @@ def valid_compiler_wrapper(value: str, digest: str) -> bool:
             and Path(command[4]).name == "sccache")
 
 
+LIBVPX_SOURCE = {
+    "repository": "https://chromium.googlesource.com/webm/libvpx.git",
+    "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
+    "worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701",
+}
+
+
 def validate_configuration(manifest: dict, root: Path) -> None:
     config = manifest.get("native_configuration")
     if not isinstance(config, dict) or configuration_digest(config) != manifest.get("native_configuration_sha256"):
         raise ValueError("native configuration digest mismatch")
     bridge, sources, artifact = manifest["bridge"], manifest["sources"], manifest["artifact"]
+    if sources.get("libvpx") != LIBVPX_SOURCE:
+        raise ValueError("wrong libvpx child source identity")
     expected = {
         "native_adapter_sha256": adapter_digest(root), "bridge_identity": bridge["identity"],
         "cxx": bridge["cxx"], "source_revision": sources["webrtc"]["revision"],
         "source_patch_sha256": sources["webrtc"]["patch_sha256"],
         "source_encoder_switch_patch_sha256": sources["webrtc"]["encoder_switch_patch_sha256"],
         "source_runtime_resources_patch_sha256": sources["webrtc"]["runtime_resources_patch_sha256"],
+        "libvpx_revision": sources["libvpx"]["revision"],
+        "libvpx_worker_patch_sha256": sources["libvpx"]["worker_patch_sha256"],
         "source_state": sources["webrtc"]["state"],
         "depot_tools_revision": sources["depot_tools"]["revision"],
         **artifact, "toolchain": manifest["abi"]["toolchain"],

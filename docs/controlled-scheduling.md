@@ -125,6 +125,33 @@ and full raw-media replay remain open qualification work. See the
 [capability matrix](capability-matrix.md) for bounded evidence rather than a
 blanket deterministic-media claim.
 
+### Private VP8 worker-seam foundation
+
+SDK exports separately pin the DEPS libvpx revision and its runtime worker patch;
+this identity is not attributed to the parent WebRTC resource patch. Producer
+validation rejects extra tracked, staged or untracked child inputs, including
+ignored files. Rust/Python consumers require that child identity and bind it to
+the hashed native configuration.
+
+The private optional seam routes VP8's unchanged persistent encoder/filter entry
+points through the existing native worker interface only when explicitly
+selected. With no selection, the original pthread path remains. Optional
+semaphore/spin callbacks may decline to preserve native primitives. This seam is
+**not installed by the managed runtime yet** and does not qualify caller-only
+multiworker execution.
+
+`consumer/vp8_runtime_workers.cc` and `tools/prove_vpx_runtime_seam.py` exercise
+matching Linux x86_64 archives, eight actual encoded/decoded frames per variant,
+original versus selected worker dispatch, native semaphore fallback and partial
+worker-creation cleanup. They use raw libvpx configuration, not the complete
+WebRTC builtin factory/media driver. Their byte/pixel digests remain raw
+observations, not replay assertions: these raw realtime codec defaults adapt
+speed to measured native elapsed time. A native-only debugger timing perturbation
+changed those observations without installing a runtime interface. No codec
+defaults or worker counts are changed to hide this timing dependency. Native
+forwarding and cleanup evidence does not establish managed scheduling,
+codec-clock coverage or arbitrary native stack/TLS safety.
+
 ## Explicit encoded input
 
 Prerecorded input remains an optional native adapter, not a simulation mode.

@@ -13,16 +13,21 @@
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
       "generated_source_sha256": "37a2c2b7e35dde237d34f929a7c4748afd0d0dca010efa824657a0d034998641"
     },
-    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba"
+    "native_adapter_sha256": "e6292b59c1d8e2c858bc940bf867a666bd4a994bccb0eabd7fd603da6c04eb0b"
   },
   "sources": {
+    "libvpx": {
+      "repository": "https://chromium.googlesource.com/webm/libvpx.git",
+      "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
+      "worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701"
+    },
     "webrtc": {
       "repository": "https://github.com/webrtc-sdk/webrtc.git",
       "revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
       "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
-      "state": "pristine",
-      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
+      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+      "state": "pristine"
     },
     "depot_tools": {
       "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
@@ -35,7 +40,7 @@
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
   "native_configuration": {
-    "native_adapter_sha256": "5c14293f34accbff7a52a168883fc99abe167866f8724e8e7da34ac8dce6f6ba",
+    "native_adapter_sha256": "e6292b59c1d8e2c858bc940bf867a666bd4a994bccb0eabd7fd603da6c04eb0b",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -51,6 +56,9 @@
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
     "source_encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
+    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+    "libvpx_revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
+    "libvpx_worker_patch_sha256": "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701",
     "source_state": "pristine",
     "depot_tools_revision": "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4",
     "flavor": "core",
@@ -142,10 +150,9 @@
         "-ffp-contract=off"
       ],
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
-    },
-    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
+    }
   },
-  "native_configuration_sha256": "76dcbdc69edbdd99b633a00023b30d76c8e27f5a9eb393f8916685a0e5fe4a09",
+  "native_configuration_sha256": "4f4b379bbc02556dace7c96316fbf388875a104b666c1ac58ddef532203631db",
   "abi": {
     "toolchain": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
     "cxx_standard": "C++20",
@@ -156,7 +163,7 @@
   "archive": {
     "member": "lib/libwebrtc.a",
     "name": "webrtc",
-    "sha256": "885b266aaf5d01aff1bc6f8a32a448e89a70a1c97b6059da6ac8775ae89d8547"
+    "sha256": "b0fdec480c89668ed3fe3603e2f3366fccc80c1123ae14ab0627760161594ac2"
   },
   "links": [
     {

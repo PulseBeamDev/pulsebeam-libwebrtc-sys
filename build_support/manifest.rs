@@ -9,6 +9,10 @@ const ENCODER_SWITCH_PATCH_SHA256: &str =
     "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a";
 const RUNTIME_RESOURCES_PATCH_SHA256: &str =
     "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02";
+const LIBVPX_REPOSITORY: &str = "https://chromium.googlesource.com/webm/libvpx.git";
+const LIBVPX_REVISION: &str = "31af37b1bd2774d11a932c1cd9a3849328375f64";
+const LIBVPX_WORKER_PATCH_SHA256: &str =
+    "59a9b834e449e133bf83864cea8c3ba3dfde27a46ab1aec72e2eb4d647cbe701";
 const DEPOT_TOOLS_REPOSITORY: &str =
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git";
 const DEPOT_TOOLS_REVISION: &str = "ed9c87f6f12f6b87210e7025d4a36a5a72a2ccd4";
@@ -466,6 +470,15 @@ struct CxxProvenance {
 struct Sources {
     webrtc: Source,
     depot_tools: Source,
+    libvpx: LibvpxSource,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LibvpxSource {
+    repository: String,
+    revision: String,
+    worker_patch_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -548,6 +561,8 @@ struct NativeConfiguration {
     source_patch_sha256: String,
     source_encoder_switch_patch_sha256: String,
     source_runtime_resources_patch_sha256: String,
+    libvpx_revision: String,
+    libvpx_worker_patch_sha256: String,
     source_state: String,
     depot_tools_revision: String,
     flavor: String,
@@ -700,6 +715,21 @@ impl ArtifactManifest {
                 manifest.sources.depot_tools.revision.as_str(),
                 DEPOT_TOOLS_REVISION,
             ),
+            (
+                "libvpx repository",
+                manifest.sources.libvpx.repository.as_str(),
+                LIBVPX_REPOSITORY,
+            ),
+            (
+                "libvpx revision",
+                manifest.sources.libvpx.revision.as_str(),
+                LIBVPX_REVISION,
+            ),
+            (
+                "libvpx worker patch",
+                manifest.sources.libvpx.worker_patch_sha256.as_str(),
+                LIBVPX_WORKER_PATCH_SHA256,
+            ),
             ("flavor", manifest.artifact.flavor.as_str(), expected_flavor),
             ("target", manifest.artifact.target.as_str(), expected_target),
             (
@@ -816,6 +846,8 @@ impl ArtifactManifest {
             || Some(&config.source_runtime_resources_patch_sha256)
                 != self.sources.webrtc.runtime_resources_patch_sha256.as_ref()
             || Some(&config.source_state) != self.sources.webrtc.state.as_ref()
+            || config.libvpx_revision != self.sources.libvpx.revision
+            || config.libvpx_worker_patch_sha256 != self.sources.libvpx.worker_patch_sha256
             || config.depot_tools_revision != self.sources.depot_tools.revision
             || config.flavor != self.artifact.flavor
             || config.target != self.artifact.target
@@ -1054,6 +1086,26 @@ mod tests {
     }
 
     #[test]
+    fn libvpx_worker_patch_digest_matches_tracked_child_patch() {
+        let digest = Sha256::digest(include_bytes!("../patches/runtime-libvpx-workers.patch"));
+        assert_eq!(format!("{digest:x}"), super::LIBVPX_WORKER_PATCH_SHA256);
+    }
+
+    #[test]
+    fn rejects_missing_or_substituted_libvpx_child_identity() {
+        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        value["sources"].as_object_mut().unwrap().remove("libvpx");
+        assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
+        for field in ["repository", "revision", "worker_patch_sha256"] {
+            for replacement in [serde_json::Value::Null, serde_json::json!("unrecognized")] {
+                let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+                value["sources"]["libvpx"][field] = replacement;
+                assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn rejects_missing_or_substituted_runtime_resources_patch() {
         for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
             let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
@@ -1135,6 +1187,14 @@ mod tests {
                 "true",
             ),
             ("/native_configuration/toolchain", "unrelated compiler"),
+            (
+                "/native_configuration/libvpx_revision",
+                "unrelated revision",
+            ),
+            (
+                "/native_configuration/libvpx_worker_patch_sha256",
+                "unrelated patch",
+            ),
             (
                 "/native_configuration/source_encoder_switch_patch_sha256",
                 "substituted patch",

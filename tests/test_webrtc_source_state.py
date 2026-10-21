@@ -22,6 +22,22 @@ class WebRtcSourceStateTests(unittest.TestCase):
             path = self.src / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("original\n")
+        self.vpx = self.src / "third_party/libvpx/source/libvpx"
+        self.vpx.mkdir(parents=True)
+        (self.vpx / "worker.c").write_text("original worker\n")
+        self.vpx_git("init", "-q")
+        self.vpx_git("add", ".")
+        self.vpx_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                     "commit", "-qm", "fixture")
+        self.vpx_revision = self.vpx_git("rev-parse", "HEAD").strip()
+        self.vpx_patch = self.work / "vpx.patch"
+        (self.vpx / "worker.c").write_text("runtime worker\n")
+        self.vpx_patch.write_text(self.vpx_git("diff", "--binary", "--full-index"))
+        self.vpx_git("restore", ".")
+        (self.src / ".gitignore").write_text("third_party/libvpx/source/libvpx/\n")
+        (self.src / "DEPS").write_text(
+            "'src/third_party/libvpx/source/libvpx':\n"
+            f"  'https://example.invalid/libvpx.git@{self.vpx_revision}',\n")
         self.git("init", "-q")
         self.git("add", ".")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -44,6 +60,9 @@ class WebRtcSourceStateTests(unittest.TestCase):
         self.runtime_patch.write_text(self.git("diff", "--binary", "--full-index"))
         self.git("restore", ".")
 
+    def vpx_git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.vpx), *args], text=True)
+
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.src), *args], text=True)
 
@@ -51,9 +70,14 @@ class WebRtcSourceStateTests(unittest.TestCase):
     def digest(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    def run_state(self, flavor="core", target="linux-x86_64", runtime_digest=None):
+    def run_state(self, flavor="core", target="linux-x86_64", runtime_digest=None,
+                  vpx_digest=None):
         values = {
             "webrtc_commit": self.revision,
+            "libvpx_url": "https://example.invalid/libvpx.git",
+            "libvpx_commit": self.vpx_revision,
+            "libvpx_runtime_patch": str(self.vpx_patch),
+            "libvpx_runtime_patch_sha256": vpx_digest or self.digest(self.vpx_patch),
             "webrtc_encoder_switch_patch": str(self.encoder_patch),
             "webrtc_encoder_switch_patch_sha256": self.digest(self.encoder_patch),
             "webrtc_runtime_resources_patch": str(self.runtime_patch),
@@ -107,6 +131,42 @@ class WebRtcSourceStateTests(unittest.TestCase):
         result = self.run_state()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime-resources source differs", result.stderr)
+
+    def test_child_patch_is_applied_and_validated_independently(self):
+        self.assert_success(self.run_state())
+        self.assert_success(self.run_state(flavor="native"))
+        self.assertEqual((self.vpx / "worker.c").read_text(), "runtime worker\n")
+        (self.vpx / "worker.c").write_text("runtime worker\nextra\n")
+        result = self.run_state()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("libvpx source differs", result.stderr)
+
+    def test_child_patch_rejects_wrong_digest(self):
+        result = self.run_state(vpx_digest="0" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("libvpx worker patch digest mismatch", result.stderr)
+
+    def test_child_patch_rejects_untracked_and_staged_changes(self):
+        self.assert_success(self.run_state())
+        (self.vpx / "extra").write_text("untracked\n")
+        self.assertNotEqual(self.run_state().returncode, 0)
+        self.vpx_git("add", "extra")
+        self.assertNotEqual(self.run_state().returncode, 0)
+
+    def test_child_patch_rejects_ignored_untracked_build_inputs(self):
+        self.assert_success(self.run_state())
+        (self.vpx / ".git/info/exclude").write_text("vpx_config.h\n")
+        (self.vpx / "vpx_config.h").write_text("#define CONFIG_MULTITHREAD 0\n")
+        result = self.run_state()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("libvpx checkout cleanliness", result.stderr)
+
+    def test_child_patch_rejects_wrong_revision(self):
+        self.vpx_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                     "commit", "--allow-empty", "-qm", "different revision")
+        result = self.run_state()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("libvpx revision mismatch", result.stderr)
 
     def test_rejects_untracked_or_staged_edits(self):
         extra = self.src / "extra"

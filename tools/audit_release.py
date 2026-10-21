@@ -12,7 +12,7 @@ import tarfile
 
 from tools.write_artifact_lock import LockError, read_checksums, template
 from tools.release_inventory import OS_TARGETS
-from tools.native_provenance import adapter_digest, configuration_digest, validate_configuration
+from tools.native_provenance import LIBVPX_SOURCE, adapter_digest, configuration_digest, validate_configuration
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +103,7 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             source_identity = {
                 "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256", "runtime_resources_patch_sha256")},
                 "depot_tools": depot_tools,
+                "libvpx": sources.get("libvpx"),
             }
             if not all(source_identity["webrtc"].values()) or not isinstance(depot_tools, dict):
                 raise AuditError(f"missing WebRTC source identity in {name}")
