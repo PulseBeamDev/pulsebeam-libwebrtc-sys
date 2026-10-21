@@ -152,6 +152,30 @@ and feedback-plumbing witness is not clipping-triggered or sustained adaptive-ga
 qualification, does not establish speech quality, and does not generalize to
 manual volume adjustment, other rates/channels or GC2 behavior.
 
+### Standalone GC1 full-scale PCM detector feedback
+
+The second `runtime_standalone_agc.rs` case uses the same generic runtime
+procedure and native active/control modules. It retains the default analog
+clipping settings: minimum 70, step 15, ratio threshold 0.1, wait 300 frames and
+predictor disabled. Four mono float-planar blocks supply silence, full-scale
+`+1.0`, full-scale `+1.0`, then silence. The first frame primes native stored
+volume at applied level 255; native clipping analysis precedes that initialization,
+so a clipped first-ever frame would not establish the same current-level witness.
+
+The active native recommendations must be 255, 240, 240, 240. The caller applies
+each actual recommendation before the next block, while the disabled control
+continues to recommend its applied 255. The second frame thus demonstrates a
+native downward detector response; the following two frames demonstrate bounded
+immediate wait suppression, not the entire 300-frame wait/reset behavior. No
+caller attenuation or synthetic microphone model is applied to the PCM.
+
+The test retains the complete float-bit and feedback observations described
+above; its trace appends `.clipping` to `PULSEBEAM_STANDALONE_AGC_TRACE_PATH`.
+Complete fresh-process/core-native/threaded-managed replay includes both cases.
+Full-scale caller-supplied PCM exercises the native detector, but does not prove
+physical acoustic clipping, microphone gain application, sustained speech gain
+adaptation or quality. No SDK algorithms or production runtime behavior change.
+
 ### Distinct-rate multi-source mixing
 
 The same standalone application now calls `tests/support/standalone_mixing.rs`,

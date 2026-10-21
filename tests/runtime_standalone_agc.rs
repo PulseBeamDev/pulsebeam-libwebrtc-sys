@@ -1,4 +1,4 @@
-//! Native GC1 startup-floor feedback, not a clipping/adaptation quality test.
+//! Native GC1 startup-floor and full-scale PCM detector feedback, not speech quality.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
 use std::{fmt::Debug, time::Duration};
@@ -42,8 +42,15 @@ struct Frame {
     active: Processed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+enum Stimulus {
+    StartupFloor,
+    FullScaleClipping,
+}
+
 #[derive(Debug, PartialEq, Serialize)]
 struct Observation {
+    stimulus: Stimulus,
     #[serde(serialize_with = "serialize_debug")]
     formats: AudioProcessingFormats,
     control: Module,
@@ -109,7 +116,7 @@ fn process(
     }
 }
 
-fn application<R: SessionRuntime>(runtime: R) -> Observation {
+fn application<R: SessionRuntime>(runtime: R, stimulus: Stimulus) -> Observation {
     let factory = runtime.environment_factory().unwrap();
     let environment = runtime.create_environment(&factory).unwrap();
     let mut active_config = AudioProcessorConfig::default();
@@ -148,22 +155,46 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     };
     let control_observation = initialize(&mut control, control_config, formats);
     let active_observation = initialize(&mut active, active_config, formats);
-    // Match the SDK's float-planar silent startup input. The extra caller tail
-    // is retained bit-for-bit, including negative zero, and is not processed.
-    let mut input = vec![0.0_f32; 160];
-    input.extend_from_slice(&[-0.0; 9]);
-    let mut control_level = 3;
-    let mut active_level = 3;
+    if stimulus == Stimulus::FullScaleClipping {
+        let analog = active_observation
+            .actual_configuration
+            .gain_controller1
+            .analog_gain_controller;
+        assert_eq!(analog.clipped_level_min, 70);
+        assert_eq!(analog.clipped_level_step, 15);
+        assert_eq!(analog.clipped_ratio_threshold, 0.1);
+        assert_eq!(analog.clipped_wait_frames, 300);
+        assert!(!analog.clipping_predictor.enabled);
+    }
+    let initial_level = match stimulus {
+        Stimulus::StartupFloor => 3,
+        Stimulus::FullScaleClipping => 255,
+    };
+    let mut control_level = initial_level;
+    let mut active_level = initial_level;
     let mut frames = Vec::new();
     for index in 0..4 {
+        // Prime the clipping case with silence: AnalyzePreProcess precedes
+        // MonoAgc's first Process(), which initializes its stored input level.
+        // +1.0 public PCM maps to +32768 internally, above the clip threshold.
+        // The repeated full-scale frame also probes immediate wait suppression.
+        let full_scale = stimulus == Stimulus::FullScaleClipping && matches!(index, 1 | 2);
+        let mut input = vec![if full_scale { 1.0_f32 } else { 0.0 }; 160];
+        input.extend_from_slice(&[-0.0; 9]);
         let control_frame = process(&mut control, stream, &input, control_level);
         let active_frame = process(&mut active, stream, &input, active_level);
         assert_eq!(control_frame.recommendation_after, control_level);
-        if index == 0 {
-            assert!(
+        match stimulus {
+            Stimulus::StartupFloor if index == 0 => assert!(
                 active_frame.recommendation_after > active_level,
                 "actual GC1 startup-floor feedback must exceed the supplied low level"
-            );
+            ),
+            Stimulus::FullScaleClipping => assert_eq!(
+                active_frame.recommendation_after,
+                if index == 0 { 255 } else { 240 },
+                "native clipping response after priming, then bounded wait suppression"
+            ),
+            _ => {}
         }
         // The caller applies the real previous recommendation before the next
         // native block. No synthetic microphone or audio-gain model is added.
@@ -178,6 +209,7 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     drop(control);
     drop(active);
     Observation {
+        stimulus,
         formats,
         control: control_observation,
         active: active_observation,
@@ -185,21 +217,31 @@ fn application<R: SessionRuntime>(runtime: R) -> Observation {
     }
 }
 
-#[test]
-fn native_gc1_startup_feedback_and_planar_output_replay() {
-    let threaded = application(ThreadedRuntime);
+fn replay(stimulus: Stimulus, suffix: &str) {
+    let threaded = application(ThreadedRuntime, stimulus);
     let managed = std::array::from_fn::<_, 2, _>(|_| {
         eprintln!("CONTROLLED_MEDIA_BEGIN");
         let world = ControlledWorld::acquire(1008, Duration::from_secs(7)).unwrap();
-        let observation = application(world.runtime().unwrap());
+        let observation = application(world.runtime().unwrap(), stimulus);
         assert_eq!(world.now(), Duration::from_secs(7));
         drop(world);
         eprintln!("CONTROLLED_MEDIA_END");
         observation
     });
-    if let Some(path) = std::env::var_os("PULSEBEAM_STANDALONE_AGC_TRACE_PATH") {
+    if let Some(mut path) = std::env::var_os("PULSEBEAM_STANDALONE_AGC_TRACE_PATH") {
+        path.push(suffix);
         std::fs::write(path, serde_json::to_vec(&(&threaded, &managed)).unwrap()).unwrap();
     }
     assert_eq!(threaded, managed[0]);
     assert_eq!(managed[0], managed[1]);
+}
+
+#[test]
+fn native_gc1_startup_feedback_and_planar_output_replay() {
+    replay(Stimulus::StartupFloor, "");
+}
+
+#[test]
+fn native_gc1_full_scale_clipping_feedback_and_planar_output_replay() {
+    replay(Stimulus::FullScaleClipping, ".clipping");
 }
