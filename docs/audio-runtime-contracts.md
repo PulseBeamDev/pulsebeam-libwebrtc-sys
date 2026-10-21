@@ -41,6 +41,38 @@ failed-configuration recovery. Core/native and core ASan with leak detection
 passed. These are bounded construction/consumer results, not complete NetEq,
 VoIP or all-software-codec deterministic execution qualification.
 
+### Active standalone APM and live configuration
+
+The generic standalone application also creates a second actual builtin module
+with `AudioProcessingModule::builtin_with_config` through the selected runtime
+environment. It releases the configuring factory and original environment before
+initialization, processing and configuration replacement. The module retains its
+real creation context; no peer factory, physical device or alternate DSP is used.
+
+At 16 kHz mono, native pre-amplifier gain 2 and capture-level pre/post gains
+3/0.5 transform the first 160 input samples from 1000 to 3000. The same module's
+`apply_config` then changes capture pre-gain to 2 and the next block becomes
+2000. Each caller buffer has nine extra samples that must remain unchanged.
+These sample-level results witness the active native effect and live replacement,
+not just construction or config readback. Initialization and both processing
+statuses must be native `OK`; actual configurations must equal the requested
+complete values.
+
+The full input/output buffers, statuses and typed configuration snapshots are
+part of the existing standalone observation. Its JSON trace renders each full
+plain-value Rust config snapshot, rather than the SDK's shorter `ToString`
+subset. All observations match threaded/managed execution, repeated managed
+scopes, fresh processes and both Linux artifact flavors. Core ASan with leak and
+stack-use-after-return checks passed alongside the existing native config tests.
+Eight complete managed application lifecycles passed continuous monitoring with
+no physical thread/helper-process creation or real socket syscalls. Managed time
+remains frozen. The existing `PULSEBEAM_STANDALONE_MIXING_TRACE_PATH` includes
+these observations alongside default APM, G711, mixer and logger consumers.
+
+This is bounded standalone effect/control/ownership qualification, separate from
+the installed peer pre-amplifier case. It does not qualify all adaptive/noise,
+render/capture, echo, multichannel or configuration-rejection paths.
+
 ### Distinct-rate multi-source mixing
 
 The same standalone application now calls `tests/support/standalone_mixing.rs`,

@@ -46,6 +46,24 @@ impl AudioMixerSourceProvider for Source {
     }
 }
 
+// Typed equality covers every config member. The optional trace renders the
+// complete plain-value Debug snapshot, not the SDK's shorter ToString subset.
+fn serialize_config<S: serde::Serializer>(
+    config: &AudioProcessorConfig,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&format!("{config:?}"))
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct GainObservation {
+    #[serde(serialize_with = "serialize_config")]
+    configuration: AudioProcessorConfig,
+    status: i32,
+    input: Vec<i16>,
+    output: Vec<i16>,
+}
+
 #[derive(Debug, PartialEq, Serialize)]
 struct Observation {
     processed: Vec<i16>,
@@ -53,6 +71,8 @@ struct Observation {
     encoded: Vec<u8>,
     decoded: Vec<i16>,
     multi_source: mixing::Observation,
+    gain_initialization_status: i32,
+    active_processing: Vec<GainObservation>,
 }
 
 fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Observation {
@@ -71,6 +91,14 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Obs
     let mut processor =
         AudioProcessingModule::builtin(&environment, AudioProcessingConfig::default()).unwrap();
     assert_eq!(processor.initialize().unwrap(), AudioProcessingStatus::OK);
+    let mut gain_config = AudioProcessorConfig::default();
+    gain_config.pre_amplifier.enabled = true;
+    gain_config.pre_amplifier.fixed_gain_factor = 2.0;
+    gain_config.capture_level_adjustment.enabled = true;
+    gain_config.capture_level_adjustment.pre_gain_factor = 3.0;
+    gain_config.capture_level_adjustment.post_gain_factor = 0.5;
+    let mut gain_processor =
+        AudioProcessingModule::builtin_with_config(&environment, &gain_config).unwrap();
     let format = SdpAudioFormat::new(b"PCMU".to_vec(), 8000, 1);
     let encoder = AudioEncoderFactory::builtin()
         .unwrap()
@@ -103,6 +131,40 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Obs
         .log(RtcEvent::from_data(RtcEventData::AlrState { in_alr: true }).unwrap())
         .unwrap();
     drop(environment);
+
+    // Both processing and live replacement use the same native product after
+    // the configuring factory and original environment have been released.
+    let gain_initialization_status = gain_processor.initialize().unwrap();
+    assert_eq!(gain_initialization_status, AudioProcessingStatus::OK);
+    let mut active_processing = Vec::new();
+    for (pre_gain, expected) in [(3.0, 3000), (2.0, 2000)] {
+        if pre_gain != gain_config.capture_level_adjustment.pre_gain_factor {
+            gain_config.capture_level_adjustment.pre_gain_factor = pre_gain;
+            gain_processor.apply_config(&gain_config).unwrap();
+        }
+        let configuration = gain_processor.configuration();
+        assert_eq!(configuration, gain_config);
+        let input = vec![1000; 169];
+        let mut output = input.clone();
+        let status = gain_processor
+            .process_interleaved(
+                AudioProcessingStream {
+                    sample_rate_hz: 16000,
+                    channels: 1,
+                },
+                &mut output,
+            )
+            .unwrap();
+        assert_eq!(status, AudioProcessingStatus::OK);
+        assert_eq!(&output[..160], &[expected; 160]);
+        assert_eq!(&output[160..], &input[160..], "caller tail is untouched");
+        active_processing.push(GainObservation {
+            configuration,
+            status: status.0,
+            input,
+            output,
+        });
+    }
 
     let mut processed: Vec<i16> = (0..80).map(|i| (i * 173 - 6800) as i16).collect();
     assert_eq!(
@@ -159,6 +221,8 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Obs
         encoded,
         decoded,
         multi_source,
+        gain_initialization_status: gain_initialization_status.0,
+        active_processing,
     }
 }
 
