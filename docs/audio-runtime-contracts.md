@@ -155,6 +155,30 @@ configuring owners are released before initialization; both modules are released
 before the driver. `PULSEBEAM_STEREO_NS_TRACE_PATH` writes the full threaded/managed
 tuple. Managed time remains frozen during this synchronous application.
 
+### Nonzero multirate float-planar capture and reverse conversion
+
+`tests/runtime_apm_conversion.rs` exercises native capture from 48-kHz stereo to
+16-kHz mono and reverse processing from 16-kHz stereo to 48-kHz mono through one
+generic runtime procedure. All optional DSP effects are disabled. The native
+capture buffer and render converter perform downmixing/resampling; there is no
+caller resampler or waveform replacement. Both format pairs preserve the native
+requirement that output is mono or has the same channel count as input. This is
+not a mono-to-stereo success claim or a general format-support matrix.
+
+Each of 32 iterations processes reverse audio before capture audio. Each input
+has two distinct nonzero fixed caller-generated channels in channel-major layout.
+Native calls must return OK and produce non-silent, varying finite output in the
+160-sample capture and 480-sample reverse prefixes, while preserving nine extra
+caller output samples. No literal converted waveform or quality is prescribed.
+
+All inputs, initialized outputs and actual outputs are retained as complete float
+bit vectors, including negative-zero input tails. The observation also retains
+four stream formats, requested/actual native configuration, initialization and
+per-call statuses, all native format snapshots, and per-direction/channel caller
+generator seeds/final states. Original environment/factory owners are released
+before initialization and the module before the driver. Managed time stays
+frozen; `PULSEBEAM_APM_CONVERSION_TRACE_PATH` writes the full threaded/managed tuple.
+
 ### Standalone GC1 startup-floor and caller feedback
 
 `tests/runtime_standalone_agc.rs` follows the pinned native float-planar startup
