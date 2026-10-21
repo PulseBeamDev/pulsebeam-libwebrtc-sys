@@ -159,6 +159,15 @@ errors. They do not establish the standalone generic default, borrowed-error,
 conversion or formatting contracts. Its explicitly deleted copy operations are
 retained as unavailable.
 
+The `AddTransceiver` mappings include owning local and receiver `MediaTrack`
+input through both `PeerConnection` and the common `Session<R>`, with installed
+native tracks, exact errors and source/peer lifetime evidence. All four overload
+rows retain a separate partial safety disposition: admitted bitrate priorities
+can reach live audio/video allocator groups, whose extreme-priority arithmetic
+is not yet protected or qualified. Constructor success and bit-preserving value
+storage do not resolve that downstream gap. See
+[the RTP contracts](rtp-value-contracts.md#encoding-graph-remaining).
+
 `check --require-mapped` additionally rejects unmapped or partial active
 declarations and unaccounted configuration macros. It is a structural mapping
 gate, **not** proof of functional SDK coverage. A valid source anchor or a test

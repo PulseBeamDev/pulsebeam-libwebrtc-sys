@@ -9944,6 +9944,13 @@ mod ffi {
             valid: &mut bool,
             error: &mut UniquePtr<NativeRtcError>,
         ) -> UniquePtr<NativeRtpTransceiver>;
+        fn peer_add_media_transceiver_value(
+            peer: &NativePeerConnection,
+            track: &NativeMediaTrack,
+            init: &NativeRtpTransceiverInit,
+            valid: &mut bool,
+            error: &mut UniquePtr<NativeRtcError>,
+        ) -> UniquePtr<NativeRtpTransceiver>;
         fn peer_add_video_transceiver(
             peer: &NativePeerConnection,
             track: &NativeVideoTrack,

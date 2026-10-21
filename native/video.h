@@ -297,6 +297,7 @@ class NativeRtpTransceiver;
 bool transceiver_init_consumption_safe(const NativePeerConnection&, const NativeRtpTransceiverInit&, bool video) noexcept;
 std::unique_ptr<NativeRtpTransceiver> peer_add_transceiver_value(const NativePeerConnection&, std::int32_t, const NativeRtpTransceiverInit&, bool&, std::unique_ptr<NativeRtcError>&) noexcept;
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value(const NativePeerConnection&, const NativeVideoTrack&, const NativeRtpTransceiverInit&, bool&, std::unique_ptr<NativeRtcError>&) noexcept;
+std::unique_ptr<NativeRtpTransceiver> peer_add_media_transceiver_value(const NativePeerConnection&, const NativeMediaTrack&, const NativeRtpTransceiverInit&, bool&, std::unique_ptr<NativeRtcError>&) noexcept;
 class NativeSetParametersOperation final {
  public:
   struct State;

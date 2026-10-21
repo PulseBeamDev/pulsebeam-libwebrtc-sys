@@ -4754,6 +4754,27 @@ impl<R: SessionRuntime> Session<R> {
         Ok(self.insert_transceiver(peer, value)?)
     }
 
+    /// Install an existing owning SDK track, including a receiver's track, into
+    /// another transceiver in this session without rebuilding its source.
+    /// The unresolved allocator-priority qualification is the same as for
+    /// [`PeerConnection::add_media_transceiver_with_init`].
+    pub fn add_media_transceiver_with_init(
+        &mut self,
+        peer: SessionPeerId,
+        track: SessionMediaTrackId,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<SessionTransceiverId, crate::RtpSenderOperationError> {
+        self.check_open()?;
+        let track = &self.media_tracks.get(&track).ok_or_else(missing)?.value;
+        let value = self
+            .peers
+            .get(&peer)
+            .ok_or_else(missing)?
+            .value
+            .add_media_transceiver_with_init(track, init)?;
+        Ok(self.insert_transceiver(peer, value)?)
+    }
+
     /// Publish audio using all native initialization fields in one operation.
     pub fn publish_audio_with_init(
         &mut self,

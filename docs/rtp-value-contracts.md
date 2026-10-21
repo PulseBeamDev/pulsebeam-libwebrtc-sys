@@ -345,9 +345,19 @@ semantics. Child getters return independent values; duplicates/order and
 standalone unsafe-to-consume numeric metadata are not normalized. The object
 has no origin/handles/thread-affine destruction and supports pure-metadata
 Send/Sync. No equality or native stringify contract is invented for this SDK
-struct. Rust Debug is explicitly metadata diagnostics. Generic init installation
-is not wired or claimed: its encodings/direction require consumer safety work,
-including the unresolved allocator-group issue.
+struct. Rust Debug is explicitly metadata diagnostics. Installation uses
+`PeerConnection::add_transceiver` for trackless receiving and the typed or
+owning-track `add_*_transceiver_with_init` methods for sending. The common
+`Session<R>` exposes these operations without a runtime-specific procedure.
+Owning `MediaTrack` input includes actual receiver tracks from the same factory,
+not just newly created local sources. Accepted local inputs retain their typed
+source leases; receiver inputs retain the native track and factory without an
+ownership edge back to the originating Rust peer. Full native errors are moved
+into `RtcError`, separately from pre-dispatch binding failures. Unknown unsafe
+directions, non-Unified-Plan configuration and unsafe video numeric conversion
+inputs are guarded at consumption, not normalized in stored metadata. The
+allocator-group safety qualification discussed below remains separate from
+this installed input path.
 
 The live transceiver and ProductionSession also expose actual SDK media_type,
 stopping, receptive, fired_direction and optional SframeEnabled snapshots.
@@ -360,7 +370,14 @@ and is not generalized into an application method.
 tests/rtp_transceiver_init.rs adds default/copy/assignment/arbitrary-byte/full
 encoding/unknown direction/NaN-bit/migrated shared-read/independent-child source
 fixtures. The live fixture adds state getters before migration and after close.
-All are source only, unrun.
+`tests/transceiver_creation.rs` exercises owning local audio/video input and
+retained successful products. `tests/media_references.rs` installs an actual
+negotiated receiver track and reads it after the original peers close and drop.
+`tests/session_runtime.rs` uses the same application procedure to install
+native audio/video receiver tracks and observe exact SDK initialization errors
+with threaded and caller-driven dependencies. These operation/lifetime checks
+do not establish a forwarding-media replay guarantee or resolve the numerical
+allocator issue below.
 
 Preferred-direction installation now also has a full signed value entry point
 through the actual synchronous SetDirectionWithError proxy, plus public

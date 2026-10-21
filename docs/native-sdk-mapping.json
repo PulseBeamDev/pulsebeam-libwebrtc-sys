@@ -1657,8 +1657,9 @@
     {
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@E@MediaType#",
       "profiles": ["core", "native"],
-      "state": "implemented",
+      "state": "partial",
       "semantics": "Idiomatic equivalent: PeerConnection::add_transceiver(kind, &RtpTransceiverInit::default()). The pinned no-init overload itself delegates to the init overload with native defaults. This row describes the declaration path, not runtime-wide media admission or shared real/sim construction.",
+      "gaps": ["Live allocator-group numerical safety remains unresolved when sending becomes active, including admitted positive finite extreme bitrate priorities and effective audio field-trial overrides. See media/base/media_engine.cc:163-181, pc/rtp_sender.cc:778-815 and call/bitrate_allocator.cc:142-191; standalone init storage and successful creation do not qualify this downstream arithmetic."],
       "rust": [
         {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_transceiver("},
         {"tree": "repository", "path": "src/rtp_transceiver_init.rs", "anchor": "impl Default for RtpTransceiverInit"}
@@ -1675,8 +1676,9 @@
     {
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@E@MediaType#&1$@N@webrtc@S@RtpTransceiverInit#",
       "profiles": ["core", "native"],
-      "state": "implemented",
+      "state": "partial",
       "semantics": "Trackless kind-plus-init creation passes the complete native value and preserves native error and normalization behavior. Plan B and invalid consumed enum/video numeric representations have separate safety errors. Factory/runtime policy is not qualified by this declaration mapping.",
+      "gaps": ["Live allocator-group numerical safety remains unresolved when sending becomes active, including admitted positive finite extreme bitrate priorities and effective audio field-trial overrides. See media/base/media_engine.cc:163-181, pc/rtp_sender.cc:778-815 and call/bitrate_allocator.cc:142-191; standalone init storage and successful creation do not qualify this downstream arithmetic."],
       "rust": [
         {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_transceiver("},
         {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn add_transceiver("}
@@ -1694,41 +1696,51 @@
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@S@scoped_refptr>#$@N@webrtc@S@MediaStreamTrackInterface#",
       "profiles": ["core", "native"],
       "state": "partial",
-      "semantics": "Typed local audio/video tracks can use the full-init entry with native defaults; SDK track-only creation delegates to the init overload.",
-      "gaps": ["No arbitrary owning MediaTrack input path for this overload. Typed local source wrappers do not implement every valid native track case."],
+      "semantics": "Owning local and receiver MediaTrack references use the full-init entry with native defaults; the pinned track-only overload delegates to that init overload. Both PeerConnection and the common Session<R> install existing same-factory track handles, preserving native errors and accepted source leases without retaining a receiving Rust peer.",
+      "gaps": ["Live allocator-group numerical safety remains unresolved when sending becomes active, including admitted positive finite extreme bitrate priorities and effective audio field-trial overrides. See media/base/media_engine.cc:163-181, pc/rtp_sender.cc:778-815 and call/bitrate_allocator.cc:142-191; standalone init storage and successful creation do not qualify this downstream arithmetic."],
       "rust": [
         {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_audio_transceiver_with_init("},
-        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("}
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_media_transceiver_with_init("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn add_media_transceiver_with_init("}
       ],
       "installation": [
         {"tree": "repository", "path": "native/audio.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
         {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
-        {"tree": "sdk", "path": "pc/peer_connection.cc", "anchor": "return AddTransceiver(track, RtpTransceiverInit());"}
+        {"tree": "sdk", "path": "pc/peer_connection.cc", "anchor": "return AddTransceiver(track, RtpTransceiverInit());"},
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.track(), init.value());"}
       ],
       "verification": [
         {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
-        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"}
+        {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"},
+        {"tree": "repository", "path": "tests/media_references.rs", "anchor": "fn receiver_streams_preserve_native_bytes_traversal_changes_and_retained_lifetimes()"},
+        {"tree": "repository", "path": "tests/session_runtime.rs", "anchor": "fn common_application_constructs_stock_media_and_trackless_receivers_in_both_runtimes()"}
       ]
     },
     {
       "declaration": "api/peer_connection_interface.h#c:@N@webrtc@S@PeerConnectionInterface@F@AddTransceiver#$@N@webrtc@S@scoped_refptr>#$@N@webrtc@S@MediaStreamTrackInterface#&1$@N@webrtc@S@RtpTransceiverInit#",
       "profiles": ["core", "native"],
       "state": "partial",
-      "semantics": "Full owning initialization is installed into native typed local audio/video track creation; independent field snapshots retain native normalization.",
-      "gaps": ["No arbitrary owning MediaTrack input path for this overload. The source-ID-based actor publication path also does not supply arbitrary native tracks."],
+      "semantics": "Full owning initialization is installed with existing same-factory MediaTrack input, including local typed sources and actual receiver tracks. PeerConnection and common Session<R> preserve native normalization/errors and retain successful products and source leases independently of caller aliases.",
+      "gaps": ["Live allocator-group numerical safety remains unresolved when sending becomes active, including admitted positive finite extreme bitrate priorities and effective audio field-trial overrides. See media/base/media_engine.cc:163-181, pc/rtp_sender.cc:778-815 and call/bitrate_allocator.cc:142-191; standalone init storage and successful creation do not qualify this downstream arithmetic."],
       "rust": [
         {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_audio_transceiver_with_init("},
         {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_video_transceiver_with_init("},
-        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn publish_audio_with_init("}
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn publish_audio_with_init("},
+        {"tree": "repository", "path": "src/peer.rs", "anchor": "pub fn add_media_transceiver_with_init("},
+        {"tree": "repository", "path": "src/production.rs", "anchor": "pub fn add_media_transceiver_with_init("}
       ],
       "installation": [
         {"tree": "repository", "path": "native/audio.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
-        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"}
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.state()->track, init.value());"},
+        {"tree": "repository", "path": "native/video.cc", "anchor": "auto result = peer.peer()->AddTransceiver(track.track(), init.value());"}
       ],
       "verification": [
         {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn audio_track_init_retains_track_and_forwards_complete_native_fields()"},
         {"tree": "repository", "path": "tests/transceiver_creation.rs", "anchor": "fn video_track_init_preserves_native_error_and_retains_the_successful_product()"},
-        {"tree": "repository", "path": "tests/production_session.rs", "anchor": "fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init()"}
+        {"tree": "repository", "path": "tests/production_session.rs", "anchor": "fn migrated_actor_negotiates_trackless_receivers_and_full_audio_init()"},
+        {"tree": "repository", "path": "tests/media_references.rs", "anchor": "fn receiver_streams_preserve_native_bytes_traversal_changes_and_retained_lifetimes()"},
+        {"tree": "repository", "path": "tests/session_runtime.rs", "anchor": "fn common_application_constructs_stock_media_and_trackless_receivers_in_both_runtimes()"}
       ]
     },
     {

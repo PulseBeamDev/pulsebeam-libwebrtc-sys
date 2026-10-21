@@ -3010,6 +3010,16 @@ std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver_value(
   if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }
   return wrap_rtp_transceiver(result.MoveValue());
 }
+std::unique_ptr<NativeRtpTransceiver> peer_add_media_transceiver_value(
+    const NativePeerConnection& peer, const NativeMediaTrack& track, const NativeRtpTransceiverInit& init,
+    bool& valid, std::unique_ptr<NativeRtcError>& error) noexcept {
+  valid = transceiver_init_consumption_safe(peer, init,
+      track.track()->kind() == webrtc::MediaStreamTrackInterface::kVideoKind);
+  if (!valid) return nullptr;
+  auto result = peer.peer()->AddTransceiver(track.track(), init.value());
+  if (!result.ok()) { error = std::make_unique<NativeRtcError>(result.MoveError()); return nullptr; }
+  return wrap_rtp_transceiver(result.MoveValue());
+}
 std::unique_ptr<NativeRtpTransceiver> peer_add_video_transceiver(
     const NativePeerConnection& peer, const NativeVideoTrack& track,
     std::uint8_t direction, rust::Slice<const rust::String> rids,

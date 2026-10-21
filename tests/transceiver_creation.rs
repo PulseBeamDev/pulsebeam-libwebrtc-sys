@@ -150,7 +150,9 @@ fn audio_track_init_retains_track_and_forwards_complete_native_fields() {
     );
     assert!(peer.transceivers().unwrap().is_empty());
     assert_eq!(rejected_init.send_encodings()[0].ssrc(), Some(123));
-    let transceiver = peer.add_audio_transceiver_with_init(&track, &init).unwrap();
+    let transceiver = peer
+        .add_media_transceiver_with_init(&track.as_media_track(), &init)
+        .unwrap();
     let sender = transceiver.sender();
     assert_eq!(sender.stream_id_bytes(), init.stream_ids());
     assert_eq!(
@@ -199,7 +201,9 @@ fn video_track_init_preserves_native_error_and_retains_the_successful_product() 
     smaller.set_max_bitrate_bps(Some(64_000));
     smaller.set_scale_resolution_down_by(Some(2.0));
     init.set_send_encodings(&[encoding, smaller]);
-    let transceiver = peer.add_video_transceiver_with_init(&track, &init).unwrap();
+    let transceiver = peer
+        .add_media_transceiver_with_init(&track.as_media_track(), &init)
+        .unwrap();
     let sender = transceiver.sender();
     assert_eq!(transceiver.media_type(), MediaType::Video);
     assert_eq!(transceiver.direction_value(), init.direction());

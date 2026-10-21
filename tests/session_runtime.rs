@@ -45,6 +45,9 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Ses
         .unwrap();
     let mut receive = RtpTransceiverInit::default();
     receive.set_direction(RtpTransceiverDirectionValue::ReceiveOnly);
+    let forwarding_peer = session.create_peer(PeerConfiguration::default()).unwrap();
+    let mut send = RtpTransceiverInit::default();
+    send.set_direction(RtpTransceiverDirectionValue::SendOnly);
     for kind in [MediaType::Audio, MediaType::Video] {
         let id = session.add_transceiver(peer, kind, &receive).unwrap();
         assert_eq!(session.transceiver_media_type(id).unwrap(), kind);
@@ -52,6 +55,34 @@ fn application<R: SessionRuntime>(runtime: R, mut progress: impl FnMut()) -> Ses
             session.direction_value(id).unwrap(),
             RtpTransceiverDirectionValue::ReceiveOnly
         );
+        let receiver = session.receiver(id).unwrap();
+        let track = session.receiver_track_reference(receiver).unwrap().unwrap();
+        let track_id = session.media_track_id(track).unwrap();
+        let mut invalid = send.clone();
+        let mut encoding = RtpEncodingParameters::default();
+        encoding.set_ssrc(Some(123));
+        invalid.set_send_encodings(&[encoding]);
+        match session.add_media_transceiver_with_init(forwarding_peer, track, &invalid) {
+            Err(RtpSenderOperationError::Native(error)) => {
+                assert_eq!(error.kind(), RtcErrorType::UnsupportedParameter);
+                assert_eq!(
+                    error.message_bytes(),
+                    b"Attempted to set an unimplemented parameter of RtpParameters."
+                );
+                assert_eq!(error.error_detail(), RtcErrorDetailType::None);
+                assert_eq!(error.sctp_cause_code(), None);
+            }
+            result => panic!("expected the native initialization error, got {result:?}"),
+        }
+        let forwarded = session
+            .add_media_transceiver_with_init(forwarding_peer, track, &send)
+            .unwrap();
+        session.release_media_track_reference(track).unwrap();
+        assert_eq!(session.transceiver_media_type(forwarded).unwrap(), kind);
+        let sender = session.sender(forwarded).unwrap();
+        let retained = session.sender_track_reference(sender).unwrap().unwrap();
+        assert_eq!(session.media_track_id(retained).unwrap(), track_id);
+        session.release_media_track_reference(retained).unwrap();
     }
     let operation = session.create_offer(peer, false).unwrap();
     let offer = loop {

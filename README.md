@@ -651,8 +651,9 @@ handoff keeps at most one emission per native encoder and uses the provided
 encoder queue, not RTP timestamps, SSRCs, or payload hashes, to consume it.
 WebRTC cannot
 re-encode these packets to match a changing bitrate; the caller controls
-source bitrate and pacing. Controlled peers continue to reject audio transceivers because their cooperative codec queues
-can deadlock; this input adapter does not change that limitation.
+source bitrate and pacing. Stock PCM audio uses the selected runtime's native
+queues; this externally encoded input adapter remains an explicit option in
+both runtimes, not a requirement for controlled audio.
 
 Camera and desktop capture methods, including discovery, reject controlled
 execution before contacting devices, display servers or portals. Enabling the
@@ -1404,6 +1405,17 @@ the SDK can accept a foreign object whose ID matches a remembered report.
 Accepted selections retain the track's own source and role context through
 SDK task-capture retirement. Controlled close/drop cancels only the known
 observer continuation without advancing time or dispatching queued work.
+`PeerConnection::add_media_transceiver_with_init` and the common
+`Session<R>::add_media_transceiver_with_init` install existing owning track
+references, including receiver tracks, with the full `RtpTransceiverInit` value.
+Tracks must share the peer's factory. Local typed sources retain their existing
+source checks; receiver-track leases retain native track/factory ownership
+without retaining the receiving Rust peer. Native errors remain distinct from
+binding safety failures. Closing the receiving peer can end the forwarded
+track's native source; retaining a sender does not promise continued media.
+Downstream allocator-priority numerical safety remains an open qualification
+gap, described in [the RTP contracts](docs/rtp-value-contracts.md#encoding-graph-remaining).
+
 Owning endpoint `MediaTrack` references also expose typed source and capability
 reads. Receiver `streams()` returns owning native `MediaStream` references with
 byte-exact identity, audio/video traversal and native find operations. Track and

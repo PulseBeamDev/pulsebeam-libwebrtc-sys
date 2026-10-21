@@ -2755,6 +2755,72 @@ impl PeerConnection {
         Ok(RtpTransceiver::from_native(native, self.inner.clone()))
     }
 
+    /// Install an owning SDK track reference, including a received track, with
+    /// the complete native initialization value. The track must share this
+    /// factory; native errors retain their full fields. Local typed sources keep
+    /// their existing admission and lifetime checks.
+    ///
+    /// Aggregate allocator arithmetic for arbitrary bitrate-priority groups and
+    /// audio allocation field-trial overrides is not yet safety-qualified. See
+    /// `docs/rtp-value-contracts.md`; successful creation is not that proof.
+    pub fn add_media_transceiver_with_init(
+        &self,
+        track: &crate::MediaTrack,
+        init: &crate::RtpTransceiverInit,
+    ) -> Result<RtpTransceiver, crate::RtpSenderOperationError> {
+        self.inner._factory.check_control_call()?;
+        if self.inner.closed.get() {
+            return Err(PeerError {
+                kind: PeerErrorKind::Closed,
+                message: "peer connection is closed".into(),
+            }
+            .into());
+        }
+        if !Rc::ptr_eq(track.factory(), &self.inner._factory) {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "track must belong to this peer factory".into(),
+            }
+            .into());
+        }
+        if let Some(video) = track.local_video() {
+            return self.add_video_transceiver_with_init(video, init);
+        }
+        if let Some(audio) = track.local_audio() {
+            return self.add_audio_transceiver_with_init(audio, init);
+        }
+        let mut valid = false;
+        let mut error = cxx::UniquePtr::null();
+        let native = ffi::peer_add_media_transceiver_value(
+            self.inner.native(),
+            track.native(),
+            init.native(),
+            &mut valid,
+            &mut error,
+        );
+        if !valid {
+            return Err(PeerError {
+                kind: PeerErrorKind::InvalidParameter,
+                message: "unsafe native transceiver initialization or non-Unified-Plan peer".into(),
+            }
+            .into());
+        }
+        if native.is_null() {
+            return Err(crate::RtpSenderOperationError::Native(
+                crate::RtcError::from_native(error),
+            ));
+        }
+        let value = RtpTransceiver::from_native(native, self.inner.clone());
+        let sender = value.sender();
+        // MediaTrack's remote owner retains the factory, not its originating
+        // PeerInner. A forwarding sender must not create peer ownership cycles.
+        self.inner.stream_inputs.borrow_mut().insert(
+            sender.resource_key(),
+            SenderTrackLease::new(&sender, track.clone()),
+        );
+        Ok(value)
+    }
+
     /// Install the entire native initialization value in one AddTransceiver.
     /// The supplied value remains unchanged on both rejection and acceptance.
     pub fn add_video_transceiver_with_init(

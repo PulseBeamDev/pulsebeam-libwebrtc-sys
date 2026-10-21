@@ -206,6 +206,22 @@ fn receiver_streams_preserve_native_bytes_traversal_changes_and_retained_lifetim
     let source = received.source().unwrap();
     assert!(source.remote());
     assert_eq!(source.state(), MediaSourceState::Live);
+    // Install the actual receiver track, not a new local track with its ID.
+    // MediaTrack retains native source/factory ownership without a PeerInner
+    // edge back to the receiving peer.
+    let mut relay = factory.create_peer_connection(Default::default()).unwrap();
+    let mut forward_init = RtpTransceiverInit::default();
+    forward_init.set_direction(RtpTransceiverDirectionValue::SendOnly);
+    let forwarded = relay
+        .add_media_transceiver_with_init(&received, &forward_init)
+        .unwrap();
+    let forwarded_sender = forwarded.sender();
+    assert!(
+        forwarded_sender
+            .track_reference()
+            .unwrap()
+            .same_resource(&received)
+    );
     let notifications = stream.observe(NonZeroUsize::new(2).unwrap());
     sender.set_stream_id_bytes(&[b"replacement-stream".to_vec()]);
     negotiate(&left, &right);
@@ -237,5 +253,14 @@ fn receiver_streams_preserve_native_bytes_traversal_changes_and_retained_lifetim
     assert!(stream.audio_tracks().is_empty());
     assert!(source.remote());
     assert_eq!(source.state(), MediaSourceState::Ended);
+    drop(received);
+    let retained = forwarded_sender.track_reference().unwrap();
+    assert_eq!(retained.id().as_slice(), b"stream-audio");
+    assert_eq!(retained.state(), MediaTrackState::Ended);
+    relay.close().unwrap();
+    drop(forwarded_sender);
+    drop(forwarded);
+    drop(relay);
+    assert_eq!(retained.state(), MediaTrackState::Ended);
     drop(notifications);
 }
