@@ -836,31 +836,44 @@ struct InputEncoder {
     configuration: Option<VideoEncoderSettings>,
     active_feedback: Weak<SourceFeedback>,
 }
-impl VideoEncoder for InputEncoder {
-    fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
-        self.released = false;
-        self.configuration = Some(settings);
-        Ok(())
+// Encoded input carries a native presentation token, not caller raw pixels.
+// Read only the native fields this adapter consumes; never materialize I420.
+#[derive(Debug, PartialEq)]
+struct InputFrameContext {
+    width: u32,
+    height: u32,
+    rtp_timestamp: u32,
+    presentation_token: Option<i64>,
+}
+impl InputFrameContext {
+    fn from_native(frame: &crate::RawVideoFrame) -> Result<Self, CodecError> {
+        let width = u32::try_from(frame.width()).map_err(|_| CodecError::InvalidFrame)?;
+        let height = u32::try_from(frame.height()).map_err(|_| CodecError::InvalidFrame)?;
+        if width == 0 || height == 0 {
+            return Err(CodecError::InvalidFrame);
+        }
+        let metadata = frame.metadata();
+        Ok(Self {
+            width,
+            height,
+            rtp_timestamp: metadata.rtp_timestamp,
+            presentation_token: metadata
+                .presentation_timestamp
+                .and_then(|value| value.microseconds().ok()),
+        })
     }
-    fn encode(
+}
+impl InputEncoder {
+    fn encode_pending(
         &mut self,
-        _: VideoFrame,
-        _: &[VideoFrameType],
-        _: EncodedImageCallback,
-    ) -> Result<(), CodecError> {
-        Err(CodecError::InvalidFrame)
-    }
-    fn encode_with_presentation_token(
-        &mut self,
-        frame: VideoFrame,
+        context: InputFrameContext,
         frame_types: &[VideoFrameType],
-        token: Option<i64>,
         callback: EncodedImageCallback,
     ) -> Result<(), CodecError> {
         if self.released {
             return Err(CodecError::Released);
         }
-        let token = token.ok_or(CodecError::InvalidFrame)?;
+        let token = context.presentation_token.ok_or(CodecError::InvalidFrame)?;
         let pending = self
             .broker
             .lock()
@@ -936,7 +949,8 @@ impl VideoEncoder for InputEncoder {
                 _ => return Err(pending.reject(CodecError::InvalidConfiguration)),
             }
         } else if pending.frames.len() != 1
-            || (pending.frames[0].width, pending.frames[0].height) != (frame.width, frame.height)
+            || (pending.frames[0].width, pending.frames[0].height)
+                != (context.width, context.height)
         {
             return Err(pending.reject(CodecError::InvalidFrame));
         }
@@ -970,7 +984,7 @@ impl VideoEncoder for InputEncoder {
                     data: unit.data,
                     width: unit.width,
                     height: unit.height,
-                    rtp_timestamp: frame.rtp_timestamp,
+                    rtp_timestamp: context.rtp_timestamp,
                     frame_type: if unit.key_frame {
                         VideoFrameType::Key
                     } else {
@@ -988,6 +1002,59 @@ impl VideoEncoder for InputEncoder {
             }
         }
         Ok(())
+    }
+}
+
+impl VideoEncoder for InputEncoder {
+    fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
+        self.released = false;
+        self.configuration = Some(settings);
+        Ok(())
+    }
+    fn encode(
+        &mut self,
+        _: VideoFrame,
+        _: &[VideoFrameType],
+        _: EncodedImageCallback,
+    ) -> Result<(), CodecError> {
+        Err(CodecError::InvalidFrame)
+    }
+    fn encode_value(
+        &mut self,
+        frame: crate::RawVideoFrame,
+        types: Option<Vec<crate::EncodedImageFrameType>>,
+        callback: EncodedImageCallback,
+    ) -> Result<i32, CodecError> {
+        let context = InputFrameContext::from_native(&frame)?;
+        let types = types
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| match value {
+                crate::EncodedImageFrameType::Key => Ok(VideoFrameType::Key),
+                crate::EncodedImageFrameType::Delta => Ok(VideoFrameType::Delta),
+                _ => Err(CodecError::InvalidFrame),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.encode_pending(context, &types, callback)
+            .map(|()| crate::codec::CODEC_OK)
+    }
+    fn encode_with_presentation_token(
+        &mut self,
+        frame: VideoFrame,
+        frame_types: &[VideoFrameType],
+        token: Option<i64>,
+        callback: EncodedImageCallback,
+    ) -> Result<(), CodecError> {
+        self.encode_pending(
+            InputFrameContext {
+                width: frame.width,
+                height: frame.height,
+                rtp_timestamp: frame.rtp_timestamp,
+                presentation_token: token,
+            },
+            frame_types,
+            callback,
+        )
     }
     fn set_rates(&mut self, rates: VideoRateControl) -> Result<(), CodecError> {
         self.rates = Some(rates);
@@ -1130,6 +1197,40 @@ mod tests {
         assert_eq!(broker.bytes, 0);
         assert!(broker.pending.is_empty());
         assert!(broker.order.is_empty());
+    }
+
+    #[test]
+    fn encoded_input_context_reads_native_geometry_rtp_and_presentation_token() {
+        let legacy = VideoFrame::i420(2, 2, vec![16; 6], 123_456, 90_000).unwrap();
+        let mut frame = crate::RawVideoFrame::from_legacy(&legacy).unwrap();
+        assert_eq!(
+            InputFrameContext::from_native(&frame).unwrap(),
+            InputFrameContext {
+                width: 2,
+                height: 2,
+                rtp_timestamp: 90_000,
+                presentation_token: None,
+            }
+        );
+        let mut metadata = frame.metadata();
+        metadata.presentation_timestamp = Some(crate::Timestamp::from_microseconds(7).unwrap());
+        frame.set_metadata(&metadata).unwrap();
+        let context = InputFrameContext::from_native(&frame).unwrap();
+        assert_eq!(context.presentation_token, Some(7));
+        assert_ne!(context.presentation_token, Some(frame.timestamp_us()));
+        assert_eq!(context.rtp_timestamp, legacy.rtp_timestamp);
+        assert_eq!(
+            (context.width, context.height),
+            (legacy.width, legacy.height)
+        );
+        metadata.presentation_timestamp = None;
+        frame.set_metadata(&metadata).unwrap();
+        assert_eq!(
+            InputFrameContext::from_native(&frame)
+                .unwrap()
+                .presentation_token,
+            None
+        );
     }
 
     #[test]

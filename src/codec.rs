@@ -9,7 +9,7 @@ use std::{
 
 use crate::ffi;
 
-const CODEC_OK: i32 = 0;
+pub(crate) const CODEC_OK: i32 = 0;
 const CODEC_ERROR: i32 = -1;
 const CODEC_PARAMETER: i32 = -4;
 const CODEC_UNINITIALIZED: i32 = -7;
