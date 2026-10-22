@@ -12,10 +12,10 @@ use std::{
 
 use crate::{
     CodecError, CodecSupport, EncodedImageCallback, EncodedVideoCodec, EncodedVideoFrame,
-    EncodedVideoMetadata, PeerConnectionFactory, PeerError, PeerErrorKind, VideoCodecFormat,
-    VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle, VideoEncoderInfo,
-    VideoEncoderSettings, VideoFrame, VideoFrameType, VideoRateControl, VideoResolution,
-    VideoSource, VideoTrack, ffi,
+    EncodedVideoMetadata, PeerConnectionFactory, PeerError, PeerErrorKind, SdpVideoFormat,
+    VideoCodecFormat, VideoEncoder, VideoEncoderFactory, VideoEncoderFactoryHandle,
+    VideoEncoderInfo, VideoEncoderSettings, VideoFrame, VideoFrameType, VideoRateControl,
+    VideoResolution, VideoSource, VideoTrack, ffi,
 };
 
 const MAX_PENDING: usize = 16;
@@ -256,7 +256,7 @@ impl EncodedH264Input {
         format: VideoCodecFormat,
         fps: [u8; 3],
     ) -> Result<Self, CodecError> {
-        if format.name != "H264" || format.parameters != self::format().parameters {
+        if format.name != "H264" || !same_codec_format(&format, &self::format()) {
             return Err(CodecError::UnsupportedFormat);
         }
         if format
@@ -324,7 +324,7 @@ impl EncodedH264Input {
             format.name.as_str(),
             "H264" | "VP8" | "VP9" | "AV1" | "H265"
         ) || (format.name == "H264"
-            && (format.parameters != self::format().parameters
+            && (!same_codec_format(&format, &self::format())
                 || (temporal_fps.is_none() && !format.scalability_modes.is_empty())))
         {
             return Err(CodecError::UnsupportedFormat);
@@ -738,13 +738,19 @@ fn valid_annex_b(data: &[u8], key: bool) -> bool {
             return false;
         }
         let nal_type = data[start] & 0x1f;
-        if nal_type == 7
-            && (end - start < 4
-                || data[start + 1] != 0x42
-                || data[start + 2] & 0xc0 != 0xc0
-                || data[start + 3] > 0x1f)
-        {
-            return false;
+        if nal_type == 7 {
+            if end - start < 4 {
+                return false;
+            }
+            let profile_level_id = format!(
+                "{:02x}{:02x}{:02x}",
+                data[start + 1],
+                data[start + 2],
+                data[start + 3]
+            );
+            if !same_codec_format(&h264_format(&profile_level_id), &format()) {
+                return false;
+            }
         }
         if !matches!(nal_type, 1 | 5 | 6 | 7 | 8 | 9) {
             return false;
@@ -761,10 +767,14 @@ fn valid_annex_b(data: &[u8], key: bool) -> bool {
 }
 
 fn format() -> VideoCodecFormat {
+    h264_format("42e01f")
+}
+
+fn h264_format(profile_level_id: &str) -> VideoCodecFormat {
     VideoCodecFormat::new("H264")
         .with_parameter("level-asymmetry-allowed", "1")
         .with_parameter("packetization-mode", "1")
-        .with_parameter("profile-level-id", "42e01f")
+        .with_parameter("profile-level-id", profile_level_id)
 }
 
 struct InputFactory {
@@ -809,7 +819,12 @@ impl VideoEncoderFactory for InputFactory {
 
 fn same_codec_format(a: &VideoCodecFormat, b: &VideoCodecFormat) -> bool {
     // Negotiated SDP formats do not carry the factory's capability mode list.
-    a.name == b.name && a.parameters == b.parameters
+    // Native H.264 identity handles profile aliases, levels and packetization.
+    if a.name == "H264" && b.name == "H264" {
+        SdpVideoFormat::from(a).is_same_codec(&SdpVideoFormat::from(b))
+    } else {
+        a.name == b.name && a.parameters == b.parameters
+    }
 }
 
 struct InputEncoder {
@@ -1207,6 +1222,37 @@ mod tests {
         );
         assert!(feedback.keyframe_requested.load(Ordering::Acquire));
         assert_eq!(*feedback.rates.lock().unwrap(), Some(rates));
+    }
+
+    #[test]
+    fn h264_input_uses_native_profile_level_identity() {
+        for profile_level_id in ["42e01f", "42c028", "42e028"] {
+            let requested = h264_format(profile_level_id);
+            assert!(same_codec_format(&requested, &format()));
+            assert!(EncodedH264Input::new_for_format(requested.clone()).is_ok());
+            assert!(EncodedH264Input::new_l1t3_for_format(requested, [64, 128, 255]).is_ok());
+        }
+        for profile_level_id in ["640028", "42e0ff"] {
+            assert!(!same_codec_format(
+                &h264_format(profile_level_id),
+                &format()
+            ));
+            assert!(EncodedH264Input::new_for_format(h264_format(profile_level_id)).is_err());
+        }
+        // SPS header validation is not a decoder proof. The genuine level-4.0
+        // VBR corpus is exercised by the consuming application's SFU witness.
+        assert!(valid_annex_b(
+            &[
+                0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x65, 1
+            ],
+            true
+        ));
+        assert!(!valid_annex_b(
+            &[
+                0, 0, 0, 1, 0x67, 0x64, 0, 0x28, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x65, 1
+            ],
+            true
+        ));
     }
 
     #[test]
