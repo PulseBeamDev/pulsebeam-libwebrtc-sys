@@ -21,6 +21,18 @@ use crate::{
 const MAX_PENDING: usize = 16;
 const MAX_PENDING_BYTES: usize = 8 * 1024 * 1024;
 
+// Opt-in boundary tracing, not an acceptance counter or frame identity. Never
+// log payload bytes or let a diagnostic write fail a native codec callback.
+fn trace_input(event: &str, details: std::fmt::Arguments<'_>) {
+    if std::env::var_os("PULSEBEAM_WEBRTC_ENCODED_DIAGNOSTICS").is_some() {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "[webrtc-encoded-input] {event} {details}"
+        );
+    }
+}
+
 /// One encoded H.264 access unit, represented as start-code-delimited Annex-B
 /// NAL units. Timestamps use caller monotonic microseconds; WebRTC assigns the
 /// wire RTP timestamp from its capture clock, rather than trusting an input RTP
@@ -126,6 +138,10 @@ struct Pending {
 
 impl Pending {
     fn reject(&self, error: CodecError) -> CodecError {
+        trace_input(
+            "reject",
+            format_args!("source={:p} error={error:?}", Arc::as_ptr(&self.feedback)),
+        );
         self.dropped
             .fetch_add(self.frames.len() as u64, Ordering::Relaxed);
         self.feedback.record_error(error);
@@ -159,6 +175,14 @@ impl Broker {
                 return Err(CodecError::InvalidFrame);
             };
             if let Some(previous) = self.pending.remove(&old) {
+                trace_input(
+                    "evict",
+                    format_args!(
+                        "source={:p} token={old} units={}",
+                        Arc::as_ptr(&previous.feedback),
+                        previous.frames.len()
+                    ),
+                );
                 self.bytes -= previous
                     .frames
                     .iter()
@@ -173,6 +197,20 @@ impl Broker {
         let token = self.next_token;
         self.bytes += size;
         self.order.push_back(token);
+        for (index, frame) in frames.iter().enumerate() {
+            trace_input(
+                "insert",
+                format_args!(
+                    "source={:p} token={token} index={index} capture_us={} key={} bytes={} width={} height={}",
+                    Arc::as_ptr(&feedback),
+                    frame.timestamp_us,
+                    frame.key_frame,
+                    frame.data.len(),
+                    frame.width,
+                    frame.height
+                ),
+            );
+        }
         self.pending.insert(
             token,
             Pending {
@@ -608,6 +646,13 @@ impl EncodedH264Source {
                 .take(token);
             return Err(CodecError::Released);
         }
+        trace_input(
+            "trigger",
+            format_args!(
+                "source={:p} token={token} capture_us={time}",
+                Arc::as_ptr(&self.feedback)
+            ),
+        );
         self.last_timestamp_us.set(Some(time));
         if key_frame {
             self.seen_keyframe.set(true);
@@ -880,6 +925,14 @@ impl InputEncoder {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take(token)
             .ok_or(CodecError::InvalidFrame)?;
+        trace_input(
+            "encode",
+            format_args!(
+                "source={:p} token={token} rtp={} requested={frame_types:?}",
+                Arc::as_ptr(&pending.feedback),
+                context.rtp_timestamp
+            ),
+        );
         let temporal = self.configuration.as_ref().is_some_and(|settings| {
             settings
                 .scalability_mode
@@ -954,6 +1007,14 @@ impl InputEncoder {
         {
             return Err(pending.reject(CodecError::InvalidFrame));
         }
+        trace_input(
+            "select",
+            format_args!(
+                "source={:p} token={token} selected={selected:?} rates={:?}",
+                Arc::as_ptr(&pending.feedback),
+                self.rates
+            ),
+        );
         self.active_feedback = Arc::downgrade(&pending.feedback);
         if let Some(rates) = self.rates {
             pending.feedback.set_rates(rates);
@@ -979,6 +1040,16 @@ impl InputEncoder {
                 pending.dropped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+            trace_input(
+                "emit",
+                format_args!(
+                    "source={:p} token={token} index={index} rtp={} key={} bytes={}",
+                    Arc::as_ptr(&pending.feedback),
+                    context.rtp_timestamp,
+                    unit.key_frame,
+                    unit.data.len()
+                ),
+            );
             if let Err(error) = callback.emit_with_metadata(
                 &EncodedVideoFrame {
                     data: unit.data,
@@ -994,6 +1065,13 @@ impl InputEncoder {
                 },
                 unit.metadata,
             ) {
+                trace_input(
+                    "emit_error",
+                    format_args!(
+                        "source={:p} token={token} index={index} error={error:?}",
+                        Arc::as_ptr(&pending.feedback)
+                    ),
+                );
                 pending
                     .dropped
                     .fetch_add((count - index) as u64, Ordering::Relaxed);
