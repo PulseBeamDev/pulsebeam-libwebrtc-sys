@@ -1038,13 +1038,14 @@ class SimulatedPacketSocketFactory final
     auto socket = ConnectTcpSocket(endpoint_, local, remote);
     if (!socket) return nullptr;
     const int tls = options.opts & (OPT_TLS | OPT_TLS_FAKE | OPT_TLS_INSECURE);
-    if (tls == 0) return socket;
     if ((tls & (tls - 1)) != 0) return nullptr;
+    // Plain TCP needs the SDK packet framing too. The simulated socket below
+    // is only a byte stream, not an ICE packet socket.
     std::unique_ptr<webrtc::Socket> raw =
         std::make_unique<SimulatedTcpRawSocket>(std::move(socket));
     if (tls == OPT_TLS_FAKE) {
       raw = std::make_unique<webrtc::AsyncSSLSocket>(raw.release());
-    } else {
+    } else if (tls != 0) {
       std::unique_ptr<webrtc::SSLAdapter> ssl(webrtc::SSLAdapter::Create(raw.release()));
       if (!ssl) return nullptr;
       if (tls == OPT_TLS_INSECURE) ssl->SetIgnoreBadCert(true);
