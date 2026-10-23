@@ -4,6 +4,33 @@ This repository builds and consumes PulseBeam's pinned WebRTC artifacts. It owns
 the private CXX bridge, small native adapters, artifact metadata and selection,
 and the low-level Rust API used by `pulsebeam-libwebrtc`.
 
+## Releasing
+
+Bump `[package].version` in `Cargo.toml`, update the root package version in
+`Cargo.lock`, and commit. Then create and push the matching source tag:
+
+```console
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+That push is the release operation. CI builds, qualifies, audits, and publishes
+all five OS groups independently, creates their derived `vX.Y.Z-<os>` tags, and
+checks real Git consumers. Do not create OS tags, refresh manifest fixture
+hashes, edit `artifacts.lock.json`, or upload assets yourself. Build metadata
+and release locks are generated from the tagged sources. The source tag must
+match the crate version because consumers derive their release URLs from it.
+
+Source checks also run on pull requests and pushes to `main`, so source-level
+failures can be caught before tagging. Native qualification runs on source tags
+or a manual qualification run, not ordinary branch pushes. For publication
+retries, use **Re-run failed jobs** on the original tag-push Actions run, not
+**Run workflow**. The latter only qualifies and never publishes. Publication
+reuses the original bundle and accepts only identical existing bytes; workflow
+artifacts are retained for one day. If those bytes are no longer available or
+conflict with an existing asset, fix the cause and release a new version.
+Never move an existing source or OS tag.
+
 ## Commands
 
 The complete local interface is:
@@ -1038,13 +1065,14 @@ Once the matching OS release is available, a normal Linux `cargo run` downloads
 and verifies the selected architecture/flavor automatically. System linker and
 library prerequisites still apply.
 
-1. **One CI workflow** runs fast checks on pull requests. Push a new `v*`
-   canonical version tag to run Linux core/native qualification on matching
+1. **One CI workflow** runs fast checks on pull requests and pushes to `main`.
+   Push a new `v*` canonical version tag to run Linux core/native qualification on matching
    x86_64 and ARM64 hosts, with runtime tests, x86_64 ASan, audit, and cold
    candidate consumers. Derived OS tags are excluded from source-release triggers. Before building any
    container or native code, the first job checks that the repository is the
    canonical producer, the tag resolves to the checked-out commit, and it equals
-   `v<package.version>` in `Cargo.toml`. Pull requests skip this tag-only check.
+   `v<package.version>` in `Cargo.toml`. Pull requests and branch pushes skip
+   this tag-only check.
    Bump the crate version (and update `Cargo.lock`) before creating a new tag;
    for example, `v0.6.0` cannot release a crate still declaring `0.5.6`.
    `just ci release-tag <tag> <commit>` runs the same check locally without a
@@ -1061,16 +1089,19 @@ library prerequisites still apply.
    any existing assets, and uploads only missing byte-verified assets. It never
    deletes, replaces, or clobbers an asset; a conflicting or unexpected asset
    fails closed. It rechecks the complete inventory, attests the closed bundle,
-   and only then advertises the release. An interrupted draft is recoverable by
-   rerunning the exact same tag with identical bytes.
+   and only then advertises the release. Recover an interrupted draft with
+   **Re-run failed jobs** on the original tag-push Actions run while its original
+   bundle is retained (one day). A new manual workflow run only qualifies; it
+   cannot publish. Retrying accepts only identical bytes.
 3. After publication, CI tests both architectures and flavors using the source tag as the Cargo
    Git dependency, with fresh checkouts and cold release-lock and archive caches.
    It reports the usable tag in the workflow summary. The tag works only after
    the matching release and its lock have been published.
 
-Never replace an asset on an existing release. If publication is incomplete or
-incorrect, use a new producer tag. Provenance, rather than byte-for-byte archive
-identity across runners, is the reproducibility contract.
+Never replace an asset on an existing release. If publication is incorrect or
+cannot resume with its original bundle, use a new producer tag. Provenance,
+rather than byte-for-byte archive identity across runners, is the reproducibility
+contract.
 
 The automated host suite validates the portable API and exported static link
 closure. It does not claim physical camera, microphone, speaker, GPU, platform

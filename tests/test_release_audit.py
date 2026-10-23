@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 
+from tests.native_manifest import current_manifest
 from tools import audit_release
 
 
@@ -32,7 +33,7 @@ class ReleaseAuditTests(unittest.TestCase):
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
         license_contents = b"archive" if license_path == "lib/libwebrtc.a" else b"license\n"
-        template = json.loads((ROOT / "tests/fixtures/artifact-support-manifest.json").read_text())
+        template = current_manifest()
         entries = [
             entry
             for entry in lock["artifacts"]

@@ -5,6 +5,7 @@ on:
   # Qualification only. Publication jobs require a canonical source-tag push.
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*', '!v*-linux', '!v*-macos', '!v*-windows', '!v*-ios', '!v*-android']
 
 permissions: {}
@@ -24,7 +25,7 @@ jobs:
         with:
           just-version: 1.43.1
       - name: Validate release identity before any expensive work
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_REPOSITORY: ${{ github.repository }}
@@ -46,28 +47,28 @@ jobs:
         run: just linux-run pulsebeam-linux-${{ github.sha }} just check
 
   macos-release:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     uses: ./.github/workflows/os-release.yml
     with: {scope: macos}
     permissions: {contents: write, id-token: write, attestations: write}
 
   windows-release:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     uses: ./.github/workflows/os-release.yml
     with: {scope: windows}
     permissions: {contents: write, id-token: write, attestations: write}
 
   ios-release:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     uses: ./.github/workflows/os-release.yml
     with: {scope: ios}
     permissions: {contents: write, id-token: write, attestations: write}
 
   android-release:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     uses: ./.github/workflows/os-release.yml
     with: {scope: android}
@@ -75,7 +76,7 @@ jobs:
 
   linux-build:
     name: Build (${{ matrix.flavor }}, ${{ matrix.target }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     strategy:
       fail-fast: false
@@ -170,7 +171,7 @@ jobs:
 
   lifetime-sanitizers:
     name: ASan tests (${{ matrix.flavor }}, linux-x86_64)
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: validate
     strategy:
       fail-fast: false
@@ -207,7 +208,7 @@ jobs:
   linux-qualification:
     name: Linux qualification
     needs: [validate, linux-build, linux-runtime, lifetime-sanitizers, linux-audit, candidate-consumer]
-    if: always() && github.event_name != 'pull_request'
+    if: always() && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -309,7 +310,7 @@ jobs:
 
   linux-release-bundle:
     name: Prepare Linux release
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: linux-qualification
     runs-on: ubuntu-24.04
     permissions:
@@ -350,7 +351,7 @@ jobs:
     concurrency:
       group: publish-linux-${{ github.ref }}
       cancel-in-progress: false
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [linux-qualification, linux-release-bundle]
     runs-on: ubuntu-24.04
     permissions:
@@ -474,7 +475,7 @@ jobs:
   release-result:
     name: Linux release and consumer result
     needs: [publish-linux, released-consumer]
-    if: always() && github.event_name == 'push'
+    if: always() && github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

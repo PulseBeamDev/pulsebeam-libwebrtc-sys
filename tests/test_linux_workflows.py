@@ -34,23 +34,28 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def job(self, name):
         return workflow_job(self.contents, name)
 
-    def test_one_workflow_checks_prs_and_publishes_on_tag_pushes(self):
+    def test_one_workflow_checks_prs_and_main_and_publishes_on_tag_pushes(self):
         self.assertEqual(sorted((ROOT / ".github/workflows").glob("*.yml")), [WORKFLOW.with_name("os-release.yml"), WORKFLOW])
         self.assertEqual(self.contents.splitlines()[0], "name: CI and release")
         triggers = self.contents.split("permissions: {}", 1)[0]
         self.assertIn("  pull_request:\n", triggers)
-        self.assertIn("  push:\n    tags: ['v*',", triggers)
+        self.assertIn("  push:\n    branches: [main]\n    tags: ['v*',", triggers)
         for scope in ("linux", "macos", "windows", "ios", "android"):
             self.assertIn(f"'!v*-{scope}'", triggers)
         self.assertIn("  workflow_dispatch:", triggers)
-        self.assertNotIn("branches: [main]", triggers)
         self.assertIn("permissions: {}", self.contents)
         self.assertNotIn("\nconcurrency:", self.contents)
         self.assertIn("group: publish-linux-${{ github.ref }}", self.job("publish-linux"))
         self.assertIn("cancel-in-progress: false", self.contents)
-        self.assertIn("if: github.event_name != 'pull_request'", self.job("linux-build"))
-        self.assertIn("if: github.event_name != 'pull_request'", self.job("lifetime-sanitizers"))
-        self.assertIn("if: always() && github.event_name != 'pull_request'", self.job("linux-qualification"))
+        qualification = "github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'"
+        for name in ("linux-build", "lifetime-sanitizers", "macos-release", "windows-release", "ios-release", "android-release"):
+            self.assertIn(f"if: {qualification}\n", self.job(name))
+        self.assertIn(f"if: always() && ({qualification})\n", self.job("linux-qualification"))
+        # A main push runs source checks, not native builds or publication.
+        publication = "github.event_name == 'push' && github.ref_type == 'tag'"
+        for name in ("linux-release-bundle", "publish-linux"):
+            self.assertIn(f"if: {publication}\n", self.job(name))
+        self.assertIn(f"if: always() && {publication}\n", self.job("release-result"))
 
     def test_validation_primes_mounted_cache_and_checks_before_release(self):
         validate = self.job("validate")
@@ -63,7 +68,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", validate)
         self.assertIn("RELEASE_REPOSITORY: ${{ github.repository }}", validate)
         identity_step = validate[validate.index("      - name: Validate release identity"):validate.index("      - name: Validate release CLI")]
-        self.assertIn("if: github.event_name == 'push'", identity_step)
+        self.assertIn("if: github.event_name == 'push' && github.ref_type == 'tag'\n", identity_step)
         tag_fetch = 'git fetch --no-tags --depth=1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"'
         self.assertLess(validate.index(tag_fetch), validate.index(identity))
         for expensive in ("just ci-preflight", "just ci podman", "just linux-image", "cargo fetch", "just check"):
@@ -151,7 +156,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("ARTIFACT_DIR", consumer)
         result = self.job("release-result")
         self.assertIn("needs: [publish-linux, released-consumer]", result)
-        self.assertIn("if: always() && github.event_name == 'push'", result)
+        self.assertIn("if: always() && github.event_name == 'push' && github.ref_type == 'tag'\n", result)
         self.assertIn("'released-consumer=${{ needs.released-consumer.result }}'", result)
         self.assertIn("GITHUB_STEP_SUMMARY", result)
         self.assertIn("Git tag $RELEASE_TAG", result)
@@ -227,7 +232,7 @@ class IndependentOSWorkflowTests(unittest.TestCase):
 
     def test_manual_qualification_cannot_mutate_tags_or_releases(self):
         for name in ("linux-release-bundle", "publish-linux"):
-            self.assertIn("if: github.event_name == 'push'", workflow_job(self.root, name))
+            self.assertIn("if: github.event_name == 'push' && github.ref_type == 'tag'\n", workflow_job(self.root, name))
         for name in ("bundle", "publish"):
             self.assertIn("if: github.event_name == 'push'", self.job(name))
         publish = self.job("publish")

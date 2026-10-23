@@ -980,15 +980,44 @@ impl ArtifactManifest {
     }
 }
 
+// Synthetic test inputs follow current sources; real artifact metadata must
+// never be refreshed this way. Production parsing still rejects stale bytes.
+#[cfg(test)]
+pub(crate) fn current_test_manifest() -> serde_json::Value {
+    let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../tests/fixtures/artifact-support-manifest.json"
+    ))
+    .unwrap();
+    let adapter = native_adapter_digest();
+    value["bridge"]["native_adapter_sha256"] = adapter.clone().into();
+    value["native_configuration"]["native_adapter_sha256"] = adapter.into();
+    let wrapper = format!(
+        "{:x}",
+        Sha256::digest(include_bytes!("../tools/native_cc_wrapper.py"))
+    );
+    value["native_configuration"]["floating_point"]["compiler_wrapper_sha256"] =
+        wrapper.clone().into();
+    value["native_configuration"]["gn_args"]["cc_wrapper"] =
+        format!("python3 tools/native_cc_wrapper.py --contract-sha256 {wrapper} sccache").into();
+    value["native_configuration_sha256"] = canonical_digest(&value["native_configuration"]).into();
+    ArtifactManifest::parse_and_validate(
+        &serde_json::to_vec(&value).unwrap(),
+        "pulsebeam-webrtc-sys-bridge-v2",
+        "core",
+        "linux-x86_64",
+        "x86_64-unknown-linux-gnu",
+    )
+    .expect("synthetic manifest must be valid before tests mutate it");
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ArtifactManifest, BRIDGE_SOURCE_SHA256, NATIVE_ADAPTER_INPUTS, SUPPORTED_CARGO_TARGETS,
-        artifact_target, canonical_digest, native_adapter_digest,
+        artifact_target, canonical_digest, current_test_manifest, native_adapter_digest,
     };
     use sha2::{Digest, Sha256};
-
-    const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/artifact-support-manifest.json");
 
     fn validate(bytes: &[u8]) -> Result<ArtifactManifest, String> {
         ArtifactManifest::parse_and_validate(
@@ -1009,8 +1038,8 @@ mod tests {
     }
 
     #[test]
-    fn accepts_host_fixture() {
-        validate(FIXTURE).unwrap();
+    fn accepts_current_source_manifest() {
+        validate(&serde_json::to_vec(&current_test_manifest()).unwrap()).unwrap();
     }
 
     #[test]
@@ -1051,7 +1080,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_or_stale_adapter_identity_and_legacy_manifest_schema() {
-        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut value: serde_json::Value = current_test_manifest();
         assert_eq!(
             value["bridge"]["native_adapter_sha256"],
             native_adapter_digest()
@@ -1062,12 +1091,21 @@ mod tests {
                 .unwrap_err()
                 .contains("stale native")
         );
+        // Rehashing a self-consistent stale identity must not make it valid.
+        value["native_configuration"]["native_adapter_sha256"] = "0".repeat(64).into();
+        value["native_configuration_sha256"] =
+            canonical_digest(&value["native_configuration"]).into();
+        assert!(
+            validate(&serde_json::to_vec(&value).unwrap())
+                .unwrap_err()
+                .contains("stale native")
+        );
         value["bridge"]
             .as_object_mut()
             .unwrap()
             .remove("native_adapter_sha256");
         assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
-        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut value: serde_json::Value = current_test_manifest();
         value["schema_version"] = 2.into();
         assert!(
             validate(&serde_json::to_vec(&value).unwrap())
@@ -1079,7 +1117,7 @@ mod tests {
     #[test]
     fn rejects_missing_or_substituted_encoder_switch_patch() {
         for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
-            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let mut value: serde_json::Value = current_test_manifest();
             value["sources"]["webrtc"]["encoder_switch_patch_sha256"] = replacement;
             assert!(
                 validate(&serde_json::to_vec(&value).unwrap())
@@ -1097,12 +1135,12 @@ mod tests {
 
     #[test]
     fn rejects_missing_or_substituted_libvpx_child_identity() {
-        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut value: serde_json::Value = current_test_manifest();
         value["sources"].as_object_mut().unwrap().remove("libvpx");
         assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
         for field in ["repository", "revision", "worker_patch_sha256"] {
             for replacement in [serde_json::Value::Null, serde_json::json!("unrecognized")] {
-                let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+                let mut value: serde_json::Value = current_test_manifest();
                 value["sources"]["libvpx"][field] = replacement;
                 assert!(validate(&serde_json::to_vec(&value).unwrap()).is_err());
             }
@@ -1112,7 +1150,7 @@ mod tests {
     #[test]
     fn rejects_missing_or_substituted_runtime_resources_patch() {
         for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
-            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let mut value: serde_json::Value = current_test_manifest();
             value["sources"]["webrtc"]["runtime_resources_patch_sha256"] = replacement;
             assert!(
                 validate(&serde_json::to_vec(&value).unwrap())
@@ -1149,7 +1187,7 @@ mod tests {
             ("/artifact/flavor", "native"),
             ("/artifact/cargo_target", "aarch64-unknown-linux-gnu"),
         ] {
-            let mut invalid: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let mut invalid: serde_json::Value = current_test_manifest();
             *invalid.pointer_mut(pointer).expect("fixture field") = wrong.into();
             assert!(
                 validate(&serde_json::to_vec(&invalid).unwrap()).is_err(),
@@ -1168,7 +1206,7 @@ mod tests {
                 Some("0000000000000000000000000000000000000000000000000000000000000000"),
             ),
         ] {
-            let mut invalid: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let mut invalid: serde_json::Value = current_test_manifest();
             let cxx = invalid["bridge"]["cxx"].as_object_mut().unwrap();
             if let Some(value) = replacement {
                 *cxx.get_mut(key).expect("fixture CXX field") = value.into();
@@ -1212,7 +1250,7 @@ mod tests {
                 "bad",
             ),
         ] {
-            let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+            let mut value: serde_json::Value = current_test_manifest();
             *value.pointer_mut(pointer).unwrap() = replacement.into();
             assert!(
                 validate(&serde_json::to_vec(&value).unwrap())
@@ -1230,7 +1268,7 @@ mod tests {
 
     #[test]
     fn rejects_unrelated_wrapper_commands_even_with_the_expected_digest() {
-        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut value: serde_json::Value = current_test_manifest();
         let digest = value["native_configuration"]["floating_point"]["compiler_wrapper_sha256"]
             .as_str()
             .unwrap()
@@ -1260,7 +1298,7 @@ mod tests {
 
     #[test]
     fn distinguishes_protobuf_configurations_without_changing_software_capabilities() {
-        let mut value: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut value: serde_json::Value = current_test_manifest();
         value["native_configuration"]["gn_args"]["rtc_enable_protobuf"] = "false".into();
         value["native_configuration_sha256"] =
             canonical_digest(&value["native_configuration"]).into();
@@ -1269,7 +1307,7 @@ mod tests {
 
     #[test]
     fn translates_every_link_kind_in_order_and_rejects_unknown_kinds() {
-        let mut fixture: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut fixture: serde_json::Value = current_test_manifest();
         fixture["links"] = serde_json::json!([
             {"kind": "dylib", "name": "pthread"},
             {"kind": "framework", "name": "CoreMedia"},
