@@ -2826,13 +2826,30 @@ impl RtpReceiver {
     /// ever be attached to each receiver during a peer's lifetime. Closing
     /// the sink restores pass-through decoding; it cannot be reattached.
     pub fn attach_encoded_sink(&self) -> Result<EncodedVideoSink, PeerError> {
+        self.attach_encoded_sink_with_ordering(false)
+    }
+
+    /// Observe encoded video after native reference finding and frame-buffer
+    /// ordering. Original frames continue to the configured decoder; this sink
+    /// does not suppress decoding or manufacture decoded pixels. A decoder
+    /// accepting the negotiated format is required. The same receiver-lifetime
+    /// attachment limit applies across both encoded sink modes.
+    pub fn attach_ordered_encoded_sink(&self) -> Result<EncodedVideoSink, PeerError> {
+        self.attach_encoded_sink_with_ordering(true)
+    }
+
+    fn attach_encoded_sink_with_ordering(
+        &self,
+        ordered: bool,
+    ) -> Result<EncodedVideoSink, PeerError> {
         if self.peer.closed.get() {
             return Err(PeerError {
                 kind: PeerErrorKind::Closed,
                 message: "peer is closed".into(),
             });
         }
-        let native = ffi::rtp_receiver_attach_encoded_video_sink(self.peer.native(), self.native());
+        let native =
+            ffi::rtp_receiver_attach_encoded_video_sink(self.peer.native(), self.native(), ordered);
         if native.is_null() {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidState,
@@ -2850,7 +2867,8 @@ impl RtpReceiver {
     }
 }
 
-/// An encoded access unit after RTP reassembly, before WebRTC decoding.
+/// An encoded access unit after RTP reassembly. Ordered observation is released
+/// at native decode scheduling; raw interception precedes reference finding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedReceivedVideoFrame {
     pub data: Vec<u8>,

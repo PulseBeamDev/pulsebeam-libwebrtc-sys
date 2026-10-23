@@ -12,7 +12,13 @@ import tarfile
 
 from tools.write_artifact_lock import LockError, read_checksums, template
 from tools.release_inventory import OS_TARGETS
-from tools.native_provenance import LIBVPX_SOURCE, adapter_digest, configuration_digest, validate_configuration
+from tools.native_provenance import (
+    LIBVPX_SOURCE,
+    RECORDABLE_IDENTITY_PATCH_SHA256,
+    adapter_digest,
+    configuration_digest,
+    validate_configuration,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +107,7 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             if not isinstance(webrtc, dict) or webrtc.get("state") != expected_state:
                 raise AuditError(f"wrong WebRTC source state in {name}")
             source_identity = {
-                "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256", "runtime_resources_patch_sha256")},
+                "webrtc": {key: webrtc.get(key) for key in ("repository", "revision", "patch_sha256", "encoder_switch_patch_sha256", "runtime_resources_patch_sha256", "recordable_identity_patch_sha256")},
                 "depot_tools": depot_tools,
                 "libvpx": sources.get("libvpx"),
             }
@@ -113,6 +119,8 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
                 raise AuditError(f"wrong WebRTC encoder-switch patch identity in {name}")
             if webrtc["runtime_resources_patch_sha256"] != RUNTIME_RESOURCES_PATCH_SHA256:
                 raise AuditError(f"wrong WebRTC runtime-resources patch identity in {name}")
+            if webrtc["recordable_identity_patch_sha256"] != RECORDABLE_IDENTITY_PATCH_SHA256:
+                raise AuditError(f"wrong WebRTC recordable-identity patch in {name}")
             if common_bridge is None:
                 common_bridge, common_sources = bridge, source_identity
             elif bridge != common_bridge or source_identity != common_sources:

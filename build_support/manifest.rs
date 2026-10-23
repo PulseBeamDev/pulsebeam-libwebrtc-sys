@@ -9,6 +9,8 @@ const ENCODER_SWITCH_PATCH_SHA256: &str =
     "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a";
 const RUNTIME_RESOURCES_PATCH_SHA256: &str =
     "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02";
+const RECORDABLE_IDENTITY_PATCH_SHA256: &str =
+    "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65";
 const LIBVPX_REPOSITORY: &str = "https://chromium.googlesource.com/webm/libvpx.git";
 const LIBVPX_REVISION: &str = "31af37b1bd2774d11a932c1cd9a3849328375f64";
 const LIBVPX_WORKER_PATCH_SHA256: &str =
@@ -26,11 +28,11 @@ const CXX_HEADER_SHA256: &str = "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9b
 const CXX_NATIVE_RUNTIME_SHA256: &str =
     "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866";
 const BRIDGE_SOURCE_SHA256: &str =
-    "2c4a505d47af5f52d0a48d3a07485fa61a3c48d68b57b491bb50277a259ecf45";
+    "f26ace54e9dc85085fce051a78205ca4963c990fa1199979a980285687faa30c";
 const GENERATED_BRIDGE_HEADER_SHA256: &str =
     "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3";
 const GENERATED_BRIDGE_SOURCE_SHA256: &str =
-    "ec2a9af239048ddc96c93d90c8255a8227332124dd19c19e1bd42259ca42f861";
+    "57a30e0326ce2f5c3aa1423d6f1aaac756a5e7c6b3aa7bdcd89ad93f87e65d81";
 
 // Keep this inventory synchronized with tools/native_provenance.py. Embedding
 // bytes supports offline Rust-only consumers without running a native compiler.
@@ -497,6 +499,7 @@ struct Source {
     #[serde(skip_serializing_if = "Option::is_none")]
     encoder_switch_patch_sha256: Option<String>,
     runtime_resources_patch_sha256: Option<String>,
+    recordable_identity_patch_sha256: Option<String>,
     #[serde(default)]
     state: Option<String>,
 }
@@ -567,6 +570,7 @@ struct NativeConfiguration {
     source_patch_sha256: String,
     source_encoder_switch_patch_sha256: String,
     source_runtime_resources_patch_sha256: String,
+    source_recordable_identity_patch_sha256: String,
     libvpx_revision: String,
     libvpx_worker_patch_sha256: String,
     source_state: String,
@@ -766,6 +770,15 @@ impl ArtifactManifest {
         {
             return Err("wrong WebRTC runtime-resources patch identity".into());
         }
+        if manifest
+            .sources
+            .webrtc
+            .recordable_identity_patch_sha256
+            .as_deref()
+            != Some(RECORDABLE_IDENTITY_PATCH_SHA256)
+        {
+            return Err("wrong WebRTC recordable-identity patch".into());
+        }
         let expected_source_state = if expected_flavor == "core"
             && matches!(expected_target, "ios-arm64" | "ios-simulator-arm64")
         {
@@ -863,6 +876,12 @@ impl ArtifactManifest {
                 != self.sources.webrtc.encoder_switch_patch_sha256.as_ref()
             || Some(&config.source_runtime_resources_patch_sha256)
                 != self.sources.webrtc.runtime_resources_patch_sha256.as_ref()
+            || Some(&config.source_recordable_identity_patch_sha256)
+                != self
+                    .sources
+                    .webrtc
+                    .recordable_identity_patch_sha256
+                    .as_ref()
             || Some(&config.source_state) != self.sources.webrtc.state.as_ref()
             || config.libvpx_revision != self.sources.libvpx.revision
             || config.libvpx_worker_patch_sha256 != self.sources.libvpx.worker_patch_sha256
@@ -1247,6 +1266,30 @@ mod tests {
     }
 
     #[test]
+    fn recordable_identity_patch_digest_matches_tracked_patch() {
+        let digest = Sha256::digest(include_bytes!(
+            "../patches/recordable-encoded-frame-rtp-identity.patch"
+        ));
+        assert_eq!(
+            format!("{digest:x}"),
+            super::RECORDABLE_IDENTITY_PATCH_SHA256
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_substituted_recordable_identity_patch() {
+        for replacement in [serde_json::Value::Null, serde_json::json!("0".repeat(64))] {
+            let mut value: serde_json::Value = current_test_manifest();
+            value["sources"]["webrtc"]["recordable_identity_patch_sha256"] = replacement;
+            assert!(
+                validate(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .contains("recordable-identity patch")
+            );
+        }
+    }
+
+    #[test]
     fn maps_every_supported_cargo_target_exactly() {
         let artifact_targets = [
             "linux-x86_64",
@@ -1329,6 +1372,10 @@ mod tests {
             ),
             (
                 "/native_configuration/source_runtime_resources_patch_sha256",
+                "substituted patch",
+            ),
+            (
+                "/native_configuration/source_recordable_identity_patch_sha256",
                 "substituted patch",
             ),
             (

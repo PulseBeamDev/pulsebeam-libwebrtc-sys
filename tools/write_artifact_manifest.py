@@ -152,6 +152,7 @@ def main():
     parser.add_argument("--source-patch-sha256", required=True)
     parser.add_argument("--encoder-switch-patch-sha256", required=True)
     parser.add_argument("--runtime-resources-patch-sha256", required=True)
+    parser.add_argument("--recordable-identity-patch-sha256", required=True)
     parser.add_argument("--libvpx-repository", required=True)
     parser.add_argument("--libvpx-revision", required=True)
     parser.add_argument("--libvpx-worker-patch-sha256", required=True)
@@ -189,6 +190,7 @@ def main():
         "source_patch_sha256": args.source_patch_sha256,
         "source_encoder_switch_patch_sha256": args.encoder_switch_patch_sha256,
         "source_runtime_resources_patch_sha256": args.runtime_resources_patch_sha256,
+        "source_recordable_identity_patch_sha256": args.recordable_identity_patch_sha256,
         "libvpx_revision": args.libvpx_revision,
         "libvpx_worker_patch_sha256": args.libvpx_worker_patch_sha256,
         "source_state": args.source_state,
@@ -229,6 +231,7 @@ def main():
                 "patch_sha256": args.source_patch_sha256,
                 "encoder_switch_patch_sha256": args.encoder_switch_patch_sha256,
                 "runtime_resources_patch_sha256": args.runtime_resources_patch_sha256,
+                "recordable_identity_patch_sha256": args.recordable_identity_patch_sha256,
                 "state": args.source_state,
             },
             "depot_tools": {

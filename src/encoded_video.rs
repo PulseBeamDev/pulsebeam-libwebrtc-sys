@@ -428,10 +428,11 @@ impl EncodedH264Input {
         self.encoder.clone()
     }
 
-    /// Register this wire format for encoded-only reception without a decoder.
-    /// Attach an encoded sink before media. Decode queries return unsupported;
-    /// decoded sinks are rejected and closing interception does not enable
-    /// decoding. A closed encoded sink cannot be reattached to that receiver.
+    /// Register this wire format for encoded-only reception. Attach an ordered
+    /// encoded sink before media. A no-output decoder lets libwebrtc perform native
+    /// reference finding and frame-buffer ordering, but never fabricates decoded
+    /// pixels; decoded sinks remain rejected. Closing interception does not
+    /// enable decoded delivery, and a closed encoded sink cannot be reattached.
     pub fn encoded_receive_factory(&self) -> Result<crate::VideoDecoderFactoryHandle, CodecError> {
         crate::VideoDecoderFactoryHandle::encoded_receive(self.format.clone())
     }

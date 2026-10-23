@@ -29,6 +29,7 @@ class ReleaseAuditTests(unittest.TestCase):
                       native_adapter: str | None = None, schema: int = 4,
                       encoder_switch_patch: str | None = audit_release.ENCODER_SWITCH_PATCH_SHA256,
                       runtime_resources_patch: str | None = audit_release.RUNTIME_RESOURCES_PATCH_SHA256,
+                      recordable_identity_patch: str | None = audit_release.RECORDABLE_IDENTITY_PATCH_SHA256,
                       license_path: str = "LICENSES/NOTICE.txt",
                       unwind_contents: bytes = b"unwind\n") -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
@@ -52,6 +53,7 @@ class ReleaseAuditTests(unittest.TestCase):
                         "patch_sha256": audit_release.CORE_IOS_PATCH_SHA256,
                         "encoder_switch_patch_sha256": encoder_switch_patch,
                         "runtime_resources_patch_sha256": runtime_resources_patch,
+                        "recordable_identity_patch_sha256": recordable_identity_patch,
                         "state": "applied" if entry["flavor"] == "core" and entry["artifact_target"] in {"ios-arm64", "ios-simulator-arm64"} else "pristine",
                     },
                     "depot_tools": {"repository": "tools-repository", "revision": "tools"},
@@ -89,6 +91,7 @@ class ReleaseAuditTests(unittest.TestCase):
                           source_patch_sha256=manifest["sources"]["webrtc"]["patch_sha256"],
                           source_encoder_switch_patch_sha256=manifest["sources"]["webrtc"]["encoder_switch_patch_sha256"],
                           source_runtime_resources_patch_sha256=manifest["sources"]["webrtc"]["runtime_resources_patch_sha256"],
+                          source_recordable_identity_patch_sha256=manifest["sources"]["webrtc"]["recordable_identity_patch_sha256"],
                           source_state=manifest["sources"]["webrtc"]["state"],
                           depot_tools_revision=manifest["sources"]["depot_tools"]["revision"])
             manifest["abi"] = {"toolchain": config["toolchain"]}

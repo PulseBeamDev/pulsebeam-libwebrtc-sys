@@ -42,6 +42,8 @@ def valid_compiler_wrapper(value: str, digest: str) -> bool:
             and Path(command[4]).name == "sccache")
 
 
+RECORDABLE_IDENTITY_PATCH_SHA256 = "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65"
+
 LIBVPX_SOURCE = {
     "repository": "https://chromium.googlesource.com/webm/libvpx.git",
     "revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
@@ -65,12 +67,15 @@ def validate_configuration(manifest: dict, root: Path) -> None:
         raise ValueError("unexpected unwind archive for non-Android target")
     if sources.get("libvpx") != LIBVPX_SOURCE:
         raise ValueError("wrong libvpx child source identity")
+    if sources.get("webrtc", {}).get("recordable_identity_patch_sha256") != RECORDABLE_IDENTITY_PATCH_SHA256:
+        raise ValueError("wrong recordable-frame identity patch")
     expected = {
         "native_adapter_sha256": adapter_digest(root), "bridge_identity": bridge["identity"],
         "cxx": bridge["cxx"], "source_revision": sources["webrtc"]["revision"],
         "source_patch_sha256": sources["webrtc"]["patch_sha256"],
         "source_encoder_switch_patch_sha256": sources["webrtc"]["encoder_switch_patch_sha256"],
         "source_runtime_resources_patch_sha256": sources["webrtc"]["runtime_resources_patch_sha256"],
+        "source_recordable_identity_patch_sha256": sources["webrtc"]["recordable_identity_patch_sha256"],
         "libvpx_revision": sources["libvpx"]["revision"],
         "libvpx_worker_patch_sha256": sources["libvpx"]["worker_patch_sha256"],
         "source_state": sources["webrtc"]["state"],

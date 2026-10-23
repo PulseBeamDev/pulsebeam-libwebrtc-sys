@@ -6204,7 +6204,7 @@ impl<R: SessionRuntime> Session<R> {
     pub fn attach_encoded_video(&mut self, receiver: SessionReceiverId) -> Result<(), PeerError> {
         let sink = self
             .receiver_without_sink(receiver)?
-            .attach_encoded_sink()?;
+            .attach_ordered_encoded_sink()?;
         self.media_sinks
             .insert(receiver, MediaSink::EncodedVideo(sink));
         Ok(())

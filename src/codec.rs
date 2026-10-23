@@ -1445,26 +1445,62 @@ impl VideoEncoderFactoryHandle {
     }
 }
 
-// Wire-format registration is deliberately separate from decoder capability.
-// Encoded interception consumes access units before this rejecting factory.
+// Wire-format registration remains separate from decoded-pixel capability.
+// This sink decoder lets libwebrtc's native reference finder and frame buffer
+// select ordered encoded frames for the track's recordable-frame callback. It
+// reports successful consumption but never fabricates a decoded image.
 struct EncodedReceiveFactory(VideoCodecFormat);
+
+struct EncodedReceiveSinkDecoder;
+
+fn same_video_codec(left: &VideoCodecFormat, right: &VideoCodecFormat) -> bool {
+    if left.name == "H264" && right.name == "H264" {
+        crate::SdpVideoFormat::from(left).is_same_codec(&crate::SdpVideoFormat::from(right))
+    } else {
+        left.name == right.name && left.parameters == right.parameters
+    }
+}
+
+impl VideoDecoder for EncodedReceiveSinkDecoder {
+    fn configure(&mut self, _: VideoDecoderSettings) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    fn decode(&mut self, _: EncodedVideoFrame, _: DecodedImageCallback) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    fn release(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    fn info(&self) -> VideoDecoderInfo {
+        VideoDecoderInfo {
+            implementation_name: "native-ordered-encoded-sink".into(),
+            hardware_accelerated: false,
+        }
+    }
+}
 impl VideoDecoderFactory for EncodedReceiveFactory {
     fn supported_formats(&self) -> Vec<VideoCodecFormat> {
         vec![self.0.clone()]
     }
     fn query_support(
         &self,
-        _: &VideoCodecFormat,
-        _: bool,
+        format: &VideoCodecFormat,
+        reference_scaling: bool,
         _: Option<VideoResolution>,
     ) -> CodecSupport {
         CodecSupport {
-            supported: false,
+            supported: !reference_scaling && same_video_codec(format, &self.0),
             power_efficient: false,
         }
     }
-    fn create(&self, _: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
-        Err(CodecError::UnsupportedFormat)
+    fn create(&self, format: &VideoCodecFormat) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        if !same_video_codec(format, &self.0) {
+            return Err(CodecError::UnsupportedFormat);
+        }
+        Ok(Box::new(EncodedReceiveSinkDecoder))
     }
 }
 

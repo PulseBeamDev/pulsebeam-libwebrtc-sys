@@ -306,7 +306,7 @@ impl Observations {
                                     PeerErrorKind::UnsupportedOperation
                                 );
                                 self.encoded_video
-                                    .push((who, receiver.attach_encoded_sink().unwrap()));
+                                    .push((who, receiver.attach_ordered_encoded_sink().unwrap()));
                             } else {
                                 self.video.push((who, track.attach_sink().unwrap()));
                             }
@@ -1784,7 +1784,7 @@ fn run_h264_profile_with_wire(
         };
         let decoder = input.encoded_receive_factory().unwrap();
         assert!(
-            !decoder
+            decoder
                 .query_support(&decoder.supported_formats()[0], false, None)
                 .supported
         );
@@ -1901,7 +1901,24 @@ fn run_h264_profile_with_wire(
         };
         let before = observations.trace.encoded_video.len();
         push_h264(&source, unit.clone(), simulcast);
-        let result = outcome(&world, &network, &peers, &source, &mut observations, before);
+        let result = if simulcast_mode == 2 {
+            // The answer advertises external SFU acceptance only to the sender.
+            // Its stock receiver is not configured for three simultaneous rungs.
+            // Wait for native encoder consumption here, then qualify publication
+            // with per-RID packet/SSRC statistics below, not receive callbacks.
+            for _ in 0..2_000 {
+                observations.step(&world, &network, &peers, true);
+                assert!(source.take_encoder_error().is_none());
+                if source.pending_frames() == 0 {
+                    break;
+                }
+                world.advance(Duration::from_millis(1)).unwrap();
+            }
+            assert_eq!(source.pending_frames(), 0);
+            Ok(None)
+        } else {
+            outcome(&world, &network, &peers, &source, &mut observations, before).map(Some)
+        };
         if matches!(simulcast_mode, 1 | 3) {
             // Neither collapsed senders nor single-encoder fallback expose
             // enough native initialization identity to associate a rung.
@@ -1919,12 +1936,14 @@ fn run_h264_profile_with_wire(
             break 'lifecycle observations.trace;
         }
         let first = result.unwrap();
-        fidelity(&first.data, &unit.data, opaque);
-        assert!(first.key_frame);
-        assert_eq!(first.temporal_index, (temporal || simulcast).then_some(0));
-        assert!(first.dependencies.is_empty());
-        assert_eq!(first.frame_id.is_some(), temporal || simulcast);
-        let mut base_id = first.frame_id;
+        if let Some(first) = &first {
+            fidelity(&first.data, &unit.data, opaque);
+            assert!(first.key_frame);
+            assert_eq!(first.temporal_index, (temporal || simulcast).then_some(0));
+            assert!(first.dependencies.is_empty());
+            assert_eq!(first.frame_id.is_some(), temporal || simulcast);
+        }
+        let mut base_id = first.as_ref().and_then(|frame| frame.frame_id);
         source.take_keyframe_request();
         if simulcast {
             assert_eq!(
@@ -2021,7 +2040,7 @@ fn run_h264_profile_with_wire(
             let received =
                 delivered.expect("controlled producer responds to native keyframe feedback");
             fidelity(&received.data, &unit.data, opaque);
-            assert_eq!(received.ssrc, first.ssrc);
+            assert_eq!(received.ssrc, first.as_ref().unwrap().ssrc);
             assert_eq!(
                 received.temporal_index,
                 if simulcast {
@@ -2139,8 +2158,9 @@ fn run_h264_profile_with_wire(
         let receiver = observations.transceivers[0].1.receiver();
         assert!(
             receiver.attach_encoded_sink().is_err(),
-            "native interception is terminal for this receiver"
+            "native encoded attachment is terminal for this receiver"
         );
+        assert!(receiver.attach_ordered_encoded_sink().is_err());
         assert!(
             receiver.track().unwrap().attach_sink().is_err(),
             "closing encoded interception must not advertise H264 decoding"
@@ -2203,11 +2223,10 @@ fn controlled_h264_simulcast_native_sender_rejects_ambiguous_fallback() {
             let replay = run_h264_profile(false, impaired, mode);
             assert_eq!(first, replay);
             assert!(first.video.is_empty());
-            if mode == 2 {
-                // Sender statistics inside the fixture establish publication.
-                // Stock reception here is not a three-rung metadata boundary.
-                assert!(!first.encoded_video.is_empty());
-            } else {
+            // Mode 2's per-RID packet and distinct-SSRC statistics inside the
+            // fixture establish publication, not simultaneous stock reception.
+            // The rejected ambiguous fallback must still emit no receive output.
+            if mode != 2 {
                 assert!(first.encoded_video.is_empty());
             }
         }
