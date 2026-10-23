@@ -128,6 +128,9 @@ def audit(archives: Path, checksums_path: Path, lock_path: Path, scope: str = "c
             native_archive = manifest["archive"]
             if digest(read_member(archive, native_archive["member"])) != native_archive["sha256"]:
                 raise AuditError(f"native archive digest mismatch in {name}")
+            unwind = manifest.get("unwind_archive")
+            if unwind and digest(read_member(archive, unwind["member"])) != unwind["sha256"]:
+                raise AuditError(f"Android unwind archive digest mismatch in {name}")
 
             licenses = manifest.get("licenses", {})
             files = licenses.get("files", []) if isinstance(licenses, dict) else []

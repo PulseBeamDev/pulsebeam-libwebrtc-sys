@@ -1008,13 +1008,13 @@ struct NativeScreenCapture::State {
 
 struct NativeCameraOptions::State {
   webrtc::Thread* role = nullptr;
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
   std::unique_ptr<webrtc::VideoCaptureOptions> value;
 #endif
 };
 NativeCameraOptions::NativeCameraOptions(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeCameraOptions::~NativeCameraOptions() {
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
   auto release = [&] { state_->value.reset(); };
   if (state_->role && !state_->role->IsCurrent()) state_->role->BlockingCall(release);
   else release();
@@ -1024,7 +1024,7 @@ const std::unique_ptr<NativeCameraOptions::State>& NativeCameraOptions::state() 
 std::unique_ptr<NativeCameraOptions> camera_options_new(const NativePeerConnectionFactory& factory) noexcept {
   auto* role = factory.signaling_thread();
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_new(factory); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
   auto state = std::make_unique<NativeCameraOptions::State>();
   state->role = role;
   state->value = std::make_unique<webrtc::VideoCaptureOptions>();
@@ -1036,7 +1036,7 @@ std::unique_ptr<NativeCameraOptions> camera_options_new(const NativePeerConnecti
 std::unique_ptr<NativeCameraOptions> camera_options_clone(const NativeCameraOptions& options) noexcept {
   auto* role = options.state()->role;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_clone(options); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
   auto state = std::make_unique<NativeCameraOptions::State>();
   state->role = role;
   state->value = std::make_unique<webrtc::VideoCaptureOptions>(*options.state()->value);
@@ -1049,7 +1049,7 @@ std::uint8_t camera_options_flags(const NativeCameraOptions& options) noexcept {
   auto* role = options.state()->role;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_flags(options); });
   std::uint8_t flags = 0;
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
   if (options.state()->value->allow_v4l2()) flags |= 1;
 #if defined(WEBRTC_USE_PIPEWIRE)
   flags |= 2;
@@ -1061,7 +1061,7 @@ std::uint8_t camera_options_flags(const NativeCameraOptions& options) noexcept {
 bool camera_options_write(const NativeCameraOptions& options, bool v4l2, bool pipewire) noexcept {
   auto* role = options.state()->role;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_write(options, v4l2, pipewire); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
 #if !defined(WEBRTC_USE_PIPEWIRE)
   if (pipewire) return false;
 #else
@@ -1076,7 +1076,7 @@ bool camera_options_write(const NativeCameraOptions& options, bool v4l2, bool pi
 bool camera_options_set_fd(const NativeCameraOptions& options, std::int32_t fd) noexcept {
   auto* role = options.state()->role;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_set_fd(options, fd); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && defined(WEBRTC_USE_PIPEWIRE)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID) && defined(WEBRTC_USE_PIPEWIRE)
   options.state()->value->set_pipewire_fd(fd);
   return true;
 #else
@@ -1086,7 +1086,7 @@ bool camera_options_set_fd(const NativeCameraOptions& options, std::int32_t fd) 
 std::int32_t camera_options_initialize(const NativeCameraOptions& options, const RustCameraInitializationObserver& observer) noexcept {
   auto* role = options.state()->role;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_options_initialize(options, observer); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
 #if defined(WEBRTC_USE_PIPEWIRE)
   // SDK Cleanup holds callback_lock_ while joining the loop. Finish on that
   // loop can wait on the same lock; no public quiescence fence repairs this.
@@ -1142,7 +1142,7 @@ std::unique_ptr<NativeCameraDeviceInfo> camera_info_new_with_options(const Nativ
   auto* role = factory.signaling_thread();
   if (role != options.state()->role) return nullptr;
   if (role && !role->IsCurrent()) return role->BlockingCall([&] { return camera_info_new_with_options(factory, options); });
-#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX)
+#if defined(PULSEBEAM_WEBRTC_NATIVE_AUDIO) && defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
 #if defined(WEBRTC_USE_PIPEWIRE)
   if (options.state()->value->allow_pipewire()) return nullptr;
 #endif

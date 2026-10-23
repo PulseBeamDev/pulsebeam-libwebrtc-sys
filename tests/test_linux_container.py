@@ -31,6 +31,9 @@ class LinuxContainerTests(unittest.TestCase):
         )
         self.assertIn("cargo install just --version 1.43.1 --locked", contents)
         self.assertIn("rustup component add rustfmt", contents)
+        # GCC invokes the unversioned name for -fuse-ld=lld during the
+        # pinned ARM64 LLVM source bootstrap; lld-19 alone does not install it.
+        self.assertIn("ln -s /usr/bin/ld.lld-19 /usr/local/bin/ld.lld", contents)
         for package in (*NATIVE_PACKAGES, *BUILD_TOOLS):
             with self.subTest(package=package):
                 self.assertIn(package, contents)

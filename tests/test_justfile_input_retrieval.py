@@ -20,9 +20,13 @@ class InputRetrievalBoundaryTests(unittest.TestCase):
         self.assertIn('--revision "src@{{ webrtc_commit }}"', sync)
         self.assertIn("'checkout_instrumented_libraries': False", sync)
         self.assertIn(
-            'timeout --foreground 20m gclient sync --no-history --shallow --nohooks --force',
+            'tools/run_process.py" --timeout 1200 -- gclient sync --no-history --shallow --nohooks --force',
             sync,
         )
+        self.assertNotIn("timeout --foreground", sync)
+        self.assertIn('--batch --timeout 120 -- "$depot_native\\\\cipd.bat" version', sync)
+        self.assertIn('--batch --timeout 1200 --cwd "$checkout_native"', sync)
+        self.assertNotIn("cmd.exe /d /s /c", sync)
         self.assertIn('retry_acquisition webrtc_hooks "{{ webrtc_commit }}"', sync)
         self.assertIn(
             'actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf \'%s\' missing)',

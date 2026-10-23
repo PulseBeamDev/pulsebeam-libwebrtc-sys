@@ -443,6 +443,8 @@ pub(crate) struct ArtifactManifest {
     native_configuration: NativeConfiguration,
     abi: Abi,
     pub(crate) archive: Archive,
+    #[serde(default)]
+    unwind_archive: Option<Archive>,
     pub(crate) links: Vec<Link>,
     licenses: LicenseInventory,
 }
@@ -792,6 +794,18 @@ impl ArtifactManifest {
         if manifest.archive.member != expected_member || manifest.archive.name != "webrtc" {
             return Err("wrong native archive identity".into());
         }
+        match (
+            expected_target.starts_with("android-"),
+            &manifest.unwind_archive,
+        ) {
+            (true, Some(unwind))
+                if unwind.member == "lib/libunwind.a"
+                    && unwind.name == "unwind"
+                    && unwind.sha256.len() == 64
+                    && unwind.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) => {}
+            (false, None) => {}
+            _ => return Err("missing, invalid or unexpected Android unwind archive".into()),
+        }
         for (name, value) in [
             ("archive digest", manifest.archive.sha256.as_str()),
             (
@@ -944,6 +958,9 @@ impl ArtifactManifest {
             Ok(())
         };
         check(&self.archive.member, &self.archive.sha256)?;
+        if let Some(unwind) = &self.unwind_archive {
+            check(&unwind.member, &unwind.sha256)?;
+        }
         if canonical_digest(&self.licenses.files) != self.licenses.sha256 {
             return Err("license inventory digest mismatch".into());
         }
@@ -961,6 +978,9 @@ impl ArtifactManifest {
             format!("cargo::rustc-link-search=native={library_dir}"),
             format!("cargo::rustc-link-lib=static={}", self.archive.name),
         ];
+        if let Some(unwind) = &self.unwind_archive {
+            directives.push(format!("cargo::rustc-link-lib=static={}", unwind.name));
+        }
         for link in &self.links {
             match link.kind {
                 LinkKind::Dylib => directives.push(format!("cargo::rustc-link-lib={}", link.name)),
@@ -1040,6 +1060,72 @@ mod tests {
     #[test]
     fn accepts_current_source_manifest() {
         validate(&serde_json::to_vec(&current_test_manifest()).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn android_unwind_archive_is_required_hashed_and_linked_for_both_abis() {
+        for (target, cargo_target) in [
+            ("android-x86_64", "x86_64-linux-android"),
+            ("android-arm64-v8a", "aarch64-linux-android"),
+        ] {
+            let mut value = current_test_manifest();
+            value["artifact"]["target"] = target.into();
+            value["artifact"]["cargo_target"] = cargo_target.into();
+            value["native_configuration"]["target"] = target.into();
+            value["native_configuration"]["cargo_target"] = cargo_target.into();
+            value["native_configuration_sha256"] =
+                canonical_digest(&value["native_configuration"]).into();
+            let parse = |value: &serde_json::Value| {
+                ArtifactManifest::parse_and_validate(
+                    &serde_json::to_vec(value).unwrap(),
+                    "pulsebeam-webrtc-sys-bridge-v2",
+                    "core",
+                    target,
+                    cargo_target,
+                )
+            };
+            assert!(parse(&value).unwrap_err().contains("unwind archive"));
+            value["archive"]["sha256"] = format!("{:x}", Sha256::digest(b"archive")).into();
+            value["unwind_archive"] = serde_json::json!({
+                "member": "lib/libunwind.a", "name": "unwind",
+                "sha256": format!("{:x}", Sha256::digest(b"unwind")),
+            });
+            value["licenses"]["files"] = serde_json::json!([{
+                "path": "LICENSES/NOTICE.txt", "sha256": format!("{:x}", Sha256::digest(b"notice")),
+            }]);
+            value["licenses"]["sha256"] = canonical_digest(&value["licenses"]["files"]).into();
+            let manifest = parse(&value).unwrap();
+            assert!(
+                manifest
+                    .cargo_link_directives("/kit/lib")
+                    .contains(&"cargo::rustc-link-lib=static=unwind".into())
+            );
+            let root = std::env::temp_dir()
+                .join(format!("pulsebeam-unwind-{}-{target}", std::process::id()));
+            std::fs::create_dir_all(root.join("lib")).unwrap();
+            std::fs::create_dir_all(root.join("LICENSES")).unwrap();
+            std::fs::write(root.join("lib/libwebrtc.a"), b"archive").unwrap();
+            std::fs::write(root.join("lib/libunwind.a"), b"unwind").unwrap();
+            std::fs::write(root.join("LICENSES/NOTICE.txt"), b"notice").unwrap();
+            manifest.validate_payloads(&root).unwrap();
+            std::fs::write(root.join("lib/libunwind.a"), b"tampered").unwrap();
+            assert!(
+                manifest
+                    .validate_payloads(&root)
+                    .unwrap_err()
+                    .contains("digest mismatch: lib/libunwind.a")
+            );
+            std::fs::remove_file(root.join("lib/libunwind.a")).unwrap();
+            assert!(
+                manifest
+                    .validate_payloads(&root)
+                    .unwrap_err()
+                    .contains("missing regular artifact payload: lib/libunwind.a")
+            );
+            std::fs::remove_dir_all(root).unwrap();
+            value["unwind_archive"]["member"] = "../libunwind.a".into();
+            assert!(parse(&value).unwrap_err().contains("unwind archive"));
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ import tarfile
 import json
 import os
 import subprocess
+import shutil
 import tempfile
 from unittest.mock import patch
 
@@ -88,18 +89,41 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
                         [{"kind": "link_arg", "name": flag} for flag in self._manifest_runtime_flags(target)],
                     )
 
+    def test_android_camera_options_exclude_desktop_linux_capture_apis(self):
+        compiler = shutil.which("clang-19") or shutil.which("clang") or shutil.which("cc")
+        if not compiler:
+            self.skipTest("a C preprocessor is required for native platform guards")
+        source = (ROOT / "native/video.cc").read_text()
+        fragment = source[source.index("struct NativeCameraOptions::State"):source.index("FfiCameraInfoReply camera_info_query")]
+        for defines, desktop in [
+            (["PULSEBEAM_WEBRTC_NATIVE_AUDIO", "WEBRTC_LINUX"], True),
+            (["PULSEBEAM_WEBRTC_NATIVE_AUDIO", "WEBRTC_LINUX", "WEBRTC_ANDROID"], False),
+            (["PULSEBEAM_WEBRTC_NATIVE_AUDIO", "WEBRTC_IOS"], False),
+            (["WEBRTC_LINUX"], False),
+        ]:
+            with self.subTest(defines=defines):
+                result = subprocess.run([compiler, "-E", "-P", "-x", "c++", *[f"-D{name}" for name in defines], "-"],
+                                        input=fragment, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for api in ("webrtc::VideoCaptureOptions", "webrtc::VideoCaptureFactory", "webrtc::VideoCaptureModule"):
+                    self.assertEqual(api in result.stdout, desktop, api)
+
     def test_android_libunwind_is_android_guarded_once_without_host_runtime_admission(self):
         compile_recipe = self._recipe("_compile flavor target:", "_export-predicate-failed")
         export_recipe = self._recipe("_export flavor target:", "_bridge-objects flavor target stage definitions_file:")
         self.assertEqual(compile_recipe.count("buildtools/third_party/libunwind:libunwind"), 1)
         self.assertEqual(export_recipe.count("obj/buildtools/third_party/libunwind/libunwind"), 1)
         self.assertEqual(self._guarded_command(compile_recipe, "buildtools/third_party/libunwind:libunwind"), 'if [[ "{{ target }}" = android-* ]]; then "$src/third_party/ninja/ninja" -C "$out" buildtools/third_party/libunwind:libunwind; fi')
-        self.assertEqual(self._guarded_command(export_recipe, "obj/buildtools/third_party/libunwind/libunwind"), 'if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name \'*.o\' -print > "$objects"; fi')
+        android_export = export_recipe[export_recipe.index('    if [[ "{{ target }}" = android-* ]]; then'):export_recipe.index("    # AudioEncoderOpus")]
+        self.assertIn('find "$out/obj/buildtools/third_party/libunwind/libunwind"', android_export)
+        self.assertIn('test -s "$objects"', android_export)
+        self.assertIn('$stage/lib/libunwind.a', android_export)
+        self.assertIn('"$ar" -M', android_export)
         for target in self.affected[:2]:
             with self.subTest(target=target):
                 self.assertEqual(self._link_flags_policy(target, "core"), self.expected_cxx[target])
                 self.assertEqual(self._link_flags_policy(target, "native"), self.expected_cxx[target] + " -laaudio")
-        self.assertNotIn("-lunwind", JUSTFILE)
+        self.assertNotIn("link-arg=-lunwind", JUSTFILE)
 
     def test_linux_arm64_uses_its_bullseye_compiler_rt_branch(self):
         compile_recipe = self._recipe("_compile flavor target:", "_export-predicate-failed")

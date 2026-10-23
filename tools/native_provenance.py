@@ -54,6 +54,15 @@ def validate_configuration(manifest: dict, root: Path) -> None:
     if not isinstance(config, dict) or configuration_digest(config) != manifest.get("native_configuration_sha256"):
         raise ValueError("native configuration digest mismatch")
     bridge, sources, artifact = manifest["bridge"], manifest["sources"], manifest["artifact"]
+    unwind = manifest.get("unwind_archive")
+    if artifact["target"].startswith("android-"):
+        if (not isinstance(unwind, dict) or set(unwind) != {"member", "name", "sha256"}
+                or unwind["member"] != "lib/libunwind.a" or unwind["name"] != "unwind"
+                or not isinstance(unwind["sha256"], str) or len(unwind["sha256"]) != 64
+                or any(char not in "0123456789abcdef" for char in unwind["sha256"])):
+            raise ValueError("missing or invalid Android unwind archive")
+    elif unwind is not None:
+        raise ValueError("unexpected unwind archive for non-Android target")
     if sources.get("libvpx") != LIBVPX_SOURCE:
         raise ValueError("wrong libvpx child source identity")
     expected = {

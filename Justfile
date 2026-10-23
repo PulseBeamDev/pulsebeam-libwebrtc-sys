@@ -46,7 +46,7 @@ check:
     grep -Fq 'SetRandomGenerator' consumer/smoke.cc
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
-    python3 -m unittest tests/test_justfile_input_retrieval.py
+    python3 -m unittest tests/test_justfile_input_retrieval.py tests/test_run_process.py
     python3 -m unittest tests/test_apple_host_protoc_archive.py
     python3 -m unittest tests/test_ios_bridge_shell.py tests/test_webrtc_source_state.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
@@ -341,7 +341,7 @@ _sync flavor target:
       checkout_native=$(just --justfile "{{ root }}/Justfile" _native-path "$checkout")
       selected_platform=$(cat "$depot/.cipd_client_platform" 2>/dev/null || printf '%s' windows-amd64)
       test "$selected_platform" = windows-amd64 && grep -Eq '^windows-amd64[[:space:]]+sha256[[:space:]]+[0-9a-f]{64}$' "$depot/cipd_client_version.digests" || { echo "CIPD bootstrap unsupported: host=windows-amd64 selected=$selected_platform depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
-      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "\"$depot_native\\cipd.bat\" version" || { echo "CIPD bootstrap failed: host=windows-amd64 depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
+      MSYS2_ARG_CONV_EXCL='*' python3 "{{ root }}/tools/run_process.py" --batch --timeout 120 -- "$depot_native\\cipd.bat" version || { echo "CIPD bootstrap failed: host=windows-amd64 depot_tools_commit={{ depot_tools_commit }}" >&2; exit 1; }
     fi
     if test "$(cat "$checkout/.pulsebeam-sync-target" 2>/dev/null || true)" = "$sync_key" && test "$(git -C "$src" rev-parse HEAD 2>/dev/null || true)" = "{{ webrtc_commit }}"; then
       just --justfile "{{ root }}/Justfile" _source-state "{{ flavor }}" "{{ target }}"
@@ -354,16 +354,16 @@ _sync flavor target:
     printf "solutions = [{'name': 'src', 'url': '{{ webrtc_url }}', 'deps_file': 'DEPS', 'managed': False, 'custom_deps': {}, 'custom_vars': {'checkout_instrumented_libraries': False}}]\n%s\n" "$target_os" > "$checkout/.gclient"
     if test "{{ target }}" = windows-x86_64; then
       vpython_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/vpython")
-      retry_acquisition webrtc_sync "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" sync --no-history --shallow --nohooks --force --revision src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="$vpython_native" python3 "{{ root }}/tools/run_process.py" --batch --timeout 1200 --cwd "$checkout_native" -- "$depot_native\\gclient.bat" sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     else
       export PATH="$depot:$PATH" DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
       cd "$checkout"
-      retry_acquisition webrtc_sync "{{ webrtc_commit }}" timeout --foreground 20m gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
+      retry_acquisition webrtc_sync "{{ webrtc_commit }}" python3 "{{ root }}/tools/run_process.py" --timeout 1200 -- gclient sync --no-history --shallow --nohooks --force --revision "src@{{ webrtc_commit }}"
     fi
     actual_webrtc=$(git -C "$src" rev-parse HEAD 2>/dev/null || printf '%s' missing)
     test "$actual_webrtc" = "{{ webrtc_commit }}" || { echo "pinned input validation failed input=webrtc pin={{ webrtc_commit }} expected={{ webrtc_commit }} actual=$actual_webrtc failure=invalid-checkout" >&2; exit 1; }
     if test "{{ target }}" = windows-x86_64; then
-      retry_acquisition webrtc_hooks "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "cd /d \"$checkout_native\" && set \"DEPOT_TOOLS_UPDATE=0\" && set \"GCLIENT_PY3=1\" && set \"VPYTHON_VIRTUALENV_ROOT=$vpython_native\" && call \"$depot_native\\gclient.bat\" runhooks"
+      retry_acquisition webrtc_hooks "{{ webrtc_commit }}" env MSYS2_ARG_CONV_EXCL='*' DEPOT_TOOLS_UPDATE=0 GCLIENT_PY3=1 VPYTHON_VIRTUALENV_ROOT="$vpython_native" python3 "{{ root }}/tools/run_process.py" --batch --cwd "$checkout_native" -- "$depot_native\\gclient.bat" runhooks
     else
       retry_acquisition webrtc_hooks "{{ webrtc_commit }}" gclient runhooks
     fi
@@ -544,7 +544,13 @@ _export flavor target:
     rm -rf "$stage"; mkdir -p "$stage/include" "$stage/lib" "$stage/LICENSES" "{{ dist }}"
     archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
     just --justfile "{{ root }}/Justfile" _export-static-closure "{{ flavor }}" "{{ target }}" "$src" "$out" "$src_native" "$out_native" "$archives" "$objects"
-    if [[ "{{ target }}" = android-* ]]; then find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"; fi
+    if [[ "{{ target }}" = android-* ]]; then
+      find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"
+      test -s "$objects" || { echo 'missing Android libunwind objects' >&2; exit 1; }
+      # Rust's Android std explicitly links -lunwind. Keep these objects in the
+      # merged C++ closure too, but export a real archive for that search name.
+      { printf 'CREATE %s\n' "$stage/lib/libunwind.a"; while IFS= read -r input; do printf 'ADDMOD %s\n' "$input"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
+    fi
     # AudioEncoderOpus's public transitive headers use this pinned relative path.
     roots=(api audio call common_audio common_video experiments logging media modules net p2p pc rtc_base sdk/objc/base system_wrappers video third_party/opus/src/include)
     for source_root in "${roots[@]}"; do find "$src/$source_root" -type f \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.inc' \) -print; done | sed "s#^$src/##" | LC_ALL=C sort -u | tar -C "$src" -T - -cf - | tar -C "$stage/include" -xf -
@@ -582,7 +588,7 @@ _export flavor target:
     export PATH="{{ work }}/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0 VPYTHON_VIRTUALENV_ROOT="{{ work }}/vpython"
     license_targets=(); while IFS= read -r root_label; do license_targets+=(--target "$root_label"); done < <(just --justfile "{{ root }}/Justfile" _roots "{{ flavor }}" "{{ target }}")
     stage_native=$(just --justfile "{{ root }}/Justfile" _native-path "$stage")
-    if test "{{ target }}" = windows-x86_64; then depot_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/depot_tools"); MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c "\"$depot_native\\vpython3.bat\" \"$src_native\\tools_webrtc\\libs\\generate_licenses.py\" ${license_targets[*]} \"$stage_native\\LICENSES\" \"$out_native\""; else vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"; fi
+    if test "{{ target }}" = windows-x86_64; then depot_native=$(just --justfile "{{ root }}/Justfile" _native-path "{{ work }}/depot_tools"); MSYS2_ARG_CONV_EXCL='*' python3 "$root_native/tools/run_process.py" --batch -- "$depot_native\\vpython3.bat" "$src_native\\tools_webrtc\\libs\\generate_licenses.py" "${license_targets[@]}" "$stage_native\\LICENSES" "$out_native"; else vpython3 "$src/tools_webrtc/libs/generate_licenses.py" "${license_targets[@]}" "$stage/LICENSES" "$out"; fi
     cp "$src/LICENSE" "$stage/LICENSES/WEBRTC-BSD.txt"; test ! -f "$src/PATENTS" || cp "$src/PATENTS" "$stage/LICENSES/"; cp "{{ root }}/LICENSE" "$stage/LICENSES/REPOSITORY-APACHE-2.0.txt"
     cp "{{ root }}/vendor/cxx/LICENSE-APACHE" "$stage/LICENSES/CXX-APACHE-2.0.txt"; cp "{{ root }}/vendor/cxx/LICENSE-MIT" "$stage/LICENSES/CXX-MIT.txt"
     just --justfile "{{ root }}/Justfile" _link-flags "{{ flavor }}" "{{ target }}" > "$stage/link.txt"

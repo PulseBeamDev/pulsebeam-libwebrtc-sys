@@ -111,6 +111,10 @@ native SDK dynamic libraries. This load check does not replace transported-media
 runtime qualification. After a failed
 `gclient sync`, it removes only incomplete dependency Git checkouts without a
 usable HEAD before retrying; a real upstream timeout can still fail the build.
+Source sync has a Python-owned 20-minute deadline on every host, including
+macOS without GNU coreutils. Windows batch launches preserve native quoting and
+are checked on the Windows producer before source acquisition. The Linux image
+provides the unversioned `ld.lld` required by the ARM64 LLVM source bootstrap.
 Every flavor/target artifact carries the same generated bridge and portable
 adapter sources, compiled with that job's target toolchain and ABI configuration.
 
@@ -149,6 +153,13 @@ identities. Consumers reject inconsistent configurations, stale adapters, altere
 static archives and missing or altered inventoried notices. These checks detect
 mismatches; they do not authenticate a local artifact supplied by its owner.
 Older manifests require a matching rebuild, not relabeling.
+
+Android kits also export `lib/libunwind.a` for the explicit `-lunwind` dependency
+in Rust's Android standard library. The manifest records it as `unwind_archive`
+with a separate SHA-256; audits and consumers verify both native archives, and
+Cargo links the bundled unwinder statically. The producer's Chromium NDK input
+is stripped of compiler drivers and runtimes, so setting its sysroot alone does
+not provide Rust's unwinder dependency.
 
 For development against a matching extracted artifact:
 

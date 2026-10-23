@@ -120,6 +120,9 @@ def extract_kit(archive_path: Path, expected_sha256: str, destination: Path, tar
     native_archive = manifest["archive"]
     if native_archive["member"] != "lib/libwebrtc.a" or digest(destination / native_archive["member"]) != native_archive["sha256"]:
         raise RuntimeError("mobile native archive identity mismatch")
+    unwind = manifest.get("unwind_archive")
+    if unwind and digest(destination / unwind["member"]) != unwind["sha256"]:
+        raise RuntimeError("mobile Android unwind archive identity mismatch")
     return manifest
 
 

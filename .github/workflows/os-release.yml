@@ -43,6 +43,8 @@ jobs:
         with: {ref: '${{ github.sha }}', persist-credentials: false}
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
         with: {just-version: 1.43.1}
+      - name: Check native process launch before source acquisition
+        run: python -m unittest tests.test_run_process
       - name: Configure the matching native SDK and Rust target
         if: inputs.scope != 'android'
         run: python -m tools.platform_ci setup '${{ matrix.target }}' build

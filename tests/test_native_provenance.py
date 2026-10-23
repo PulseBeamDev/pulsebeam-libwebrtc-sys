@@ -21,11 +21,18 @@ class NativeProvenanceTests(unittest.TestCase):
         native_provenance.validate_configuration(current_manifest(), ROOT)
 
     def test_producer_records_current_sources_without_refreshing_fixtures(self):
+        for target in ("linux-x86_64", "android-x86_64", "android-arm64-v8a"):
+            with self.subTest(target=target):
+                self.produce_manifest(target)
+
+    def produce_manifest(self, target):
         fixture = current_manifest()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "lib").mkdir()
             (root / "lib/libwebrtc.a").write_bytes(b"synthetic archive\n")
+            if target.startswith("android-"):
+                (root / "lib/libunwind.a").write_bytes(b"synthetic unwind\n")
             (root / "LICENSES").mkdir()
             (root / "LICENSES/NOTICE").write_text("synthetic notice\n")
             (root / "generated.h").write_text("synthetic bridge header\n")
@@ -37,7 +44,7 @@ class NativeProvenanceTests(unittest.TestCase):
             ]))
             command = [sys.executable, str(ROOT / "tools/write_artifact_manifest.py")]
             options = {
-                "flavor": "core", "target": "linux-x86_64",
+                "flavor": "core", "target": target,
                 "bridge-identity": fixture["bridge"]["identity"],
                 "source-repository": fixture["sources"]["webrtc"]["repository"],
                 "source-revision": fixture["sources"]["webrtc"]["revision"],
@@ -63,6 +70,27 @@ class NativeProvenanceTests(unittest.TestCase):
             self.assertEqual(manifest["schema_version"], 4)
             self.assertEqual(manifest["bridge"]["native_adapter_sha256"], native_provenance.adapter_digest(ROOT))
             native_provenance.validate_configuration(manifest, ROOT)
+            if target.startswith("android-"):
+                self.assertEqual(manifest["unwind_archive"], {
+                    "member": "lib/libunwind.a", "name": "unwind",
+                    "sha256": hashlib.sha256(b"synthetic unwind\n").hexdigest(),
+                })
+            else:
+                self.assertNotIn("unwind_archive", manifest)
+
+    def test_android_requires_exact_bundled_unwind_identity(self):
+        value = current_manifest()
+        value["artifact"].update(target="android-x86_64", cargo_target="x86_64-linux-android")
+        value["native_configuration"].update(value["artifact"])
+        value["native_configuration_sha256"] = native_provenance.configuration_digest(value["native_configuration"])
+        valid = {"member": "lib/libunwind.a", "name": "unwind", "sha256": "1" * 64}
+        for unwind in (None, {}, {**valid, "member": "../libunwind.a"}, {**valid, "sha256": "bad"}):
+            with self.subTest(unwind=unwind):
+                value["unwind_archive"] = unwind
+                with self.assertRaisesRegex(ValueError, "Android unwind archive"):
+                    native_provenance.validate_configuration(value, ROOT)
+        value["unwind_archive"] = valid
+        native_provenance.validate_configuration(value, ROOT)
 
     def test_source_edits_invalidate_existing_artifacts_not_test_inputs(self):
         for path in ("native/adapter.cc", "Justfile", "tools/native_cc_wrapper.py"):

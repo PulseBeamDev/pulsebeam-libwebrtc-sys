@@ -255,6 +255,11 @@ def main():
         "links": links_for(args.flavor, args.target),
         "licenses": {"sha256": digest(license_files), "files": license_files},
     }
+    if args.target.startswith("android-"):
+        manifest["unwind_archive"] = {
+            "member": "lib/libunwind.a", "name": "unwind",
+            "sha256": hashlib.sha256((args.output.parent / "lib/libunwind.a").read_bytes()).hexdigest(),
+        }
     validate_configuration(manifest, Path(__file__).resolve().parents[1])
     args.output.write_text(json.dumps(manifest, indent=2) + "\n")
 

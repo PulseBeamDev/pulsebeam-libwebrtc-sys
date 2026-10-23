@@ -141,6 +141,10 @@ def extract_artifact(source_artifact: Path, destination: Path) -> None:
         if archive_member not in {"lib/libwebrtc.a", "lib/webrtc.lib"}:
             raise ProofError("invalid native archive member")
         wanted.add(archive_member)
+        if manifest.get("unwind_archive") is not None:
+            if manifest["unwind_archive"].get("member") != "lib/libunwind.a":
+                raise ProofError("invalid Android unwind archive member")
+            wanted.add("lib/libunwind.a")
         for notice in manifest["licenses"]["files"]:
             path = Path(notice["path"])
             if "\\" in notice["path"] or path.is_absolute() or not path.parts or path.parts[0] != "LICENSES" or ".." in path.parts:

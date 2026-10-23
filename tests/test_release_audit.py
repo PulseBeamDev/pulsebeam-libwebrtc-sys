@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from tests.native_manifest import current_manifest
-from tools import audit_release
+from tools import audit_release, rust_only_consumer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,8 @@ class ReleaseAuditTests(unittest.TestCase):
                       native_adapter: str | None = None, schema: int = 4,
                       encoder_switch_patch: str | None = audit_release.ENCODER_SWITCH_PATCH_SHA256,
                       runtime_resources_patch: str | None = audit_release.RUNTIME_RESOURCES_PATCH_SHA256,
-                      license_path: str = "LICENSES/NOTICE.txt") -> tuple[Path, Path]:
+                      license_path: str = "LICENSES/NOTICE.txt",
+                      unwind_contents: bytes = b"unwind\n") -> tuple[Path, Path]:
         lock = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
         checksums = []
         license_contents = b"archive" if license_path == "lib/libwebrtc.a" else b"license\n"
@@ -95,13 +96,21 @@ class ReleaseAuditTests(unittest.TestCase):
                 config["gn_args"].update(rtc_include_internal_audio_device="true", rtc_use_x11="true", rtc_use_pipewire="true")
             manifest["native_configuration"] = config
             manifest["native_configuration_sha256"] = audit_release.manifest_digest(config)
+            if entry["artifact_target"].startswith("android-"):
+                manifest["unwind_archive"] = {
+                    "member": "lib/libunwind.a", "name": "unwind",
+                    "sha256": hashlib.sha256(b"unwind\n").hexdigest(),
+                }
             path = root / entry["asset_name"]
             with tarfile.open(path, "w:gz") as archive:
-                for name, contents in (
+                payloads = [
                     ("manifest.json", json.dumps(manifest).encode()),
                     (license_path, license_contents),
                     ("lib/libwebrtc.a", b"archive"),
-                ):
+                ]
+                if "unwind_archive" in manifest:
+                    payloads.append(("lib/libunwind.a", unwind_contents))
+                for name, contents in payloads:
                     member = tarfile.TarInfo(name)
                     member.size = len(contents)
                     archive.addfile(member, io.BytesIO(contents))
@@ -109,6 +118,20 @@ class ReleaseAuditTests(unittest.TestCase):
         checksum_path = root / "SHA256SUMS"
         checksum_path.write_text("".join(checksums), encoding="utf-8")
         return checksum_path, ROOT / "artifacts.lock.json"
+
+    def test_android_audit_checks_bundled_unwind_bytes_even_with_valid_outer_checksums(self):
+        for contents in (b"unwind\n", b"tampered\n"):
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checksums, lock = self.build_release(root, {"android-x86_64", "android-arm64-v8a"},
+                                                     unwind_contents=contents)
+                if contents == b"unwind\n":
+                    self.assertEqual(len(audit_release.audit(root, checksums, lock, "android")["assets"]), 4)
+                    rust_only_consumer.extract_artifact(root / "webrtc-core-android-x86_64.tar.gz", root / "kit")
+                    self.assertEqual((root / "kit/lib/libunwind.a").read_bytes(), b"unwind\n")
+                else:
+                    with self.assertRaisesRegex(audit_release.AuditError, "unwind archive digest mismatch"):
+                        audit_release.audit(root, checksums, lock, "android")
 
     def test_accepts_only_complete_consistent_matrix(self):
         with tempfile.TemporaryDirectory() as temporary:
