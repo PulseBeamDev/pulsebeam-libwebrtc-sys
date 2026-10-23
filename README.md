@@ -1637,6 +1637,26 @@ queued units also increment that source's drop count. This adapter
 does not supply a decoder. Ordinary direct input does not support encoded
 simulcast; spatial SVC and H.264 packetization mode 0 are unsupported.
 
+The external producer owns encoded bitrate and pacing. The passthrough encoder
+sets native `has_trusted_rate_controller`, preventing bitrate-based frame
+optimization from discarding already-encoded references. This follows the
+[LiveKit passthrough contract](https://github.com/livekit/rust-sdks/blob/7f3ddc08bda60e318d4acdd1625b0723ac6c009f/webrtc-sys/src/passthrough_video_encoder.cpp#L343-L385),
+not a process-wide field-trial override. Native scheduling, congestion handling
+and transport remain active. Consume `latest_rate_control()` and keyframe
+feedback; WebRTC cannot recompress a recording to meet a lower target bitrate
+or synthesize a requested IDR. Select an appropriate recording/rendition and
+resume from a genuine keyframe when recovery is requested.
+
+Other native pre-encode drops and pending-queue eviction can still break an
+encoded reference chain. The adapter tracks source-local submission order,
+never gaps in factory-global presentation tokens. It withholds dependent
+deltas, requests a keyframe, and reports those holds through native
+`OnFrameDropped`, without fabricating encoder errors. A successful keyframe
+callback restores continuity. Simulcast encodings recover independently;
+inactive/unfunded encodings and failed callbacks do not establish continuity.
+Temporal input conservatively requires a keyframe after any missing capture;
+this does not infer compressed-frame dependencies from timestamps or metadata.
+
 `EncodedH264Input::new_simulcast()` opts into three-rung H.264 sending through
 native per-image callbacks. Create a sender with three ordered RIDs, then use
 `push_simulcast([unit0, unit1, unit2])` with matching capture timestamps, ascending

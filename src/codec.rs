@@ -519,6 +519,22 @@ pub struct VideoEncoderInfo {
     pub fps_allocation: Option<[Vec<u8>; 5]>,
 }
 
+impl VideoEncoderInfo {
+    pub(crate) fn into_native(self) -> crate::OwnedVideoEncoderInfo {
+        let mut result = crate::OwnedVideoEncoderInfo::default();
+        let mut fields = result.fields();
+        fields.implementation_name = self.implementation_name.into_bytes();
+        fields.is_hardware_accelerated = self.hardware_accelerated;
+        fields.supports_native_handle = self.supports_native_handle;
+        fields.supports_simulcast = self.supports_simulcast;
+        if let Some(fps) = self.fps_allocation {
+            fields.fps_allocation = fps;
+        }
+        result.set_fields(fields);
+        result
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoDecoderInfo {
     pub implementation_name: String,
@@ -878,18 +894,7 @@ pub trait VideoEncoder: Send + 'static {
     /// Complete byte-preserving SDK info. This default explicitly projects the
     /// legacy capability DTO onto actual SDK defaults; override for all fields.
     fn info_value(&self) -> Result<crate::OwnedVideoEncoderInfo, CodecError> {
-        let legacy = self.info();
-        let mut result = crate::OwnedVideoEncoderInfo::default();
-        let mut fields = result.fields();
-        fields.implementation_name = legacy.implementation_name.into_bytes();
-        fields.is_hardware_accelerated = legacy.hardware_accelerated;
-        fields.supports_native_handle = legacy.supports_native_handle;
-        fields.supports_simulcast = legacy.supports_simulcast;
-        if let Some(fps) = legacy.fps_allocation {
-            fields.fps_allocation = fps;
-        }
-        result.set_fields(fields);
-        Ok(result)
+        Ok(self.info().into_native())
     }
 }
 

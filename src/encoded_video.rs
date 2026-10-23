@@ -64,6 +64,7 @@ pub struct EncodedVideoAccessUnit {
 #[derive(Default)]
 struct SourceFeedback {
     retired: AtomicBool,
+    submitted: AtomicU64,
     keyframe_requested: AtomicBool,
     encoding_keyframes: AtomicU8,
     rates: Mutex<Option<VideoRateControl>>,
@@ -131,12 +132,27 @@ impl SourceFeedback {
 
 struct Pending {
     source_id: u64,
+    sequence: u64,
     dropped: Arc<AtomicU64>,
     feedback: Arc<SourceFeedback>,
     frames: Vec<EncodedVideoAccessUnit>,
 }
 
 impl Pending {
+    fn decodable_units(&self, previous: [bool; 3], selected: &[bool]) -> Vec<bool> {
+        self.frames
+            .iter()
+            .enumerate()
+            .map(|(index, unit)| {
+                let decodable = selected[index] && (unit.key_frame || previous[index]);
+                if selected[index] && !decodable {
+                    self.feedback.request_encoding_keyframe(index);
+                }
+                decodable
+            })
+            .collect()
+    }
+
     fn check_keyframe_requests(
         &self,
         frame_types: &[VideoFrameType],
@@ -219,6 +235,12 @@ impl Broker {
                     .fetch_add(previous.frames.len() as u64, Ordering::Relaxed);
             }
         }
+        let sequence = feedback
+            .submitted
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| CodecError::InvalidFrame)?;
         self.next_token += 1;
         let token = self.next_token;
         self.bytes += size;
@@ -241,6 +263,7 @@ impl Broker {
             token,
             Pending {
                 source_id,
+                sequence,
                 dropped,
                 feedback,
                 frames,
@@ -885,6 +908,7 @@ impl VideoEncoderFactory for InputFactory {
             simulcast: self.simulcast,
             configuration: None,
             active_feedback: Weak::new(),
+            chains: ReferenceChains::default(),
         }))
     }
 }
@@ -899,6 +923,25 @@ fn same_codec_format(a: &VideoCodecFormat, b: &VideoCodecFormat) -> bool {
     }
 }
 
+// Submission order belongs to one source, never to the factory-global token
+// space. Each simulcast encoding has an independent reference chain. Temporal
+// input is conservatively held after any gap until a genuine keyframe arrives.
+#[derive(Default)]
+struct ReferenceChains {
+    previous: Option<(u64, u64)>,
+    intact: [bool; 3],
+}
+impl ReferenceChains {
+    fn begin_capture(&mut self, source: u64, sequence: u64) -> [bool; 3] {
+        let follows = self.previous.is_some_and(|(previous_source, previous)| {
+            previous_source == source && previous.checked_add(1) == Some(sequence)
+        });
+        self.previous = Some((source, sequence));
+        let previous = std::mem::take(&mut self.intact);
+        if follows { previous } else { [false; 3] }
+    }
+}
+
 struct InputEncoder {
     broker: Arc<Mutex<Broker>>,
     released: bool,
@@ -907,6 +950,7 @@ struct InputEncoder {
     simulcast: bool,
     configuration: Option<VideoEncoderSettings>,
     active_feedback: Weak<SourceFeedback>,
+    chains: ReferenceChains,
 }
 // Encoded input carries a native presentation token, not caller raw pixels.
 // Read only the native fields this adapter consumes; never materialize I420.
@@ -952,6 +996,9 @@ impl InputEncoder {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take(token)
             .ok_or(CodecError::InvalidFrame)?;
+        let previous = self
+            .chains
+            .begin_capture(pending.source_id, pending.sequence);
         trace_input(
             "encode",
             format_args!(
@@ -1049,10 +1096,31 @@ impl InputEncoder {
         // Validate every selected image before the first callback. Callback
         // publication is still non-atomic, exactly like the native interface.
         pending.check_keyframe_requests(frame_types, &selected)?;
+        let decodable = pending.decodable_units(previous, &selected);
         let count = pending.frames.len();
         for (index, unit) in pending.frames.into_iter().enumerate() {
             if !selected[index] {
                 pending.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if !decodable[index] {
+                trace_input(
+                    "hold_delta",
+                    format_args!(
+                        "source={:p} token={token} index={index}",
+                        Arc::as_ptr(&pending.feedback)
+                    ),
+                );
+                pending.dropped.fetch_add(1, Ordering::Relaxed);
+                if let Err(error) =
+                    callback.frame_dropped(context.rtp_timestamp, index as i32, true)
+                {
+                    pending
+                        .dropped
+                        .fetch_add((count - index - 1) as u64, Ordering::Relaxed);
+                    pending.feedback.record_error(error);
+                    return Err(error);
+                }
                 continue;
             }
             trace_input(
@@ -1093,6 +1161,7 @@ impl InputEncoder {
                 pending.feedback.record_error(error);
                 return Err(error);
             }
+            self.chains.intact[index] = true;
         }
         Ok(())
     }
@@ -1101,6 +1170,9 @@ impl InputEncoder {
 impl VideoEncoder for InputEncoder {
     fn initialize(&mut self, settings: VideoEncoderSettings) -> Result<(), CodecError> {
         self.released = false;
+        self.rates = None;
+        self.active_feedback = Weak::new();
+        self.chains = ReferenceChains::default();
         self.configuration = Some(settings);
         Ok(())
     }
@@ -1163,6 +1235,16 @@ impl VideoEncoder for InputEncoder {
         self.released = true;
         Ok(())
     }
+    fn info_value(&self) -> Result<crate::OwnedVideoEncoderInfo, CodecError> {
+        let mut result = self.info().into_native();
+        let mut fields = result.fields();
+        // The external encoder owns rate control. Native bitrate-based frame
+        // dropping cannot safely discard already-encoded reference pictures.
+        // Keep native queue/congestion handling and forward SetRates upstream.
+        fields.has_trusted_rate_controller = true;
+        result.set_fields(fields);
+        Ok(result)
+    }
     fn info(&self) -> VideoEncoderInfo {
         VideoEncoderInfo {
             implementation_name: "direct encoded video input".into(),
@@ -1223,6 +1305,150 @@ mod tests {
     }
 
     #[test]
+    fn encoded_passthrough_owns_rate_control_without_claiming_native_buffers() {
+        for (simulcast, temporal_fps) in
+            [(false, None), (true, None), (false, Some([64, 128, 255]))]
+        {
+            let encoder = InputEncoder {
+                broker: Arc::new(Mutex::new(Broker::default())),
+                released: false,
+                rates: None,
+                temporal_fps,
+                simulcast,
+                configuration: None,
+                active_feedback: Weak::new(),
+                chains: ReferenceChains::default(),
+            };
+            let legacy = encoder.info();
+            let fields = encoder.info_value().unwrap().fields();
+            assert!(fields.has_trusted_rate_controller);
+            assert!(!fields.supports_native_handle);
+            assert!(fields.scaling_settings.thresholds.is_none());
+            assert_eq!(fields.supports_simulcast, legacy.supports_simulcast);
+            assert_eq!(
+                fields.implementation_name,
+                legacy.implementation_name.as_bytes()
+            );
+            if let Some(fps) = legacy.fps_allocation {
+                assert_eq!(fields.fps_allocation, fps);
+            }
+        }
+        assert!(
+            !crate::OwnedVideoEncoderInfo::default()
+                .fields()
+                .has_trusted_rate_controller
+        );
+    }
+
+    #[test]
+    fn native_capture_gaps_hold_deltas_until_a_keyframe_restores_the_chain() {
+        // Metadata-only model of source submission and successful callbacks.
+        // These units are not passed to a decoder or into an RTC connection.
+        let mut chains = ReferenceChains::default();
+        for (sequence, keyframe, expected) in [
+            (0, false, false),
+            (1, true, true),
+            (2, false, true),
+            (4, false, false), // Capture 3 never reached Encode.
+            (5, false, false),
+            (6, true, true),
+            (7, false, true),
+        ] {
+            let mut frames = broker_batch(1);
+            frames.truncate(1);
+            frames[0].key_frame = keyframe;
+            let pending = Pending {
+                source_id: 1,
+                sequence,
+                dropped: Arc::new(AtomicU64::new(0)),
+                feedback: Arc::new(SourceFeedback::default()),
+                frames,
+            };
+            let previous = chains.begin_capture(pending.source_id, pending.sequence);
+            assert_eq!(pending.decodable_units(previous, &[true]), [expected]);
+            assert_eq!(
+                pending.feedback.keyframe_requested.load(Ordering::Acquire),
+                !expected
+            );
+            if expected {
+                chains.intact[0] = true;
+            }
+        }
+    }
+
+    #[test]
+    fn simulcast_recovery_is_per_encoding_and_ignores_unfunded_units() {
+        let mut frames = broker_batch(1);
+        for frame in &mut frames {
+            frame.key_frame = false;
+        }
+        let mut pending = Pending {
+            source_id: 1,
+            sequence: 1,
+            dropped: Arc::new(AtomicU64::new(0)),
+            feedback: Arc::new(SourceFeedback::default()),
+            frames,
+        };
+        assert_eq!(
+            pending.decodable_units([true, false, false], &[true, true, false]),
+            [true, false, false]
+        );
+        assert_eq!(
+            pending.feedback.encoding_keyframes.load(Ordering::Acquire),
+            0b010
+        );
+        pending.frames[1].key_frame = true;
+        assert_eq!(
+            pending.decodable_units([true, false, false], &[true, true, false]),
+            [true, true, false]
+        );
+    }
+
+    #[test]
+    fn source_replacement_rejection_and_partial_callback_failure_break_only_unemitted_chains() {
+        let mut chains = ReferenceChains::default();
+        assert_eq!(chains.begin_capture(1, 0), [false; 3]);
+        // Only the first callback succeeds; later encodings fail or are unfunded.
+        chains.intact[0] = true;
+        assert_eq!(chains.begin_capture(1, 1), [true, false, false]);
+        // This capture is rejected before any publication, so none are marked.
+        assert_eq!(chains.begin_capture(1, 2), [false; 3]);
+        chains.intact = [true; 3];
+        assert_eq!(chains.begin_capture(2, 3), [false; 3]);
+        chains.intact = [true; 3];
+        // Reordered/duplicate source input is not a continuation either.
+        assert_eq!(chains.begin_capture(2, 3), [false; 3]);
+    }
+
+    #[test]
+    fn submitted_sequences_are_source_local_not_global_broker_tokens() {
+        let mut broker = Broker::default();
+        let first = Arc::new(SourceFeedback::default());
+        let second = Arc::new(SourceFeedback::default());
+        let dropped = Arc::new(AtomicU64::new(0));
+        let a = broker
+            .insert(1, dropped.clone(), first.clone(), broker_batch(1))
+            .unwrap();
+        let b = broker
+            .insert(2, dropped.clone(), second, broker_batch(1))
+            .unwrap();
+        assert_eq!(
+            broker.insert(
+                1,
+                dropped.clone(),
+                first.clone(),
+                broker_batch(MAX_PENDING_BYTES)
+            ),
+            Err(CodecError::InvalidFrame)
+        );
+        let c = broker.insert(1, dropped, first, broker_batch(1)).unwrap();
+        assert_eq!((a, b, c), (1, 2, 3));
+        assert_eq!(broker.take(a).unwrap().sequence, 0);
+        assert_eq!(broker.take(b).unwrap().sequence, 0);
+        assert_eq!(broker.take(c).unwrap().sequence, 1);
+    }
+
+    #[test]
     fn all_selected_native_keyframe_requests_survive_first_delta_rejection() {
         // Metadata-only preflight test; these broker values never enter RTC.
         let mut frames = broker_batch(1);
@@ -1231,6 +1457,7 @@ mod tests {
         }
         let pending = Pending {
             source_id: 1,
+            sequence: 0,
             dropped: Arc::new(AtomicU64::new(0)),
             feedback: Arc::new(SourceFeedback::default()),
             frames,
@@ -1255,6 +1482,7 @@ mod tests {
     fn unfunded_units_do_not_publish_selected_keyframe_feedback() {
         let pending = Pending {
             source_id: 1,
+            sequence: 0,
             dropped: Arc::new(AtomicU64::new(0)),
             feedback: Arc::new(SourceFeedback::default()),
             frames: broker_batch(1),
@@ -1387,6 +1615,7 @@ mod tests {
             simulcast: false,
             configuration: None,
             active_feedback: Arc::downgrade(&first),
+            chains: ReferenceChains::default(),
         };
         let rate = VideoRateControl {
             bitrate_bps: 100_000,
@@ -1401,11 +1630,36 @@ mod tests {
         encoder.set_rates(rate).unwrap();
         assert_eq!(*first.rates.lock().unwrap(), Some(rate));
         assert_eq!(*replacement.rates.lock().unwrap(), None);
-        encoder.active_feedback = Arc::downgrade(&replacement);
+        encoder.chains.intact = [true; 3];
+        encoder
+            .initialize(VideoEncoderSettings {
+                width: 320,
+                height: 180,
+                start_bitrate_bps: 100_000,
+                max_bitrate_bps: 200_000,
+                min_bitrate_bps: 10_000,
+                max_framerate: 30,
+                cores: 1,
+                max_payload_size: 1200,
+                scalability_mode: None,
+                h264_temporal_layers: Some(1),
+                simulcast_temporal_layers: Vec::new(),
+                simulcast_streams: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(encoder.rates, None);
+        assert!(encoder.active_feedback.upgrade().is_none());
+        assert_eq!(encoder.chains.intact, [false; 3]);
         let updated = VideoRateControl {
             bitrate_bps: 50_000,
             ..rate
         };
+        // Native SetRates can arrive after reinitialization but before another
+        // presentation token associates this encoder with a source.
+        encoder.set_rates(updated).unwrap();
+        assert_eq!(*first.rates.lock().unwrap(), Some(rate));
+        assert_eq!(*replacement.rates.lock().unwrap(), None);
+        encoder.active_feedback = Arc::downgrade(&replacement);
         encoder.set_rates(updated).unwrap();
         assert_eq!(*first.rates.lock().unwrap(), Some(rate));
         assert_eq!(*replacement.rates.lock().unwrap(), Some(updated));
