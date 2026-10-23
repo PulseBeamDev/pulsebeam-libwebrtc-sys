@@ -137,6 +137,32 @@ struct Pending {
 }
 
 impl Pending {
+    fn check_keyframe_requests(
+        &self,
+        frame_types: &[VideoFrameType],
+        selected: &[bool],
+    ) -> Result<(), CodecError> {
+        let mut missing_keyframe = false;
+        for (index, unit) in self
+            .frames
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected[*index])
+        {
+            if frame_types.get(index) == Some(&VideoFrameType::Key) {
+                // Preserve every native request before rejecting the capture
+                // batch. Returning early strands later rungs on delta input.
+                self.feedback.request_encoding_keyframe(index);
+                missing_keyframe |= !unit.key_frame;
+            }
+        }
+        if missing_keyframe {
+            Err(self.reject(CodecError::InvalidFrame))
+        } else {
+            Ok(())
+        }
+    }
+
     fn reject(&self, error: CodecError) -> CodecError {
         trace_input(
             "reject",
@@ -1021,19 +1047,7 @@ impl InputEncoder {
         }
         // Validate every selected image before the first callback. Callback
         // publication is still non-atomic, exactly like the native interface.
-        for (index, unit) in pending
-            .frames
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| selected[*index])
-        {
-            if frame_types.get(index) == Some(&VideoFrameType::Key) {
-                pending.feedback.request_encoding_keyframe(index);
-                if !unit.key_frame {
-                    return Err(pending.reject(CodecError::InvalidFrame));
-                }
-            }
-        }
+        pending.check_keyframe_requests(frame_types, &selected)?;
         let count = pending.frames.len();
         for (index, unit) in pending.frames.into_iter().enumerate() {
             if !selected[index] {
@@ -1205,6 +1219,55 @@ mod tests {
                 },
             })
             .collect()
+    }
+
+    #[test]
+    fn all_selected_native_keyframe_requests_survive_first_delta_rejection() {
+        // Metadata-only preflight test; these broker values never enter RTC.
+        let mut frames = broker_batch(1);
+        for frame in &mut frames {
+            frame.key_frame = false;
+        }
+        let pending = Pending {
+            source_id: 1,
+            dropped: Arc::new(AtomicU64::new(0)),
+            feedback: Arc::new(SourceFeedback::default()),
+            frames,
+        };
+        assert_eq!(
+            pending.check_keyframe_requests(&[VideoFrameType::Key; 3], &[true; 3]),
+            Err(CodecError::InvalidFrame)
+        );
+        assert_eq!(
+            pending.feedback.encoding_keyframes.load(Ordering::Acquire),
+            0b111
+        );
+        assert!(pending.feedback.keyframe_requested.load(Ordering::Acquire));
+        assert_eq!(pending.dropped.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            *pending.feedback.encoder_error.lock().unwrap(),
+            Some(CodecError::InvalidFrame)
+        );
+    }
+
+    #[test]
+    fn unfunded_units_do_not_publish_selected_keyframe_feedback() {
+        let pending = Pending {
+            source_id: 1,
+            dropped: Arc::new(AtomicU64::new(0)),
+            feedback: Arc::new(SourceFeedback::default()),
+            frames: broker_batch(1),
+        };
+        assert_eq!(
+            pending.check_keyframe_requests(&[VideoFrameType::Key; 3], &[true, true, false]),
+            Ok(())
+        );
+        assert_eq!(
+            pending.feedback.encoding_keyframes.load(Ordering::Acquire),
+            0b011
+        );
+        assert_eq!(pending.dropped.load(Ordering::Relaxed), 0);
+        assert!(pending.feedback.encoder_error.lock().unwrap().is_none());
     }
 
     #[test]
