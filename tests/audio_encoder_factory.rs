@@ -20,7 +20,8 @@ fn selected_factories_expose_native_prioritized_metadata() {
     assert_eq!(spec.format.name, b"opus");
     assert_eq!(spec.format.clockrate_hz, 48000);
     assert_eq!(spec.format.num_channels, 2);
-    assert_eq!(spec.info.num_channels, 1);
+    // The private stereo carrier is independent of the encoded packet layout.
+    assert_eq!(spec.info.num_channels, 2);
     assert_eq!(
         spec.format.parameters.get(b"stereo".as_slice()).unwrap(),
         b"0"
@@ -64,7 +65,9 @@ fn selected_encoder_query_and_creation_preserve_native_dispatch() {
             .unwrap()
             .is_some()
     );
-    assert!(carrier.query_encoder(&opus).unwrap().is_none()); // Exact carrier name gate.
+    let carrier_info = carrier.query_encoder(&canonical).unwrap().unwrap();
+    // Dispatch follows native Opus matching, including case-insensitive names.
+    assert_eq!(carrier.query_encoder(&opus).unwrap(), Some(carrier_info));
 
     let mut multi = SdpAudioFormat::new(b"multiopus".to_vec(), 48000, 2);
     multi
