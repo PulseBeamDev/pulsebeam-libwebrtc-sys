@@ -107,7 +107,7 @@ def clean_snapshot(destination: Path, download_url: str, digest: str, target: st
         "schema_version": 1,
         "scope": scope,
         "bridge": {"identity": lock["bridge_identity"]},
-        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037", "encoder_switch_patch_sha256": "3efb4195c6fe89e7a120cfa9ded6d8fccd99ffacf85148ff0c79e9b34550f99a", "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"}, "depot_tools": {"repository": "fixture", "revision": "fixture"}, "libvpx": dict(write_artifact_lock.LIBVPX_SOURCE)},
+        "sources": {"webrtc": {"repository": "fixture", "revision": "fixture", "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037", "encoder_switch_patch_sha256": "3efb4195c6fe89e7a120cfa9ded6d8fccd99ffacf85148ff0c79e9b34550f99a", "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02", "recordable_identity_patch_sha256": write_artifact_lock.RECORDABLE_IDENTITY_PATCH_SHA256}, "depot_tools": {"repository": "fixture", "revision": "fixture"}, "libvpx": dict(write_artifact_lock.LIBVPX_SOURCE)},
         "assets": assets,
     }
     report_path = destination / f"{scope}-audit.json"

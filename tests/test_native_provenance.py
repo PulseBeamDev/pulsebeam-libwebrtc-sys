@@ -51,6 +51,7 @@ class NativeProvenanceTests(unittest.TestCase):
                 "source-patch-sha256": fixture["sources"]["webrtc"]["patch_sha256"],
                 "encoder-switch-patch-sha256": fixture["sources"]["webrtc"]["encoder_switch_patch_sha256"],
                 "runtime-resources-patch-sha256": fixture["sources"]["webrtc"]["runtime_resources_patch_sha256"],
+                "recordable-identity-patch-sha256": fixture["sources"]["webrtc"]["recordable_identity_patch_sha256"],
                 "libvpx-repository": native_provenance.LIBVPX_SOURCE["repository"],
                 "libvpx-revision": native_provenance.LIBVPX_SOURCE["revision"],
                 "libvpx-worker-patch-sha256": native_provenance.LIBVPX_SOURCE["worker_patch_sha256"],

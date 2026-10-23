@@ -10314,6 +10314,7 @@ mod ffi {
         fn rtp_receiver_attach_encoded_video_sink(
             peer: &NativePeerConnection,
             receiver: &NativeRtpReceiver,
+            ordered: bool,
         ) -> UniquePtr<NativeEncodedVideoSink>;
         fn encoded_video_sink_take_frame(sink: &NativeEncodedVideoSink) -> FfiEncodedVideoFrame;
         fn encoded_video_sink_dropped_frames(sink: &NativeEncodedVideoSink) -> u64;

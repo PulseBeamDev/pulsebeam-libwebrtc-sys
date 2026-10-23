@@ -9,11 +9,11 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "2c4a505d47af5f52d0a48d3a07485fa61a3c48d68b57b491bb50277a259ecf45",
+      "bridge_source_sha256": "f26ace54e9dc85085fce051a78205ca4963c990fa1199979a980285687faa30c",
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
-      "generated_source_sha256": "ec2a9af239048ddc96c93d90c8255a8227332124dd19c19e1bd42259ca42f861"
+      "generated_source_sha256": "57a30e0326ce2f5c3aa1423d6f1aaac756a5e7c6b3aa7bdcd89ad93f87e65d81"
     },
-    "native_adapter_sha256": "6c51a6fb50fe8b1aa3d41596fa96a6fdbd3690e99e4251b43f66d099e2079544"
+    "native_adapter_sha256": "489a9d361bcb7254ddf85166f41aaea618178a821c094e0b98add6a6cfbe5b65"
   },
   "sources": {
     "libvpx": {
@@ -27,7 +27,8 @@
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
       "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
       "state": "pristine",
-      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
+      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+      "recordable_identity_patch_sha256": "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65"
     },
     "depot_tools": {
       "repository": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
@@ -39,7 +40,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "e72fc9e93d274709c5edbb68044edafc2f6af790e027a50d14d30532fe4e0504",
+  "native_configuration_sha256": "e657229629528c2730ba38ae290bccf8d69f8758978b9181ee7e69d9e81996e8",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -68,7 +69,7 @@
     ]
   },
   "native_configuration": {
-    "native_adapter_sha256": "6c51a6fb50fe8b1aa3d41596fa96a6fdbd3690e99e4251b43f66d099e2079544",
+    "native_adapter_sha256": "489a9d361bcb7254ddf85166f41aaea618178a821c094e0b98add6a6cfbe5b65",
     "bridge_identity": "pulsebeam-webrtc-sys-bridge-v2",
     "cxx": {
       "version": "1.0.200",
@@ -77,9 +78,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "2c4a505d47af5f52d0a48d3a07485fa61a3c48d68b57b491bb50277a259ecf45",
+      "bridge_source_sha256": "f26ace54e9dc85085fce051a78205ca4963c990fa1199979a980285687faa30c",
       "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
-      "generated_source_sha256": "ec2a9af239048ddc96c93d90c8255a8227332124dd19c19e1bd42259ca42f861"
+      "generated_source_sha256": "57a30e0326ce2f5c3aa1423d6f1aaac756a5e7c6b3aa7bdcd89ad93f87e65d81"
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
@@ -121,6 +122,7 @@
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
     },
     "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+    "source_recordable_identity_patch_sha256": "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65",
     "libvpx_revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
     "libvpx_worker_patch_sha256": "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a"
   }

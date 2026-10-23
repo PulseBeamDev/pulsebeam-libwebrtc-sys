@@ -578,7 +578,8 @@ std::unique_ptr<NativeRtpTransceiver> wrap_rtp_transceiver(
 bool rtp_receiver_request_keyframe(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
 std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
-    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept;
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
+    bool ordered) noexcept;
 FfiEncodedVideoFrame encoded_video_sink_take_frame(
     const NativeEncodedVideoSink& sink) noexcept;
 std::uint64_t encoded_video_sink_dropped_frames(

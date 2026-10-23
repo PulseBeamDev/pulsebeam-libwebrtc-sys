@@ -18,7 +18,9 @@ class WebRtcSourceStateTests(unittest.TestCase):
         self.paths = ["media/engine/webrtc_video_engine.cc",
                       "media/engine/webrtc_video_engine_unittest.cc"]
         self.runtime_paths = ["call/call.cc", "call/call_config.h"]
-        for name in ["BUILD.gn", *self.paths, *self.runtime_paths]:
+        self.recordable_paths = ["api/video/recordable_encoded_frame.h",
+                                 "video/video_receive_stream2.cc"]
+        for name in ["BUILD.gn", *self.paths, *self.runtime_paths, *self.recordable_paths]:
             path = self.src / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("original\n")
@@ -60,6 +62,12 @@ class WebRtcSourceStateTests(unittest.TestCase):
         self.runtime_patch.write_text(self.git("diff", "--binary", "--full-index"))
         self.git("restore", ".")
 
+        self.recordable_patch = self.work / "recordable.patch"
+        for name in self.recordable_paths:
+            (self.src / name).write_text("recordable identity fixed\n")
+        self.recordable_patch.write_text(self.git("diff", "--binary", "--full-index"))
+        self.git("restore", ".")
+
     def vpx_git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.vpx), *args], text=True)
 
@@ -71,7 +79,7 @@ class WebRtcSourceStateTests(unittest.TestCase):
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def run_state(self, flavor="core", target="linux-x86_64", runtime_digest=None,
-                  vpx_digest=None):
+                  recordable_digest=None, vpx_digest=None):
         values = {
             "webrtc_commit": self.revision,
             "libvpx_url": "https://example.invalid/libvpx.git",
@@ -82,6 +90,8 @@ class WebRtcSourceStateTests(unittest.TestCase):
             "webrtc_encoder_switch_patch_sha256": self.digest(self.encoder_patch),
             "webrtc_runtime_resources_patch": str(self.runtime_patch),
             "webrtc_runtime_resources_patch_sha256": runtime_digest or self.digest(self.runtime_patch),
+            "webrtc_recordable_identity_patch": str(self.recordable_patch),
+            "webrtc_recordable_identity_patch_sha256": recordable_digest or self.digest(self.recordable_patch),
             "webrtc_core_ios_patch": str(self.ios_patch),
             "webrtc_core_ios_patch_sha256": self.digest(self.ios_patch),
             "webrtc_core_ios_build_gn_sha256": self.ios_hash,
@@ -107,6 +117,8 @@ class WebRtcSourceStateTests(unittest.TestCase):
                 self.assertEqual((self.src / name).read_text(), "encoder fixed\n")
             for name in self.runtime_paths:
                 self.assertEqual((self.src / name).read_text(), "runtime resources fixed\n")
+            for name in self.recordable_paths:
+                self.assertEqual((self.src / name).read_text(), "recordable identity fixed\n")
             self.assertEqual((self.src / "BUILD.gn").read_text(), "original\n")
 
     def test_ios_patch_transitions_do_not_remove_runtime_patch(self):
@@ -131,6 +143,14 @@ class WebRtcSourceStateTests(unittest.TestCase):
         result = self.run_state()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime-resources source differs", result.stderr)
+
+    def test_recordable_identity_patch_rejects_changed_source_and_wrong_digest(self):
+        self.assertNotEqual(self.run_state(recordable_digest="0" * 64).returncode, 0)
+        self.assert_success(self.run_state())
+        (self.src / self.recordable_paths[0]).write_text("recordable identity fixed\nunexpected\n")
+        result = self.run_state()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("recordable-identity source differs", result.stderr)
 
     def test_child_patch_is_applied_and_validated_independently(self):
         self.assert_success(self.run_state())

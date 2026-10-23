@@ -867,8 +867,9 @@ obsolete `controlled_media` constructor method has been removed. The earlier
 focused encoded-input fixtures explicitly select Opus carrier input with `builtin_opus()`,
 direct VP8 with `builtin_vp8()`, or direct H.264 with
 `input.encoded_receive_factory()`. The last is an encoded-only adapter: its
-support queries do not advertise decoded output and `attach_encoded_sink()`
-is its receive path. Ordinary
+no-output decoder lets libwebrtc perform native reference finding and frame-buffer
+ordering, while `attach_ordered_encoded_sink()` receives the ordered encoded units and no
+decoded pixels are fabricated. Ordinary
 H.264 needs no DD; `new_l1t3()` requires native DD negotiation and sender L1T3
 selection. The caller alone delivers packets, advances time and pumps queues.
 Closing an encoded sink is terminal for that receiver; a new receiver is needed
@@ -1027,17 +1028,19 @@ matrix has passed.
 
 The immutable commit
 `ba469aa2093ba950066258ca0a59a6fbd1295582` is the current WebRTC source
-identity; `m150_release` is branch context, not an input to the build. The
-source includes the pinned `patches/encoder-preference-order-fallback.patch`,
-which corrects a contradictory SDK assertion for negotiated-codec fallback
-and tests both default-fallback policies. The additional immutable
-`patches/core-ios-remove-framework-objc.patch` applies only to core iOS device and simulator
-artifacts apply that pinned delta to remove `sdk:framework_objc`; native iOS
-and every other artifact omit that iOS-only patch. `build.txt` and
-`manifest.json` record both patch digests and the iOS patch's applied/pristine
-state; the encoder-switch patch is always required. Source-state checks reject
-tracked WebRTC source changes outside the exact pinned patches, and
-only optimized release artifacts are published.
+identity; `m150_release` is branch context, not an input to the build. The source includes three always-required pinned deltas:
+`patches/encoder-preference-order-fallback.patch` corrects a contradictory SDK
+assertion for negotiated-codec fallback,
+`patches/runtime-codec-core-budget.patch` applies the configured codec-core
+budget, and `patches/recordable-encoded-frame-rtp-identity.patch` exposes the
+post-ordering RTP timestamp and receive-stream SSRC needed to associate a
+recordable encoded frame with its exact native input. The additional immutable
+`patches/core-ios-remove-framework-objc.patch` applies only to core iOS device
+and simulator artifacts to remove `sdk:framework_objc`; native iOS and every
+other artifact omit that iOS-only patch. `build.txt` and `manifest.json` record
+all patch digests and the iOS patch's applied/pristine state. Source-state
+checks reject tracked WebRTC source changes outside the exact pinned patches,
+and only optimized release artifacts are published.
 
 Linux publication requires the entire `core`/`native` by
 `linux-x86_64`/`linux-arm64` group. It does not advertise a partial architecture
@@ -1543,6 +1546,17 @@ access unit with start-code-delimited NAL units, not RTP payload fragments.
 Closing the sink clears queued frames and resumes normal WebRTC decoding; this
 pinned upstream receiver cannot safely be attached a second time, even after
 close. This is not a raw RTP payload API.
+
+`RtpReceiver::attach_ordered_encoded_sink()` instead forwards unchanged frames
+through libwebrtc's native reference finder and frame buffer, observing the
+selected encoded units through its recordable-frame callback. Exact native
+SSRC/timestamp and payload identity associate metadata without custom ordering.
+This mode requires a decoder accepting the negotiated codec and does not
+suppress its decode calls. The encoded-only factory uses a no-output decoder;
+built-in decoder factories still decode normally. Both sink modes share the
+same receiver-lifetime attachment limit and bounded output queue. Ordered
+observation also bounds pending metadata to 512 frames/4 MiB. Session encoded
+video output uses this ordered mode, not raw interception.
 
 `RtpTransceiver::header_extensions_to_negotiate()` returns the native complete
 ordered extension snapshot. Change only each entry's `direction`, then apply

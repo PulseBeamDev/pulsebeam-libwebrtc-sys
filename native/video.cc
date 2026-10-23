@@ -490,14 +490,17 @@ class CameraFrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFra
 
 
 
-// Receive-side transformer consumes encoded frames before the decoder. When
-// deactivated, future frames pass through to the upstream decoder instead.
+// Raw interception consumes receiver frames before native reference finding.
+// Ordered observation snapshots metadata and forwards the original unchanged;
+// the recordable-frame callback then releases its exact native RTP identity.
 // Keep one transformer per receiver lifetime: replacing upstream's delegate
 // does not reset the old callback registration in this pinned revision.
-class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
+class EncodedFrameCollector
+    : public webrtc::FrameTransformerInterface,
+      public webrtc::VideoSinkInterface<webrtc::RecordableEncodedFrame> {
  public:
-  explicit EncodedFrameCollector(std::shared_ptr<ReadinessSignal> readiness)
-      : readiness_(std::move(readiness)) {}
+  EncodedFrameCollector(std::shared_ptr<ReadinessSignal> readiness, bool ordered)
+      : readiness_(std::move(readiness)), ordered_(ordered) {}
   void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
     ReadinessNotification notify{};
     std::shared_ptr<StockFrameCallbackSlot> callback;
@@ -505,48 +508,98 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
       std::lock_guard lock(mutex_);
       if (active_ && frame->GetDirection() ==
                          webrtc::TransformableFrameInterface::Direction::kReceiver) {
-        notify.readiness = readiness_;
         auto* video = static_cast<webrtc::TransformableVideoFrameInterface*>(frame.get());
         const auto data = frame->GetData();
-        if (data.size() > kMaxBytes) {
+        if (data.size() <= kMaxBytes) {
+          auto& queue = ordered_ ? pending_frames_ : frames_;
+          auto& queued_bytes = ordered_ ? pending_bytes_ : queued_bytes_;
+          const auto max_frames = ordered_ ? kMaxPendingFrames : kMaxFrames;
+          while (!queue.empty() &&
+                 (queue.size() >= max_frames ||
+                  queued_bytes > kMaxBytes - data.size())) {
+            queued_bytes -= queue.front().data.size();
+            queue.pop_front();
+            Lost();
+          }
+          StoredFrame snapshot;
+          snapshot.data.assign(data.begin(), data.end());
+          snapshot.mime_type = frame->GetMimeType();
+          snapshot.rtp_timestamp = frame->GetTimestamp();
+          snapshot.ssrc = frame->GetSsrc();
+          snapshot.payload_type = frame->GetPayloadType();
+          snapshot.key_frame = video->IsKeyFrame();
+          snapshot.rid = video->Rid();
+          if (auto time = video->CaptureTime()) snapshot.capture_time_us = MediaTimestampBits(*time);
+          if (auto time = video->ReceiveTime()) snapshot.receive_time_us = MediaTimestampBits(*time);
+          const auto metadata = video->Metadata();
+          snapshot.frame_id = metadata.GetFrameId();
+          if (snapshot.frame_id) {
+            snapshot.spatial_index = metadata.GetSpatialIndex();
+            snapshot.temporal_index = metadata.GetTemporalIndex();
+            if (auto dependencies = metadata.GetDependencies()) {
+              snapshot.dependencies.assign(dependencies->begin(), dependencies->end());
+            }
+            for (auto indication : metadata.GetDecodeTargetIndications())
+              snapshot.decode_target_indications.push_back(static_cast<std::uint8_t>(indication));
+          }
+          queued_bytes += snapshot.data.size();
+          queue.push_back(std::move(snapshot));
+        } else {
           Lost();
+        }
+        if (!ordered_) {
+          notify.readiness = readiness_;
           return;
         }
-        while (!frames_.empty() &&
-               (frames_.size() >= kMaxFrames || queued_bytes_ > kMaxBytes - data.size())) {
-          queued_bytes_ -= frames_.front().data.size();
-          frames_.pop_front();
-          Lost();
-        }
-        StoredFrame snapshot;
-        snapshot.data.assign(data.begin(), data.end());
-        snapshot.mime_type = frame->GetMimeType();
-        snapshot.rtp_timestamp = frame->GetTimestamp();
-        snapshot.ssrc = frame->GetSsrc();
-        snapshot.payload_type = frame->GetPayloadType();
-        snapshot.key_frame = video->IsKeyFrame();
-        snapshot.rid = video->Rid();
-        if (auto time = video->CaptureTime()) snapshot.capture_time_us = MediaTimestampBits(*time);
-        if (auto time = video->ReceiveTime()) snapshot.receive_time_us = MediaTimestampBits(*time);
-        const auto metadata = video->Metadata();
-        snapshot.frame_id = metadata.GetFrameId();
-        if (snapshot.frame_id) {
-          snapshot.spatial_index = metadata.GetSpatialIndex();
-          snapshot.temporal_index = metadata.GetTemporalIndex();
-          if (auto dependencies = metadata.GetDependencies()) {
-            snapshot.dependencies.assign(dependencies->begin(), dependencies->end());
-          }
-          for (auto indication : metadata.GetDecodeTargetIndications())
-            snapshot.decode_target_indications.push_back(static_cast<std::uint8_t>(indication));
-        }
-        queued_bytes_ += snapshot.data.size();
-        frames_.push_back(std::move(snapshot));
-        return;
       }
       const auto it = callbacks_.find(frame->GetSsrc());
       if (it != callbacks_.end()) callback = it->second;
     }
+    // Native reference finding, frame buffering, and decode scheduling remain
+    // authoritative. The recordable-frame sink below observes only after that
+    // path has selected the next encoded frame.
     if (callback) callback->OnTransformedFrame(std::move(frame));
+  }
+
+  void OnFrame(const webrtc::RecordableEncodedFrame& frame) override {
+    ReadinessNotification notify{};
+    const auto buffer = frame.encoded_buffer();
+    if (!buffer) return;
+    {
+      std::lock_guard lock(mutex_);
+      if (!active_) return;
+      const auto rtp_timestamp = frame.rtp_timestamp();
+      const auto ssrc = frame.ssrc();
+      if (!rtp_timestamp || !ssrc) {
+        Lost();
+        return;
+      }
+      const auto match = std::find_if(
+          pending_frames_.begin(), pending_frames_.end(), [&](const StoredFrame& candidate) {
+            return candidate.rtp_timestamp == *rtp_timestamp &&
+                   candidate.ssrc == *ssrc;
+          });
+      if (match == pending_frames_.end() ||
+          match->key_frame != frame.is_key_frame() ||
+          match->data.size() != buffer->size() ||
+          !std::equal(match->data.begin(), match->data.end(), buffer->data())) {
+        Lost();
+        return;
+      }
+      StoredFrame snapshot = std::move(*match);
+      pending_bytes_ -= snapshot.data.size();
+      pending_frames_.erase(match);
+      while (!frames_.empty() &&
+             (frames_.size() >= kMaxFrames ||
+              queued_bytes_ > kMaxBytes - snapshot.data.size())) {
+        queued_bytes_ -= frames_.front().data.size();
+        frames_.pop_front();
+        Lost();
+      }
+      queued_bytes_ += snapshot.data.size();
+      frames_.push_back(std::move(snapshot));
+      notify.readiness = readiness_;
+    }
   }
 
   void RegisterTransformedFrameSinkCallback(
@@ -609,6 +662,8 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
   void Deactivate() {
     std::lock_guard lock(mutex_);
     active_ = false;
+    pending_frames_.clear();
+    pending_bytes_ = 0;
     frames_.clear();
     queued_bytes_ = 0;
   }
@@ -634,10 +689,14 @@ class EncodedFrameCollector : public webrtc::FrameTransformerInterface {
     std::vector<std::uint8_t> decode_target_indications;
   };
   const std::shared_ptr<ReadinessSignal> readiness_;
+  const bool ordered_;
   static constexpr std::size_t kMaxFrames = 4;
+  static constexpr std::size_t kMaxPendingFrames = 512;
   static constexpr std::size_t kMaxBytes = 4 * 1024 * 1024;
   std::mutex mutex_;
   std::map<std::uint32_t, std::shared_ptr<StockFrameCallbackSlot>> callbacks_;
+  std::deque<StoredFrame> pending_frames_;
+  std::size_t pending_bytes_ = 0;
   std::deque<StoredFrame> frames_;
   std::size_t queued_bytes_ = 0;
   std::uint64_t dropped_frames_ = 0;
@@ -1574,6 +1633,9 @@ void local_media_stream_observer_close(const NativeLocalMediaStreamObserver& obs
 
 struct NativeEncodedVideoSink::State {
   webrtc::scoped_refptr<EncodedFrameCollector> collector;
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source;
+  webrtc::Thread* worker = nullptr;
+  std::atomic<bool> closed{false};
 };
 
 struct NativeVideoSink::State {
@@ -2942,17 +3004,24 @@ bool rtp_receiver_request_keyframe(
 }
 
 std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
-    const NativePeerConnection& peer, const NativeRtpReceiver& receiver) noexcept {
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
+    bool ordered) noexcept {
   if (!peer.worker_thread()) return nullptr;
   // Receiver handles may outlive their original peer or come from another peer.
   const auto receivers = peer.peer()->GetReceivers();
   if (std::find(receivers.begin(), receivers.end(), receiver.state()->receiver) ==
       receivers.end()) return nullptr;
   if (!peer.reserve_encoded_receiver(receiver.state()->receiver->id())) return nullptr;
+  auto track = VideoTrack(receiver.state()->receiver->track());
+  if (!track || !track->GetSource() || !track->GetSource()->remote() ||
+      (ordered && !track->GetSource()->SupportsEncodedOutput())) return nullptr;
   auto state = std::make_unique<NativeEncodedVideoSink::State>();
-  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(peer.readiness());
+  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(peer.readiness(), ordered);
+  if (ordered) state->source = track->GetSource();
+  state->worker = peer.worker_thread();
   peer.worker_thread()->BlockingCall([&] {
     peer.frame_transformer_hosts().Receiver(peer, receiver.state()->receiver)->SetCollector(state->collector);
+    if (state->source) state->source->AddEncodedSink(state->collector.get());
   });
   return std::make_unique<NativeEncodedVideoSink>(std::move(state));
 }
@@ -2966,7 +3035,14 @@ std::uint64_t encoded_video_sink_dropped_frames(
   return sink.state()->collector->DroppedFrames();
 }
 bool close_encoded_video_sink(const NativeEncodedVideoSink& sink) noexcept {
-  sink.state()->collector->Deactivate();
+  auto& state = *sink.state();
+  if (state.closed.exchange(true)) return true;
+  if (state.worker && state.source) {
+    state.worker->BlockingCall([&] {
+      state.source->RemoveEncodedSink(state.collector.get());
+    });
+  }
+  state.collector->Deactivate();
   return true;
 }
 
