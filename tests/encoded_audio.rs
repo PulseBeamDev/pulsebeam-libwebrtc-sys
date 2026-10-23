@@ -269,6 +269,12 @@ fn received_audio_extension_profile(include_level: bool) {
 
 #[test]
 fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
+    for receiver_stereo in [true, false] {
+        run_mono_and_stereo_opus_sources(receiver_stereo);
+    }
+}
+
+fn run_mono_and_stereo_opus_sources(receiver_stereo: bool) {
     #[cfg(feature = "native")]
     assert_eq!(
         PeerConnectionFactory::builder()
@@ -416,16 +422,18 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         non_trickle::gathered_local_description(&alice, &clock, &network, &mut Vec::new());
     finish(&bob, bob.set_remote_description(gathered).unwrap());
     let mut answer = finish(&bob, bob.create_answer().unwrap()).unwrap();
-    // The receiver explicitly requests stereo on the second m-line. An
-    // ordinary built-in answer defaults to mono even when it can decode stereo.
-    let sections: Vec<_> = answer.sdp.split("m=audio").collect();
-    assert_eq!(sections.len(), 3);
-    answer.sdp = format!(
-        "{}m=audio{}m=audio{}",
-        sections[0],
-        sections[1],
-        sections[2].replacen("useinbandfec=1", "useinbandfec=1;stereo=1", 1)
-    );
+    // Exercise both the explicit stereo preference and the native mono
+    // default. The genuine stereo payload must survive either negotiated
+    // encoder input layout without passing opaque carrier bytes through a
+    // PCM channel remix.
+    if receiver_stereo {
+        // Bundled m-lines sharing one payload type must share its fmtp.
+        answer.sdp = answer
+            .sdp
+            .replace("useinbandfec=1", "useinbandfec=1;stereo=1");
+    } else {
+        assert!(!answer.sdp.contains("stereo=1"));
+    }
     finish(&bob, bob.set_local_description(answer).unwrap());
     let gathered = non_trickle::gathered_local_description(&bob, &clock, &network, &mut Vec::new());
     finish(&alice, alice.set_remote_description(gathered).unwrap());
@@ -523,7 +531,10 @@ fn mono_and_stereo_opus_sources_preserve_distinct_payloads_without_encoding() {
         clock.advance(Duration::from_millis(1)).unwrap();
         thread::yield_now();
     }
-    assert_eq!(seen, [true; 2], "both sources must arrive byte-identically");
+    assert_eq!(
+        seen, [true; 2],
+        "both sources must arrive byte-identically (receiver_stereo={receiver_stereo})"
+    );
     assert_ne!(sink_stream[0], sink_stream[1], "tracks must stay isolated");
 
     let variants = [

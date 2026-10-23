@@ -621,8 +621,10 @@ impl OpusAudioLevel {
 
 /// A sequence-bound Opus input source. Create its factory with
 /// [`crate::AudioEncoderFactory::with_opus_frames`]. Frames bypass Opus
-/// encoding; each source carries its own bytes through a 48 kHz bridge
-/// matching its configured mono or stereo format.
+/// encoding; each source preserves its configured mono or stereo Opus bytes.
+/// Source and passthrough encoder share fixed, private 48 kHz two-channel
+/// input blocks, independently of the Opus payload's channel count or the
+/// receiver's SDP stereo preference. No PCM channel remix touches the bytes.
 /// The factory accepts Opus-only tracks, not raw PCM tracks. At most 24
 /// in-flight 10 ms input copies are admitted per source, counting every attached
 /// sender. Retry on `Backpressure`. Detachment does not count as consumption;

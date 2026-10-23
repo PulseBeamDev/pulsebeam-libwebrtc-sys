@@ -2200,14 +2200,14 @@ class OpusMetadataTransformer : public webrtc::FrameTransformerInterface {
 class OpusCarrierEncoder final : public webrtc::AudioEncoder {
  public:
   OpusCarrierEncoder(webrtc::AudioEncoderFactory::Options options,
-                     std::uint8_t channels,
                      webrtc::scoped_refptr<OpusMetadataTransformer> transformer)
-      : options_(std::move(options)), channels_(channels),
-        transformer_(std::move(transformer)) {}
+      : options_(std::move(options)), transformer_(std::move(transformer)) {}
   ~OpusCarrierEncoder() override { transformer_->Clear(queue_, emission_slot_); }
 
   int SampleRateHz() const override { return 48000; }
-  size_t NumChannels() const override { return channels_; }
+  // AudioEncoder::NumChannels describes INPUT, not the encoded Opus payload.
+  // Match the private source layout so ACM never remixes the opaque bytes.
+  size_t NumChannels() const override { return opus_carrier::kChannels; }
   size_t Num10MsFramesInNextPacket() const override {
     return next_slots_;
   }
@@ -2240,7 +2240,7 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
     EncodedInfo info;
     auto block = std::span(reinterpret_cast<const std::uint8_t*>(audio.data()),
                            audio.size_bytes());
-    const auto block_bytes = kBytesPerChannelBlock * channels_;
+    const auto block_bytes = kBytesPerChannelBlock * kChannels;
     if (block.size() != block_bytes || !HasMagic(block)) {
       Reset();
       return info;
@@ -2326,7 +2326,6 @@ class OpusCarrierEncoder final : public webrtc::AudioEncoder {
   }
 
   const webrtc::AudioEncoderFactory::Options options_;
-  const std::uint8_t channels_;
   webrtc::scoped_refptr<OpusMetadataTransformer> transformer_;
   std::shared_ptr<OpusEmissionSlot> emission_slot_ = std::make_shared<OpusEmissionSlot>();
   webrtc::TaskQueueBase* queue_ = nullptr;
@@ -2352,14 +2351,14 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
   std::vector<webrtc::AudioCodecSpec> GetSupportedEncoders() override {
     std::vector<webrtc::AudioCodecSpec> opus;
     for (auto spec : builtin_->GetSupportedEncoders()) {
-      if (OpusChannels(spec.format)) {
+      if (IsOpus(spec.format)) {
         spec.format.parameters["stereo"] = "0";
-        spec.info.num_channels = 1;
+        spec.info.num_channels = opus_carrier::kChannels;
         // Opus has one RFC 7587 RTP identity (opus/48000/2). The pinned
         // payload mapper ignores stereo fmtp when matching audio codecs, so
         // advertising stereo=0 and stereo=1 separately creates duplicate PTs.
-        // Advertise the canonical format once; Query/Create still honor the
-        // remote stereo preference for mono and stereo carrier streams.
+        // Advertise the canonical format once. Private input dimensions do
+        // not select or rewrite the genuine Opus payload's channel count.
         opus.push_back(std::move(spec));
       }
     }
@@ -2367,10 +2366,9 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
   }
   std::optional<webrtc::AudioCodecInfo> QueryAudioEncoder(
       const webrtc::SdpAudioFormat& format) override {
-    const auto channels = OpusChannels(format);
-    if (!channels) return std::nullopt;
+    if (!IsOpus(format)) return std::nullopt;
     auto info = builtin_->QueryAudioEncoder(format);
-    if (info) info->num_channels = *channels;
+    if (info) info->num_channels = opus_carrier::kChannels;
     return info;
   }
   std::unique_ptr<webrtc::AudioEncoder> Create(
@@ -2378,17 +2376,11 @@ class OpusCarrierFactory : public webrtc::AudioEncoderFactory {
       Options options) override {
     if (!QueryAudioEncoder(format)) return nullptr;
     return std::make_unique<OpusCarrierEncoder>(
-        std::move(options), *OpusChannels(format), transformer_);
+        std::move(options), transformer_);
   }
  private:
-  static std::optional<std::uint8_t> OpusChannels(
-      const webrtc::SdpAudioFormat& format) {
-    if (format.name != "opus" || format.clockrate_hz != 48000 ||
-        format.num_channels != 2) return std::nullopt;
-    const auto stereo = format.parameters.find("stereo");
-    if (stereo == format.parameters.end() || stereo->second == "0") return 1;
-    if (stereo->second == "1") return 2;
-    return std::nullopt;
+  static bool IsOpus(const webrtc::SdpAudioFormat& format) {
+    return webrtc::SdpAudioFormat("opus", 48000, 2).Matches(format);
   }
  private:
   webrtc::scoped_refptr<webrtc::AudioEncoderFactory> builtin_;

@@ -12,9 +12,12 @@
 #include <utility>
 
 namespace pulsebeam::webrtc_sys::opus_carrier {
-// An adapter-private transport across 48 kHz mono/stereo AudioSource sinks.
+// An adapter-private transport across fixed 48 kHz, two-channel input blocks.
+// Both source and passthrough encoder use this layout, independently of Opus
+// payload channels or SDP stereo preference. PCM remixing would corrupt bytes.
 // It never appears on the wire. Each 10 ms callback carries its own envelope,
 // so reset cannot release reservations for input still on a native queue.
+constexpr std::size_t kChannels = 2;
 constexpr std::size_t kBytesPerChannelBlock = 960;
 constexpr std::size_t kHeaderBytes = 36;
 constexpr std::size_t kMaxPayloadBytes = 1200;

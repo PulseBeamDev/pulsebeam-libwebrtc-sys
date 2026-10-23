@@ -195,7 +195,7 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
   }
   bool PushOpus(std::span<const std::uint8_t> payload,
                 std::uint32_t rtp_timestamp, std::uint32_t samples_per_channel,
-                std::uint8_t channels, std::int64_t capture_time_us,
+                std::int64_t capture_time_us,
                 const std::shared_ptr<opus_carrier::Budget>& budget,
                 std::uint32_t source_id, bool has_level,
                 std::uint8_t level_dbov, bool voice_activity) {
@@ -204,17 +204,18 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
     // No recipient can join/leave between its individual carrier blocks.
     std::lock_guard lock(mutex_);
     if (closed_ || sinks_.empty() || !source_id) return false;
-    std::vector<std::uint32_t> recipients;
-    for (const auto& entry : sinks_) recipients.push_back(entry.recipient);
     const auto slots = samples_per_channel / 480;
+    const auto capacity = kBytesPerChannelBlock * kChannels - kHeaderBytes;
+    if (payload.size() > slots * capacity) return false;
+    std::vector<std::uint32_t> recipients;
+    recipients.reserve(sinks_.size());
+    for (const auto& entry : sinks_) recipients.push_back(entry.recipient);
     const auto packet = Reserve(*budget, slots, recipients);
     if (!packet) return false;
-    const auto block_bytes = kBytesPerChannelBlock * channels;
-    const auto capacity = block_bytes - kHeaderBytes;
     const auto checksum = Checksum(payload);
     for (const auto& entry : sinks_) {
       for (std::uint32_t slot = 0; slot < slots; ++slot) {
-        std::array<std::int16_t, 960> samples{};
+        std::array<std::int16_t, 480 * kChannels> samples{};
         auto* bytes = reinterpret_cast<std::uint8_t*>(samples.data());
         std::memcpy(bytes, kMagic.data(), kMagic.size());
         Store16(bytes + 8, static_cast<std::uint16_t>(payload.size()));
@@ -234,7 +235,7 @@ class PushAudioSource : public webrtc::Notifier<webrtc::AudioSourceInterface> {
                       std::min(capacity, payload.size() - offset));
         const auto capture_ms = capture_time_us < 0 ? std::nullopt :
             std::optional<std::int64_t>(capture_time_us / 1000 + slot * 10);
-        entry.sink->OnData(samples.data(), 16, 48000, channels, 480, capture_ms);
+        entry.sink->OnData(samples.data(), 16, 48000, kChannels, 480, capture_ms);
       }
     }
     return true;
@@ -891,9 +892,10 @@ bool audio_source_push_opus_with_level_at(const NativeAudioSource& source,
                             std::uint8_t level_dbov, bool voice_activity) noexcept {
   if (capture_time_us < -1 || (has_level && level_dbov > 127)) return false;
   using namespace opus_carrier;
-  // The private carrier matches the negotiated encoder's mono/stereo input.
+  // Validate the genuine encoded payload independently of the fixed private
+  // input layout shared by PushOpus and OpusCarrierEncoder.
   const auto channels = source.state()->encoded_channels;
-  const auto block_bytes = kBytesPerChannelBlock * channels;
+  const auto block_bytes = kBytesPerChannelBlock * kChannels;
   if ((channels != 1 && channels != 2) ||
       samples_per_channel == 0 || samples_per_channel > 2880 ||
       samples_per_channel % 480 != 0 || payload.empty() ||
@@ -909,7 +911,7 @@ bool audio_source_push_opus_with_level_at(const NativeAudioSource& source,
     state.budget_id = Register(state.budget);
   }
   return state.source->PushOpus({payload.data(), payload.size()}, rtp_timestamp,
-                                samples_per_channel, channels, capture_time_us,
+                                samples_per_channel, capture_time_us,
                                 state.budget, state.budget_id, has_level,
                                 level_dbov, voice_activity);
 }
