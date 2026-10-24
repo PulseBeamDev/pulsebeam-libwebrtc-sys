@@ -937,6 +937,8 @@ fn migrated_temporal_actor_receives_native_dd_and_wakes_for_rejection() {
             // output. Refusal must not burn the native encoded reservation.
             assert!(session.attach_raw_and_encoded_video(receiver).is_err());
             session.attach_encoded_video(receiver).unwrap();
+            assert!(session.dropped_raw_video_frames(receiver).is_err());
+            assert_eq!(session.dropped_encoded_video_frames(receiver).unwrap(), 0);
             (session, receiver)
         })
         .join()

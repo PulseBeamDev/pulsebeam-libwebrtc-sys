@@ -323,6 +323,16 @@ fn application<R: SessionRuntime>(
             "encoded and native decoded output must include the same actual RTP frames on this receiver"
         );
         assert_eq!(call.sessions[1].dropped_frames(receiver).unwrap(), 0);
+        assert_eq!(
+            call.sessions[1].dropped_raw_video_frames(receiver).unwrap(),
+            0
+        );
+        assert_eq!(
+            call.sessions[1]
+                .dropped_encoded_video_frames(receiver)
+                .unwrap(),
+            0
+        );
         let _ = call.sessions[1].try_raw_video_sink_event(receiver).unwrap();
         assert_eq!(
             call.sessions[1]
@@ -335,6 +345,12 @@ fn application<R: SessionRuntime>(
         call.sessions[1].close_media_sink(receiver).unwrap();
         assert!(call.sessions[1].try_raw_video_frame(receiver).is_err());
         assert!(call.sessions[1].try_video_frame(receiver).is_err());
+        assert!(call.sessions[1].dropped_raw_video_frames(receiver).is_err());
+        assert!(
+            call.sessions[1]
+                .dropped_encoded_video_frames(receiver)
+                .is_err()
+        );
         // Combined attachment must preserve the native encoded receiver-lifetime
         // reservation. A failed reattachment must also release its raw sink.
         assert!(
