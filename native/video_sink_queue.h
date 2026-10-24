@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 #include "api/video/video_frame.h"
@@ -21,9 +22,17 @@ namespace pulsebeam::webrtc_sys {
 // RemoveSink returns. No callback pointer or borrowed constraints escape.
 class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
+  explicit FrameSink(std::optional<rust::Box<RustDecodedVideoObserver>> observer = std::nullopt)
+      : observer_(std::move(observer)) {}
+
   void OnFrame(const webrtc::VideoFrame& frame) override {
     std::lock_guard lock(mutex_);
     if (!active_) return;
+    // Optional synchronous facts precede retention loss. This is the SAME sink:
+    // no extra VideoSinkWants, decoder, timing, or delivery policy is installed.
+    if (observer_) {
+      decoded_video_frame_observed(**observer_, std::make_unique<NativeRawVideoFrame>(frame));
+    }
     // Keep the existing four-frame/16 MiB decoded-frame retention policy.
     if (frame.width() <= 0 || frame.height() <= 0) {
       Lost();
@@ -106,6 +115,16 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
     // Control notifications already accepted remain consumable after close.
   }
 
+  // Release user state only after the attachment owner's RemoveSink barrier.
+  // Closed sink handles can remain alive to drain accepted control records.
+  void RetireObserver() {
+    std::optional<rust::Box<RustDecodedVideoObserver>> observer;
+    {
+      std::lock_guard lock(mutex_);
+      observer.swap(observer_);
+    }
+  }
+
  private:
   void Lost() {
     if (dropped_frames_ != std::numeric_limits<std::uint64_t>::max()) {
@@ -130,6 +149,7 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   static constexpr std::size_t kMaxFrames = 4;
   static constexpr std::size_t kMaxBytes = 16 * 1024 * 1024;
   std::mutex mutex_;
+  std::optional<rust::Box<RustDecodedVideoObserver>> observer_;
   std::deque<QueuedFrame> frames_;
   std::deque<FfiVideoSinkEvent> events_;
   std::size_t queued_bytes_ = 0;

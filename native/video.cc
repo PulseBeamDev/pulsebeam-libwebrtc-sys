@@ -2828,7 +2828,8 @@ std::uint8_t ApplySinkWants(NativeVideoSink::State& state,
 std::unique_ptr<NativeVideoSink> AttachVideoSink(
     const NativeVideoSourceView& view,
     webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
-    const FfiVideoSinkWants& input, std::uint8_t& status) {
+    const FfiVideoSinkWants& input, std::uint8_t& status,
+    std::optional<rust::Box<RustDecodedVideoObserver>> observer = std::nullopt) {
   auto state = std::make_unique<NativeVideoSink::State>();
   state->source = view.state()->source;
   state->producer = view.state()->producer;
@@ -2839,7 +2840,7 @@ std::unique_ptr<NativeVideoSink> AttachVideoSink(
     status = 3;
     return nullptr;
   }
-  state->sink = std::make_unique<FrameSink>();
+  state->sink = std::make_unique<FrameSink>(std::move(observer));
   const auto wants = ToVideoSinkWants(input);
   status = state->worker->BlockingCall([&] { return ApplySinkWants(*state, wants); });
   if (status != 0) return nullptr;
@@ -2853,6 +2854,13 @@ std::unique_ptr<NativeVideoSink> video_track_attach_sink(
     const NativeVideoTrack& track, const NativeVideoSourceView& source,
     const FfiVideoSinkWants& wants, std::uint8_t& status) noexcept {
   return AttachVideoSink(source, track.state()->track, wants, status);
+}
+std::unique_ptr<NativeVideoSink> video_track_attach_observed_sink(
+    const NativeVideoTrack& track, const NativeVideoSourceView& source,
+    const FfiVideoSinkWants& wants, rust::Box<RustDecodedVideoObserver> observer,
+    std::uint8_t& status) noexcept {
+  return AttachVideoSink(source, track.state()->track, wants, status,
+                         std::make_optional(std::move(observer)));
 }
 std::unique_ptr<NativeVideoSink> video_source_attach_sink(
     const NativeVideoSourceView& source, const FfiVideoSinkWants& wants,
@@ -2907,6 +2915,7 @@ bool close_video_sink(const NativeVideoSink& sink) noexcept {
     if (state.track) state.track->RemoveSink(state.sink.get());
     else state.source->RemoveSink(state.sink.get());
   });
+  state.sink->RetireObserver();
   return true;
 }
 

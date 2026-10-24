@@ -9,9 +9,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "f26ace54e9dc85085fce051a78205ca4963c990fa1199979a980285687faa30c",
-      "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
-      "generated_source_sha256": "57a30e0326ce2f5c3aa1423d6f1aaac756a5e7c6b3aa7bdcd89ad93f87e65d81"
+      "bridge_source_sha256": "55c37bea1dd4c51c64537bc7878f5ff455b99ab91283401ff86d65494bffa8cc",
+      "generated_header_sha256": "e01d9d6c4e7aab115dc7b25952bf6bb149d5f84edbf033259e6b545c257a97bd",
+      "generated_source_sha256": "b0d238453247d2cc8902bde81e655e5b3576cc2f5b30d423cc33ffbe1299eb93"
     },
     "native_adapter_sha256": "489a9d361bcb7254ddf85166f41aaea618178a821c094e0b98add6a6cfbe5b65"
   },
@@ -78,9 +78,9 @@
       "rust_runtime_sha256": "35bce0faa8fc61e8724ed6febaab7e9cedc0e221af9d73bc3d8fb59e9b23471d",
       "header_sha256": "ea2c1f9fe95b02f055836dd75e22b558f616385a522ec9beeaba8d043c3a32d8",
       "native_runtime_sha256": "6a64476a783ef8a42da9f30a9e3d48deb7757b87442f6ed68b9d2c38f2768866",
-      "bridge_source_sha256": "f26ace54e9dc85085fce051a78205ca4963c990fa1199979a980285687faa30c",
-      "generated_header_sha256": "b7a9b82575bf8d2697c69d0d2c681f74ca5f958f0f0076f4cca667449f14b1a3",
-      "generated_source_sha256": "57a30e0326ce2f5c3aa1423d6f1aaac756a5e7c6b3aa7bdcd89ad93f87e65d81"
+      "bridge_source_sha256": "55c37bea1dd4c51c64537bc7878f5ff455b99ab91283401ff86d65494bffa8cc",
+      "generated_header_sha256": "e01d9d6c4e7aab115dc7b25952bf6bb149d5f84edbf033259e6b545c257a97bd",
+      "generated_source_sha256": "b0d238453247d2cc8902bde81e655e5b3576cc2f5b30d423cc33ffbe1299eb93"
     },
     "source_revision": "ba469aa2093ba950066258ca0a59a6fbd1295582",
     "source_patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",

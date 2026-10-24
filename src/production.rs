@@ -6186,6 +6186,30 @@ impl<R: SessionRuntime> Session<R> {
         Ok(())
     }
 
+    /// Synchronous decoded-frame observations on the existing raw sink, before
+    /// its independent polling retention. Receiver identity is this validated
+    /// session binding; decoded VideoFrame callbacks do not supply an SSRC.
+    pub fn attach_raw_video_with_observer(
+        &mut self,
+        receiver: SessionReceiverId,
+        observer: impl crate::DecodedVideoFrameObserver,
+    ) -> Result<(), PeerError> {
+        let track = self
+            .receiver_without_sink(receiver)?
+            .track()
+            .ok_or_else(missing)?;
+        let sink = track.attach_sink_with_observer(observer)?;
+        self.media_sinks.insert(receiver, MediaSink::RawVideo(sink));
+        Ok(())
+    }
+
+    pub fn raw_video_observer_failed(
+        &self,
+        receiver: SessionReceiverId,
+    ) -> Result<bool, PeerError> {
+        Ok(self.raw_video_sink(receiver)?.observer_failed())
+    }
+
     fn raw_video_sink(&self, receiver: SessionReceiverId) -> Result<&crate::VideoSink, PeerError> {
         match self.media_sinks.get(&receiver) {
             Some(MediaSink::RawVideo(sink) | MediaSink::RawAndEncodedVideo { raw: sink, .. }) => {
@@ -6244,6 +6268,23 @@ impl<R: SessionRuntime> Session<R> {
         // Refuse unavailable decoded output BEFORE reserving the native
         // receiver-lifetime encoded observer. Later refusal drops this raw sink.
         let raw = track.attach_sink_with_wants(&crate::VideoSinkWants::default())?;
+        let encoded = receiver_ref.attach_ordered_encoded_sink()?;
+        self.media_sinks
+            .insert(receiver, MediaSink::RawAndEncodedVideo { raw, encoded });
+        Ok(())
+    }
+
+    /// Combined observation with a synchronous decoded-frame callback installed
+    /// before raw attachment. The ordered observer and polling queues retain
+    /// their existing behavior, wants and native receiver-lifetime fences.
+    pub fn attach_raw_and_encoded_video_with_observer(
+        &mut self,
+        receiver: SessionReceiverId,
+        observer: impl crate::DecodedVideoFrameObserver,
+    ) -> Result<(), PeerError> {
+        let receiver_ref = self.receiver_without_sink(receiver)?;
+        let track = receiver_ref.track().ok_or_else(missing)?;
+        let raw = track.attach_sink_with_observer(observer)?;
         let encoded = receiver_ref.attach_ordered_encoded_sink()?;
         self.media_sinks
             .insert(receiver, MediaSink::RawAndEncodedVideo { raw, encoded });
