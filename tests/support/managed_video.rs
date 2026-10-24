@@ -170,6 +170,11 @@ enum ObservationMode {
     CallbackShutdown,
     CallbackOverflow,
     CallbackPanic,
+    EncodedCallbackCloseSink,
+    EncodedCallbackClosePeer,
+    EncodedCallbackShutdown,
+    EncodedCallbackOverflow,
+    EncodedCallbackPanic,
 }
 
 struct ObserverDrop(Arc<AtomicBool>);
@@ -185,6 +190,7 @@ struct Observation {
     frames: Vec<FrameObservation>,
     encoded: Vec<(u32, Vec<u8>)>,
     callbacks: Vec<FrameObservation>,
+    encoded_callbacks: Vec<(u32, Vec<u8>)>,
     observed_at_us: u128,
     media_elapsed_us: u128,
 }
@@ -200,17 +206,29 @@ fn application<R: SessionRuntime>(
     mut after_shutdown: impl FnMut(),
 ) -> Observation {
     let dual_observation = mode != ObservationMode::RawOnly;
-    let callback_mode = matches!(
+    let encoded_callback_mode = matches!(
         mode,
-        ObservationMode::CallbackCloseSink
-            | ObservationMode::CallbackClosePeer
-            | ObservationMode::CallbackShutdown
-            | ObservationMode::CallbackOverflow
-            | ObservationMode::CallbackPanic
+        ObservationMode::EncodedCallbackCloseSink
+            | ObservationMode::EncodedCallbackClosePeer
+            | ObservationMode::EncodedCallbackShutdown
+            | ObservationMode::EncodedCallbackOverflow
+            | ObservationMode::EncodedCallbackPanic
     );
-    let overflow = mode == ObservationMode::CallbackOverflow;
+    let callback_mode = encoded_callback_mode
+        || matches!(
+            mode,
+            ObservationMode::CallbackCloseSink
+                | ObservationMode::CallbackClosePeer
+                | ObservationMode::CallbackShutdown
+                | ObservationMode::CallbackOverflow
+                | ObservationMode::CallbackPanic
+        );
+    let encoded_overflow = mode == ObservationMode::EncodedCallbackOverflow;
+    let overflow = encoded_overflow || mode == ObservationMode::CallbackOverflow;
     let callbacks = Arc::new(Mutex::new(Vec::<FrameObservation>::new()));
+    let encoded_callbacks = Arc::new(Mutex::new(Vec::new()));
     let observer_dropped = Arc::new(AtomicBool::new(false));
+    let encoded_observer_dropped = Arc::new(AtomicBool::new(false));
     let mut call = Call::new(runtimes, resources);
     let source = call.sessions[0].create_raw_video_source().unwrap();
     let transceiver = call.sessions[0]
@@ -256,34 +274,65 @@ fn application<R: SessionRuntime>(
                 let snapshots = callbacks.clone();
                 let guard = ObserverDrop(observer_dropped.clone());
                 let mut last_native_time = None;
-                call.sessions[1]
-                    .attach_raw_and_encoded_video_with_observer(
-                        receiver,
-                        move |observation: DecodedVideoFrameObservation| {
-                            let _ = &guard;
-                            assert!((7_000_000..17_000_000).contains(&observation.native_observed_at_us),
-                                "callback must report actual controlled native clock, not host clock");
-                            assert!(last_native_time.is_none_or(|last| last <= observation.native_observed_at_us));
-                            last_native_time = Some(observation.native_observed_at_us);
-                            if mode == ObservationMode::CallbackPanic {
-                                panic!("intentional decoded observer panic");
-                            }
-                            let frame = observation.frame.expect("actual native I420 snapshot");
-                            let mut snapshots = snapshots.lock().unwrap();
-                            assert!(
-                                snapshots.len() < 8,
-                                "fixture only submits eight actual source frames"
-                            );
-                            snapshots.push(FrameObservation {
-                                width: frame.width,
-                                height: frame.height,
-                                timestamp_us: frame.timestamp_us,
-                                rtp_timestamp: frame.rtp_timestamp,
-                                visible_i420: frame.buffer.as_bytes().to_vec(),
-                            });
-                        },
-                    )
-                    .unwrap();
+                let callback = move |observation: DecodedVideoFrameObservation| {
+                    let _ = &guard;
+                    assert!(
+                        (7_000_000..17_000_000).contains(&observation.native_observed_at_us),
+                        "callback must report actual controlled native clock, not host clock"
+                    );
+                    assert!(
+                        last_native_time
+                            .is_none_or(|last| last <= observation.native_observed_at_us)
+                    );
+                    last_native_time = Some(observation.native_observed_at_us);
+                    if mode == ObservationMode::CallbackPanic {
+                        panic!("intentional decoded observer panic");
+                    }
+                    let frame = observation.frame.expect("actual native I420 snapshot");
+                    let mut snapshots = snapshots.lock().unwrap();
+                    assert!(
+                        snapshots.len() < 8,
+                        "fixture only submits eight actual source frames"
+                    );
+                    snapshots.push(FrameObservation {
+                        width: frame.width,
+                        height: frame.height,
+                        timestamp_us: frame.timestamp_us,
+                        rtp_timestamp: frame.rtp_timestamp,
+                        visible_i420: frame.buffer.as_bytes().to_vec(),
+                    });
+                };
+                if encoded_callback_mode {
+                    let snapshots = encoded_callbacks.clone();
+                    let guard = ObserverDrop(encoded_observer_dropped.clone());
+                    call.sessions[1]
+                        .attach_raw_and_encoded_video_with_observers(
+                            receiver,
+                            callback,
+                            move |observation| {
+                                let _ = &guard;
+                                if mode == ObservationMode::EncodedCallbackPanic {
+                                    panic!("intentional encoded observer panic");
+                                }
+                                let EncodedVideoFrameObservation::Frame(frame) = observation else {
+                                    panic!("lossless fixture must retain native ordered metadata");
+                                };
+                                assert!(frame.mime_type.eq_ignore_ascii_case("video/h264"));
+                                assert!(!frame.data.is_empty());
+                                let mut snapshots = snapshots.lock().unwrap();
+                                assert!(snapshots.len() < 8);
+                                if snapshots.is_empty() {
+                                    assert!(frame.key_frame);
+                                }
+                                snapshots.push((frame.rtp_timestamp, frame.data));
+                            },
+                        )
+                        .unwrap();
+                } else {
+                    call.sessions[1]
+                        .attach_raw_and_encoded_video_with_observer(receiver, callback)
+                        .unwrap();
+                }
             }
         } else {
             call.sessions[1]
@@ -340,14 +389,16 @@ fn application<R: SessionRuntime>(
         }
         progress();
         call.drain();
-        if dual_observation {
+        if dual_observation && (!encoded_overflow || encoded_callbacks.lock().unwrap().len() >= 6) {
             while let Some(frame) = call.sessions[1].try_video_frame(receiver).unwrap() {
                 assert!(frame.mime_type.eq_ignore_ascii_case("video/h264"));
                 assert!(!frame.data.is_empty());
                 encoded_timestamps.insert(frame.rtp_timestamp);
                 encoded.push((frame.rtp_timestamp, frame.data.clone()));
                 if held_encoded.is_none() {
-                    assert!(frame.key_frame);
+                    if !encoded_overflow {
+                        assert!(frame.key_frame);
+                    }
                     held_encoded = Some(frame);
                 }
             }
@@ -413,12 +464,31 @@ fn application<R: SessionRuntime>(
                 "callback pixels and RTP identity must match actual native polling output"
             );
         }
+        let encoded_drops = call.sessions[1]
+            .dropped_encoded_video_frames(receiver)
+            .unwrap();
+        if encoded_overflow {
+            assert!(
+                encoded_drops > 0,
+                "native encoded callbacks must survive actual polling retention loss"
+            );
+            assert!(encoded_callbacks.lock().unwrap().len() >= 6);
+        } else {
+            assert_eq!(encoded_drops, 0);
+        }
         assert_eq!(
             call.sessions[1]
-                .dropped_encoded_video_frames(receiver)
+                .encoded_video_observer_failed(receiver)
                 .unwrap(),
-            0
+            mode == ObservationMode::EncodedCallbackPanic
         );
+        if encoded_callback_mode && mode != ObservationMode::EncodedCallbackPanic {
+            let snapshots = encoded_callbacks.lock().unwrap();
+            assert!(
+                encoded.iter().all(|frame| snapshots.contains(frame)),
+                "callback bytes and RTP identity must match actual native polling output"
+            );
+        }
         let _ = call.sessions[1].try_raw_video_sink_event(receiver).unwrap();
         assert_eq!(
             call.sessions[1]
@@ -433,6 +503,9 @@ fn application<R: SessionRuntime>(
             | ObservationMode::CallbackCloseSink
             | ObservationMode::CallbackOverflow
             | ObservationMode::CallbackPanic
+            | ObservationMode::EncodedCallbackCloseSink
+            | ObservationMode::EncodedCallbackOverflow
+            | ObservationMode::EncodedCallbackPanic
     ) {
         call.sessions[1].close_media_sink(receiver).unwrap();
         assert!(call.sessions[1].try_raw_video_frame(receiver).is_err());
@@ -470,7 +543,9 @@ fn application<R: SessionRuntime>(
         if index != 1
             || !matches!(
                 mode,
-                ObservationMode::DualShutdown | ObservationMode::CallbackShutdown
+                ObservationMode::DualShutdown
+                    | ObservationMode::CallbackShutdown
+                    | ObservationMode::EncodedCallbackShutdown
             )
         {
             call.sessions[index].close_peer(call.peers[index]).unwrap();
@@ -489,8 +564,20 @@ fn application<R: SessionRuntime>(
             observer_dropped.load(Ordering::Acquire),
             "native close/shutdown must release callback owner"
         );
+        if encoded_callback_mode {
+            assert!(
+                encoded_observer_dropped.load(Ordering::Acquire),
+                "native close/shutdown must release encoded callback owner"
+            );
+        }
+        let encoded_count = encoded_callbacks.lock().unwrap().len();
         let count = callbacks.lock().unwrap().len();
         after_shutdown();
+        assert_eq!(
+            encoded_callbacks.lock().unwrap().len(),
+            encoded_count,
+            "no encoded callback after native removal/shutdown"
+        );
         assert_eq!(
             callbacks.lock().unwrap().len(),
             count,
@@ -498,11 +585,13 @@ fn application<R: SessionRuntime>(
         );
     }
     let callbacks = callbacks.lock().unwrap().clone();
+    let encoded_callbacks = encoded_callbacks.lock().unwrap().clone();
     Observation {
         events: call.events,
         frames: received,
         encoded,
         callbacks,
+        encoded_callbacks,
         observed_at_us,
         media_elapsed_us,
     }
@@ -599,6 +688,25 @@ pub fn check_decoded_callbacks() {
         assert_eq!(
             first, second,
             "actual decoded callback observation must replay: {mode:?}"
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub fn check_encoded_callbacks() {
+    let parameters = &[("packetization-mode", "1"), ("profile-level-id", "42e01f")];
+    for mode in [
+        ObservationMode::EncodedCallbackCloseSink,
+        ObservationMode::EncodedCallbackClosePeer,
+        ObservationMode::EncodedCallbackShutdown,
+        ObservationMode::EncodedCallbackOverflow,
+        ObservationMode::EncodedCallbackPanic,
+    ] {
+        let first = run_observed("H264", parameters, None, mode);
+        let second = run_observed("H264", parameters, None, mode);
+        assert_eq!(
+            first, second,
+            "native encoded callbacks must replay: {mode:?}"
         );
     }
 }

@@ -731,6 +731,11 @@ mod camera_sink;
 mod decoded_video_observer;
 pub use decoded_video_observer::{DecodedVideoFrameObservation, DecodedVideoFrameObserver};
 use decoded_video_observer::{RustDecodedVideoObserver, decoded_video_frame_observed};
+mod encoded_video_observer;
+pub use encoded_video_observer::{EncodedVideoFrameObservation, EncodedVideoFrameObserver};
+use encoded_video_observer::{
+    RustEncodedVideoObserver, encoded_video_frame_observed, encoded_video_observer_closed,
+};
 mod desktop_frame;
 mod desktop_memory;
 #[cfg(feature = "native")]
@@ -3820,6 +3825,13 @@ mod ffi {
         fn desktop_selection_notify(source: &RustDesktopSelectionObserver, event: u8);
         type RustCameraInitializationObserver;
         fn camera_options_initialized(source: &RustCameraInitializationObserver, status: i32);
+        type RustEncodedVideoObserver;
+        fn encoded_video_observer_closed(source: &RustEncodedVideoObserver);
+        fn encoded_video_frame_observed(
+            source: &RustEncodedVideoObserver,
+            frame: FfiEncodedVideoFrame,
+            dropped: u64,
+        );
         type RustDecodedVideoObserver;
         fn decoded_video_frame_observed(
             source: &RustDecodedVideoObserver,
@@ -4636,6 +4648,7 @@ mod ffi {
         fn decoder_get_info_value(decoder: &RustVideoDecoder) -> UniquePtr<NativeVideoDecoderInfo>;
     }
 
+    #[derive(Default)]
     struct FfiEncodedVideoFrame {
         available: bool,
         data: Vec<u8>,
@@ -10331,6 +10344,11 @@ mod ffi {
             peer: &NativePeerConnection,
             receiver: &NativeRtpReceiver,
             ordered: bool,
+        ) -> UniquePtr<NativeEncodedVideoSink>;
+        fn rtp_receiver_attach_observed_encoded_video_sink(
+            peer: &NativePeerConnection,
+            receiver: &NativeRtpReceiver,
+            observer: Box<RustEncodedVideoObserver>,
         ) -> UniquePtr<NativeEncodedVideoSink>;
         fn encoded_video_sink_take_frame(sink: &NativeEncodedVideoSink) -> FfiEncodedVideoFrame;
         fn encoded_video_sink_dropped_frames(sink: &NativeEncodedVideoSink) -> u64;
