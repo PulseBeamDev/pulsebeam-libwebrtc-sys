@@ -220,13 +220,17 @@ impl Source {
     }
 }
 
-// One explicit receive mode per actor receiver, matching the native audio
-// reservation and avoiding accidental decoded/encoded double consumption.
+// One explicit observation mode per receiver. Audio remains exclusive; video
+// may deliberately combine a passive ordered tap with normal native decoding.
 enum MediaSink {
     Pcm(crate::AudioSink),
     RawVideo(crate::VideoSink),
     EncodedAudio(EncodedAudioSink),
     EncodedVideo(EncodedVideoSink),
+    RawAndEncodedVideo {
+        raw: crate::VideoSink,
+        encoded: EncodedVideoSink,
+    },
 }
 impl MediaSink {
     fn close(&mut self) -> Result<(), PeerError> {
@@ -238,6 +242,13 @@ impl MediaSink {
                 sink.close();
                 Ok(())
             }
+            Self::RawAndEncodedVideo { raw, encoded } => {
+                // Preserve raw sink close admission before changing either
+                // observation. The encoded handle's close is infallible.
+                raw.close()?;
+                encoded.close();
+                Ok(())
+            }
         }
     }
     fn dropped_frames(&self) -> u64 {
@@ -246,6 +257,9 @@ impl MediaSink {
             Self::RawVideo(sink) => sink.dropped_frames(),
             Self::EncodedAudio(sink) => sink.dropped_frames(),
             Self::EncodedVideo(sink) => sink.dropped_frames(),
+            Self::RawAndEncodedVideo { raw, encoded } => raw
+                .dropped_frames()
+                .saturating_add(encoded.dropped_frames()),
         }
     }
 }
@@ -6172,13 +6186,20 @@ impl<R: SessionRuntime> Session<R> {
         Ok(())
     }
 
+    fn raw_video_sink(&self, receiver: SessionReceiverId) -> Result<&crate::VideoSink, PeerError> {
+        match self.media_sinks.get(&receiver) {
+            Some(MediaSink::RawVideo(sink) | MediaSink::RawAndEncodedVideo { raw: sink, .. }) => {
+                Ok(sink)
+            }
+            _ => Err(missing()),
+        }
+    }
+
     pub fn raw_video_sink_wants(
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<crate::VideoSinkWants>, PeerError> {
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         Ok(sink.wants())
     }
     pub fn update_raw_video_sink_wants(
@@ -6187,9 +6208,7 @@ impl<R: SessionRuntime> Session<R> {
         wants: &crate::VideoSinkWants,
     ) -> Result<(), PeerError> {
         self.check_open()?;
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         sink.update_wants(wants)
     }
 
@@ -6207,6 +6226,27 @@ impl<R: SessionRuntime> Session<R> {
             .attach_ordered_encoded_sink()?;
         self.media_sinks
             .insert(receiver, MediaSink::EncodedVideo(sink));
+        Ok(())
+    }
+
+    /// Observe ordered encoded video and native-decoded I420 on the SAME
+    /// receiver. The ordered tap forwards original frames unchanged to the
+    /// configured decoder; this does not select a codec or change interception.
+    /// A factory configured for encoded-only receive is refused as for raw video.
+    /// Drain the two existing frame APIs independently. Dropped-frame counts
+    /// aggregate both observer queues, not native decoder/playout losses.
+    pub fn attach_raw_and_encoded_video(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<(), PeerError> {
+        let receiver_ref = self.receiver_without_sink(receiver)?;
+        let track = receiver_ref.track().ok_or_else(missing)?;
+        // Refuse unavailable decoded output BEFORE reserving the native
+        // receiver-lifetime encoded observer. Later refusal drops this raw sink.
+        let raw = track.attach_sink_with_wants(&crate::VideoSinkWants::default())?;
+        let encoded = receiver_ref.attach_ordered_encoded_sink()?;
+        self.media_sinks
+            .insert(receiver, MediaSink::RawAndEncodedVideo { raw, encoded });
         Ok(())
     }
 
@@ -6236,9 +6276,7 @@ impl<R: SessionRuntime> Session<R> {
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<SessionRawVideoFrameId>, PeerError> {
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         let frame = sink.try_next_native_frame();
         frame
             .map(|frame| self.retain_raw_video_frame(frame))
@@ -6248,9 +6286,7 @@ impl<R: SessionRuntime> Session<R> {
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<crate::VideoFrame>, PeerError> {
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         Ok(sink.try_next_frame())
     }
     /// Pop a native raw-sink control callback without pumping native work.
@@ -6258,9 +6294,7 @@ impl<R: SessionRuntime> Session<R> {
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<crate::VideoSinkEvent>, PeerError> {
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         Ok(sink.try_next_event())
     }
 
@@ -6268,9 +6302,7 @@ impl<R: SessionRuntime> Session<R> {
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<u64, PeerError> {
-        let Some(MediaSink::RawVideo(sink)) = self.media_sinks.get(&receiver) else {
-            return Err(missing());
-        };
+        let sink = self.raw_video_sink(receiver)?;
         Ok(sink.dropped_events())
     }
 
@@ -6287,7 +6319,10 @@ impl<R: SessionRuntime> Session<R> {
         &mut self,
         receiver: SessionReceiverId,
     ) -> Result<Option<EncodedReceivedVideoFrame>, PeerError> {
-        let Some(MediaSink::EncodedVideo(sink)) = self.media_sinks.get(&receiver) else {
+        let Some(
+            MediaSink::EncodedVideo(sink) | MediaSink::RawAndEncodedVideo { encoded: sink, .. },
+        ) = self.media_sinks.get(&receiver)
+        else {
             return Err(missing());
         };
         Ok(sink.try_next_frame())

@@ -933,6 +933,9 @@ fn migrated_temporal_actor_receives_native_dd_and_wakes_for_rejection() {
                 session.set_sender_parameters(sender, parameters).unwrap();
             }
             assert_eq!(session.receiver(incoming).unwrap(), receiver);
+            // This explicitly encoded-only factory cannot supply decoded
+            // output. Refusal must not burn the native encoded reservation.
+            assert!(session.attach_raw_and_encoded_video(receiver).is_err());
             session.attach_encoded_video(receiver).unwrap();
             (session, receiver)
         })
