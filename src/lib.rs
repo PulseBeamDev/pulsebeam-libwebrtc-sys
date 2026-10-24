@@ -728,6 +728,9 @@ pub use source_encoded_video::{RecordableVideoFrame, VideoSourceEncodedSink};
 pub use video_sink_wants::{VideoSinkAggregates, VideoSinkFrameSize, VideoSinkWants};
 mod camera_options;
 mod camera_sink;
+mod decoded_video_observer;
+pub use decoded_video_observer::{DecodedVideoFrameObservation, DecodedVideoFrameObserver};
+use decoded_video_observer::{RustDecodedVideoObserver, decoded_video_frame_observed};
 mod desktop_frame;
 mod desktop_memory;
 #[cfg(feature = "native")]
@@ -3817,6 +3820,11 @@ mod ffi {
         fn desktop_selection_notify(source: &RustDesktopSelectionObserver, event: u8);
         type RustCameraInitializationObserver;
         fn camera_options_initialized(source: &RustCameraInitializationObserver, status: i32);
+        type RustDecodedVideoObserver;
+        fn decoded_video_frame_observed(
+            source: &RustDecodedVideoObserver,
+            frame: UniquePtr<NativeRawVideoFrame>,
+        );
         type RustRawCameraSink;
         fn camera_raw_sink_present(source: &RustRawCameraSink) -> bool;
         fn camera_raw_frame(
@@ -9896,6 +9904,13 @@ mod ffi {
             track: &NativeVideoTrack,
             source: &NativeVideoSourceView,
             wants: &FfiVideoSinkWants,
+            status: &mut u8,
+        ) -> UniquePtr<NativeVideoSink>;
+        fn video_track_attach_observed_sink(
+            track: &NativeVideoTrack,
+            source: &NativeVideoSourceView,
+            wants: &FfiVideoSinkWants,
+            observer: Box<RustDecodedVideoObserver>,
             status: &mut u8,
         ) -> UniquePtr<NativeVideoSink>;
         fn video_source_attach_sink(

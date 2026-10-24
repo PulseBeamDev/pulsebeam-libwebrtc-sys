@@ -5,6 +5,10 @@ use serde::Serialize;
 use std::{
     collections::{BTreeSet, HashMap},
     net::IpAddr,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -146,7 +150,7 @@ impl<R: SessionRuntime> Call<R> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct FrameObservation {
     width: u32,
     height: u32,
@@ -161,6 +165,18 @@ enum ObservationMode {
     DualCloseSink,
     DualClosePeer,
     DualShutdown,
+    CallbackCloseSink,
+    CallbackClosePeer,
+    CallbackShutdown,
+    CallbackOverflow,
+    CallbackPanic,
+}
+
+struct ObserverDrop(Arc<AtomicBool>);
+impl Drop for ObserverDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -168,6 +184,7 @@ struct Observation {
     events: Vec<String>,
     frames: Vec<FrameObservation>,
     encoded: Vec<(u32, Vec<u8>)>,
+    callbacks: Vec<FrameObservation>,
     observed_at_us: u128,
     media_elapsed_us: u128,
 }
@@ -180,8 +197,20 @@ fn application<R: SessionRuntime>(
     mode: ObservationMode,
     mut progress: impl FnMut(),
     mut now: impl FnMut() -> Duration,
+    mut after_shutdown: impl FnMut(),
 ) -> Observation {
     let dual_observation = mode != ObservationMode::RawOnly;
+    let callback_mode = matches!(
+        mode,
+        ObservationMode::CallbackCloseSink
+            | ObservationMode::CallbackClosePeer
+            | ObservationMode::CallbackShutdown
+            | ObservationMode::CallbackOverflow
+            | ObservationMode::CallbackPanic
+    );
+    let overflow = mode == ObservationMode::CallbackOverflow;
+    let callbacks = Arc::new(Mutex::new(Vec::<FrameObservation>::new()));
+    let observer_dropped = Arc::new(AtomicBool::new(false));
     let mut call = Call::new(runtimes, resources);
     let source = call.sessions[0].create_raw_video_source().unwrap();
     let transceiver = call.sessions[0]
@@ -222,9 +251,40 @@ fn application<R: SessionRuntime>(
     call.negotiate(codec_name, &mut progress);
     let receiver = call.receiver.unwrap();
     if dual_observation {
-        call.sessions[1]
-            .attach_raw_and_encoded_video(receiver)
-            .unwrap();
+        if callback_mode {
+            {
+                let snapshots = callbacks.clone();
+                let guard = ObserverDrop(observer_dropped.clone());
+                call.sessions[1]
+                    .attach_raw_and_encoded_video_with_observer(
+                        receiver,
+                        move |observation: DecodedVideoFrameObservation| {
+                            let _ = &guard;
+                            if mode == ObservationMode::CallbackPanic {
+                                panic!("intentional decoded observer panic");
+                            }
+                            let frame = observation.frame.expect("actual native I420 snapshot");
+                            let mut snapshots = snapshots.lock().unwrap();
+                            assert!(
+                                snapshots.len() < 8,
+                                "fixture only submits eight actual source frames"
+                            );
+                            snapshots.push(FrameObservation {
+                                width: frame.width,
+                                height: frame.height,
+                                timestamp_us: frame.timestamp_us,
+                                rtp_timestamp: frame.rtp_timestamp,
+                                visible_i420: frame.buffer.as_bytes().to_vec(),
+                            });
+                        },
+                    )
+                    .unwrap();
+            }
+        } else {
+            call.sessions[1]
+                .attach_raw_and_encoded_video(receiver)
+                .unwrap();
+        }
         assert!(call.sessions[1].attach_raw_video(receiver).is_err());
         assert!(call.sessions[1].attach_encoded_video(receiver).is_err());
         assert!(
@@ -287,7 +347,8 @@ fn application<R: SessionRuntime>(
                 }
             }
         }
-        if let Some(frame) = call.sessions[1].try_raw_video_frame(receiver).unwrap()
+        if (!overflow || callbacks.lock().unwrap().len() >= 6)
+            && let Some(frame) = call.sessions[1].try_raw_video_frame(receiver).unwrap()
             && received.len() < 2
         {
             assert_eq!((frame.width, frame.height), (WIDTH, HEIGHT));
@@ -322,11 +383,31 @@ fn application<R: SessionRuntime>(
                 .all(|frame| encoded_timestamps.contains(&frame.rtp_timestamp)),
             "encoded and native decoded output must include the same actual RTP frames on this receiver"
         );
-        assert_eq!(call.sessions[1].dropped_frames(receiver).unwrap(), 0);
+        if overflow {
+            assert!(
+                call.sessions[1].dropped_raw_video_frames(receiver).unwrap() > 0,
+                "complete callbacks must survive actual polling retention loss"
+            );
+        } else {
+            assert_eq!(call.sessions[1].dropped_frames(receiver).unwrap(), 0);
+            assert_eq!(
+                call.sessions[1].dropped_raw_video_frames(receiver).unwrap(),
+                0
+            );
+        }
         assert_eq!(
-            call.sessions[1].dropped_raw_video_frames(receiver).unwrap(),
-            0
+            call.sessions[1]
+                .raw_video_observer_failed(receiver)
+                .unwrap(),
+            mode == ObservationMode::CallbackPanic
         );
+        if callback_mode && mode != ObservationMode::CallbackPanic {
+            let snapshots = callbacks.lock().unwrap();
+            assert!(
+                received.iter().all(|frame| snapshots.contains(frame)),
+                "callback pixels and RTP identity must match actual native polling output"
+            );
+        }
         assert_eq!(
             call.sessions[1]
                 .dropped_encoded_video_frames(receiver)
@@ -341,7 +422,13 @@ fn application<R: SessionRuntime>(
             0
         );
     }
-    if mode == ObservationMode::DualCloseSink {
+    if matches!(
+        mode,
+        ObservationMode::DualCloseSink
+            | ObservationMode::CallbackCloseSink
+            | ObservationMode::CallbackOverflow
+            | ObservationMode::CallbackPanic
+    ) {
         call.sessions[1].close_media_sink(receiver).unwrap();
         assert!(call.sessions[1].try_raw_video_frame(receiver).is_err());
         assert!(call.sessions[1].try_video_frame(receiver).is_err());
@@ -375,7 +462,12 @@ fn application<R: SessionRuntime>(
     for index in 0..2 {
         // Both other combined cases leave the sinks ATTACHED through peer
         // retirement or direct shutdown, exercising dependent cleanup too.
-        if index != 1 || mode != ObservationMode::DualShutdown {
+        if index != 1
+            || !matches!(
+                mode,
+                ObservationMode::DualShutdown | ObservationMode::CallbackShutdown
+            )
+        {
             call.sessions[index].close_peer(call.peers[index]).unwrap();
         }
         call.sessions[index].shutdown().unwrap();
@@ -387,10 +479,25 @@ fn application<R: SessionRuntime>(
             received[0].visible_i420.as_slice()
         );
     }
+    if callback_mode {
+        assert!(
+            observer_dropped.load(Ordering::Acquire),
+            "native close/shutdown must release callback owner"
+        );
+        let count = callbacks.lock().unwrap().len();
+        after_shutdown();
+        assert_eq!(
+            callbacks.lock().unwrap().len(),
+            count,
+            "no callback after native removal/shutdown"
+        );
+    }
+    let callbacks = callbacks.lock().unwrap().clone();
     Observation {
         events: call.events,
         frames: received,
         encoded,
+        callbacks,
         observed_at_us,
         media_elapsed_us,
     }
@@ -429,6 +536,15 @@ fn run_observed(
                 world.advance(Duration::from_millis(1)).unwrap();
             },
             || world.now(),
+            || {
+                // Endpoints may already be retired. Pump native work only:
+                // delivering old packets to removed destinations is unrelated
+                // to decoded callback lifetime and is correctly rejected.
+                for _ in 0..10 {
+                    world.advance(Duration::from_millis(1)).unwrap();
+                    assert!(!world.pump(256).blocked);
+                }
+            },
         )
     };
     eprintln!("CONTROLLED_MEDIA_END");
@@ -459,6 +575,25 @@ pub fn check_dual_observation() {
         assert_eq!(
             first, second,
             "same-receiver dual native observation must replay: {mode:?}"
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub fn check_decoded_callbacks() {
+    let parameters = &[("packetization-mode", "1"), ("profile-level-id", "42e01f")];
+    for mode in [
+        ObservationMode::CallbackCloseSink,
+        ObservationMode::CallbackClosePeer,
+        ObservationMode::CallbackShutdown,
+        ObservationMode::CallbackOverflow,
+        ObservationMode::CallbackPanic,
+    ] {
+        let first = run_observed("H264", parameters, None, mode);
+        let second = run_observed("H264", parameters, None, mode);
+        assert_eq!(
+            first, second,
+            "actual decoded callback observation must replay: {mode:?}"
         );
     }
 }

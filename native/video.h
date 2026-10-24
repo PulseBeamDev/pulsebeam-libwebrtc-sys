@@ -540,6 +540,10 @@ FfiVideoSinkWants video_sink_default_wants() noexcept;
 std::unique_ptr<NativeVideoSink> video_track_attach_sink(
     const NativeVideoTrack&, const NativeVideoSourceView&,
     const FfiVideoSinkWants&, std::uint8_t&) noexcept;
+struct RustDecodedVideoObserver;
+std::unique_ptr<NativeVideoSink> video_track_attach_observed_sink(
+    const NativeVideoTrack&, const NativeVideoSourceView&,
+    const FfiVideoSinkWants&, rust::Box<RustDecodedVideoObserver>, std::uint8_t&) noexcept;
 std::unique_ptr<NativeVideoSink> video_source_attach_sink(
     const NativeVideoSourceView&, const FfiVideoSinkWants&, std::uint8_t&) noexcept;
 std::uint8_t video_sink_update_wants(const NativeVideoSink&, const FfiVideoSinkWants&) noexcept;

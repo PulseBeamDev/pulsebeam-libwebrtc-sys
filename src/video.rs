@@ -1374,6 +1374,29 @@ impl VideoTrack {
         &self,
         wants: &crate::VideoSinkWants,
     ) -> Result<VideoSink, PeerError> {
+        self.attach_sink_impl(wants, None)
+    }
+
+    /// Observe actual decoded callbacks synchronously before polling retention
+    /// loss. This installs no additional sink or native sink wants. It is not
+    /// presentation feedback. Callback panics are exposed by the returned sink.
+    pub fn attach_sink_with_observer(
+        &self,
+        observer: impl crate::DecodedVideoFrameObserver,
+    ) -> Result<VideoSink, PeerError> {
+        let observer =
+            crate::decoded_video_observer::RustDecodedVideoObserver::new(Box::new(observer));
+        self.attach_sink_impl(&crate::VideoSinkWants::default(), Some(observer))
+    }
+
+    fn attach_sink_impl(
+        &self,
+        wants: &crate::VideoSinkWants,
+        observer: Option<(
+            Box<crate::decoded_video_observer::RustDecodedVideoObserver>,
+            crate::decoded_video_observer::ObserverStatus,
+        )>,
+    ) -> Result<VideoSink, PeerError> {
         if self
             .inner
             ._peer
@@ -1390,18 +1413,35 @@ impl VideoTrack {
             .source()
             .ok_or_else(|| native_error("native video track has no source"))?;
         let mut status = 0;
-        let native = ffi::video_track_attach_sink(
-            self.native(),
-            source.native(),
-            &wants.native(),
-            &mut status,
-        );
+        let (native, observer_status) = if let Some((observer, observer_status)) = observer {
+            (
+                ffi::video_track_attach_observed_sink(
+                    self.native(),
+                    source.native(),
+                    &wants.native(),
+                    observer,
+                    &mut status,
+                ),
+                Some(observer_status),
+            )
+        } else {
+            (
+                ffi::video_track_attach_sink(
+                    self.native(),
+                    source.native(),
+                    &wants.native(),
+                    &mut status,
+                ),
+                None,
+            )
+        };
         if native.is_null() {
             Err(sink_operation_error(status))
         } else {
             Ok(VideoSink {
                 inner: Rc::new(VideoSinkInner {
                     native,
+                    observer_status,
                     _track: self.inner.clone(),
                     _source: source,
                 }),
@@ -1657,12 +1697,22 @@ pub struct VideoSink {
     inner: Rc<VideoSinkInner>,
 }
 struct VideoSinkInner {
+    observer_status: Option<crate::decoded_video_observer::ObserverStatus>,
     // Detach before releasing the exact SDK target and originating factory.
     native: cxx::UniquePtr<ffi::NativeVideoSink>,
     _track: Rc<TrackInner>,
     _source: VideoSourceView,
 }
 impl VideoSink {
+    /// True after a synchronous decoded observer panicked and was retired.
+    /// Polling queue loss is separate and remains available as dropped_frames.
+    pub fn observer_failed(&self) -> bool {
+        self.inner
+            .observer_status
+            .as_ref()
+            .is_some_and(|status| status.failed())
+    }
+
     fn native(&self) -> &ffi::NativeVideoSink {
         self.inner.native.as_ref().expect("validated video sink")
     }
