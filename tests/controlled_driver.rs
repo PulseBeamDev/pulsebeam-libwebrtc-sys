@@ -572,17 +572,57 @@ fn peers_share_a_caller_pumped_thread_and_reject_threaded_configurations() {
     assert!(ControlledPeerDriver::new(&clock).is_ok());
 }
 
+trait PacketDelivery {
+    fn deliver_ready(&self);
+}
+
+impl PacketDelivery for ControlledSimulatedNetwork {
+    fn deliver_ready(&self) {
+        while let Some(packet) = self.next_packet() {
+            self.deliver(packet.id).unwrap();
+        }
+    }
+}
+
+struct FirstDtlsFlightLoss {
+    network: ControlledSimulatedNetwork,
+    dropped: std::cell::Cell<bool>,
+}
+
+impl std::ops::Deref for FirstDtlsFlightLoss {
+    type Target = ControlledSimulatedNetwork;
+
+    fn deref(&self) -> &Self::Target {
+        &self.network
+    }
+}
+
+impl PacketDelivery for FirstDtlsFlightLoss {
+    fn deliver_ready(&self) {
+        while let Some(packet) = self.network.next_packet() {
+            // DTLS handshake record, not STUN. Fault injection never substitutes
+            // a handshake response: recovery must come from native retransmission.
+            if packet.kind == OutboundKind::Udp
+                && packet.payload.starts_with(&[0x16, 0xfe])
+                && !self.dropped.replace(true)
+            {
+                self.network.drop_packet(packet.id).unwrap();
+            } else {
+                self.network.deliver(packet.id).unwrap();
+            }
+        }
+    }
+}
+
 fn pump(
     driver: &ControlledPeerDriver,
     queues: &TaskQueueFactory,
     clock: &ManualClock,
-    network: &ControlledSimulatedNetwork,
+    network: &impl PacketDelivery,
 ) {
     assert!(driver.run_ready());
     queues.run_ready();
-    while let Some(packet) = network.next_packet() {
-        network.deliver(packet.id).unwrap();
-    }
+    network.deliver_ready();
     let next = [driver.next_deadline(), queues.next_deadline()]
         .into_iter()
         .flatten()
@@ -601,7 +641,7 @@ fn completed(
     driver: &ControlledPeerDriver,
     queues: &TaskQueueFactory,
     clock: &ManualClock,
-    network: &ControlledSimulatedNetwork,
+    network: &impl PacketDelivery,
 ) -> Option<SessionDescription> {
     for _ in 0..10_000 {
         while let Some(event) = peer.try_next_event() {
@@ -626,7 +666,7 @@ fn gathered(
     driver: &ControlledPeerDriver,
     queues: &TaskQueueFactory,
     clock: &ManualClock,
-    network: &ControlledSimulatedNetwork,
+    network: &impl PacketDelivery,
 ) -> SessionDescription {
     for _ in 0..10_000 {
         while let Some(event) = peer.try_next_event() {
@@ -662,8 +702,8 @@ fn connection_trace(event: &PeerConnectionEvent) -> Option<String> {
 }
 
 #[test]
-fn two_peers_exchange_gathered_sdp_with_virtual_time_only() {
-    if isolated::run_in_child("two_peers_exchange_gathered_sdp_with_virtual_time_only") {
+fn two_peers_retransmit_lost_dtls_flight_with_virtual_time_only() {
+    if isolated::run_in_child("two_peers_retransmit_lost_dtls_flight_with_virtual_time_only") {
         return;
     }
     let _serial = DRIVER_TEST_LOCK
@@ -687,7 +727,12 @@ fn connect_with_seed() -> (
         .build()
         .unwrap();
     let driver = ControlledPeerDriver::new(&clock).unwrap();
-    let network = ControlledSimulatedNetwork::new(&clock, &driver).unwrap();
+    let network = FirstDtlsFlightLoss {
+        network: ControlledSimulatedNetwork::new(&clock, &driver).unwrap(),
+        dropped: std::cell::Cell::new(false),
+    };
+    let handshake_started = clock.now();
+    let handshake_deadline = handshake_started + Duration::from_secs(5);
     #[cfg(target_os = "linux")]
     let threads_before = native_thread_ids();
     let endpoint_a = network
@@ -864,19 +909,26 @@ fn connect_with_seed() -> (
                 bob_trace.push(state);
             }
         }
-        if alice_connected && bob_connected && bob_channel.is_some() {
+        if (alice_connected && bob_connected && bob_channel.is_some())
+            || clock.now() >= handshake_deadline
+        {
             break;
         }
         pump(&driver, &queues, &clock, &network);
     }
     assert!(
         alice_connected && bob_connected,
-        "ICE did not connect under virtual time"
+        "native ICE/DTLS did not connect within five virtual seconds after first-flight loss"
+    );
+    assert!(
+        network.dropped.get(),
+        "the DTLS loss fault was not exercised"
     );
     let mut bob_channel = bob_channel.expect("remote data channel was not announced");
     for _ in 0..10_000 {
-        if alice_channel.state() == DataChannelState::Open
-            && bob_channel.state() == DataChannelState::Open
+        if (alice_channel.state() == DataChannelState::Open
+            && bob_channel.state() == DataChannelState::Open)
+            || clock.now() >= handshake_deadline
         {
             break;
         }
@@ -884,6 +936,10 @@ fn connect_with_seed() -> (
     }
     assert_eq!(alice_channel.state(), DataChannelState::Open);
     assert_eq!(bob_channel.state(), DataChannelState::Open);
+    assert!(
+        clock.now() <= handshake_deadline,
+        "DTLS/SCTP startup exceeded five virtual seconds"
+    );
     assert_eq!(
         alice_channel.send(DataChannelMessage::binary([1, 2, 3, 0])),
         DataChannelSendResult::Sent

@@ -8,7 +8,7 @@ const CORE_IOS_PATCH_SHA256: &str =
 const ENCODER_SWITCH_PATCH_SHA256: &str =
     "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a";
 const RUNTIME_RESOURCES_PATCH_SHA256: &str =
-    "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02";
+    "937d2c42fe925b7703b0319c0eb80d6dfdf09194005790520d211ed00e4454d8";
 const RECORDABLE_IDENTITY_PATCH_SHA256: &str =
     "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65";
 const LIBVPX_REPOSITORY: &str = "https://chromium.googlesource.com/webm/libvpx.git";

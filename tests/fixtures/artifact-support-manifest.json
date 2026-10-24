@@ -27,7 +27,7 @@
       "patch_sha256": "c05d3e629c6c59f621e0c89be1a26fce31ee6625a9763d4a3d9f492f80454037",
       "encoder_switch_patch_sha256": "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a",
       "state": "pristine",
-      "runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+      "runtime_resources_patch_sha256": "937d2c42fe925b7703b0319c0eb80d6dfdf09194005790520d211ed00e4454d8",
       "recordable_identity_patch_sha256": "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65"
     },
     "depot_tools": {
@@ -40,7 +40,7 @@
     "target": "linux-x86_64",
     "cargo_target": "x86_64-unknown-linux-gnu"
   },
-  "native_configuration_sha256": "e657229629528c2730ba38ae290bccf8d69f8758978b9181ee7e69d9e81996e8",
+  "native_configuration_sha256": "914ea47c65cb6832d99f6d868a4f6344fb70b989314217e7a35aa1a6e5328737",
   "abi": {
     "toolchain": "artifact-support",
     "cxx_standard": "C++20",
@@ -121,7 +121,7 @@
       ],
       "compiler_wrapper_sha256": "75de5bdd37e76968e73b79b4475e054c9365470af36cb29ffd353bd694d4b71d"
     },
-    "source_runtime_resources_patch_sha256": "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02",
+    "source_runtime_resources_patch_sha256": "937d2c42fe925b7703b0319c0eb80d6dfdf09194005790520d211ed00e4454d8",
     "source_recordable_identity_patch_sha256": "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65",
     "libvpx_revision": "31af37b1bd2774d11a932c1cd9a3849328375f64",
     "libvpx_worker_patch_sha256": "22dba73c693cbd1948e9c819fde2ad55c3ecb8891c13ddddab2729302df87f3a"

@@ -14,7 +14,7 @@ webrtc_core_ios_build_gn_sha256 := "ed533d68269e01a70f7c40567099cd9f7fd5c52c66ea
 webrtc_encoder_switch_patch := root + "/patches/encoder-preference-order-fallback.patch"
 webrtc_encoder_switch_patch_sha256 := "8206418589692b8f5724ce9bad820fcd2d5a5b1d531e6bff8f64b53ca601d55a"
 webrtc_runtime_resources_patch := root + "/patches/runtime-codec-core-budget.patch"
-webrtc_runtime_resources_patch_sha256 := "0746c63e599fd0bedde9f41c3be254f20c9ca028f37250278acdeb392e685e02"
+webrtc_runtime_resources_patch_sha256 := "937d2c42fe925b7703b0319c0eb80d6dfdf09194005790520d211ed00e4454d8"
 webrtc_recordable_identity_patch := root + "/patches/recordable-encoded-frame-rtp-identity.patch"
 webrtc_recordable_identity_patch_sha256 := "1530938c01084f4c197030fd8a9d87d5ca3771cd2e7ff4a51887b1bee1c5cc65"
 libvpx_url := "https://chromium.googlesource.com/webm/libvpx.git"
@@ -256,7 +256,7 @@ _source-state flavor target:
     actual_patch=$(shasum -a 256 "$patch" | awk '{print $1}')
     test "$actual_patch" = "{{ webrtc_core_ios_patch_sha256 }}" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=patch-digest expected={{ webrtc_core_ios_patch_sha256 }} actual=$actual_patch" >&2; exit 1; }
     test -z "$(git -C "$src" ls-files --others --exclude-standard)" || { echo "source state failed: target={{ target }} flavor={{ flavor }} invariant=checkout-cleanliness expected=$expected actual=untracked-files" >&2; exit 1; }
-    git -C "$src" diff --cached --quiet && test -z "$(git -C "$src" diff --name-only -- . ':!BUILD.gn' ':!media/engine/webrtc_video_engine.cc' ':!media/engine/webrtc_video_engine_unittest.cc' ':!call/call.cc' ':!call/call_config.h' ':!api/video/recordable_encoded_frame.h' ':!video/video_receive_stream2.cc')" || { echo 'source state failed: unexpected modification outside pinned patches' >&2; exit 1; }
+    git -C "$src" diff --cached --quiet && test -z "$(git -C "$src" diff --name-only -- . ':!BUILD.gn' ':!media/engine/webrtc_video_engine.cc' ':!media/engine/webrtc_video_engine_unittest.cc' ':!call/call.cc' ':!call/call_config.h' ':!rtc_base/openssl_stream_adapter.cc' ':!api/video/recordable_encoded_frame.h' ':!video/video_receive_stream2.cc')" || { echo 'source state failed: unexpected modification outside pinned patches' >&2; exit 1; }
     encoder_patch="{{ webrtc_encoder_switch_patch }}"
     test "$(shasum -a 256 "$encoder_patch" | awk '{print $1}')" = "{{ webrtc_encoder_switch_patch_sha256 }}" || { echo 'source state failed: encoder-switch patch digest mismatch' >&2; exit 1; }
     encoder_paths=(media/engine/webrtc_video_engine.cc media/engine/webrtc_video_engine_unittest.cc)
@@ -270,7 +270,7 @@ _source-state flavor target:
     test "$actual_encoder_patch" = "{{ webrtc_encoder_switch_patch_sha256 }}" || { echo 'source state failed: encoder-switch source differs from pinned patch' >&2; exit 1; }
     runtime_patch="{{ webrtc_runtime_resources_patch }}"
     test "$(shasum -a 256 "$runtime_patch" | awk '{print $1}')" = "{{ webrtc_runtime_resources_patch_sha256 }}" || { echo 'source state failed: runtime-resources patch digest mismatch' >&2; exit 1; }
-    runtime_paths=(call/call.cc call/call_config.h)
+    runtime_paths=(call/call.cc call/call_config.h rtc_base/openssl_stream_adapter.cc)
     if git -C "$src" diff --quiet -- "${runtime_paths[@]}"; then
       git -C "$src" apply --check "$runtime_patch"
       rm -rf "{{ work }}/package/webrtc-{{ flavor }}-{{ target }}"
