@@ -1583,6 +1583,18 @@ same receiver-lifetime attachment limit and bounded output queue. Ordered
 observation also bounds pending metadata to 512 frames/4 MiB. Session encoded
 video output uses this ordered mode, not raw interception.
 
+For observations independent of polling retention, use
+`RtpReceiver::attach_ordered_encoded_sink_with_observer()` or
+`Session::attach_raw_and_encoded_video_with_observers()` for both encoded and
+native-decoded callbacks on the same receiver. The encoded callback owns its
+access unit and metadata, still bounded to 4 MiB per frame. Its `Dropped` event
+reports unavailable native identity or pending metadata, not polling queue
+eviction. Neither the decoder nor the existing polling queues change. Native
+I420 can arrive before or after the encoded callback. Callbacks must not block,
+await, or synchronously control the SDK. A panic retires the callback and sets
+`EncodedVideoSink::observer_failed()` (or the session's
+`encoded_video_observer_failed()`). Closing the sink retires its observer too.
+
 `RtpTransceiver::header_extensions_to_negotiate()` returns the native complete
 ordered extension snapshot. Change only each entry's `direction`, then apply
 that full vector with `set_header_extensions_to_negotiate()` before the next

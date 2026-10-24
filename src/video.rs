@@ -2876,7 +2876,7 @@ impl RtpReceiver {
     /// ever be attached to each receiver during a peer's lifetime. Closing
     /// the sink restores pass-through decoding; it cannot be reattached.
     pub fn attach_encoded_sink(&self) -> Result<EncodedVideoSink, PeerError> {
-        self.attach_encoded_sink_with_ordering(false)
+        self.attach_encoded_sink_with_ordering(false, None)
     }
 
     /// Observe encoded video after native reference finding and frame-buffer
@@ -2885,12 +2885,27 @@ impl RtpReceiver {
     /// accepting the negotiated format is required. The same receiver-lifetime
     /// attachment limit applies across both encoded sink modes.
     pub fn attach_ordered_encoded_sink(&self) -> Result<EncodedVideoSink, PeerError> {
-        self.attach_encoded_sink_with_ordering(true)
+        self.attach_encoded_sink_with_ordering(true, None)
+    }
+
+    /// Observe native ordered encoded callbacks before independent polling
+    /// retention. The configured decoder still receives the original frames.
+    pub fn attach_ordered_encoded_sink_with_observer(
+        &self,
+        observer: impl crate::EncodedVideoFrameObserver,
+    ) -> Result<EncodedVideoSink, PeerError> {
+        let observer =
+            crate::encoded_video_observer::RustEncodedVideoObserver::new(Box::new(observer));
+        self.attach_encoded_sink_with_ordering(true, Some(observer))
     }
 
     fn attach_encoded_sink_with_ordering(
         &self,
         ordered: bool,
+        observer: Option<(
+            Box<crate::encoded_video_observer::RustEncodedVideoObserver>,
+            crate::encoded_video_observer::ObserverStatus,
+        )>,
     ) -> Result<EncodedVideoSink, PeerError> {
         if self.peer.closed.get() {
             return Err(PeerError {
@@ -2898,8 +2913,25 @@ impl RtpReceiver {
                 message: "peer is closed".into(),
             });
         }
-        let native =
-            ffi::rtp_receiver_attach_encoded_video_sink(self.peer.native(), self.native(), ordered);
+        let (native, observer_status) = if let Some((observer, status)) = observer {
+            (
+                ffi::rtp_receiver_attach_observed_encoded_video_sink(
+                    self.peer.native(),
+                    self.native(),
+                    observer,
+                ),
+                Some(status),
+            )
+        } else {
+            (
+                ffi::rtp_receiver_attach_encoded_video_sink(
+                    self.peer.native(),
+                    self.native(),
+                    ordered,
+                ),
+                None,
+            )
+        };
         if native.is_null() {
             return Err(PeerError {
                 kind: PeerErrorKind::InvalidState,
@@ -2908,6 +2940,7 @@ impl RtpReceiver {
         }
         Ok(EncodedVideoSink {
             native,
+            observer_status,
             _peer: self.peer.clone(),
         })
     }
@@ -2953,17 +2986,16 @@ pub enum DecodeTargetIndication {
 
 /// A bounded receive-only queue, exclusive to one receiver. A full queue
 /// discards the oldest frame. A frame too large for the 4 MiB cap is dropped.
-/// No transformed frame is forwarded to the built-in decoder while active.
+/// Raw interception suppresses decoding; ordered observation leaves it active.
 pub struct EncodedVideoSink {
     native: cxx::UniquePtr<ffi::NativeEncodedVideoSink>,
+    observer_status: Option<crate::encoded_video_observer::ObserverStatus>,
     _peer: Rc<PeerInner>,
 }
 
-impl EncodedVideoSink {
-    pub fn try_next_frame(&self) -> Option<EncodedReceivedVideoFrame> {
-        let frame =
-            ffi::encoded_video_sink_take_frame(self.native.as_ref().expect("validated sink"));
-        frame.available.then_some(EncodedReceivedVideoFrame {
+impl EncodedReceivedVideoFrame {
+    pub(crate) fn from_native(frame: ffi::FfiEncodedVideoFrame) -> Option<Self> {
+        frame.available.then_some(Self {
             data: frame.data,
             mime_type: frame.mime_type,
             rtp_timestamp: frame.rtp_timestamp,
@@ -2989,6 +3021,21 @@ impl EncodedVideoSink {
                 })
                 .collect(),
         })
+    }
+}
+
+impl EncodedVideoSink {
+    pub fn try_next_frame(&self) -> Option<EncodedReceivedVideoFrame> {
+        EncodedReceivedVideoFrame::from_native(ffi::encoded_video_sink_take_frame(
+            self.native.as_ref().expect("validated sink"),
+        ))
+    }
+
+    /// True after a synchronous encoded observer panicked and was retired.
+    pub fn observer_failed(&self) -> bool {
+        self.observer_status
+            .as_ref()
+            .is_some_and(|status| status.failed())
     }
 
     /// Saturating count of dropped access units, including oversize frames.

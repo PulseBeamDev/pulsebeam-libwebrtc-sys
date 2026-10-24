@@ -584,6 +584,10 @@ bool rtp_receiver_request_keyframe(
 std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
     bool ordered) noexcept;
+struct RustEncodedVideoObserver;
+std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_observed_encoded_video_sink(
+    const NativePeerConnection&, const NativeRtpReceiver&,
+    rust::Box<RustEncodedVideoObserver>) noexcept;
 FfiEncodedVideoFrame encoded_video_sink_take_frame(
     const NativeEncodedVideoSink& sink) noexcept;
 std::uint64_t encoded_video_sink_dropped_frames(

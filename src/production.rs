@@ -6291,6 +6291,36 @@ impl<R: SessionRuntime> Session<R> {
         Ok(())
     }
 
+    /// Observe both actual native callback streams independently of polling
+    /// retention. Encoded callback metadata loss and panic retirement remain
+    /// explicit; callback order relative to I420 is not fixed.
+    pub fn attach_raw_and_encoded_video_with_observers(
+        &mut self,
+        receiver: SessionReceiverId,
+        decoded: impl crate::DecodedVideoFrameObserver,
+        encoded: impl crate::EncodedVideoFrameObserver,
+    ) -> Result<(), PeerError> {
+        let receiver_ref = self.receiver_without_sink(receiver)?;
+        let track = receiver_ref.track().ok_or_else(missing)?;
+        let raw = track.attach_sink_with_observer(decoded)?;
+        let encoded = receiver_ref.attach_ordered_encoded_sink_with_observer(encoded)?;
+        self.media_sinks
+            .insert(receiver, MediaSink::RawAndEncodedVideo { raw, encoded });
+        Ok(())
+    }
+
+    pub fn encoded_video_observer_failed(
+        &self,
+        receiver: SessionReceiverId,
+    ) -> Result<bool, PeerError> {
+        match self.media_sinks.get(&receiver) {
+            Some(
+                MediaSink::EncodedVideo(sink) | MediaSink::RawAndEncodedVideo { encoded: sink, .. },
+            ) => Ok(sink.observer_failed()),
+            _ => Err(missing()),
+        }
+    }
+
     /// Detach before releasing the actor's sink. Audio may then switch modes;
     /// encoded-video reattachment retains its native receiver-lifetime limit.
     /// Owned frames already returned to the caller are unaffected.

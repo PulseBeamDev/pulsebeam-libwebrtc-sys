@@ -21,3 +21,8 @@ fn same_receiver_observes_ordered_h264_and_native_i420_without_interception() {
 fn decoded_callbacks_precede_polling_loss_and_retire_safely() {
     managed_video::check_decoded_callbacks();
 }
+
+#[test]
+fn encoded_callbacks_survive_polling_loss_and_retire_safely() {
+    managed_video::check_encoded_callbacks();
+}

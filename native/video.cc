@@ -495,19 +495,37 @@ class CameraFrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFra
 // the recordable-frame callback then releases its exact native RTP identity.
 // Keep one transformer per receiver lifetime: replacing upstream's delegate
 // does not reset the old callback registration in this pinned revision.
+// Dispatch owned observations only after releasing collector locks. Shared
+// ownership fences concurrent callback retirement and native sink teardown.
+struct EncodedObserverNotification {
+  std::shared_ptr<rust::Box<RustEncodedVideoObserver>> observer;
+  FfiEncodedVideoFrame frame{};
+  std::uint64_t dropped = 0;
+  ~EncodedObserverNotification() {
+    if (observer && (frame.available || dropped))
+      encoded_video_frame_observed(**observer, std::move(frame), dropped);
+  }
+};
+
 class EncodedFrameCollector
     : public webrtc::FrameTransformerInterface,
       public webrtc::VideoSinkInterface<webrtc::RecordableEncodedFrame> {
  public:
-  EncodedFrameCollector(std::shared_ptr<ReadinessSignal> readiness, bool ordered)
-      : readiness_(std::move(readiness)), ordered_(ordered) {}
+  EncodedFrameCollector(std::shared_ptr<ReadinessSignal> readiness, bool ordered,
+      std::optional<rust::Box<RustEncodedVideoObserver>> observer = std::nullopt)
+      : readiness_(std::move(readiness)), ordered_(ordered) {
+    if (observer) observer_ =
+        std::make_shared<rust::Box<RustEncodedVideoObserver>>(std::move(*observer));
+  }
   void Transform(std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
     ReadinessNotification notify{};
+    EncodedObserverNotification observation;
     std::shared_ptr<StockFrameCallbackSlot> callback;
     {
       std::lock_guard lock(mutex_);
       if (active_ && frame->GetDirection() ==
                          webrtc::TransformableFrameInterface::Direction::kReceiver) {
+        observation.observer = observer_;
         auto* video = static_cast<webrtc::TransformableVideoFrameInterface*>(frame.get());
         const auto data = frame->GetData();
         if (data.size() <= kMaxBytes) {
@@ -520,6 +538,7 @@ class EncodedFrameCollector
             queued_bytes -= queue.front().data.size();
             queue.pop_front();
             Lost();
+            ++observation.dropped;
           }
           StoredFrame snapshot;
           snapshot.data.assign(data.begin(), data.end());
@@ -546,6 +565,7 @@ class EncodedFrameCollector
           queue.push_back(std::move(snapshot));
         } else {
           Lost();
+          ++observation.dropped;
         }
         if (!ordered_) {
           notify.readiness = readiness_;
@@ -563,15 +583,21 @@ class EncodedFrameCollector
 
   void OnFrame(const webrtc::RecordableEncodedFrame& frame) override {
     ReadinessNotification notify{};
+    EncodedObserverNotification observation;
     const auto buffer = frame.encoded_buffer();
-    if (!buffer) return;
     {
       std::lock_guard lock(mutex_);
       if (!active_) return;
+      observation.observer = observer_;
+      if (!buffer) {
+        observation.dropped = 1;
+        return;
+      }
       const auto rtp_timestamp = frame.rtp_timestamp();
       const auto ssrc = frame.ssrc();
       if (!rtp_timestamp || !ssrc) {
         Lost();
+        observation.dropped = 1;
         return;
       }
       const auto match = std::find_if(
@@ -584,11 +610,13 @@ class EncodedFrameCollector
           match->data.size() != buffer->size() ||
           !std::equal(match->data.begin(), match->data.end(), buffer->data())) {
         Lost();
+        observation.dropped = 1;
         return;
       }
       StoredFrame snapshot = std::move(*match);
       pending_bytes_ -= snapshot.data.size();
       pending_frames_.erase(match);
+      if (observation.observer) observation.frame = Snapshot(snapshot);
       while (!frames_.empty() &&
              (frames_.size() >= kMaxFrames ||
               queued_bytes_ > kMaxBytes - snapshot.data.size())) {
@@ -633,39 +661,24 @@ class EncodedFrameCollector
     auto frame = std::move(frames_.front());
     frames_.pop_front();
     queued_bytes_ -= frame.data.size();
-    result.available = true;
-    for (auto byte : frame.data) result.data.push_back(byte);
-    result.mime_type = frame.mime_type;
-    result.rtp_timestamp = frame.rtp_timestamp;
-    result.ssrc = frame.ssrc;
-    result.payload_type = frame.payload_type;
-    result.key_frame = frame.key_frame;
-    result.has_rid = frame.rid.has_value();
-    result.rid = frame.rid.value_or("");
-    result.has_capture_time = frame.capture_time_us.has_value();
-    result.capture_time_us = frame.capture_time_us.value_or(0);
-    result.has_receive_time = frame.receive_time_us.has_value();
-    result.receive_time_us = frame.receive_time_us.value_or(0);
-    result.has_frame_id = frame.frame_id.has_value();
-    result.frame_id = frame.frame_id.value_or(0);
-    result.spatial_index = frame.spatial_index;
-    result.temporal_index = frame.temporal_index;
-    for (auto dependency : frame.dependencies) result.dependencies.push_back(dependency);
-    for (auto indication : frame.decode_target_indications)
-      result.decode_target_indications.push_back(indication);
-    return result;
+    return Snapshot(frame);
   }
   std::uint64_t DroppedFrames() {
     std::lock_guard lock(mutex_);
     return dropped_frames_;
   }
   void Deactivate() {
-    std::lock_guard lock(mutex_);
-    active_ = false;
-    pending_frames_.clear();
-    pending_bytes_ = 0;
-    frames_.clear();
-    queued_bytes_ = 0;
+    std::shared_ptr<rust::Box<RustEncodedVideoObserver>> retired;
+    {
+      std::lock_guard lock(mutex_);
+      active_ = false;
+      pending_frames_.clear();
+      pending_bytes_ = 0;
+      frames_.clear();
+      queued_bytes_ = 0;
+      retired = std::move(observer_);
+    }
+    if (retired) encoded_video_observer_closed(**retired);
   }
 
  private:
@@ -688,7 +701,32 @@ class EncodedFrameCollector
     std::vector<std::int64_t> dependencies;
     std::vector<std::uint8_t> decode_target_indications;
   };
+  static FfiEncodedVideoFrame Snapshot(const StoredFrame& frame) {
+    FfiEncodedVideoFrame result{};
+    result.available = true;
+    for (auto byte : frame.data) result.data.push_back(byte);
+    result.mime_type = frame.mime_type;
+    result.rtp_timestamp = frame.rtp_timestamp;
+    result.ssrc = frame.ssrc;
+    result.payload_type = frame.payload_type;
+    result.key_frame = frame.key_frame;
+    result.has_rid = frame.rid.has_value();
+    result.rid = frame.rid.value_or("");
+    result.has_capture_time = frame.capture_time_us.has_value();
+    result.capture_time_us = frame.capture_time_us.value_or(0);
+    result.has_receive_time = frame.receive_time_us.has_value();
+    result.receive_time_us = frame.receive_time_us.value_or(0);
+    result.has_frame_id = frame.frame_id.has_value();
+    result.frame_id = frame.frame_id.value_or(0);
+    result.spatial_index = frame.spatial_index;
+    result.temporal_index = frame.temporal_index;
+    for (auto dependency : frame.dependencies) result.dependencies.push_back(dependency);
+    for (auto indication : frame.decode_target_indications)
+      result.decode_target_indications.push_back(indication);
+    return result;
+  }
   const std::shared_ptr<ReadinessSignal> readiness_;
+  std::shared_ptr<rust::Box<RustEncodedVideoObserver>> observer_;
   const bool ordered_;
   static constexpr std::size_t kMaxFrames = 4;
   static constexpr std::size_t kMaxPendingFrames = 512;
@@ -3012,9 +3050,9 @@ bool rtp_receiver_request_keyframe(
   return true;
 }
 
-std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
+static std::unique_ptr<NativeEncodedVideoSink> AttachEncodedVideoSink(
     const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
-    bool ordered) noexcept {
+    bool ordered, std::optional<rust::Box<RustEncodedVideoObserver>> observer) noexcept {
   if (!peer.worker_thread()) return nullptr;
   // Receiver handles may outlive their original peer or come from another peer.
   const auto receivers = peer.peer()->GetReceivers();
@@ -3025,7 +3063,8 @@ std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
   if (!track || !track->GetSource() || !track->GetSource()->remote() ||
       (ordered && !track->GetSource()->SupportsEncodedOutput())) return nullptr;
   auto state = std::make_unique<NativeEncodedVideoSink::State>();
-  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(peer.readiness(), ordered);
+  state->collector = webrtc::make_ref_counted<EncodedFrameCollector>(
+      peer.readiness(), ordered, std::move(observer));
   if (ordered) state->source = track->GetSource();
   state->worker = peer.worker_thread();
   peer.worker_thread()->BlockingCall([&] {
@@ -3033,6 +3072,17 @@ std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
     if (state->source) state->source->AddEncodedSink(state->collector.get());
   });
   return std::make_unique<NativeEncodedVideoSink>(std::move(state));
+}
+
+std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_encoded_video_sink(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
+    bool ordered) noexcept {
+  return AttachEncodedVideoSink(peer, receiver, ordered, std::nullopt);
+}
+std::unique_ptr<NativeEncodedVideoSink> rtp_receiver_attach_observed_encoded_video_sink(
+    const NativePeerConnection& peer, const NativeRtpReceiver& receiver,
+    rust::Box<RustEncodedVideoObserver> observer) noexcept {
+  return AttachEncodedVideoSink(peer, receiver, true, std::move(observer));
 }
 
 FfiEncodedVideoFrame encoded_video_sink_take_frame(
