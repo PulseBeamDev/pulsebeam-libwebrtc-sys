@@ -12,6 +12,7 @@
 #include "api/video/video_frame.h"
 #include "api/video/video_sink_interface.h"
 #include "api/video_track_source_constraints.h"
+#include "rtc_base/time_utils.h"
 #include "pulsebeam-webrtc-sys/native/codec.h"
 #include "pulsebeam-webrtc-sys/native/raw_video_frame.h"
 #include "pulsebeam-webrtc-sys/src/lib.rs.h"
@@ -31,7 +32,8 @@ class FrameSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
     // Optional synchronous facts precede retention loss. This is the SAME sink:
     // no extra VideoSinkWants, decoder, timing, or delivery policy is installed.
     if (observer_) {
-      decoded_video_frame_observed(**observer_, std::make_unique<NativeRawVideoFrame>(frame));
+      decoded_video_frame_observed(**observer_, std::make_unique<NativeRawVideoFrame>(frame),
+                                   webrtc::TimeMicros());
     }
     // Keep the existing four-frame/16 MiB decoded-frame retention policy.
     if (frame.width() <= 0 || frame.height() <= 0) {

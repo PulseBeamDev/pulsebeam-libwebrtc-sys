@@ -10,6 +10,10 @@ use std::sync::{
 /// Arrival is sampled synchronously at callback entry, before pixel conversion.
 pub struct DecodedVideoFrameObservation {
     pub observed_at: std::time::Instant,
+    /// SDK global monotonic clock sampled at the native callback. In an
+    /// exclusive ControlledWorld this is its controlled clock, independent of
+    /// host runtime/thread clock shims. Not a capture or presentation time.
+    pub native_observed_at_us: i64,
     /// Conversion/geometry failures remain explicit observations, never frames.
     pub frame: Result<VideoFrame, RawVideoError>,
 }
@@ -68,6 +72,7 @@ impl Drop for RustDecodedVideoObserver {
 pub(crate) fn decoded_video_frame_observed(
     source: &RustDecodedVideoObserver,
     frame: cxx::UniquePtr<crate::ffi::NativeRawVideoFrame>,
+    native_observed_at_us: i64,
 ) {
     let observed_at = std::time::Instant::now();
     if source.status.failed() {
@@ -103,6 +108,7 @@ pub(crate) fn decoded_video_frame_observed(
         };
         observer.on_frame(DecodedVideoFrameObservation {
             observed_at,
+            native_observed_at_us,
             frame: snapshot,
         });
     });

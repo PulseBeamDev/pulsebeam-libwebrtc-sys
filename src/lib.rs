@@ -3824,6 +3824,7 @@ mod ffi {
         fn decoded_video_frame_observed(
             source: &RustDecodedVideoObserver,
             frame: UniquePtr<NativeRawVideoFrame>,
+            native_observed_at_us: i64,
         );
         type RustRawCameraSink;
         fn camera_raw_sink_present(source: &RustRawCameraSink) -> bool;
