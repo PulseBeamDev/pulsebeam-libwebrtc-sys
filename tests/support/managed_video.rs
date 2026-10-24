@@ -2,7 +2,11 @@
 //! Codec preferences are explicit test inputs, not runtime admission rules.
 use pulsebeam_webrtc_sys::*;
 use serde::Serialize;
-use std::{collections::HashMap, net::IpAddr, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::IpAddr,
+    time::Duration,
+};
 
 struct Call<R: SessionRuntime> {
     sessions: [Session<R>; 2],
@@ -151,10 +155,19 @@ struct FrameObservation {
     visible_i420: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationMode {
+    RawOnly,
+    DualCloseSink,
+    DualClosePeer,
+    DualShutdown,
+}
+
 #[derive(Debug, Eq, PartialEq, Serialize)]
 struct Observation {
     events: Vec<String>,
     frames: Vec<FrameObservation>,
+    encoded: Vec<(u32, Vec<u8>)>,
     observed_at_us: u128,
     media_elapsed_us: u128,
 }
@@ -164,9 +177,11 @@ fn application<R: SessionRuntime>(
     parameters: &[(&str, &str)],
     runtimes: [R; 2],
     resources: Option<ExecutionResources>,
+    mode: ObservationMode,
     mut progress: impl FnMut(),
     mut now: impl FnMut() -> Duration,
 ) -> Observation {
+    let dual_observation = mode != ObservationMode::RawOnly;
     let mut call = Call::new(runtimes, resources);
     let source = call.sessions[0].create_raw_video_source().unwrap();
     let transceiver = call.sessions[0]
@@ -206,7 +221,24 @@ fn application<R: SessionRuntime>(
         .unwrap();
     call.negotiate(codec_name, &mut progress);
     let receiver = call.receiver.unwrap();
-    call.sessions[1].attach_raw_video(receiver).unwrap();
+    if dual_observation {
+        call.sessions[1]
+            .attach_raw_and_encoded_video(receiver)
+            .unwrap();
+        assert!(call.sessions[1].attach_raw_video(receiver).is_err());
+        assert!(call.sessions[1].attach_encoded_video(receiver).is_err());
+        assert!(
+            call.sessions[1]
+                .raw_video_sink_wants(receiver)
+                .unwrap()
+                .is_some()
+        );
+        call.sessions[1]
+            .update_raw_video_sink_wants(receiver, &VideoSinkWants::default())
+            .unwrap();
+    } else {
+        call.sessions[1].attach_raw_video(receiver).unwrap();
+    }
 
     // Above VGA: host-derived cores can select native VPx worker pthreads.
     // Do not let a tiny source make an uncontrolled host default look safe.
@@ -227,6 +259,10 @@ fn application<R: SessionRuntime>(
     let mut next_capture = media_started_at;
     let mut submitted = 0;
     let mut received = Vec::new();
+    let mut encoded_timestamps = BTreeSet::new();
+    let mut encoded = Vec::new();
+    let mut held_encoded = None;
+    let mut held_raw = None;
     for _ in 0..10_000 {
         let current = now();
         if submitted < 8 && current >= next_capture {
@@ -239,7 +275,21 @@ fn application<R: SessionRuntime>(
         }
         progress();
         call.drain();
-        if let Some(frame) = call.sessions[1].try_raw_video_frame(receiver).unwrap() {
+        if dual_observation {
+            while let Some(frame) = call.sessions[1].try_video_frame(receiver).unwrap() {
+                assert!(frame.mime_type.eq_ignore_ascii_case("video/h264"));
+                assert!(!frame.data.is_empty());
+                encoded_timestamps.insert(frame.rtp_timestamp);
+                encoded.push((frame.rtp_timestamp, frame.data.clone()));
+                if held_encoded.is_none() {
+                    assert!(frame.key_frame);
+                    held_encoded = Some(frame);
+                }
+            }
+        }
+        if let Some(frame) = call.sessions[1].try_raw_video_frame(receiver).unwrap()
+            && received.len() < 2
+        {
             assert_eq!((frame.width, frame.height), (WIDTH, HEIGHT));
             let visible_i420 = frame.buffer.as_bytes().to_vec();
             assert_eq!(visible_i420.len(), y * 3 / 2);
@@ -252,10 +302,49 @@ fn application<R: SessionRuntime>(
                 rtp_timestamp: frame.rtp_timestamp,
                 visible_i420,
             });
-            if received.len() == 2 {
-                break;
+            if dual_observation && held_raw.is_none() {
+                held_raw = Some(frame);
             }
         }
+        if received.len() == 2
+            && (!dual_observation
+                || received
+                    .iter()
+                    .all(|frame| encoded_timestamps.contains(&frame.rtp_timestamp)))
+        {
+            break;
+        }
+    }
+    if dual_observation {
+        assert!(
+            received
+                .iter()
+                .all(|frame| encoded_timestamps.contains(&frame.rtp_timestamp)),
+            "encoded and native decoded output must include the same actual RTP frames on this receiver"
+        );
+        assert_eq!(call.sessions[1].dropped_frames(receiver).unwrap(), 0);
+        let _ = call.sessions[1].try_raw_video_sink_event(receiver).unwrap();
+        assert_eq!(
+            call.sessions[1]
+                .dropped_raw_video_sink_events(receiver)
+                .unwrap(),
+            0
+        );
+    }
+    if mode == ObservationMode::DualCloseSink {
+        call.sessions[1].close_media_sink(receiver).unwrap();
+        assert!(call.sessions[1].try_raw_video_frame(receiver).is_err());
+        assert!(call.sessions[1].try_video_frame(receiver).is_err());
+        // Combined attachment must preserve the native encoded receiver-lifetime
+        // reservation. A failed reattachment must also release its raw sink.
+        assert!(
+            call.sessions[1]
+                .attach_raw_and_encoded_video(receiver)
+                .is_err()
+        );
+        call.sessions[1].attach_raw_video(receiver).unwrap();
+        call.sessions[1].close_media_sink(receiver).unwrap();
+        assert!(call.sessions[1].attach_encoded_video(receiver).is_err());
     }
     assert_eq!(
         received.len(),
@@ -268,21 +357,34 @@ fn application<R: SessionRuntime>(
     let media_elapsed_us = observed_at_us - media_started_at.as_micros();
     assert!(media_elapsed_us >= 33_000);
     for index in 0..2 {
-        call.sessions[index].close_peer(call.peers[index]).unwrap();
+        // Both other combined cases leave the sinks ATTACHED through peer
+        // retirement or direct shutdown, exercising dependent cleanup too.
+        if index != 1 || mode != ObservationMode::DualShutdown {
+            call.sessions[index].close_peer(call.peers[index]).unwrap();
+        }
         call.sessions[index].shutdown().unwrap();
+    }
+    if dual_observation {
+        assert!(!held_encoded.unwrap().data.is_empty());
+        assert_eq!(
+            held_raw.unwrap().buffer.as_bytes(),
+            received[0].visible_i420.as_slice()
+        );
     }
     Observation {
         events: call.events,
         frames: received,
+        encoded,
         observed_at_us,
         media_elapsed_us,
     }
 }
 
-fn run(
+fn run_observed(
     codec_name: &str,
     parameters: &[(&str, &str)],
     resources: Option<ExecutionResources>,
+    mode: ObservationMode,
 ) -> Observation {
     eprintln!("CONTROLLED_MEDIA_BEGIN");
     let observation = {
@@ -301,6 +403,7 @@ fn run(
             parameters,
             runtimes,
             resources,
+            mode,
             || {
                 assert!(!world.pump(256).blocked);
                 while let Some(packet) = network.next_packet() {
@@ -314,6 +417,34 @@ fn run(
     };
     eprintln!("CONTROLLED_MEDIA_END");
     observation
+}
+
+fn run(
+    codec_name: &str,
+    parameters: &[(&str, &str)],
+    resources: Option<ExecutionResources>,
+) -> Observation {
+    run_observed(codec_name, parameters, resources, ObservationMode::RawOnly)
+}
+
+/// Composition proof for the existing native encoder, ordered encoded
+/// observation, and native I420 decoder. Prerecorded input is separately
+/// retained and qualified by the consumer's encoded-source scenarios.
+#[allow(dead_code)]
+pub fn check_dual_observation() {
+    let parameters = &[("packetization-mode", "1"), ("profile-level-id", "42e01f")];
+    for mode in [
+        ObservationMode::DualCloseSink,
+        ObservationMode::DualClosePeer,
+        ObservationMode::DualShutdown,
+    ] {
+        let first = run_observed("H264", parameters, None, mode);
+        let second = run_observed("H264", parameters, None, mode);
+        assert_eq!(
+            first, second,
+            "same-receiver dual native observation must replay: {mode:?}"
+        );
+    }
 }
 
 #[allow(dead_code)]

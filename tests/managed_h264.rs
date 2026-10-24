@@ -11,3 +11,8 @@ fn high_resolution_stock_h264_uses_managed_call_defaults_and_replays() {
         "PULSEBEAM_H264_TRACE_PATH",
     );
 }
+
+#[test]
+fn same_receiver_observes_ordered_h264_and_native_i420_without_interception() {
+    managed_video::check_dual_observation();
+}

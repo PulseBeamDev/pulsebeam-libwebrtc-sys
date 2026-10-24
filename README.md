@@ -397,11 +397,17 @@ After negotiation, select `attach_pcm` or `attach_raw_video` on the receiving
 endpoint and consume owned values with `try_pcm_frame` or
 `try_raw_video_frame`. Raw sinks require explicit polling; in headless mode a
 PCM poll may pull one native playout block. Readiness alone does not drive
-headless audio playout or guarantee raw-video notification. One receive mode
-is active per actor receiver. `close_media_sink` detaches it before reattachment
-or an audio-mode switch; encoded-video interception retains its existing
-receiver-lifetime restriction. Returned frames own their data across source
-replacement, sink closure, session migration and shutdown.
+headless audio playout or guarantee raw-video notification. One explicit
+observation mode is active per receiver. `attach_raw_and_encoded_video` combines
+native-decoded I420 with the existing passive ordered encoded observer on that
+same receiver; drain `try_raw_video_frame` and `try_video_frame` independently.
+It keeps the configured decoder and forwards originals unchanged. Encoded-only
+receive factories are refused, without reserving the encoded observer first.
+Its `dropped_frames` count sums both observer queues, not native playout losses.
+`close_media_sink` detaches the active mode before reattachment or an audio-mode
+switch; encoded observation retains its existing receiver-lifetime restriction.
+Returned frames own their data across source replacement, sink closure, session
+migration and shutdown.
 
 Local raw-video sinks expose native `DiscardedFrame` and `ConstraintsChanged`
 notifications through `VideoSink::try_next_event`; actor receivers use
