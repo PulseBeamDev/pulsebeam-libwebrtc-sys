@@ -837,7 +837,10 @@ impl PeerConnectionFactoryBuilder {
     /// device initialization is unavailable. No device is opened by default.
     #[cfg(feature = "native")]
     pub fn native_audio(mut self, enabled: bool) -> Self {
-        self.audio_device_module = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.audio_device_module = None;
+        }
         self.native_audio = enabled;
         self
     }

@@ -45,6 +45,10 @@ jobs:
         with: {just-version: 1.43.1}
       - name: Check native process launch before source acquisition
         run: python -m unittest tests.test_run_process
+      - name: Parse release recipes with the native Apple Bash before downloads
+        if: inputs.scope == 'macos' || inputs.scope == 'ios'
+        env: {PULSEBEAM_TEST_BASH: /bin/bash}
+        run: python -m unittest tests.test_release_shell_syntax
       - name: Configure the matching native SDK and Rust target
         if: inputs.scope != 'android'
         run: python -m tools.platform_ci setup '${{ matrix.target }}' build

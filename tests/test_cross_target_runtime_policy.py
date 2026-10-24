@@ -188,8 +188,8 @@ class CrossTargetRuntimePolicyTests(unittest.TestCase):
     @staticmethod
     def _cxx_target_input(target):
         return {
-            "android-x86_64": 'triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac)',
-            "android-arm64-v8a": 'triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac)',
+            "android-x86_64": 'case "{{ target }}" in android-x86_64) triple=x86_64;; *) triple=aarch64;; esac',
+            "android-arm64-v8a": 'case "{{ target }}" in android-x86_64) triple=x86_64;; *) triple=aarch64;; esac',
             "linux-arm64": '--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot"',
         }[target]
 

@@ -22,7 +22,11 @@ class ProcessLaunchTests(unittest.TestCase):
                 "spaces & shell $ syntax",
             ], capture_output=True, text=True)
             self.assertEqual(result.returncode, 27, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), [str(Path(temporary).resolve()), "spaces & shell $ syntax"])
+            working_directory, argument = result.stdout.splitlines()
+            # Windows may report an 8.3 spelling even though --cwd selected the
+            # correct directory. Compare filesystem identity, not path text.
+            self.assertTrue(Path(working_directory).samefile(temporary))
+            self.assertEqual(argument, "spaces & shell $ syntax")
 
     def test_timeout_is_portable_and_reports_failure_without_gnu_timeout(self):
         result = subprocess.run([

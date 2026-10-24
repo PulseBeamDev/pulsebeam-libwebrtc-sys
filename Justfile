@@ -47,7 +47,7 @@ check:
     python3 tools/cxx_import.py verify
     python3 -m unittest tests/test_cxx_import.py
     python3 -m unittest tests/test_justfile_input_retrieval.py tests/test_run_process.py
-    python3 -m unittest tests/test_apple_host_protoc_archive.py
+    python3 -m unittest tests/test_apple_host_protoc_archive.py tests/test_normalize_apple_archives.py tests/test_release_shell_syntax.py tests/test_arm64_compiler_builtins.py
     python3 -m unittest tests/test_ios_bridge_shell.py tests/test_webrtc_source_state.py
     python3 -m unittest tests/test_cross_target_runtime_policy.py
     python3 -m unittest tests/test_linux_runtime_host.py
@@ -438,6 +438,17 @@ _apple-host-protoc flavor target:
     case "{{ target }}" in macos-*|ios-*) ;; *) exit 0;; esac
     src="{{ work }}/checkout/src"; out="{{ work }}/out/{{ flavor }}/{{ target }}"; ar="$src/third_party/llvm-build/Release+Asserts/bin/llvm-ar"
     case "$(uname -m)" in x86_64) host_arch=x86_64;; arm64) host_arch=arm64;; *) echo "unsupported Apple host architecture: $(uname -m)" >&2; exit 1;; esac
+    case "{{ target }}" in
+      macos-*)
+        # These native-host archives must be reindexed before LLD links protoc,
+        # not after the executable has already failed on a __.SYMDEF child.
+        support_archives=()
+        for name in libprotoc_lib libprotobuf_full libprotobuf_lite; do support_archives+=("obj/third_party/protobuf/$name.a"); done
+        "$src/third_party/ninja/ninja" -C "$out" "${support_archives[@]}"
+        for index in "${!support_archives[@]}"; do support_archives[$index]="$out/${support_archives[$index]}"; done
+        python3 "{{ root }}/tools/normalize_apple_archives.py" --ar "$ar" "${support_archives[@]}"
+        ;;
+    esac
     "$src/third_party/ninja/ninja" -C "$out" protoc
     protoc=$(find "$out" -type f -name protoc -perm -111 -print -quit); support=$(find "$out" -type f -path '*/obj/third_party/protobuf/libprotoc_lib.a' -print -quit)
     test -x "$protoc" || { echo "missing host protoc: $protoc" >&2; exit 1; }
@@ -447,7 +458,8 @@ _apple-host-protoc flavor target:
     test -n "$support_members" || { echo "empty host protoc support archive: $support" >&2; exit 1; }
     support_member=$(printf '%s\n' "$support_members" | awk '$0 != "__.SYMDEF" && $0 != "__.SYMDEF SORTED" { print; exit }')
     test -n "$support_member" || { echo "invalid host protoc support archive: $support has no linkable object member" >&2; exit 1; }
-    support_member=${support_member##*/}
+    # Thin archives list path-qualified names. Pass the listed member back
+    # unchanged; llvm-ar cannot extract it by basename.
     support_format=$("$ar" p "$support" "$support_member" | file -) || { echo "unreadable host protoc support member: $support:$support_member" >&2; exit 1; }
     grep -Eq "Mach-O.*${host_arch}" <<< "$support_format" || { echo "host protoc support architecture mismatch: expected=$host_arch actual=$support_format" >&2; exit 1; }
 
@@ -533,7 +545,26 @@ _export-static-closure flavor target src out src_native out_native archives obje
     if test "{{ target }}" = linux-arm64; then
       required_source_set_objects //buildtools/third_party/libunwind:libunwind "{{ out }}" buildtools/third_party/libunwind/libunwind libunwind
     fi
+    just --justfile "{{ root }}/Justfile" _export-compiler-builtins "{{ target }}" "{{ src }}" >> "{{ archives }}"
     test -s "{{ archives }}" || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" static-closure 'at least one static archive output' 'no matching .a or .lib output'
+
+# libyuv SME code needs the matching Clang SME ABI implementation. Rust's
+# compiler_builtins is not a substitute, and a consumer may use another linker.
+# Merge the pinned target runtime into libwebrtc.a, including its dependencies,
+# so neither consumer boundary needs access to the producer's Clang installation.
+_export-compiler-builtins target src:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in
+      linux-arm64) triple=aarch64-linux-gnu;;
+      android-arm64-v8a) triple=aarch64-linux-android26;;
+      *) exit 0;;
+    esac
+    bin="{{ src }}/third_party/llvm-build/Release+Asserts/bin"
+    builtins=$("$bin/clang" --target="$triple" --rtlib=compiler-rt --print-libgcc-file-name)
+    test -f "$builtins" || { echo "missing target compiler-rt builtins: {{ target }}: $builtins" >&2; exit 1; }
+    "$bin/llvm-nm" --defined-only "$builtins" | grep -E ' [TW] __arm_tpidr2_save$' >/dev/null || { echo "missing SME ABI support in target compiler-rt builtins: {{ target }}: $builtins" >&2; exit 1; }
+    printf '%s\n' "$builtins"
 
 _export flavor target:
     #!/usr/bin/env bash
@@ -544,6 +575,7 @@ _export flavor target:
     rm -rf "$stage"; mkdir -p "$stage/include" "$stage/lib" "$stage/LICENSES" "{{ dist }}"
     archives=$(mktemp); objects=$(mktemp); definitions_file=$(mktemp); toolchain_file=$(mktemp); trap 'rm -f "$archives" "$objects" "$definitions_file" "$toolchain_file"' EXIT
     just --justfile "{{ root }}/Justfile" _export-static-closure "{{ flavor }}" "{{ target }}" "$src" "$out" "$src_native" "$out_native" "$archives" "$objects"
+    case "{{ target }}" in macos-*|ios-*) python3 "{{ root }}/tools/normalize_apple_archives.py" --ar "$ar" --list "$archives";; esac
     if [[ "{{ target }}" = android-* ]]; then
       find "$out/obj/buildtools/third_party/libunwind/libunwind" -name '*.o' -print > "$objects"
       test -s "$objects" || { echo 'missing Android libunwind objects' >&2; exit 1; }
@@ -576,7 +608,8 @@ _export flavor target:
       grep -qx -- '-DWEBRTC_USE_X11' "$definitions_file" || printf '%s\n' '-DWEBRTC_USE_X11' >> "$definitions_file"
     fi
     just --justfile "{{ root }}/Justfile" _bridge-objects "{{ flavor }}" "{{ target }}" "$stage" "$definitions_file" >> "$objects"
-    library="$stage/lib/$(case "{{ target }}" in windows-*) printf webrtc.lib;; *) printf libwebrtc.a;; esac)"
+    # Bash 3.2 on Apple cannot parse this case inside a quoted $(...).
+    case "{{ target }}" in windows-*) library="$stage/lib/webrtc.lib";; *) library="$stage/lib/libwebrtc.a";; esac
     library_native=$(just --justfile "{{ root }}/Justfile" _native-path "$library")
     { printf 'CREATE %s\n' "$library_native"; while read -r input; do test -f "$input" || { echo "missing archive: $input" >&2; exit 1; }; printf 'ADDLIB %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$archives"; while read -r input; do test -f "$input" || { echo "missing object: $input" >&2; exit 1; }; printf 'ADDMOD %s\n' "$(just --justfile "{{ root }}/Justfile" _native-path "$input")"; done < "$objects"; printf 'SAVE\nEND\n'; } | "$ar" -M
     members=$("$ar" t "$library_native") || just --justfile "{{ root }}/Justfile" _export-predicate-failed "{{ flavor }}" "{{ target }}" archive-membership "a readable member list for $library" 'llvm-ar could not list archive members'
@@ -807,9 +840,9 @@ _cpp-smoke flavor target kit:
         fi
         ;;
       linux-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; args=(--target=aarch64-linux-gnu --sysroot="$src/build/linux/debian_bullseye_arm64-sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1" -pthread);;
-      android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; triple=$(case "{{ target }}" in android-x86_64) printf x86_64;; *) printf aarch64;; esac); args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1");;
-      macos-x86_64|macos-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; arch=$(case "{{ target }}" in macos-x86_64) printf x86_64;; *) printf arm64;; esac); args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -DWEBRTC_POSIX -DWEBRTC_MAC);;
-      ios-arm64|ios-simulator-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; sdk=$(case "{{ target }}" in ios-arm64) printf iphoneos;; *) printf iphonesimulator;; esac); minimum=$(case "{{ target }}" in ios-arm64) printf '%s' -miphoneos-version-min=18.0;; *) printf '%s' -mios-simulator-version-min=18.0;; esac); args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -DWEBRTC_POSIX -DWEBRTC_IOS -DWEBRTC_MAC);;
+      android-x86_64|android-arm64-v8a) prebuilt=$(find "$src/third_party/android_toolchain/ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -1); cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; case "{{ target }}" in android-x86_64) triple=x86_64;; *) triple=aarch64;; esac; args=(--target="${triple}-linux-android26" --sysroot="$prebuilt/sysroot" -nostdinc++ -isystem "{{ kit }}/include/c++/v1");;
+      macos-x86_64|macos-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; case "{{ target }}" in macos-x86_64) arch=x86_64;; *) arch=arm64;; esac; args=(-arch "$arch" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -mmacosx-version-min=12.0 -DWEBRTC_POSIX -DWEBRTC_MAC);;
+      ios-arm64|ios-simulator-arm64) cxx="$src/third_party/llvm-build/Release+Asserts/bin/clang++"; case "{{ target }}" in ios-arm64) sdk=iphoneos; minimum=-miphoneos-version-min=18.0;; *) sdk=iphonesimulator; minimum=-mios-simulator-version-min=18.0;; esac; args=(-arch arm64 -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" "$minimum" -DWEBRTC_POSIX -DWEBRTC_IOS -DWEBRTC_MAC);;
       windows-x86_64) if test -z "${PULSEBEAM_WEBRTC_CONSUMER_STATICLIB:-}"; then library="$kit_native\\lib\\webrtc.lib"; fi; MSYS2_ARG_CONV_EXCL='*' "$src_native\\third_party\\llvm-build\\Release+Asserts\\bin\\clang-cl" /std:c++20 /GR- /EHs-c- /MT "${exported_defines[@]}" /I"$kit_native\\include" "${sources[@]}" "$library" "${link[@]}" "/Fe:$kit_native\\$program.exe"; exit;;
     esac
     "$cxx" "${defs[@]}" "${args[@]}" -I"{{ kit }}/include" "${sources[@]}" "$library" "${link[@]}" -o "{{ kit }}/$program"

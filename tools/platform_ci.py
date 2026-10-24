@@ -167,6 +167,14 @@ def produce(flavor: str, target: str) -> None:
     # Android builds execute this within the repository-owned Linux image, so
     # the installed Rust target remains present for the build/smoke-link step.
     ci_tasks.install_target(target)
+    # Catch target/feature cfg mistakes before acquiring and compiling WebRTC.
+    # This is type-checking only; the subsequent production smokes still link.
+    cargo, _ = rust_only_consumer.coordinate(target, flavor)
+    check = ["cargo", "check", "--locked", "--lib", "--target", cargo]
+    if flavor == "native":
+        check.extend(["--features", "native"])
+    invoke(check, environment={**os.environ, "PULSEBEAM_WEBRTC_SYS_SKIP_LINK": "1",
+                               "CARGO_HOME": os.environ.get("CARGO_HOME", str(ROOT / ".work/cargo-home"))})
     invoke(["just", "build", flavor, target], timeout=21600)
     if target.startswith(("macos-", "windows-")):
         archive = ROOT / f"dist/webrtc-{flavor}-{target}.tar.gz"

@@ -92,6 +92,13 @@ verify-artifact`. The archive can be built at this revision with `just build
 core linux-x86_64`, using the producer-recorded SHA-256, or be an immutable
 release/workflow artifact accompanied by its matching trusted audit checksum.
 
+Non-Linux producer jobs type-check the selected Rust target and flavor before
+source acquisition, without bypassing the later real link and runtime gates.
+Apple jobs also parse every Bash recipe with `/bin/bash` before downloading
+WebRTC, including the Bash 3.2 shipped by macOS. Local syntax reproduction can
+select an older shell with `PULSEBEAM_TEST_BASH=/path/to/bash python3 -m unittest
+tests.test_release_shell_syntax`.
+
 The tested Rust-only contract excludes downstream C and C++ compilation. Rust
 still invokes the platform linker, and the target must provide the system
 libraries and SDK inputs declared by the artifact manifest. Using a compiler
@@ -160,6 +167,17 @@ with a separate SHA-256; audits and consumers verify both native archives, and
 Cargo links the bundled unwinder statically. The producer's Chromium NDK input
 is stripped of compiler drivers and runtimes, so setting its sysroot alone does
 not provide Rust's unwinder dependency.
+
+Linux ARM64 and Android ARM64 kits also merge the pinned Clang target's
+compiler-rt builtins into `libwebrtc.a`. This supplies libyuv's SME ABI helpers,
+including `__arm_tpidr2_save` and their runtime dependencies, even when Rust's
+link suppresses the compiler driver's default libraries. SME remains enabled;
+consumers do not need the producer's Clang installation to find those helpers.
+
+Apple archives are reindexed as GNU archives before host protoc linking and
+artifact merging. Only stray Darwin symbol-index members (`__.SYMDEF` variants)
+are removed. Thin archive paths and duplicate object basenames are retained,
+and host protoc's architecture is still checked using the exact listed member.
 
 For development against a matching extracted artifact:
 

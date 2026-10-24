@@ -268,6 +268,25 @@ class IndependentOSWorkflowTests(unittest.TestCase):
 
 
 class PlatformCITests(unittest.TestCase):
+    def test_target_and_flavor_type_check_precedes_source_acquisition_without_weakening_link(self):
+        for flavor in ("core", "native"):
+            with self.subTest(flavor=flavor), patch.object(platform_ci.rust_only_consumer, "require_host"), patch.object(ci_tasks, "install_target"), patch.object(platform_ci, "invoke") as invoke:
+                platform_ci.produce(flavor, "android-arm64-v8a")
+                check, build = invoke.call_args_list
+                expected = ["cargo", "check", "--locked", "--lib", "--target", "aarch64-linux-android"]
+                if flavor == "native":
+                    expected.extend(["--features", "native"])
+                self.assertEqual(check.args[0], expected)
+                self.assertEqual(check.kwargs["environment"]["PULSEBEAM_WEBRTC_SYS_SKIP_LINK"], "1")
+                self.assertEqual(build.args[0], ["just", "build", flavor, "android-arm64-v8a"])
+                self.assertNotIn("environment", build.kwargs)
+
+    def test_target_type_error_stops_before_build(self):
+        with patch.object(platform_ci.rust_only_consumer, "require_host"), patch.object(ci_tasks, "install_target"), patch.object(platform_ci, "invoke", side_effect=RuntimeError("target cfg error")) as invoke:
+            with self.assertRaisesRegex(RuntimeError, "target cfg error"):
+                platform_ci.produce("native", "android-arm64-v8a")
+            invoke.assert_called_once()
+
     def test_setup_cannot_proceed_without_explicit_ci_environment(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(platform_ci.rust_only_consumer, "require_host"), patch.object(platform_ci, "invoke") as invoke:
             with self.assertRaises(platform_ci.SetupError):
