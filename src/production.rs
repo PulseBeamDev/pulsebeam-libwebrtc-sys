@@ -6327,6 +6327,30 @@ impl<R: SessionRuntime> Session<R> {
         };
         Ok(sink.try_next_frame())
     }
+    /// Raw-video observer retention losses, not native decoder/playout losses.
+    /// Kept separate from encoded observation so dual consumers cannot mistake
+    /// an encoded queue overflow for a dropped native decoded observation.
+    pub fn dropped_raw_video_frames(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<u64, PeerError> {
+        Ok(self.raw_video_sink(receiver)?.dropped_frames())
+    }
+
+    /// Encoded-video observer retention losses for single or combined mode.
+    pub fn dropped_encoded_video_frames(
+        &mut self,
+        receiver: SessionReceiverId,
+    ) -> Result<u64, PeerError> {
+        let Some(
+            MediaSink::EncodedVideo(sink) | MediaSink::RawAndEncodedVideo { encoded: sink, .. },
+        ) = self.media_sinks.get(&receiver)
+        else {
+            return Err(missing());
+        };
+        Ok(sink.dropped_frames())
+    }
+
     pub fn dropped_frames(&mut self, receiver: SessionReceiverId) -> Result<u64, PeerError> {
         Ok(self
             .media_sinks

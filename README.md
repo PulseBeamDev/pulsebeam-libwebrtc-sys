@@ -404,6 +404,8 @@ same receiver; drain `try_raw_video_frame` and `try_video_frame` independently.
 It keeps the configured decoder and forwards originals unchanged. Encoded-only
 receive factories are refused, without reserving the encoded observer first.
 Its `dropped_frames` count sums both observer queues, not native playout losses.
+Use `dropped_raw_video_frames` and `dropped_encoded_video_frames` to distinguish
+which observer lost retained output; do not infer decoder loss from either.
 `close_media_sink` detaches the active mode before reattachment or an audio-mode
 switch; encoded observation retains its existing receiver-lifetime restriction.
 Returned frames own their data across source replacement, sink closure, session
