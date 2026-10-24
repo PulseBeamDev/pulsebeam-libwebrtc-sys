@@ -399,8 +399,12 @@ For complete decoded callback facts before polling retention, opt into
 `attach_sink_with_observer`). This observes the same native sink with unchanged
 wants and queue limits, not an additional decoder or sink. Each synchronous
 callback receives owned bounded I420 pixels or an explicit conversion error,
-plus the host monotonic callback-entry `observed_at`. It reports neither UI
-presentation nor an SSRC. Do not block or synchronously control the SDK from
+plus the host monotonic callback-entry `observed_at` and SDK global monotonic
+`native_observed_at_us`. In an exclusive `ControlledWorld`, the latter uses its
+actual controlled clock even outside a host runtime context. Map clock domains
+explicitly before freshness/cadence comparisons; custom environment clocks need
+not equal the SDK global clock. Neither timestamp reports UI presentation, and
+the callback supplies no SSRC. Do not block or synchronously control the SDK from
 this callback. Panics retire it and set `raw_video_observer_failed` (local
 `VideoSink::observer_failed`); polling retention loss remains separate. Observer
 state is released after native removal, even when closed sink handles remain

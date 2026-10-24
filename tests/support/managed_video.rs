@@ -255,11 +255,16 @@ fn application<R: SessionRuntime>(
             {
                 let snapshots = callbacks.clone();
                 let guard = ObserverDrop(observer_dropped.clone());
+                let mut last_native_time = None;
                 call.sessions[1]
                     .attach_raw_and_encoded_video_with_observer(
                         receiver,
                         move |observation: DecodedVideoFrameObservation| {
                             let _ = &guard;
+                            assert!((7_000_000..17_000_000).contains(&observation.native_observed_at_us),
+                                "callback must report actual controlled native clock, not host clock");
+                            assert!(last_native_time.is_none_or(|last| last <= observation.native_observed_at_us));
+                            last_native_time = Some(observation.native_observed_at_us);
                             if mode == ObservationMode::CallbackPanic {
                                 panic!("intentional decoded observer panic");
                             }
